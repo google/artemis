@@ -1,0 +1,217 @@
+{
+  // ==============================================================================
+  // ☕ ARTEMIS Autonomous Agent & Framework Configuration
+  // ==============================================================================
+
+  // ------------------------------------------------------------------------------
+  // 1. Global Default Model (Applied to all sub-agents unless overridden below)
+  // ------------------------------------------------------------------------------
+  "default": {
+    "provider": "google",
+    "model": "gemini-3.6-flash",
+    "thinking_level": "medium",
+    "fallback": {
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "thinking_level": "medium"
+    }
+  },
+
+  // ------------------------------------------------------------------------------
+  // 2. Ready-to-Use Presets (Switch easily in code or CLI)
+  // ------------------------------------------------------------------------------
+  "presets": {
+    "gemini-flagship": {
+      "provider": "google",
+      "model": "gemini-3.6-flash",
+      "fallback": { "provider": "google", "model": "gemini-3.5-flash" }
+    },
+    "gemini-flash": {
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "fallback": { "provider": "google", "model": "gemini-2.0-flash" }
+    },
+    "openai-gpt4o": {
+      "provider": "openai",
+      "model": "gpt-4o",
+      "fallback": { "provider": "openai", "model": "gpt-4o-mini" }
+    },
+    "cost-saving": {
+      "provider": "google",
+      "model": "gemini-3.5-flash-lite",
+      "fallback": { "provider": "google", "model": "gemini-3.1-flash-lite" }
+    },
+    "local-ollama": {
+      "provider": "openai",
+      "model": "llama3.2-vision",
+      "fallback": { "provider": "openai", "model": "llama3.2-vision" }
+    }
+  },
+
+  // ------------------------------------------------------------------------------
+  // 3. Agent & Sub-Agent Node Customizations (Optional - Inherits from 'default')
+  // ------------------------------------------------------------------------------
+  "nodes": {
+    // 🧠 Planner: High-level goal decomposition and strategic step planning
+    "planner": {
+      "thinking_level": "medium"
+    },
+
+    // 🎯 Operator: Screen perception, element interaction, and direct execution
+    "operator": {
+      "thinking_level": "medium",
+      "include_thoughts": true
+    },
+
+    // 🎬 Video Analyzer: Multimodal screen recording verification and temporal analysis
+    // NOTE: Dual-path engine automatically routes:
+    //  - Native Gemini Files API for Gemini models with Google API keys (long video file stream)
+    //  - Universal Multi-Model Engine for Claude 3.5/3.7, GPT-4o, OpenRouter, Vertex AI (dynamic keyframe extraction + multimodal tool calling)
+    "video_analyzer": {},
+
+    // 👁️ Object Detector & Explorer (Flash Mode): Visual coordinates grounding and bounding boxes
+    // CRITICAL REQUIREMENT: Standard LLMs (including standard Gemini Flash, GPT-4o, Claude 3.7) lack sub-pixel spatial coordinate fine-tuning.
+    // To achieve accurate [x, y] point and bounding box localization, this node MUST use specialized Gemini ER (Embodied Reasoning / Robotics) models:
+    // e.g., "gemini-robotics-er-2-preview". Non-ER models will fail spatial coordinate detection.
+    "object_detector": {
+      "model": "gemini-robotics-er-2-preview",
+      "fallback": {
+        "provider": "google",
+        "model": "gemini-robotics-er-2-preview"
+      }
+    },
+
+    // 🔍 Explorer: Deep element grounding and multi-candidate visual search
+    // NOTE:
+    //  - "flash" version delegates directly to object_detector (requires Gemini ER model above).
+    //  - "pro" / "ultra" versions run multi-turn ReAct loops (supports both Native Gemini and Universal Multi-Model LangChain engines).
+    "explorer": {
+      "thinking_level": "medium"
+    },
+
+    // 🛡️ Validator & Failure Analyzer: Self-healing, action verification & recovery
+    "validator_failure_analyzer": {
+      "thinking_level": "medium"
+    },
+
+    // 📋 Summarizer: Aggregates step history and generates structured outcome
+    "summarizer": {},
+
+    // 🔽 Hopper: Fast lightweight package name locator
+    "hopper": {
+      "model": "gemini-3.5-flash-lite",
+      "fallback": {
+        "provider": "google",
+        "model": "gemini-3.1-flash-lite"
+      }
+    },
+
+    // 📝 Outputter: Synthesizes execution trace into final output report
+    "outputter": {},
+
+    // 🪵 Log Analyzer: Error log diagnosis with search grounding
+    "log_analyzer": {
+      "enable_grounding": true
+    },
+
+    // 🩺 Diagnoser Expert: Failure root cause diagnosis with search grounding
+    "diagnoser_expert": {
+      "enable_grounding": true
+    },
+    // 🏛️ Committee Council Members
+    "planner_avatar": {},
+    "history_analyzer_expert": {},
+    // 🔎 Checker: Visual subgoal verification and rollback
+    "checker": {}
+  },
+
+  // ------------------------------------------------------------------------------
+  // 4. Runtime Mode & Agent Capabilities Configuration (Dual-Engine: Flash vs. Pro)
+  // ------------------------------------------------------------------------------
+  "agent": {
+    // ==========================================================================
+    // ⚡ 4.1 FLASH Profile Options (Reactive Single-Agent Lightweight Loop)
+    // ==========================================================================
+    // Best for: Simple, fast, deterministic tasks (< 30 UI steps).
+    // Execution: Observe-Think-Act single LLM reactive loop without graph overhead.
+    "flash": {
+      "max_turns": 30, // Maximum reactive turns before stopping
+      "explorer_mode": "flash", // Perception mode for Flash runner ('flash' 1-shot detection)
+      // 🧠 Step Summarizer: Asynchronous visual context compressor
+      // Summarizes intermediate steps in background without blocking the runner,
+      // replacing pruned images with strictly objective, high-density state summaries.
+      "step_summarizer": {
+        "enabled": true, // Whether background step summarization is active
+        "model": "gemini-3.5-flash-lite", // Lightweight model for fast background inference
+        "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
+      }
+    },
+    // ==========================================================================
+    // 🚀 4.2 PRO Profile Options (Deep Multi-Agent Graph Closed-Loop)
+    // ==========================================================================
+    // Best for: Complex, exploratory, dynamic multi-branch tasks.
+    // Execution: LangGraph multi-node graph with autonomous planning, validation, and self-healing.
+    "pro": {
+      // 🧭 Explorer: Perception sub-agent under Pro profile ('flash', 'pro', or 'ultra')
+      "explorer": {
+        "mode": "flash", // Default mode for Pro nodes (Operator/Validator)
+        "caching": true // Context caching for multi-turn Pro/Ultra visual reasoning
+      },
+      // 🎯 Planner Validation: Async verification when task plan milestones change
+      "planner_validation": {
+        "enabled": false,
+        "similarity_threshold": 0.85
+      },
+      // 🏛️ Committee: Multi-Agent Council debate tool for Operator
+      "committee": {
+        "enabled": false,
+        "debate_rounds": 2
+      },
+      // 🔎 Checker: Visual subgoal verification and automatic checkpoint rollback
+      "checker": {
+        "enabled": false,
+        "max_iterations": 20,
+        "max_chat_rounds": 4
+      },
+      // 🎬 Video Analyzer & Screen Recording: Continuous screen recording via scrcpy and temporal analysis
+      "video_analyzer": {
+        "enabled": true, // Whether continuous video recording and video tools are active (default: auto-detected)
+        "enable_ledger": true
+      }
+    },
+    // ==========================================================================
+    // 🌐 4.3 Shared Capabilities & Global Overrides
+    // ==========================================================================
+    // 🎬 Screen Recording & Video Analyzer Configuration
+    "video_analyzer": {
+      "enabled": true, // Whether continuous screen recording via scrcpy is active (default: auto-detected)
+      "enable_ledger": true
+    },
+    // 📝 Outputter: Post-execution report synthesis and structured schema extraction
+    // Reviews action history, notes, and verifies goal achievement to synthesize final output.
+    "outputter": {
+      "enabled": true, // Whether Outputter is mounted to synthesize final outputs
+      "force_synthesis": false // Force Outputter synthesis even without explicit output schema
+    },
+    // 🧭 Global / Per-Agent Explorer Version Overrides
+    "explorer": {
+      "default_version": "flash", // Fallback version when not specified
+      "flash_mode": "flash", // Version for Flash runner
+      "pro_mode": "flash", // Version for Pro graph runner
+      "caching": true
+    },
+    "explorer_versions": {
+      "operator": "flash",
+      "validator": "flash"
+    },
+// 🚫 Per-agent Tool Blacklists
+    "blacklisted_tools": {
+      "explorer": [
+        "ask_image_processor",
+        "get_ocr_list",
+        "inspect_region"
+      ]
+    }
+  }
+}
+

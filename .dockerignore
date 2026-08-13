@@ -1,0 +1,16 @@
+.git
+.venv
+__pycache__
+*.pyc
+traces/
+latte-traces/
+debug/replay/
+debug_pub/replay/
+*.mp4
+*.jpg
+*.png
+pytest_temp/
+/scratch/
+android_world*
+/dist/
+node_modules/

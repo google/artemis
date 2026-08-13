@@ -1,0 +1,166 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from artemis.utils.logger import get_logger
+from pydantic import BaseModel, Field
+
+logger = get_logger(__name__)
+
+
+def __find_element_by_resource_id_in_rich_hierarchy(
+    hierarchy: list[dict], resource_id: str
+) -> dict | None:
+    """Retrieves all the sibling elements for a given resource ID from a nested dictionary.
+
+    Args:
+      hierarchy (dict): The nested dictionary representing the UI hierarchy.
+      resource_id (str): The resource-id to find.
+
+    Returns:
+      list: A list of the sibling elements, or None if the resource_id is not
+      found.
+    """
+    if not hierarchy:
+        return None
+
+    for child in hierarchy:
+        if child.get("attributes", {}).get("resource-id") == resource_id:
+            return child.get("attributes", {})
+
+    for child in hierarchy:
+        result = __find_element_by_resource_id_in_rich_hierarchy(
+            child.get("children", []), resource_id
+        )
+        if result is not None:
+            return result
+
+    return None
+
+
+def text_input_is_empty(text: str | None, hint_text: str | None) -> bool:
+    return not text or text == hint_text
+
+
+def find_element_by_resource_id(
+    ui_hierarchy: list[dict],
+    resource_id: str,
+    index: int | None = None,
+    is_rich_hierarchy: bool = False,
+) -> dict | None:
+    """Find a UI element by its resource-id in the UI hierarchy.
+
+    Args:
+        ui_hierarchy: List of UI element dictionaries
+        resource_id: The resource-id to search for (e.g.,
+          "com.google.android.settings.intelligence:id/open_search_view_edit_text")
+
+    Returns:
+        The complete UI element dictionary if found, None otherwise
+    """
+    if is_rich_hierarchy:
+        return __find_element_by_resource_id_in_rich_hierarchy(ui_hierarchy, resource_id)
+
+    target_idx = index or 0
+
+    def search_recursive(elements: list[dict]) -> dict | None:
+        nonlocal target_idx
+        for element in elements:
+            if isinstance(element, dict):
+                if element.get("resourceId") == resource_id:
+                    if target_idx == 0:
+                        return element
+                    target_idx -= 1
+                    continue
+
+                children = element.get("children", [])
+                if children:
+                    result = search_recursive(children)
+                    if result:
+                        return result
+        return None
+
+    return search_recursive(ui_hierarchy)
+
+
+def is_element_focused(element: dict) -> bool:
+    return element.get("focused", None) == "true"
+
+
+def get_element_text(element: dict, hint_text: bool = False) -> str | None:
+    if hint_text:
+        return element.get("hintText", None)
+    return element.get("text", None)
+
+
+class _CyFunctionDetectorMeta(type):
+    def __instancecheck__(self, instance):
+        name = type(instance).__name__
+        return (
+            name
+            in (
+                "cyfunction",
+                "cython_function_or_method",
+                "builtin_function_or_method",
+            )
+            or "cyfunction" in name.lower()
+        )
+
+
+class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
+    pass
+
+
+class Point(BaseModel):
+    model_config = {"ignored_types": (CyFunctionDetector,)}
+    x: int
+    y: int
+
+
+class ElementBounds(BaseModel):
+    model_config = {"ignored_types": (CyFunctionDetector,)}
+    x: int = Field(description="The x coordinate of the top-left corner of the element.")
+    y: int = Field(description="The y coordinate of the top-left corner of the element.")
+    width: int = Field(description="The width of the element.")
+    height: int = Field(description="The height of the element.")
+
+    def get_center(self) -> Point:
+        return Point(x=self.x + self.width // 2, y=self.y + self.height // 2)
+
+    def get_relative_point(self, x_percent: float, y_percent: float) -> Point:
+        """Returns the coordinates of the point at x_percent of the width and y_percent
+
+        of the height of the element.
+
+        Ex if x_percent = 0.95 and y_percent = 0.95,
+        the point is at the bottom right of the element:
+        <------>
+        |      |
+        |     x|
+        <------>
+        """
+        return Point(
+            x=int(self.x + self.width * x_percent),
+            y=int(self.y + self.height * y_percent),
+        )
+
+
+def get_bounds_for_element(element: dict) -> ElementBounds | None:
+    bounds = element.get("bounds", None)
+    if bounds:
+        try:
+            return ElementBounds(**bounds)
+        except Exception as e:
+            logger.error(f"Failed to validate bounds: {e}")
+            return None
+    return None
