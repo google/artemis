@@ -1,0 +1,151 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+$bg-base: #e2e5ea;
+$glass-bg: rgba(255, 255, 255, 0.45);
+$glass-border: rgba(255, 255, 255, 0.6);
+
+.workspace-container {
+  position: relative;
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: $bg-base;
+  overflow: hidden;
+
+  &.is-resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+
+  /* --- Dynamic Aurora Background --- */
+  .aurora-background {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    overflow: hidden;
+    background: linear-gradient(135deg, #e2e5ea 0%, #cfd6df 100%);
+
+    .glow {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(90px);
+      opacity: 0.5;
+      animation: aurora-drift 22s infinite alternate ease-in-out;
+    }
+
+    .glow-1 {
+      width: 55vw;
+      height: 55vh;
+      background: rgba(94, 114, 228, 0.25); 
+      top: -15%;
+      left: -5%;
+      animation-delay: 0s;
+    }
+
+    .glow-2 {
+      width: 45vw;
+      height: 45vh;
+      background: rgba(45, 206, 137, 0.2);
+      bottom: -10%;
+      left: 30%;
+      animation-delay: -5s;
+    }
+
+    .glow-3 {
+      width: 50vw;
+      height: 60vh;
+      background: rgba(206, 104, 172, 0.15);
+      top: 20%;
+      right: -10%;
+      animation-delay: -10s;
+    }
+  }
+
+  /* --- Glassmorphism Panel --- */
+  .glass-panel {
+    position: relative;
+    z-index: 1; 
+    background: $glass-bg;
+    backdrop-filter: blur(24px) saturate(120%); 
+    -webkit-backdrop-filter: blur(24px) saturate(120%);
+    border: 1px solid $glass-border;
+    box-shadow: 0 8px 32px rgba(31, 38, 135, 0.05); 
+  }
+
+  .left-panel {
+    flex: 1; 
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.35); 
+    border-right: 1px solid rgba(255, 255, 255, 0.8);
+    border-left: none;
+    border-top: none;
+    border-bottom: none;
+  }
+
+  .right-panel {
+    min-width: 300px; 
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    background-color: #ffffff;
+    box-shadow: -6px 0 24px rgba(0, 0, 0, 0.03);
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    z-index: 2;
+  }
+
+  .resizer {
+    width: 12px;
+    cursor: col-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    transition: background 0.2s ease;
+    margin: 0 -6px;
+
+    &:hover, .workspace-container.is-resizing & {
+      background: rgba(255, 255, 255, 0.15);
+      
+      .resizer-handle {
+        background: rgba(94, 114, 228, 0.8);
+        height: 60px;
+      }
+    }
+
+    .resizer-handle {
+      width: 4px;
+      height: 40px;
+      background: rgba(0, 0, 0, 0.15);
+      border-radius: 4px;
+      transition: all 0.2s ease;
+    }
+  }
+}
+
+@keyframes aurora-drift {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(5%, 3%) scale(1.05); }
+  100% { transform: translate(-2%, -5%) scale(0.95); }
+}

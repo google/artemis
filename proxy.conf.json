@@ -1,0 +1,23 @@
+{
+  "/api": {
+    "target": "http://localhost:8000",
+    "secure": false,
+    "logLevel": "debug"
+  },
+  "/images": {
+    "target": "http://localhost:8000",
+    "secure": false,
+    "logLevel": "debug"
+  },
+  "/videos": {
+    "target": "http://localhost:8000",
+    "secure": false,
+    "logLevel": "debug"
+  },
+  "/local_file": {
+    "target": "http://localhost:8000",
+    "secure": false,
+    "logLevel": "debug"
+  }
+}
+

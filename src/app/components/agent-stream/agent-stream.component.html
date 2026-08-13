@@ -1,0 +1,647 @@
+<div class="agent-stream-container">
+  <!-- VS Code Style Navigation Header -->
+  <header class="vscode-nav-header">
+    <div class="vscode-tab-container">
+      <button 
+        class="vscode-tab-btn" 
+        [class.active]="isTaskDropdownOpen()" 
+        (click)="toggleTaskDropdown($event)"
+      >
+        <span class="material-symbols-outlined tab-icon">list_alt</span>
+        <span class="tab-label">Task Queue</span>
+      </button>
+      <button 
+        class="vscode-tab-btn" 
+        [class.active]="isNotesDropdownOpen()" 
+        (click)="toggleNotesDropdown($event)"
+      >
+        <span class="material-symbols-outlined tab-icon">description</span>
+        <span class="tab-label">Notes & Plans</span>
+      </button>
+    </div>
+
+<!-- Dropdown Popover Panel for Task Queue -->
+    <div class="vscode-dropdown-menu task-dropdown" *ngIf="isTaskDropdownOpen()">
+      <div class="dropdown-section-label">
+        <span class="material-symbols-outlined icon-bolt">bolt</span>
+        <span>Active Queue ({{ activeQueue().length }})</span>
+      </div>
+
+      <div *ngIf="activeQueue().length === 0" class="dropdown-empty-state">
+        No active or queued tasks
+      </div>
+
+      <div 
+        *ngFor="let session of activeQueue(); trackBy: trackSession"
+        class="dropdown-item-card"
+        [class.selected]="agentService.currentSessionId() === session.session_id"
+        [class.running]="getTaskStatus(session) === 'running'"
+        (click)="selectTask(session.session_id, $event)"
+      >
+        <div class="item-header">
+          <span class="task-badge" [ngClass]="getTaskStatus(session)">
+            <span class="status-dot" *ngIf="getTaskStatus(session) === 'running'"></span>
+            {{ getTaskStatus(session) | uppercase }}
+          </span>
+          <span class="item-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
+        </div>
+        <div class="item-goal" title="{{ session.initial_goal }}">
+          {{ session.initial_goal || 'Unnamed Task' }}
+        </div>
+        <div class="item-footer">
+          <span class="item-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+          <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
+        </div>
+      </div>
+
+      <div class="dropdown-section-label history-label">
+        <span class="material-symbols-outlined icon-history">history</span>
+        <span>Past Runs & History ({{ historyTasks().length }})</span>
+      </div>
+
+      <div *ngIf="historyTasks().length === 0" class="dropdown-empty-state">
+        No past task history
+      </div>
+
+      <div class="dropdown-history-list">
+        <div 
+          *ngFor="let session of historyTasks(); trackBy: trackSession"
+          class="dropdown-item-card"
+          [class.selected]="agentService.currentSessionId() === session.session_id"
+          [class.running]="getTaskStatus(session) === 'running'"
+          (click)="selectTask(session.session_id, $event)"
+        >
+          <div class="item-header">
+            <span class="task-badge" [ngClass]="getTaskStatus(session)">
+              <span class="status-dot" *ngIf="getTaskStatus(session) === 'running'"></span>
+              {{ getTaskStatus(session) | uppercase }}
+            </span>
+            <span class="item-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
+          </div>
+          <div class="item-goal" title="{{ session.initial_goal }}">
+            {{ session.initial_goal || 'Unnamed Task' }}
+          </div>
+          <div class="item-footer">
+            <span class="item-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+            <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dropdown Popover Panel for Notes & Plans -->
+    <div class="vscode-dropdown-menu notes-dropdown" *ngIf="isNotesDropdownOpen()">
+      <!-- Notes Selector / Pills (Shown if there are note files) -->
+      <div class="notes-selector-container" *ngIf="noteKeys().length > 1">
+        <div class="notes-selector-list">
+          <button 
+            *ngFor="let key of noteKeys(); trackBy: trackNoteKey"
+            class="note-selector-pill"
+            [class.active]="agentService.selectedNoteKey() === key"
+            (click)="selectNote(key, $event)"
+          >
+            <span class="material-symbols-outlined pill-icon">draft</span>
+            {{ key }}
+          </button>
+        </div>
+      </div>
+
+      <div *ngIf="noteKeys().length === 0" class="dropdown-empty-state">
+        <span class="material-symbols-outlined empty-icon">description</span>
+        <span>No notes available for this session.</span>
+      </div>
+
+      <!-- Rich Notes Content Viewer -->
+      <div class="dropdown-notes-content" *ngIf="noteKeys().length > 0">
+        <h3 class="note-title" *ngIf="parsedNote().title">{{ parsedNote().title }}</h3>
+
+        <!-- Milestones list -->
+        <div class="milestones-container" *ngIf="parsedNote().milestones.length > 0">
+          <div 
+            *ngFor="let milestone of parsedNote().milestones; trackBy: trackMilestone" 
+            class="milestone-block"
+            [ngClass]="milestone.type"
+          >
+            <div class="milestone-title-row">
+              <ng-container [ngSwitch]="milestone.type">
+                <span *ngSwitchCase="'checked'" class="material-symbols-outlined milestone-status-icon checked">check_box</span>
+                <span *ngSwitchCase="'progress'" class="material-symbols-outlined milestone-status-icon progress">indeterminate_check_box</span>
+                <span *ngSwitchCase="'unchecked'" class="material-symbols-outlined milestone-status-icon unchecked">check_box_outline_blank</span>
+              </ng-container>
+              <div class="milestone-text">
+                <span 
+                  *ngFor="let seg of milestone.segments" 
+                  [class.bold-segment]="seg.bold"
+                  [class.code-segment]="seg.code"
+                >{{ seg.text }}</span>
+              </div>
+            </div>
+
+            <!-- Sub-steps list -->
+            <div class="milestone-substeps" *ngIf="milestone.subSteps.length > 0">
+              <div 
+                *ngFor="let step of milestone.subSteps; trackBy: trackMarkdownLine" 
+                class="substep-row"
+                [ngClass]="step.type"
+                [style.padding-left.px]="(step.indent > 2 ? (step.indent - 2) * 12 : 0)"
+              >
+                <ng-container [ngSwitch]="step.type">
+                  <span *ngSwitchCase="'checked'" class="material-symbols-outlined check-icon checked">check_box</span>
+                  <span *ngSwitchCase="'progress'" class="material-symbols-outlined check-icon progress">indeterminate_check_box</span>
+                  <span *ngSwitchCase="'unchecked'" class="material-symbols-outlined check-icon unchecked">check_box_outline_blank</span>
+                  <span *ngSwitchCase="'list-item'" class="bullet">•</span>
+                </ng-container>
+                <span class="line-text" *ngIf="step.type !== 'empty'">
+                  <span 
+                    *ngFor="let seg of step.segments" 
+                    [class.bold-segment]="seg.bold"
+                    [class.code-segment]="seg.code"
+                  >{{ seg.text }}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Other Markdown Lines Container -->
+        <div class="other-lines-container" *ngIf="parsedNote().otherLines.length > 0">
+          <div 
+            *ngFor="let line of parsedNote().otherLines; trackBy: trackMarkdownLine"
+            class="md-line"
+            [ngClass]="line.type"
+            [style.margin-left.px]="line.indent * 12"
+          >
+            <ng-container [ngSwitch]="line.type">
+              <span *ngSwitchCase="'checked'" class="material-symbols-outlined check-icon checked">check_box</span>
+              <span *ngSwitchCase="'progress'" class="material-symbols-outlined check-icon progress">indeterminate_check_box</span>
+              <span *ngSwitchCase="'unchecked'" class="material-symbols-outlined check-icon unchecked">check_box_outline_blank</span>
+              <span *ngSwitchCase="'list-item'" class="bullet">•</span>
+            </ng-container>
+            <span class="line-text" *ngIf="line.type !== 'empty'">
+              <span 
+                *ngFor="let seg of line.segments" 
+                [class.bold-segment]="seg.bold"
+                [class.code-segment]="seg.code"
+              >{{ seg.text }}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Floating Top-Right Badges & Toolbar (Pinned overlay, hidden in empty/initial state) -->
+  <div class="stream-floating-toolbar" *ngIf="consolidatedBlocks().length > 0 || showPlanningLoader()">
+    <!-- Active Model Info Chip (Informational Metadata, Not a Button) -->
+    <div 
+      class="model-info-chip" 
+      [ngClass]="getModelClass(model.name)"
+      *ngIf="agentService.activeModel() as model"
+      [title]="'Active Model: ' + model.id + ' (' + model.provider + ')'"
+    >
+      <span class="material-symbols-outlined model-icon">{{ getModelIcon(model.name) }}</span>
+      <span class="model-label">Model:</span>
+      <span class="model-name">{{ getModelDisplayName(model.name) }}</span>
+    </div>
+
+    <!-- Screen Recording Action Button (Interactive Button) -->
+    <button 
+      class="btn-screen-recording"
+      [class.active]="agentService.isVideoWindowOpen()"
+      [class.recording]="agentService.isCurrentSessionRunning()"
+      [class.has-video]="!agentService.isCurrentSessionRunning() && !!agentService.currentSessionVideoUrl()"
+      (click)="agentService.toggleVideoPlayer()"
+      [title]="agentService.isCurrentSessionRunning() ? 'Task is currently running (Recording screen)' : (agentService.currentSessionVideoUrl() ? 'Play Screen Recording' : 'Check Device Screen Recording')"
+    >
+      <span class="material-symbols-outlined video-icon" *ngIf="agentService.isCurrentSessionRunning()">
+        videocam
+      </span>
+      <span class="material-symbols-outlined video-icon play-icon" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionVideoUrl()">
+        smart_display
+      </span>
+      <span class="material-symbols-outlined video-icon" *ngIf="!agentService.isCurrentSessionRunning() && !agentService.currentSessionVideoUrl()">
+        videocam
+      </span>
+
+      <span class="btn-text" *ngIf="agentService.isCurrentSessionRunning()">Recording...</span>
+      <span class="btn-text" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionVideoUrl()">Play Recording</span>
+      <span class="btn-text" *ngIf="!agentService.isCurrentSessionRunning() && !agentService.currentSessionVideoUrl()">Screen Recording</span>
+
+      <span class="video-pulse-dot red" *ngIf="agentService.isCurrentSessionRunning()"></span>
+    </button>
+  </div>
+
+  <!-- Event Logs Section -->
+  <main class="stream-logs-content">
+
+    <div *ngIf="consolidatedBlocks().length === 0 && !showPlanningLoader()" class="empty-state">
+      <div class="empty-icon"><span class="material-symbols-outlined">sensors</span></div>
+      <h3>No Stream Activity Selected</h3>
+      <p>Please select a session from the Task List on the right to view its real-time log payloads.</p>
+    </div>
+
+    <!-- Retrying Banner -->
+    <div class="retrying-banner" *ngIf="agentService.isRetrying()">
+      <span class="material-symbols-outlined spinning-icon">sync</span>
+      <span>{{ agentService.retryMessage() || 'Reconnecting to AI model...' }}</span>
+    </div>
+
+    <!-- The phase-based session logs list -->
+    <div class="logs-list-container" *ngIf="phases().length > 0 || showPlanningLoader()">
+      <div class="phase-container" *ngFor="let phase of phases(); let first = first; trackBy: trackPhase">
+        <div 
+          class="phase-header" 
+          *ngIf="hasVisibleBlocks(phase)"
+          [class.first-phase]="first"
+        >
+          <span class="phase-worked-time">Worked for {{ phase.durationSeconds }}s</span>
+          <span class="phase-token-usage" *ngIf="phase.tokens" [title]="getTokenTooltip(phase)">
+            <span class="token-dot">·</span>
+            <span class="token-text">{{ formatTokenCount(phase.tokens) }}</span>
+          </span>
+        </div>
+        <div class="phase-body" *ngIf="hasVisibleBlocks(phase)">
+          <ng-container *ngFor="let block of phase.blocks; trackBy: trackBlock">
+            <div 
+              *ngIf="hasVisibleContent(block)"
+              class="block-item" 
+              [ngClass]="['type-' + block.type]"
+            >
+              <!-- Unified Step / Stream Body -->
+              <div class="step-body">
+                <!-- Native Thinking (Thought) -->
+                <div *ngIf="getNativeThinking(block) as nativeText"
+                     class="thinking-stream-details native-thinking-details" 
+                     [class.is-running]="isBlockRunning(block)"
+                     [class.collapsed]="collapsedStreams().has(block.data.execution_id || block.data.step_id || block.id)">
+                  <div class="details-summary" (click)="toggleCollapse(block.data.execution_id || block.data.step_id || block.id)">
+                    <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                    Thought
+                  </div>
+                  <div class="details-content-wrapper">
+                    <div class="details-content stream-box">
+                      <div class="stream-text" [innerHTML]="renderMarkdown(typedTextsSignal()[block.id + '-native'] || nativeText)"></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Raw Thinking / Plan / Message (Work) -->
+                <div *ngIf="getRawThinking(block) as rawText" class="step-raw-thinking-message" [class.is-running]="isBlockRunning(block)">
+                  <div class="report-header">
+                    <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                    Work
+                  </div>
+                  <div class="report-content stream-box">
+                    <div class="stream-text" [innerHTML]="renderMarkdown(typedTextsSignal()[block.id] || rawText)"></div>
+                  </div>
+                </div>
+
+
+                <!-- Tool Call / Action section (Unified Chronological Loop matching Debug UI execution order) -->
+                <div class="step-actions-container" *ngIf="(block.data.generic_tools && block.data.generic_tools.length > 0) || block.data.action_taken">
+                  <ng-container *ngFor="let item of getSortedStepEvents(block.data); let itemIdx = index; trackBy: trackStepEvent">
+                    <!-- Android Action Card (when item is an action) -->
+                    <div class="step-android-action-card" 
+                         [class.is-running]="isItemRunning(item, block)"
+                         [class.is-failed]="isActionFailed(item.data, block.data)"
+                         [class.is-expanded]="isActionExpanded('action-' + block.id + '-' + itemIdx)"
+                         *ngIf="item.type === 'action' && isAndroidAction(item.data)">
+                      <div class="action-card-header" (click)="toggleActionExpanded('action-' + block.id + '-' + itemIdx, $event)">
+                        <span class="material-symbols-outlined action-icon" [class.is-failed]="isActionFailed(item.data, block.data)">{{ getActionIcon(item.data) }}</span>
+                        <span class="action-title">{{ getActionTitle(item.data) }}</span>
+                        <span class="action-status-badge is-failed" *ngIf="isActionFailed(item.data, block.data)">
+                          <span class="material-symbols-outlined status-icon">error</span>
+                          {{ getActionErrorMessage(item.data, block.data) }}
+                        </span>
+                        <span class="action-expand-icon material-symbols-outlined">
+                          {{ isActionExpanded('action-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
+                        </span>
+                      </div>
+
+                      <!-- Compact preview body (when collapsed) -->
+                      <div class="action-card-body" *ngIf="!isActionExpanded('action-' + block.id + '-' + itemIdx) && (getActionTargetText(item.data) || getActionInputText(item.data) || getActionCoords(item.data))">
+                        <div class="action-detail-row" *ngIf="getActionTargetText(item.data)">
+                          <span class="detail-label">Target:</span>
+                          <span class="detail-value">"{{ getActionTargetText(item.data) }}"</span>
+                        </div>
+                        <div class="action-detail-row" *ngIf="getActionInputText(item.data)">
+                          <span class="detail-label">{{ getActionInputLabel(item.data) }}:</span>
+                          <span class="detail-value">"{{ getActionInputText(item.data) }}"</span>
+                        </div>
+                        <div class="action-detail-row" *ngIf="getActionCoords(item.data)">
+                          <span class="detail-label">Coordinates:</span>
+                          <span class="detail-value coordinate-badge">[{{ getActionCoords(item.data) }}]</span>
+                        </div>
+                      </div>
+
+                      <!-- Detailed expanded view (when clicked) -->
+                      <div class="action-card-expanded-details" *ngIf="isActionExpanded('action-' + block.id + '-' + itemIdx)" (click)="$event.stopPropagation()">
+                        <div class="expanded-grid">
+                          <div class="grid-item" *ngIf="getActionTargetText(item.data)">
+                            <span class="grid-label">Target</span>
+                            <span class="grid-value">"{{ getActionTargetText(item.data) }}"</span>
+                          </div>
+                          <div class="grid-item" *ngIf="getActionInputText(item.data)">
+                            <span class="grid-label">{{ getActionInputLabel(item.data) }}</span>
+                            <span class="grid-value">"{{ getActionInputText(item.data) }}"</span>
+                          </div>
+                          <div class="grid-item" *ngIf="getActionCoords(item.data)">
+                            <span class="grid-label">Coordinates</span>
+                            <span class="grid-value code-pill">[{{ getActionCoords(item.data) }}]</span>
+                          </div>
+                          <div class="grid-item" *ngIf="getActionBounds(item.data)">
+                            <span class="grid-label">Target Bounds</span>
+                            <span class="grid-value code-pill">[{{ getActionBounds(item.data) }}]</span>
+                          </div>
+                          <div class="grid-item" *ngIf="getActionClass(item.data)">
+                            <span class="grid-label">Target Class</span>
+                            <span class="grid-value code-pill">{{ getActionClass(item.data) }}</span>
+                          </div>
+                          <div class="grid-item" *ngFor="let param of getActionExtraParams(item.data); trackBy: trackParam">
+                            <span class="grid-label">{{ param.key }}</span>
+                            <span class="grid-value code-pill">{{ param.value }}</span>
+                          </div>
+                          <!-- Fallback item if all detail fields are empty -->
+                          <div class="grid-item" *ngIf="!getActionTargetText(item.data) && !getActionInputText(item.data) && !getActionCoords(item.data) && !getActionBounds(item.data) && !getActionClass(item.data) && getActionExtraParams(item.data).length === 0">
+                            <span class="grid-label">Action</span>
+                            <span class="grid-value">{{ getActionTitle(item.data) }}</span>
+                          </div>
+                        </div>
+
+                        <!-- Action Screenshots (Pre & Post Action) -->
+                        <div class="expanded-screenshots-container" *ngIf="getStepPreImageUrl(block.data, item.data) || getStepPostImageUrl(block.data, item.data)">
+                          <div class="screenshot-column" *ngIf="getStepPreImageUrl(block.data, item.data)">
+                            <span class="screenshot-label">Pre-Action (Before)</span>
+                            <div class="image-wrapper" (click)="openImageModal(getStepPreImageUrl(block.data, item.data)!, item.data, $event)">
+                              <div class="img-relative-box">
+                                <img #preImg [src]="getStepPreImageUrl(block.data, item.data)" (load)="onImageLoad(preImg, preOverlay, item.data)" alt="Pre-Action Screenshot" />
+                                <div #preOverlay class="overlay-layer"></div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div class="screenshot-column" *ngIf="getStepPostImageUrl(block.data, item.data)">
+                            <span class="screenshot-label">Post-Action (After)</span>
+                            <div class="image-wrapper" (click)="openImageModal(getStepPostImageUrl(block.data, item.data)!, null, $event)">
+                              <div class="img-relative-box">
+                                <img [src]="getStepPostImageUrl(block.data, item.data)" alt="Post-Action Screenshot" />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="expanded-error-banner" *ngIf="isActionFailed(item.data, block.data)">
+                          <span class="material-symbols-outlined icon">error</span>
+                          <span class="error-text">{{ getActionErrorMessage(item.data, block.data) }}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Generic Tools & LLM Calls (when item is a tool) -->
+                    <ng-container *ngIf="item.type === 'tool'">
+                      <!-- Failed LLM Calls (Permanently maintain Action Card format in red) -->
+                      <div class="step-android-action-card tool-action-card is-failed" *ngIf="item.data.type === 'llm_call' && item.data.status === 'failed'">
+                        <div class="action-card-header">
+                          <span class="material-symbols-outlined action-icon is-failed">error</span>
+                          <span class="action-title">Gemini AI Failed</span>
+                          <span class="action-status-badge is-failed">
+                            <span class="material-symbols-outlined status-icon">warning</span>
+                            Failed
+                          </span>
+                        </div>
+                        <div class="action-card-body">
+                          <div class="action-detail-row">
+                            <span class="detail-label">Reason:</span>
+                            <span class="detail-value">{{ getLLMErrorText(item.data) }}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Generic Tool Calls (Text format for note tools, video analyzer, and other sub-agents) -->
+                      <div class="step-generic-tool" 
+                           [class.is-running]="isItemRunning(item, block)"
+                           [class.is-note-tool]="isNoteTool(item.data)"
+                           [class.is-video-tool]="isVideoTool(item.data)"
+                           *ngIf="shouldShowTool(item.data, block.data) && !isFailureAnalyzerActionTool(item.data)">
+                        <div class="tool-call-label">
+                          <span class="stream-status-dot" [class.streaming]="isItemRunning(item, block)"></span>
+                          <div class="tool-call-text">
+                            <span>{{ getToolDisplayLabel(item.data) }}{{ ((isNoteTool(item.data) && getToolKey(item.data)) || (isVideoTool(item.data) && getVideoToolTarget(item.data))) ? ':' : '' }}</span>
+                            
+                            <!-- Note Tool Pill -->
+                            <ng-container *ngIf="isNoteTool(item.data) && getToolKey(item.data) as key">
+                              <span 
+                                class="tool-key-pill" 
+                                (click)="onToolKeyClick(key)"
+                                title="Click to view note content"
+                              >
+                                <span class="material-symbols-outlined pill-icon">draft</span>
+                                {{ key }}
+                              </span>
+                            </ng-container>
+
+                            <!-- Video Analyzer Pill -->
+                            <ng-container *ngIf="isVideoTool(item.data) && getVideoToolTarget(item.data) as videoTarget">
+                              <span 
+                                class="tool-key-pill video-pill" 
+                                (click)="onVideoToolClick(item.data)"
+                                title="Click to open video player"
+                              >
+                                <span class="material-symbols-outlined pill-icon">video_camera_back</span>
+                                {{ videoTarget }}
+                              </span>
+                            </ng-container>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Action Card format (ONLY for FailureAnalyzer non-note tools) -->
+                      <div class="step-android-action-card tool-action-card" 
+                           [class.is-running]="isItemRunning(item, block)"
+                           [class.has-no-details]="isAdbCommandTool(item.data) ? !getAdbCommandLine(item.data) : (!getToolTargetText(item.data) && !getToolInputText(item.data) && !getToolCoords(item.data) && !getToolAnalysisText(item.data) && !getToolGenericDetails(item.data) && getToolExtraParams(item.data).length === 0)"
+                           [class.is-failed]="isToolFailed(item.data)"
+                           [class.is-expanded]="isActionExpanded('tool-' + block.id + '-' + itemIdx)"
+                           *ngIf="shouldShowTool(item.data, block.data) && isFailureAnalyzerActionTool(item.data)">
+                        <div class="action-card-header" (click)="toggleActionExpanded('tool-' + block.id + '-' + itemIdx, $event)">
+                          <span class="material-symbols-outlined action-icon" [class.is-failed]="isToolFailed(item.data)">{{ getToolIcon(item.data) }}</span>
+                          <span class="action-title">{{ getToolTitle(item.data) }}</span>
+                          <span class="action-status-badge is-failed" *ngIf="isToolFailed(item.data)">
+                            <span class="material-symbols-outlined status-icon">error</span>
+                            {{ getToolErrorMessage(item.data) }}
+                          </span>
+                          <span class="action-expand-icon material-symbols-outlined">
+                            {{ isActionExpanded('tool-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
+                          </span>
+                        </div>
+
+                        <!-- Compact preview body (when collapsed) -->
+                        <div class="action-card-body" *ngIf="!isActionExpanded('tool-' + block.id + '-' + itemIdx) && (isAdbCommandTool(item.data) ? getAdbCommandLine(item.data) : (getToolTargetText(item.data) || getToolInputText(item.data) || getToolCoords(item.data) || getToolAnalysisText(item.data) || getToolGenericDetails(item.data)))">
+                          <!-- ADB command details -->
+                          <ng-container *ngIf="isAdbCommandTool(item.data)">
+                            <div class="action-detail-row" *ngIf="getAdbCommandLine(item.data)">
+                              <span class="detail-label">Command:</span>
+                              <span class="detail-value command-value"><code>{{ getAdbCommandLine(item.data) }}</code></span>
+                            </div>
+                            <div class="action-detail-row" *ngIf="getAdbCwd(item.data)">
+                              <span class="detail-label">Cwd:</span>
+                              <span class="detail-value">"{{ getAdbCwd(item.data) }}"</span>
+                            </div>
+                            <div class="action-detail-row" *ngIf="getAdbTerminalId(item.data)">
+                              <span class="detail-label">Terminal ID:</span>
+                              <span class="detail-value">"{{ getAdbTerminalId(item.data) }}"</span>
+                            </div>
+                          </ng-container>
+
+                          <!-- Standard details -->
+                          <ng-container *ngIf="!isAdbCommandTool(item.data)">
+                            <div class="action-detail-row" *ngIf="getToolTargetText(item.data)">
+                              <span class="detail-label">Target:</span>
+                              <span class="detail-value">"{{ getToolTargetText(item.data) }}"</span>
+                            </div>
+                            <div class="action-detail-row" *ngIf="getToolInputText(item.data)">
+                              <span class="detail-label">{{ getToolInputLabel(item.data) }}:</span>
+                              <span class="detail-value">"{{ getToolInputText(item.data) }}"</span>
+                            </div>
+                            <div class="action-detail-row" *ngIf="getToolCoords(item.data)">
+                              <span class="detail-label">Coordinates:</span>
+                              <span class="detail-value coordinate-badge">[{{ getToolCoords(item.data) }}]</span>
+                            </div>
+                            <div class="action-detail-row" *ngIf="getToolAnalysisText(item.data)">
+                              <span class="detail-label">Analysis:</span>
+                              <span class="detail-value">"{{ getToolAnalysisText(item.data) }}"</span>
+                            </div>
+                            <div class="action-detail-row" *ngIf="getToolGenericDetails(item.data)">
+                              <span class="detail-label">Details:</span>
+                              <span class="detail-value">"{{ getToolGenericDetails(item.data) }}"</span>
+                            </div>
+                          </ng-container>
+                        </div>
+
+                        <!-- Detailed expanded view (when clicked) -->
+                        <div class="action-card-expanded-details" *ngIf="isActionExpanded('tool-' + block.id + '-' + itemIdx)" (click)="$event.stopPropagation()">
+                          <div class="expanded-grid">
+                            <ng-container *ngIf="isAdbCommandTool(item.data)">
+                              <div class="grid-item full-width" *ngIf="getAdbCommandLine(item.data)">
+                                <span class="grid-label">Command</span>
+                                <span class="grid-value command-value"><code>{{ getAdbCommandLine(item.data) }}</code></span>
+                              </div>
+                              <div class="grid-item" *ngIf="getAdbCwd(item.data)">
+                                <span class="grid-label">Working Directory</span>
+                                <span class="grid-value">"{{ getAdbCwd(item.data) }}"</span>
+                              </div>
+                              <div class="grid-item" *ngIf="getAdbTerminalId(item.data)">
+                                <span class="grid-label">Terminal ID</span>
+                                <span class="grid-value code-pill">{{ getAdbTerminalId(item.data) }}</span>
+                              </div>
+                            </ng-container>
+
+                            <ng-container *ngIf="!isAdbCommandTool(item.data)">
+                              <div class="grid-item" *ngIf="getToolTargetText(item.data)">
+                                <span class="grid-label">Target</span>
+                                <span class="grid-value">"{{ getToolTargetText(item.data) }}"</span>
+                              </div>
+                              <div class="grid-item" *ngIf="getToolInputText(item.data)">
+                                <span class="grid-label">{{ getToolInputLabel(item.data) }}</span>
+                                <span class="grid-value">"{{ getToolInputText(item.data) }}"</span>
+                              </div>
+                              <div class="grid-item" *ngIf="getToolCoords(item.data)">
+                                <span class="grid-label">Coordinates</span>
+                                <span class="grid-value code-pill">[{{ getToolCoords(item.data) }}]</span>
+                              </div>
+                              <div class="grid-item" *ngIf="getToolAnalysisText(item.data)">
+                                <span class="grid-label">Analysis</span>
+                                <span class="grid-value">"{{ getToolAnalysisText(item.data) }}"</span>
+                              </div>
+                              <div class="grid-item" *ngIf="getToolGenericDetails(item.data)">
+                                <span class="grid-label">Details</span>
+                                <span class="grid-value">"{{ getToolGenericDetails(item.data) }}"</span>
+                              </div>
+                              <div class="grid-item" *ngFor="let param of getToolExtraParams(item.data); trackBy: trackParam">
+                                <span class="grid-label">{{ param.key }}</span>
+                                <span class="grid-value code-pill">{{ param.value }}</span>
+                              </div>
+                            </ng-container>
+                          </div>
+
+                          <!-- Action Screenshots (Pre & Post Action) -->
+                          <div class="expanded-screenshots-container" *ngIf="getStepPreImageUrl(block.data, item.data) || getStepPostImageUrl(block.data, item.data)">
+                            <div class="screenshot-column" *ngIf="getStepPreImageUrl(block.data, item.data)">
+                              <span class="screenshot-label">Pre-Action (Before)</span>
+                              <div class="image-wrapper" (click)="openImageModal(getStepPreImageUrl(block.data, item.data)!, item.data, $event)">
+                                <div class="img-relative-box">
+                                  <img #preImgTool [src]="getStepPreImageUrl(block.data, item.data)" (load)="onImageLoad(preImgTool, preOverlayTool, item.data)" alt="Pre-Action Screenshot" />
+                                  <div #preOverlayTool class="overlay-layer"></div>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div class="screenshot-column" *ngIf="getStepPostImageUrl(block.data, item.data)">
+                              <span class="screenshot-label">Post-Action (After)</span>
+                              <div class="image-wrapper" (click)="openImageModal(getStepPostImageUrl(block.data, item.data)!, null, $event)">
+                                <div class="img-relative-box">
+                                  <img [src]="getStepPostImageUrl(block.data, item.data)" alt="Post-Action Screenshot" />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div class="expanded-error-banner" *ngIf="isToolFailed(item.data)">
+                            <span class="material-symbols-outlined icon">error</span>
+                            <span class="error-text">{{ getToolErrorMessage(item.data) }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </ng-container>
+                  </ng-container>
+                </div>
+              </div>
+            </div>
+          </ng-container>
+        </div>
+      </div>
+
+      <!-- Planning Loader -->
+      <div class="planning-loader-container" *ngIf="showPlanningLoader()">
+        <div class="planning-loader">
+          <span class="material-symbols-outlined spin-animation">progress_activity</span>
+          <span class="loader-text">Planning next steps...</span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Floating Action Buttons for Task Execution (Icon-only) -->
+  <div class="fab-actions-container">
+    <button 
+      *ngIf="agentService.isPaused()"
+      class="fab-btn fab-resume-task" 
+      (click)="agentService.resumeTask()" 
+      title="Resume task"
+      aria-label="Resume Task"
+    >
+      <span class="material-symbols-outlined">play_arrow</span>
+    </button>
+    <button 
+      *ngIf="agentService.isRunningTask() && !agentService.isPaused()"
+      class="fab-btn fab-stop-task" 
+      (click)="agentService.stopTask()" 
+      title="Stop running task"
+      aria-label="Stop Task"
+    >
+      <span class="material-symbols-outlined">stop</span>
+    </button>
+  </div>
+
+  <!-- Fullscreen Image Zoom Lightbox Modal -->
+  <div class="image-modal-backdrop" *ngIf="selectedZoomImage()" (click)="closeImageModal($event)">
+    <div class="image-modal-content" (click)="$event.stopPropagation()">
+      <button class="image-modal-close" (click)="closeImageModal($event)" aria-label="Close image preview">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+      <div class="img-relative-box">
+        <img #modalImg [src]="selectedZoomImage()" (load)="onImageLoad(modalImg, modalOverlay, selectedZoomAction())" alt="Zoomed Screenshot" />
+        <div #modalOverlay class="overlay-layer"></div>
+      </div>
+    </div>
+  </div>
+</div>

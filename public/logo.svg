@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="158 183 204 137" width="204" height="137">
+  <defs>
+    <!-- Red Glow -->
+    <radialGradient id="redGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#EA4335" stop-opacity="1" />
+      <stop offset="30%" stop-color="#EA4335" stop-opacity="1" />
+      <stop offset="100%" stop-color="#EA4335" stop-opacity="0" />
+    </radialGradient>
+    <!-- Yellow Glow -->
+    <radialGradient id="yellowGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FBBC05" stop-opacity="1" />
+      <stop offset="30%" stop-color="#FBBC05" stop-opacity="1" />
+      <stop offset="100%" stop-color="#FBBC05" stop-opacity="0" />
+    </radialGradient>
+    <!-- Green Glow -->
+    <radialGradient id="greenGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#34A853" stop-opacity="1" />
+      <stop offset="30%" stop-color="#34A853" stop-opacity="1" />
+      <stop offset="100%" stop-color="#34A853" stop-opacity="0" />
+    </radialGradient>
+    
+    <!-- Logo Silhouette Mask -->
+    <mask id="logoMask">
+      <!-- Cup Body (Filled) with stroke to smooth corners -->
+      <path d="M 170 195 L 310 195 L 310 255 C 310 325 170 325 170 255 Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="22" stroke-linejoin="round" />
+      <!-- Handle (Outline Only) -->
+      <path d="M 310 220 L 350 220 L 350 270 L 310 270" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" />
+    </mask>
+  </defs>
+  
+  <!-- Logo with Mesh Gradient (No Background) -->
+  <g mask="url(#logoMask)">
+    <!-- Base background: solid Blue on the right and center -->
+    <rect x="158" y="183" width="204" height="137" fill="#4285F4" />
+    
+    <!-- Red glow on the top-center/left -->
+    <circle cx="230" cy="180" r="105" fill="url(#redGlow)" />
+    
+    <!-- Yellow glow on the middle-left -->
+    <circle cx="150" cy="235" r="90" fill="url(#yellowGlow)" />
+    
+    <!-- Green glow on the bottom-left -->
+    <circle cx="170" cy="305" r="85" fill="url(#greenGlow)" />
+  </g>
+</svg>

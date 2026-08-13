@@ -1,0 +1,221 @@
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<!-- Backdrop overlay only when in theater / modal mode -->
+<div 
+  class="theater-backdrop" 
+  *ngIf="agentService.isVideoWindowOpen() && isTheaterMode()"
+  (click)="isTheaterMode.set(false)"
+></div>
+
+<div 
+  class="floating-video-wrapper"
+  *ngIf="agentService.isVideoWindowOpen()"
+  [class.minimized]="agentService.isVideoMinimized()"
+  [class.theater]="isTheaterMode()"
+  [style.left.px]="!isTheaterMode() ? posX() : null"
+  [style.top.px]="!isTheaterMode() ? posY() : null"
+>
+  <!-- Window Header (Draggable Handle) -->
+  <header class="window-header" (mousedown)="startDrag($event)">
+    <div class="header-left">
+      <span class="material-symbols-outlined header-icon">
+        {{ agentService.isCurrentSessionRunning() ? 'sensors' : 'smart_display' }}
+      </span>
+      <span class="header-title" [title]="agentService.activeVideoTitle()">
+        {{ agentService.isCurrentSessionRunning() ? 'Live Device Screen' : (agentService.activeVideoTitle() || 'Screen Recording') }}
+      </span>
+    </div>
+
+    <div class="header-actions" (mousedown)="$event.stopPropagation()">
+      <!-- Playback Speed Pills (Shown only when playback video is active) -->
+      <div class="speed-pill-group" *ngIf="!agentService.isCurrentSessionRunning() && !agentService.isVideoMinimized() && !videoLoadError() && agentService.activeVideoUrl()">
+        <button 
+          *ngFor="let speed of speedOptions"
+          class="speed-btn"
+          [class.active]="playbackRate() === speed"
+          (click)="setSpeed(speed)"
+          [title]="'Speed: ' + speed + 'x'"
+        >
+          {{ speed }}x
+        </button>
+      </div>
+
+      <!-- Minimize / Restore Toggle -->
+      <button 
+        class="header-btn" 
+        (click)="toggleMinimize()"
+        [title]="agentService.isVideoMinimized() ? 'Restore' : 'Minimize'"
+        aria-label="Minimize"
+      >
+        <span class="material-symbols-outlined">{{ agentService.isVideoMinimized() ? 'expand_less' : 'remove' }}</span>
+      </button>
+
+      <!-- Theater / Fullscreen Toggle -->
+      <button 
+        class="header-btn" 
+        (click)="toggleTheater()"
+        [title]="isTheaterMode() ? 'Exit Theater' : 'Theater Mode'"
+        *ngIf="!agentService.isVideoMinimized()"
+        aria-label="Theater"
+      >
+        <span class="material-symbols-outlined">{{ isTheaterMode() ? 'close_fullscreen' : 'open_in_full' }}</span>
+      </button>
+
+      <!-- Close Window -->
+      <button 
+        class="header-btn close-btn" 
+        (click)="agentService.closeVideoPlayer()" 
+        title="Close"
+        aria-label="Close"
+      >
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Video Main Content Area -->
+  <div class="video-body" *ngIf="!agentService.isVideoMinimized()">
+    <!-- 1. LIVE SCREEN STREAM (AUTOMATICALLY ACTIVE DURING RUNNING TEST) -->
+    <ng-container *ngIf="agentService.isCurrentSessionRunning()">
+      <div class="live-stream-container" *ngIf="!liveStreamError()">
+        <img 
+          class="live-screen-img" 
+          [src]="liveStreamUrl()" 
+          (error)="onLiveStreamError()" 
+          alt="Live Device Screen" 
+        />
+        <div class="live-status-overlay">
+          <div class="live-badge">
+            <span class="pulse-dot"></span>
+            <span>LIVE</span>
+          </div>
+          <button class="live-refresh-btn" (click)="retryLiveStream()" title="Refresh Live Stream">
+            <span class="material-symbols-outlined">refresh</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="empty-video-fallback" *ngIf="liveStreamError()">
+        <div class="fallback-icon-wrap">
+          <span class="material-symbols-outlined fallback-icon">phonelink_off</span>
+        </div>
+        <h4 class="fallback-title">Device Stream Connecting</h4>
+        <p class="fallback-desc">Waiting for ADB device screen stream...</p>
+        <button class="retry-btn" (click)="retryLiveStream()">
+          <span class="material-symbols-outlined">refresh</span> Reconnect
+        </button>
+      </div>
+    </ng-container>
+
+    <!-- 2. RECORDING PLAYBACK (AUTOMATICALLY ACTIVE WHEN TEST FINISHED) -->
+    <ng-container *ngIf="!agentService.isCurrentSessionRunning()">
+      <!-- Loading State -->
+      <div class="video-loading-state" *ngIf="agentService.isVideoLoading()">
+        <span class="material-symbols-outlined spinning-icon">progress_activity</span>
+        <span>Loading screen recording...</span>
+      </div>
+
+      <!-- Active Video Playback View -->
+      <ng-container *ngIf="!agentService.isVideoLoading() && agentService.activeVideoUrl() as videoUrl">
+        <div class="video-container" *ngIf="!videoLoadError()">
+          <video 
+            #videoRef
+            [src]="videoUrl" 
+            playsinline
+            (loadedmetadata)="onLoadedMetadata()"
+            (timeupdate)="onTimeUpdate()"
+            (play)="onPlay()"
+            (pause)="onPause()"
+            (ended)="onEnded()"
+            (error)="onError()"
+            (click)="togglePlay()"
+          ></video>
+        </div>
+
+        <!-- Dedicated Bottom Controls Bar (Outside Video: ZERO Obscurity / Zero Overlap) -->
+        <div class="video-controls-footer" *ngIf="!videoLoadError()">
+          <!-- Timeline Scrubber Bar -->
+          <div class="scrubber-bar-container">
+            <input 
+              type="range" 
+              class="scrubber-range" 
+              [min]="0" 
+              [max]="duration() || 100" 
+              [step]="0.1" 
+              [value]="currentTime()" 
+              (input)="onScrub($event)" 
+            />
+            <div class="scrubber-progress-fill" [style.width.%]="progressPercent()"></div>
+          </div>
+
+          <!-- Bottom Controls Row -->
+          <div class="controls-row">
+            <div class="controls-left">
+              <!-- Play / Pause Button -->
+              <button class="ctrl-btn play-btn" (click)="togglePlay()" [title]="isPlaying() ? 'Pause' : 'Play'">
+                <span class="material-symbols-outlined">{{ isPlaying() ? 'pause' : 'play_arrow' }}</span>
+              </button>
+
+              <!-- Step Replay / Reset -->
+              <button class="ctrl-btn" (click)="restart()" title="Replay from start">
+                <span class="material-symbols-outlined">replay</span>
+              </button>
+
+              <!-- Time Display -->
+              <span class="time-display">
+                {{ formatTime(currentTime()) }} / {{ formatTime(duration()) }}
+              </span>
+            </div>
+
+            <div class="controls-right">
+              <!-- Loop Toggle -->
+              <button 
+                class="ctrl-btn" 
+                [class.active]="isLooping()" 
+                (click)="toggleLoop()" 
+                [title]="isLooping() ? 'Loop enabled' : 'Enable loop'"
+              >
+                <span class="material-symbols-outlined">repeat</span>
+              </button>
+
+              <!-- Mute / Unmute Toggle -->
+              <button class="ctrl-btn" (click)="toggleMute()" [title]="isMuted() ? 'Unmute' : 'Mute'">
+                <span class="material-symbols-outlined">{{ isMuted() ? 'volume_off' : 'volume_up' }}</span>
+              </button>
+
+              <!-- Open in new tab -->
+              <button class="ctrl-btn" (click)="openInNewTab()" title="Open video in new tab">
+                <span class="material-symbols-outlined">open_in_new</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </ng-container>
+
+      <!-- Clean, High-Contrast Minimal Empty / Fallback State -->
+      <div class="empty-video-fallback" *ngIf="!agentService.isVideoLoading() && (!agentService.activeVideoUrl() || videoLoadError())">
+        <div class="fallback-icon-wrap">
+          <span class="material-symbols-outlined fallback-icon">videocam_off</span>
+        </div>
+        <h4 class="fallback-title">No Video Recording Available</h4>
+        <p class="fallback-desc">
+          No screen recording was found for this task.
+        </p>
+      </div>
+    </ng-container>
+  </div>
+</div>

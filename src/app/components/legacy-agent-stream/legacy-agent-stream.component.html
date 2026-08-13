@@ -1,0 +1,116 @@
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<div class="agent-stream-container">
+  <!-- Header with Session Selector -->
+  <header class="stream-header">
+    <div class="header-title">
+      <h2>👣 Real-time Agent Stream (Legacy Card View)</h2>
+      <p class="subtitle">Select a session to monitor raw agent activity</p>
+    </div>
+
+    <div class="session-selector-wrapper">
+      <label for="session-select">Active Session:</label>
+      <select
+        id="session-select"
+        [value]="agentService.currentSessionId() || ''"
+        (change)="onSessionChange($event)"
+        class="session-dropdown"
+      >
+        <option value="" disabled selected>-- Select a Session --</option>
+        <option
+          *ngFor="let session of agentService.sessions()"
+          [value]="session.session_id"
+        >
+          {{ session.initial_goal || 'Unnamed Goal' }} ({{ session.start_time * 1000 | date:'short' }})
+        </option>
+      </select>
+      <button class="btn-refresh" (click)="agentService.fetchSessions()">🔄 Refresh</button>
+    </div>
+  </header>
+
+  <!-- Event Logs Section -->
+  <main class="stream-logs-content">
+    <div *ngIf="agentService.sessionLogs().length === 0" class="empty-state">
+      <div class="empty-icon">📡</div>
+      <h3>No Stream Activity Selected</h3>
+      <p>Please select a running session from the dropdown above to view real-time log payloads.</p>
+    </div>
+
+    <div *ngIf="agentService.sessionLogs().length > 0" class="logs-list">
+      <div
+        *ngFor="let log of agentService.sessionLogs(); let i = index"
+        class="log-card"
+        [ngClass]="['type-' + log.type, isStepEvent(log.type) ? 'step-event-card' : 'raw-event-card']"
+      >
+        <div class="log-card-header">
+          <div class="badge-group">
+            <span class="index-badge">#{{ i + 1 }}</span>
+            <span class="type-badge" [ngClass]="log.type">{{ log.type }}</span>
+          </div>
+          <span class="timestamp">{{ log.timestamp | date:'HH:mm:ss.SSS' }}</span>
+        </div>
+
+        <!-- Render Step Events in a beautiful, structured layout -->
+        <div *ngIf="isStepEvent(log.type)" class="log-card-body step-body">
+          <!-- Step Summary (Message to User) -->
+          <div class="step-summary-section" *ngIf="log.data.summary">
+            <div class="section-title">💬 Message to User / Summary:</div>
+            <div class="summary-bubble">{{ log.data.summary }}</div>
+          </div>
+
+          <!-- Model thinking process (collapsible) -->
+          <details class="thinking-details" *ngIf="log.data.operator_native_thinking">
+            <summary class="details-summary">🧠 Model Thinking Process (Click to expand)</summary>
+            <div class="details-content thinking-text">{{ log.data.operator_native_thinking }}</div>
+          </details>
+
+          <!-- Raw thinking process (collapsible) -->
+          <details class="planning-details" *ngIf="log.data.operator_raw_thinking">
+            <summary class="details-summary">📝 Raw Plan / Thoughts (Click to expand)</summary>
+            <div class="details-content planning-text">{{ log.data.operator_raw_thinking }}</div>
+          </details>
+
+          <!-- Tool Call (collapsible) -->
+          <details class="tool-details" *ngIf="log.data.action_taken" [open]="isShortContent(log.data.action_taken)">
+            <summary class="details-summary">🛠️ Tool Call Details (Click to expand)</summary>
+            <div class="details-content">
+              <pre class="json-code"><code>{{ formatJson(log.data.action_taken) }}</code></pre>
+            </div>
+          </details>
+
+          <!-- Tool Call Result (collapsible) -->
+          <details class="result-details" *ngIf="log.data.last_execution_result">
+            <summary class="details-summary">✓ Execution Result (Click to expand)</summary>
+            <div class="details-content">
+              <pre class="json-code"><code>{{ formatJson(log.data.last_execution_result) }}</code></pre>
+            </div>
+          </details>
+        </div>
+
+        <!-- Render other event types as raw JSON (collapsible) -->
+        <div *ngIf="!isStepEvent(log.type)" class="log-card-body raw-body">
+          <details class="raw-details" [open]="isShortContent(log.data)">
+            <summary class="details-summary">📄 Raw Payload Data (Click to expand)</summary>
+            <div class="details-content">
+              <pre class="json-code"><code>{{ formatJson(log.data) }}</code></pre>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>

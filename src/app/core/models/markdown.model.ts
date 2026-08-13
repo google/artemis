@@ -1,0 +1,40 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+export interface MarkdownSegment {
+  text: string;
+  bold: boolean;
+  code?: boolean;
+}
+
+export interface MarkdownLine {
+  type: 'h1' | 'h2' | 'h3' | 'checked' | 'progress' | 'unchecked' | 'list-item' | 'text' | 'empty';
+  segments: MarkdownSegment[];
+  indent: number;
+}
+
+export interface NoteMilestone {
+  index: number;
+  type: 'checked' | 'progress' | 'unchecked';
+  segments: MarkdownSegment[];
+  subSteps: MarkdownLine[];
+}
+
+export interface ParsedNote {
+  title: string | null;
+  milestones: NoteMilestone[];
+  otherLines: MarkdownLine[];
+}
