@@ -25,7 +25,7 @@ from artemis.config import (
 from artemis.context import DevicePlatform
 from artemis.sdk.types.task import AgentProfile, TaskRequestCommon
 from artemis.utils.video import detect_video_tools_enabled
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class _CyFunctionDetectorMeta(type):
@@ -125,7 +125,10 @@ class AgentConfig(BaseModel):
 
     explorer: ExplorerConfig = Field(default_factory=ExplorerConfig)
     explorer_versions: dict[str, Literal["flash", "pro", "ultra"]]
-    blacklisted_tools: dict[str, list[str]]
+    denylisted_tools: dict[str, list[str]] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("denylisted_tools", "blocklisted_tools"),
+    )
     enable_video_ledger: bool = True
 
     model_config = {"arbitrary_types_allowed": True}

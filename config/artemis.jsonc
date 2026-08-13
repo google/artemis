@@ -204,8 +204,8 @@
       "operator": "flash",
       "validator": "flash"
     },
-// 🚫 Per-agent Tool Blacklists
-    "blacklisted_tools": {
+// 🚫 Per-agent Tool Denylists
+    "denylisted_tools": {
       "explorer": [
         "ask_image_processor",
         "get_ocr_list",

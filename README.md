@@ -303,7 +303,7 @@ All model configurations, thinking budgets, agent capabilities, and tool filteri
   // 4. Agent Capabilities & Tool Filtering
   "agent": {
     "explorer_versions": { "operator": "flash", "validator": "flash" },
-    "blacklisted_tools": {
+    "denylisted_tools": {
       "explorer": ["ask_image_processor", "get_ocr_list", "inspect_region"]
     }
   }

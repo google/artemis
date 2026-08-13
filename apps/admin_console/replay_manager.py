@@ -52,7 +52,7 @@ REPLAY_TOOLS_CONFIG = {
         "module": "artemis.tools.explorer_tool",
         "function": "_run_explorer_logic",
         "agent_name": "explorer",
-        "blacklist_args": ["ctx", "state"],
+        "denylist_args": ["ctx", "state"],
         "fallback_mappings": {},
         "llm_span_name": "gemini_explorer_call",
     },
@@ -65,7 +65,7 @@ REPLAY_TOOLS_CONFIG = {
         "module": "artemis.tools.image_processor_tool",
         "function": "_run_image_processor_logic",
         "agent_name": "image_processor",
-        "blacklist_args": ["ctx", "state"],
+        "denylist_args": ["ctx", "state"],
         "fallback_mappings": {},
         "llm_span_name": "gemini_image_processor_call",
     },
@@ -1996,14 +1996,14 @@ class ReplayManager:
                 user_submits = user_submits or {}
                 sig = inspect.signature(tool_fn)
                 tool_args = {}
-                blacklist = tool_cfg.get("blacklist_args", [])
+                denylist = tool_cfg.get("denylist_args", [])
                 fallback_mappings = tool_cfg.get("fallback_mappings", {})
 
                 user_submits = user_submits or {}
                 sig = inspect.signature(tool_fn)
                 tool_args = {}
                 for name, param in sig.parameters.items():
-                    if name in blacklist:
+                    if name in denylist:
                         if name == "ctx":
                             tool_args["ctx"] = ctx
                         elif name == "state":
@@ -2012,7 +2012,7 @@ class ReplayManager:
 
                     if name in user_submits:
                         val = user_submits[name]
-                        if param.annotation == bool and isinstance(val, str):
+                        if param.annotation is bool and isinstance(val, str):
                             val = val.lower() == "true"
                         tool_args[name] = val
                     else:
@@ -2086,10 +2086,10 @@ class ReplayManager:
             tool_fn = getattr(mod, tool_cfg["function"])
             sig = inspect.signature(tool_fn)
 
-            blacklist = tool_cfg.get("blacklist_args", [])
+            denylist = tool_cfg.get("denylist_args", [])
             explorer_params = []
             for name, param in sig.parameters.items():
-                if name in blacklist:
+                if name in denylist:
                     continue
                 default_val = ""
                 if param.default is not inspect.Parameter.empty:
@@ -2106,7 +2106,7 @@ class ReplayManager:
                     )
                 ):
                     input_type = "textarea"
-                elif param.annotation == bool:
+                elif param.annotation is bool:
                     input_type = "checkbox"
                 elif param.annotation in (int, float):
                     input_type = "number"
@@ -2181,12 +2181,12 @@ class ReplayManager:
                 all_tool_defaults = {}
                 for t_name, sig in tool_signatures.items():
                     t_cfg = REPLAY_TOOLS_CONFIG[t_name]
-                    blacklist = t_cfg.get("blacklist_args", [])
+                    denylist = t_cfg.get("denylist_args", [])
                     fallback_mappings = t_cfg.get("fallback_mappings", {})
 
                     defaults = {}
                     for name, param in sig.parameters.items():
-                        if name in blacklist:
+                        if name in denylist:
                             continue
 
                         val = ""

@@ -223,8 +223,8 @@ UNIVERSAL_EXPLORER_TOOLS = [
 
 
 class Explorer:
-    BLACKLIST_TEMPLATE = (
-        "\n# TOOL BLACKLIST\n- The following tools are blacklisted and cannot be used: {tools}\n"
+    DENYLIST_TEMPLATE = (
+        "\n# TOOL DENYLIST\n- The following tools are denylisted and cannot be used: {tools}\n"
     )
     TOOLS = [
         types.FunctionDeclaration(
@@ -445,12 +445,12 @@ class Explorer:
         self.next_img_id = 1
         try:
             agent_cfg = getattr(self.ctx, "agent_config", None)
-            blacklisted_config = (
-                getattr(agent_cfg, "blacklisted_tools", {}).get("explorer", []) if agent_cfg else []
+            denylisted_config = (
+                getattr(agent_cfg, "denylisted_tools", {}).get("explorer", []) if agent_cfg else []
             )
-            self.blacklisted_tools = set(blacklisted_config)
+            self.denylisted_tools = set(denylisted_config)
         except (TypeError, AttributeError):
-            self.blacklisted_tools = set()
+            self.denylisted_tools = set()
         self.http_client = None
         self.turn_latencies = []
         self.turn_cached_tokens = []
@@ -514,8 +514,8 @@ class Explorer:
             ]
 
     def get_exposed_tools(self, only_submit: bool = False) -> list[types.FunctionDeclaration]:
-        """Returns the list of tools, filtering out blacklisted ones."""
-        tools = [tool for tool in self.TOOLS if tool.name not in self.blacklisted_tools]
+        """Returns the list of tools, filtering out denylisted ones."""
+        tools = [tool for tool in self.TOOLS if tool.name not in self.denylisted_tools]
         if only_submit:
             tools = [tool for tool in tools if tool.name == "submit_answer"]
         return tools
@@ -1143,11 +1143,11 @@ class Explorer:
         """Executes Explorer reasoning loop via Universal LangChain ChatModel."""
         llm = get_llm(self.ctx, name="explorer")
 
-        # Filter universal tools based on blacklist
+        # Filter universal tools based on denylist
         exposed_tools = [
             t
             for t in UNIVERSAL_EXPLORER_TOOLS
-            if t["function"]["name"] not in self.blacklisted_tools
+            if t["function"]["name"] not in self.denylisted_tools
         ]
         bound_llm = llm.bind_tools(exposed_tools)
 
@@ -1251,12 +1251,12 @@ class Explorer:
                 args = tc.get("args", {})
                 call_id = tc.get("id", f"call_{iterations}_{name}")
 
-                if name in self.blacklisted_tools:
+                if name in self.denylisted_tools:
                     messages.append(
                         ToolMessage(
                             tool_call_id=call_id,
                             name=name,
-                            content=f"Tool '{name}' is blacklisted and unavailable.",
+                            content=f"Tool '{name}' is denylisted and unavailable.",
                         )
                     )
                     continue
@@ -1428,12 +1428,12 @@ class Explorer:
 
         # Resolve parameters
         mode = version.capitalize()
-        version_blacklist = set()
+        version_denylist = set()
         if version == "ultra":
             max_iterations = 8
         elif version == "pro":
             max_iterations = 3
-            version_blacklist = {
+            version_denylist = {
                 "ask_image_processor",
                 "get_ocr_list",
                 "inspect_region",
@@ -1441,21 +1441,21 @@ class Explorer:
             }
         else:
             max_iterations = 3
-            version_blacklist = {
+            version_denylist = {
                 "ask_image_processor",
                 "get_ocr_list",
                 "inspect_region",
             }
 
         try:
-            blacklisted_config = (
-                self.ctx.agent_config.blacklisted_tools.get("explorer", [])
+            denylisted_config = (
+                self.ctx.agent_config.denylisted_tools.get("explorer", [])
                 if self.ctx.agent_config
                 else []
             )
-            self.blacklisted_tools = version_blacklist.union(set(blacklisted_config))
+            self.denylisted_tools = version_denylist.union(set(denylisted_config))
         except (TypeError, AttributeError):
-            self.blacklisted_tools = version_blacklist
+            self.denylisted_tools = version_denylist
 
         # 2. Prepare Native Tools declarations
         self.width = 1080
@@ -1544,14 +1544,14 @@ class Explorer:
             prompt_parts.append("")
 
         prompt_template = "\n".join(prompt_parts)
-        prompt_template += "\n{blakclist}"
-        if self.blacklisted_tools:
-            blacklist_section = self.BLACKLIST_TEMPLATE.format(
-                tools=", ".join(sorted(self.blacklisted_tools))
+        prompt_template += "\n{denylist}"
+        if self.denylisted_tools:
+            denylist_section = self.DENYLIST_TEMPLATE.format(
+                tools=", ".join(sorted(self.denylisted_tools))
             )
         else:
-            blacklist_section = ""
-        prompt_template = prompt_template.replace("{blakclist}", blacklist_section)
+            denylist_section = ""
+        prompt_template = prompt_template.replace("{denylist}", denylist_section)
 
         explore_info = EXPLORE_DESCRIPTIONS.get(version, EXPLORE_DESCRIPTIONS["pro"])
         version_prompt = explore_info.get("version_prompt")
@@ -2039,20 +2039,20 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                         "name": name,
                         "args": args,
                     }
-                    if name in self.blacklisted_tools:
+                    if name in self.denylisted_tools:
                         logger.warning(
-                            "Explorer attempted to call blacklisted tool"
+                            "Explorer attempted to call denylisted tool"
                             f" '{name}'. Blocking execution."
                         )
                         tool_call_trace["response"] = {
-                            "error": (f"Tool '{name}' is blacklisted and unavailable.")
+                            "error": (f"Tool '{name}' is denylisted and unavailable.")
                         }
                         turn_record["tool_calls"].append(tool_call_trace)
                         tool_response_parts.append(
                             types.Part.from_function_response(
                                 name=fc.name,
                                 response={
-                                    "error": (f"Tool '{name}' is blacklisted and unavailable.")
+                                    "error": (f"Tool '{name}' is denylisted and unavailable.")
                                 },
                             )
                         )

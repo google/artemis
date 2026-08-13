@@ -136,7 +136,7 @@ def test_agent_config_loading():
     assert agent_cfg.explorer.flash_mode == "flash"
     assert agent_cfg.explorer.pro_mode == "flash"
     assert agent_cfg.explorer.caching is True
-    assert "explorer" in agent_cfg.blacklisted_tools
+    assert "explorer" in agent_cfg.denylisted_tools
     assert agent_cfg.video_analyzer.enable_ledger is True
     assert agent_cfg.planner_validation.enabled is False
     assert agent_cfg.planner_validation.similarity_threshold == 0.85

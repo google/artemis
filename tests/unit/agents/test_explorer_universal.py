@@ -43,7 +43,7 @@ def mock_context(tmp_path):
     ctx.device.device_height = 2400
 
     ctx.agent_config = Mock()
-    ctx.agent_config.blacklisted_tools = {}
+    ctx.agent_config.denylisted_tools = {}
 
     ctx.data_engine = Mock()
     ctx.data_engine.base_dir = tmp_path

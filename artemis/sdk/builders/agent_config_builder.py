@@ -73,7 +73,7 @@ class AgentConfigBuilder:
         agent_cfg = load_agent_config()
         self._explorer = agent_cfg.explorer
         self._explorer_versions = agent_cfg.explorer_versions
-        self._blacklisted_tools = agent_cfg.blacklisted_tools
+        self._denylisted_tools = agent_cfg.denylisted_tools
         self._enable_video_ledger = agent_cfg.video_analyzer.enable_ledger
         if agent_cfg.video_analyzer.enabled is not None:
             self._video_recording_tools_enabled = agent_cfg.video_analyzer.enabled
@@ -431,9 +431,9 @@ class AgentConfigBuilder:
         self._explorer_versions = versions
         return self
 
-    def with_blacklisted_tools(self, tools: dict[str, list[str]]) -> "AgentConfigBuilder":
-        """Configure blacklisted tools."""
-        self._blacklisted_tools = tools
+    def with_denylisted_tools(self, tools: dict[str, list[str]]) -> "AgentConfigBuilder":
+        """Configure denylisted tools."""
+        self._denylisted_tools = tools
         return self
 
     def build(self, validate_profiles: bool = True) -> AgentConfig:
@@ -505,7 +505,7 @@ class AgentConfigBuilder:
             pro=self._pro,
             explorer=self._explorer,
             explorer_versions=self._explorer_versions,
-            blacklisted_tools=self._blacklisted_tools,
+            denylisted_tools=self._denylisted_tools,
             enable_video_ledger=self._enable_video_ledger,
         )
 

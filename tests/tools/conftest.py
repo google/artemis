@@ -77,7 +77,7 @@ def artemis_context(inputs_dir, mock_adb_client):
     ctx.trace_dir = trace_out
 
     ctx.agent_config = MagicMock()
-    ctx.agent_config.blacklisted_tools = {}
+    ctx.agent_config.denylisted_tools = {}
 
     return ctx
 

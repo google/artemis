@@ -843,7 +843,7 @@ async def test_explorer_initial_visual_marking_previous_screenshot_on_the_fly_oc
 
 
 @pytest.mark.asyncio
-async def test_explorer_blacklisted_tool():
+async def test_explorer_denylisted_tool():
     # Mock context and state
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_ctx.device = MagicMock()
@@ -855,12 +855,12 @@ async def test_explorer_blacklisted_tool():
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.6-flash"
     mock_ctx.agent_config = MagicMock()
-    mock_ctx.agent_config.blacklisted_tools = {"explorer": ["search_xml_ocr"]}
+    mock_ctx.agent_config.denylisted_tools = {"explorer": ["search_xml_ocr"]}
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/tmp/test_screenshot.jpg"
 
-    # Response 1: Model calls search_xml_ocr (which is blacklisted)
+    # Response 1: Model calls search_xml_ocr (which is denylisted)
     mock_response1 = MagicMock()
     mock_response1.text = ""
     mock_func_call1 = MagicMock()
@@ -958,7 +958,7 @@ async def test_explorer_blacklisted_tool():
         assert mock_client.aio.models.generate_content.call_count == 2
 
         # Verify the contents passed to the second call contain the error response
-        # indicating that the tool is blacklisted and unavailable.
+        # indicating that the tool is denylisted and unavailable.
         call_args = mock_client.aio.models.generate_content.call_args_list[1]
         contents = call_args[1]["contents"]
 
@@ -978,7 +978,7 @@ async def test_explorer_blacklisted_tool():
         for part in tool_content.parts:
             func_resp = part.function_response
             if func_resp and func_resp.name == "search_xml_ocr":
-                assert "blacklisted and unavailable" in func_resp.response["error"]
+                assert "denylisted and unavailable" in func_resp.response["error"]
                 found_error = True
 
         assert found_error

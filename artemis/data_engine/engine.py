@@ -851,7 +851,7 @@ class DataEngine:
 
             interleaved_events = []
             try:
-                blacklist = (
+                denylist = (
                     "operator",
                     "perception",
                     "planner",
@@ -891,7 +891,7 @@ class DataEngine:
 
                     if is_relevant_llm:
                         relevant_traces.append(t)
-                    elif t.type in ("tool", "agent") and t.name not in blacklist:
+                    elif t.type in ("tool", "agent") and t.name not in denylist:
                         relevant_traces.append(t)
 
                 # Sort by timestamp to ensure exact chronological order

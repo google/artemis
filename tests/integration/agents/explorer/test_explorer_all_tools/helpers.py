@@ -29,7 +29,7 @@ def create_mock_context() -> MagicMock:
     ctx.device.device_height = 2400
     ctx.llm_config = MagicMock()
     ctx.agent_config = MagicMock()
-    ctx.agent_config.blacklisted_tools = {"explorer": []}
+    ctx.agent_config.denylisted_tools = {"explorer": []}
     ctx.data_engine = None
     ctx.adb_client = None
     return ctx

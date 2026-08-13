@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from artemis.config.constants import (
     AGENT_CONFIG_FILENAME,
@@ -286,9 +286,10 @@ class AgentGlobalConfig(BaseModel):
         default_factory=OutputterConfig,
         description="Outputter synthesis agent runtime options.",
     )
-    blacklisted_tools: dict[str, list[str]] = Field(
+    denylisted_tools: dict[str, list[str]] = Field(
         default_factory=dict,
-        description="List of blacklisted tools per agent.",
+        description="List of denylisted tools per agent.",
+        validation_alias=AliasChoices("denylisted_tools", "blocklisted_tools"),
     )
     video_analyzer: VideoAnalyzerConfig = Field(
         default_factory=VideoAnalyzerConfig,
