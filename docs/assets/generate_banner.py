@@ -842,7 +842,7 @@ def create_banner_html(lang="en"):
 """
     if lang == "cn":
         replacements = {
-            "__TAGLINE__": "用 <span>Autonomous Assistant Platform</span> 测试任意安卓手机",
+            "__TAGLINE__": "用 <span>Artemis</span> 测试任意安卓手机",
             "__PROMPT_LABEL__": "目标 / 提示词",
             "__PROMPT_STATUS__": "设备实机运行中",
             "__PROMPT_TEXT__": "连接蓝牙耳机播放歌曲，并持续采集 CPU 性能指标",
