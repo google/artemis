@@ -35,6 +35,7 @@ from artemis.tools.scratchpad import (
     get_update_note_tool_pure,
 )
 from artemis.tools.video_tool import get_video_analyzer_tool_pure
+from artemis.tools.tool_wrapper import invoke_tool_with_injection
 from artemis.utils.logger import get_logger
 from artemis.utils.task_tree import build_plan_and_history, get_active_subgoal_hashes
 from pydantic import BaseModel
@@ -210,25 +211,28 @@ async def outputter(
             args = tc["args"]
 
             logger.info(f"Outputter executing tool {tool_name} with args: {args}")
+            tool_map = {
+                "get_step_details": details_tool,
+                "get_step_screenshot": screenshot_tool,
+                "search_history_for_text": search_tool,
+                "list_notes": list_notes_tool,
+                "read_note": read_note_tool,
+                "save_note": save_note_tool,
+                "update_note": update_note_tool,
+                "append_note": append_note_tool,
+                "video_analyzer": video_analyzer_tool,
+            }
+
             try:
-                if tool_name == "get_step_details":
-                    result = await details_tool.ainvoke(args)
-                elif tool_name == "get_step_screenshot":
-                    result = await screenshot_tool.ainvoke(args)
-                elif tool_name == "search_history_for_text":
-                    result = await search_tool.ainvoke(args)
-                elif tool_name == "list_notes":
-                    result = await list_notes_tool.ainvoke(args)
-                elif tool_name == "read_note":
-                    result = await read_note_tool.ainvoke(args)
-                elif tool_name == "save_note":
-                    result = await save_note_tool.ainvoke(args)
-                elif tool_name == "update_note":
-                    result = await update_note_tool.ainvoke(args)
-                elif tool_name == "append_note":
-                    result = await append_note_tool.ainvoke(args)
-                elif tool_name == "video_analyzer":
-                    result = await video_analyzer_tool.ainvoke(args)
+                selected_tool = tool_map.get(tool_name)
+                if selected_tool:
+                    result = await invoke_tool_with_injection(
+                        tool=selected_tool,
+                        args=args,
+                        tool_call_id=tc["id"],
+                        state=graph_output,
+                        record_trace=True,
+                    )
                 else:
                     result = f"Error: Tool {tool_name} is not supported."
                 status = (

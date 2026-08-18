@@ -78,7 +78,7 @@ class IPCService:
                 except Exception:
                     pass
 
-            if tr_type == "tool" and isinstance(payload, dict):
+            if tr_type in ("tool", "action") and isinstance(payload, dict):
                 args = payload.get("args", payload)
                 data["payload"] = {"args": cls._clean_value(args)}
             elif tr_type == "llm_call" and isinstance(payload, dict):
@@ -144,8 +144,17 @@ class IPCService:
                     data = payload.get("data")
 
                     if event_type == "session_started" and data:
-                        state.active_session_id = data.get("session_id")
-                        current_session_id = data.get("session_id")
+                        incoming_sid = data.get("session_id")
+                        if incoming_sid and str(incoming_sid) in getattr(
+                            state, "cancelled_session_ids", set()
+                        ):
+                            print(
+                                f"[IPC] Ignoring session_started for cancelled session: {incoming_sid}"
+                            )
+                            continue
+
+                        state.active_session_id = incoming_sid
+                        current_session_id = incoming_sid
                         pid = data.get("pid")
                         goal = data.get("initial_goal")
                         device_info = data.get("device_info")

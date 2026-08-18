@@ -40,6 +40,7 @@ class ToolWrapper(BaseModel):
     tool_fn_getter: Callable[[ArtemisContext], BaseTool]
     on_success_fn: Callable[..., str]
     on_failure_fn: Callable[..., str]
+    is_available_fn: Callable[[ArtemisContext], bool] | None = None
 
 
 class CompositeToolWrapper(ToolWrapper):

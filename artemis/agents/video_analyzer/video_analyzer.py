@@ -40,7 +40,7 @@ from langchain_core.messages import (
 from artemis.agents.video_analyzer.conflict_resolution import (
     ConflictResolutionService,
 )
-from artemis.config import settings
+from artemis.config import get_temp_dir, settings
 from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.context import ArtemisContext
 from artemis.controllers.controller_factory import get_controller
@@ -461,10 +461,10 @@ class VideoAnalyzer:
         utils_cfg = getattr(llm_config, "utils", None) if llm_config else None
         llm_cfg = getattr(utils_cfg, "video_analyzer", None) if utils_cfg else None
         model_str = (
-            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.6-flash"
+            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.7-flash"
         ).lower()
         self.model_name = (
-            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.6-flash"
+            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.7-flash"
         )
         if "/" in self.model_name:
             self.model_name = self.model_name.split("/")[-1]
@@ -1142,7 +1142,7 @@ class VideoAnalyzer:
                                         confidence = float(event.get("confidence_score", 0.0))
                                         relative_offset = max(0.0, verification_ts - actual_start)
 
-                                        out_dir = Path("/tmp/video_analyzer")
+                                        out_dir = get_temp_dir("video_analyzer")
                                         out_dir.mkdir(parents=True, exist_ok=True)
                                         existing_imgs = glob.glob(f"{out_dir}/img_*.jpg")
                                         max_idx = -1
@@ -1692,7 +1692,7 @@ class VideoAnalyzer:
             screenshot_path_str = None
             try:
                 rel_offset = max(0.0, v_ts - actual_start)
-                out_dir = Path("/tmp/video_analyzer")
+                out_dir = get_temp_dir("video_analyzer")
                 out_dir.mkdir(parents=True, exist_ok=True)
 
                 existing_imgs = glob.glob(f"{out_dir}/img_*.jpg")
@@ -1899,7 +1899,7 @@ class VideoAnalyzer:
                 if getattr(llm_cfg, "thinking_level", None) is not None:
                     thinking_level = llm_cfg.thinking_level
             else:
-                self.model_name = "gemini-3.6-flash"
+                self.model_name = "gemini-3.7-flash"
 
             # Track files for cleanup
             self.local_files_to_cleanup = set()

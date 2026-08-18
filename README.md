@@ -1,398 +1,248 @@
-# ARTEMIS ☕📱
+<p align="center">
+  <img src="./docs/assets/artemis-banner.png" alt="ARTEMIS Banner" width="100%" />
+</p>
 
-**Autonomous Multimodal Android Agent & Mobile UI Automation Platform**
+<p align="center">
+  <strong>ARTEMIS: Autonomous AI Assistant for Mobile Automation</strong>
+</p>
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Framework: LangGraph](https://img.shields.io/badge/Orchestration-LangGraph-orange.svg)](https://github.com/langchain-ai/langgraph)
-[![Model: Google Gemini](https://img.shields.io/badge/Powered%20by-Google%20Gemini-4285F4.svg)](https://ai.google.dev/)
+<p align="center">
+  <em>⚡ Drive real phones from Cursor & Claude Code • Cross-App Automation • Zero-Maintenance UI Testing • Flash Mode as Fast as 3-5s</em>
+</p>
 
-ARTEMIS is a next-generation, production-grade autonomous agent and testing framework engineered for Android devices and emulators. Combining state-of-the-art multimodal Large Vision-Language Models (VLMs) with hierarchical closed-loop planning, resilient self-healing, and deep Android subsystem integration (ADB, UIAutomator2, accessibility trees), ARTEMIS enables autonomous UI navigation, robust automated testing, and intelligent device diagnostics.
+<p align="center">
+  <a href="./README.md"><b>English</b></a> •
+  <a href="./README_CN.md">中文文档</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#mcp-setup">MCP for IDEs</a> •
+  <a href="#benchmarks">Benchmarks</a> •
+  <a href="https://discord.gg/wF2FN4WHGY">Discord Community</a>
+</p>
 
----
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.12+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.12+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Native%20Server-8A2BE2.svg" alt="MCP Native"></a>
+  <a href="https://ai.google.dev/"><img src="https://img.shields.io/badge/Multimodal-Gemini%20%7C%20Claude%20%7C%20GPT--4o%20%7C%20Qwen--VL-4285F4.svg" alt="Multi-Model"></a>
+  <a href="https://github.com/google-research/android_world"><img src="https://img.shields.io/badge/AndroidWorld-99%25%2B%20SOTA-success.svg" alt="AndroidWorld SOTA"></a>
+</p>
 
-## 📑 Table of Contents
+<!-- Demo Showcase -->
+<p align="center">
+  <img src="./docs/assets/demo.gif" alt="Artemis in Action" width="88%" />
+  <br>
+  <em><b>Live Demo</b>: Setup driving routes and calculate total durations in Google Maps, then open YouTube to play a Coldplay song.</em>
+</p>
 
-- [Key Features](#-key-features)
-- [Architecture Overview](#-architecture-overview)
-- [Prerequisites](#-prerequisites)
-- [Installation & Setup](#-installation--setup)
-- [Quick Start](#-quick-start)
-  - [Command Line Interface (CLI)](#command-line-interface-cli)
-  - [Python SDK](#python-sdk)
-- [Execution Profiles: Flash vs. Pro](#-execution-profiles-flash-vs-pro)
-- [Model Context Protocol (MCP) Integration](#-model-context-protocol-mcp-integration)
-- [Configuration Guide](#-configuration-guide)
-  - [Using Non-Google LLMs](#using-non-google-llms)
-- [Trace Inspection & Observability](#-trace-inspection--observability)
-- [Development & Testing](#-development--testing)
-- [License](#-license)
+## ✨ Key Highlights
 
----
+* ⚡ **Lightning Fast**: First-of-its-kind **Optimistic Asynchronous Pipeline** decouples the foreground execution stream from heavy LLM reasoning;
+* 🔋 **Ultra-Long Autonomous Execution**: **Pro mode** runs stably for over 10 hours, while monitoring tasks support around-the-clock 24/7 execution;
+* 🔌 **Native Model Context Protocol (MCP)**: Empowers **Cursor, Claude Code, OpenClaw, Windsurf** with direct mobile device manipulation from within your chat prompts;
+* 💾 **Visual Console & Persistent Debugging**: Real-time Web UI screen projection, execution replay, and task management with natural language test generation and high-fidelity historical review;
+* 🏆 **Industry-Leading SOTA**: Achieved **99%+ task completion** on Google Research's **AndroidWorld** benchmark (100+ complex multi-step tasks).
 
-## ✨ Key Features
+<a id="quick-start"></a>
+## ⚡ Quick Start
 
-- **Dual-Engine Execution**:
-  - **ARTEMIS Flash**: High-speed, reactive single-agent loop for deterministic, low-latency tasks (< 35 steps).
-  - **ARTEMIS Pro**: Multi-agent closed-loop graph orchestration (Planner $\rightarrow$ Operator $\rightarrow$ Failure Analyzer $\rightarrow$ Summarizer) powered by LangGraph.
-- **Multimodal Perception**:
-  - Combined visual screenshot grounding, real-time OCR, accessibility hierarchy (XML) parsing, and dynamic video analysis.
-- **Resilient Locating Strategy ("Dynamic-First, Coordinate-Fallback")**:
-  - Prioritizes semantic IDs, XPath, and accessibility text matching to withstand UI layout drift; seamlessly falls back to calibrated absolute/relative coordinates.
-- **Autonomous Self-Healing**:
-  - Built-in failure analyzer and safety net detect blocked flows, system dialogs, app crashes, or unexpected states and auto-recover in real time.
-- **App Locking & Session Boundaries**:
-  - Restricts execution context to target application packages with automatic foreground recovery.
-- **Model Context Protocol (MCP) Native**:
-  - Exposes Android automation, state inspection, and trace querying as MCP tools for IDEs and AI orchestrators.
-- **Structured Pydantic Outputs**:
-  - Automatically parses agent observations and findings into validated Pydantic schemas.
-
----
-
-## 🏛 Architecture Overview
-
-ARTEMIS operates on a closed-loop multi-agent architecture:
-
-```
-                      ┌─────────────────────────────────┐
-                      │          User Goal / Task       │
-                      └────────────────┬────────────────┘
-                                       │
-                                       ▼
-                       ┌───────────────────────────────┐
-                       │       Planner Agent           │
-                       │ (Hierarchical Task Breakdown) │
-                       └───────────────┬───────────────┘
-                                       │
-                        ┌──────────────┴──────────────┐
-                        ▼                             ▼
-       ┌─────────────────────────────────┐   ┌───────────────────────────────┐
-       │         Operator Agent          │   │      Diagnostic Agents        │
-       │ (Screen VLM + XML Grounding)    │   │  (Log Reader, Video Analyzer, │
-       └────────────────┬────────────────┘   │   Object Detector, Explorer)  │
-                        │                    └───────────────────────────────┘
-                        ▼
-       ┌─────────────────────────────────┐
-       │   Execution & Device Control    │
-       │   (ADB / UIAutomator2 / Taps)   │
-       └────────────────┬────────────────┘
-                        │
-          [Action Success / State Change?]
-            │                         │
-          (Yes)                      (No / Blocked)
-            │                         │
-            ▼                         ▼
- ┌──────────────────────┐  ┌─────────────────────────────────────────┐
- │ Next Step / Complete │  │ Failure Analyzer & Safety Net           │
- └──────────┬───────────┘  │ (Popup dismissal, Retry, Self-healing)  │
-            │              └────────────────────┬────────────────────┘
-            ▼                                   │
- ┌──────────────────────┐                       │
- │  Summarizer / Output │◄──────────────────────┘
- │  (Reports, Traces)   │
- └──────────────────────┘
-```
-
----
-
-## 🔧 Prerequisites
-
-1. **Python**: Version `3.12` or higher.
-2. **Android SDK / ADB**:
-   - `adb` must be installed and accessible in your system `PATH`.
-   - Verify with `adb devices`.
-3. **Android Device or Emulator**:
-   - A physically connected Android device with **USB Debugging** enabled, or
-   - An active Android Emulator (AVD) running on your local machine.
-4. **Screen Recording & Video Tools** *(optional for `--with-video-recording-tools`)*:
-   - **`scrcpy`**: Required for live Android device screen video recording (`apt install scrcpy` / `brew install scrcpy`).
-   - **`ffmpeg`**: Required for video transcoding, trimming, and audio extraction (`apt install ffmpeg` / `brew install ffmpeg`).
-
----
-
-## 🚀 Installation & Setup
-
-### 1. Clone the Repository
+Ensure an Android device (with **USB Debugging** enabled) or emulator is connected.
 
 ```bash
-git clone https://github.com/google/artemis.git
-cd artemis
+# 1. Clone repo & navigate to directory
+git clone https://github.com/google/artemis.git && cd artemis
+
+# 2. One-click launch (automatically installs ADB, scrcpy, FFmpeg, uv runtime, and opens console)
+# 🍎 macOS & 🐧 Linux
+./start.sh
+
+# 🪟 Windows (CMD / PowerShell)
+start.bat
 ```
 
-### 2. Install Dependencies
+> 💡 **Tip**: Opens `http://localhost:8000` in your default browser with a device connection wizard, live screen mirroring, prompt sandbox, and execution replays. You can also run directly from CLI: `artemis run "Open Settings, find Battery and tell me current level" --profile flash`.
 
-Using [`uv`](https://docs.astral.sh/uv/) (recommended):
+<a id="mcp-setup"></a>
+<a id="mcp"></a>
+<details>
+<summary><b>🔌 MCP Setup for Cursor / Claude Code / Windsurf (Click to expand)</b></summary>
+
+<br>
+
+ARTEMIS includes a native **Model Context Protocol (MCP)** server. Connect your real phone directly into AI IDEs:
+
+### 1. Generate MCP Config
+
+Run the built-in generator to produce ready-to-use JSON configuration:
 
 ```bash
-# Install dependencies into a virtual environment
-uv sync --dev
+artemis mcp --generate-config cursor
+# Or generate configs for all IDEs:
+artemis mcp --generate-config all
 ```
 
-Or using standard `pip`:
+### 2. Copy Config to Your IDE
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+* **Cursor** (`.cursor/mcp.json` or Settings ➔ MCP Servers):
+```json
+{
+  "mcpServers": {
+    "artemis": {
+      "command": "python",
+      "args": ["-m", "mcp_server"],
+      "cwd": "/path/to/artemis",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
 ```
 
-### 3. Quick Setup (10 Seconds)
-
-Run the interactive setup wizard to configure your API key and connect your device:
-
-```bash
-artemis init
+* **Claude Desktop** (`claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "artemis": {
+      "command": "python",
+      "args": ["-m", "mcp_server"],
+      "cwd": "/path/to/artemis"
+    }
+  }
+}
 ```
 
-Verify your environment and connected devices anytime with the doctor diagnostic tool:
+### 3. Prompt Your Phone in the IDE Chat
+In Cursor or Claude Code, simply prompt:
+> 💬 *"Build the latest changes into an APK, install it on the connected device, open the login screen with a test account, verify if there are any unexpected popups after login, and return screenshots of the final page."*
 
-```bash
-artemis doctor
-```
+</details>
 
-*(Alternatively, copy `.env.example` to `.env` and set `GEMINI_API_KEY` for LLM reasoning and `OCR_API_KEY` for Vision perception.)*
+<a id="python-sdk"></a>
+<details>
+<summary><b>🐍 Python SDK Integration (Click to expand)</b></summary>
 
----
+<br>
 
-## 💡 Quick Start
-
-### Command Line Interface (CLI)
-
-ARTEMIS installs a unified command-line tool `artemis`:
-
-```bash
-# 1. Environment & Device Diagnostics
-artemis doctor
-
-# 2. Interactive Setup Wizard
-artemis init
-
-# 3. Basic task execution (ARTEMIS Pro by default)
-artemis run "Open YouTube and search for Lo-Fi Hip Hop"
-
-# 4. Fast reactive profile (ARTEMIS Flash)
-artemis run "Open Settings and verify Airplane Mode is turned off" --profile flash
-
-# 5. Execute with trace recording and structured output
-artemis run "Open Maps, search for coffee shops, and extract the top 3 results" \
-  --test-name "coffee_search_test" \
-  --traces-path "./traces" \
-  --output-description '{"places": "list of shop names", "ratings": "list of rating scores"}'
-
-# 6. Enable dynamic video recording analysis
-artemis run "Play the latest video in the feed and verify playback" --with-video-recording-tools
-```
-
-### Python SDK
-
-Use the fluent SDK to integrate ARTEMIS into your test suites or automation workflows:
+Embed the mobile automation engine into your Python workflows in just a few lines:
 
 ```python
 import asyncio
-from pydantic import BaseModel, Field
-from artemis.sdk import Agent
-
-
-class VideoSearchResult(BaseModel):
-    query: str = Field(..., description="The search term used")
-    top_video_title: str = Field(..., description="Title of the first video result")
-    channel_name: str = Field(..., description="Channel name of the first video")
+from artemis.interfaces.sdk import ArtemisClient
 
 
 async def main():
-    # 1. Initialize the agent
-    agent = Agent()
-    await agent.init()
+    # Initialize client (choose "flash" for speed or "pro" for deep reasoning)
+    client = ArtemisClient(default_profile="flash")
 
-    try:
-        # 2. Build task specification
-        task = (
-            agent.new_task("Search for 'Pixel 9 Pro' and get the first video details")
-            .with_name("youtube_search_verification")
-            .with_locked_app_package("com.google.android.youtube")
-            .with_output_format(VideoSearchResult)
-            .with_max_steps(50)
-            .build()
-        )
+    # Run autonomous task
+    result = await client.run("Open calculator and compute (128 * 45) + 330")
 
-        # 3. Execute task
-        result: VideoSearchResult = await agent.run_task(request=task)
-
-        if result:
-            print("Search Results:")
-            print(f"- Query: {result.query}")
-            print(f"- First Video: {result.top_video_title}")
-            print(f"- Channel: {result.channel_name}")
-        else:
-            print("Task did not complete successfully.")
-
-    finally:
-        # 4. Clean up agent session & device connections
-        await agent.clean()
+    print(f"Status: {result.status}")
+    print(f"Turns taken: {result.turns}")
+    print(f"Trace ID: {result.trace_id}")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
----
+</details>
+
+## 🕹️ Usage Modes
+
+<p align="center">
+  <img src="./docs/assets/artemis-ui-showcase-en.png" alt="Artemis Web Console" width="90%" />
+  <br />
+  <sub>💡 <b>Console Overview</b>: <b>① View Switcher</b> (Home / Workspace) · <b>② Model & Replay</b> (Flash/Pro status & video replay) · <b>③ Live Agent Stream</b> (Action perception, target coordinates & structured results) · <b>④ Prompt Dock</b> (Natural language dispatch) · <b>⑤ Task Queue & Dashboard</b> (Lifecycle & history)</sub>
+</p>
+
+* 🖥️ **Web Visual Console (`artemis ui`)**: Real-time screen projection and interactive panel, supporting natural language task dispatch, live reasoning telemetry, action trajectories, and execution replay;
+* 🔌 **Native MCP Protocol (IDE Integration)**: Operates as a standard MCP server seamlessly integrating with **Cursor, Claude Code, OpenClaw**, etc., directly invoking mobile device manipulation inside the IDE;
+* 💻 **Developer CLI (`artemis run`)**: Direct terminal execution for automated tasks, test cases, or AndroidWorld benchmarks with high-fidelity structured terminal output;
+* 🐍 **Python SDK**: Integrates as a standard Python library into existing automated testing frameworks or pipelines with strongly typed Pydantic structured outputs.
+
+## 📊 Head-to-Head Comparison
+
+| Scenario / Dimension | Traditional Automation | Generic Screen AI Agents | **ARTEMIS ☕** |
+| :--- | :--- | :--- | :--- |
+| **Natural Language Execution** | ❌ Rigid hard-coded scripts only | ⚠️ Sluggish (waits 20-30s per tap) | ⚡ **High Throughput**: As fast as 3–5s per step in Flash mode with fluid responses |
+| **UI Redesign Resilience** | ❌ Layout changes break XPath selectors | ⚠️ Coordinate guessing leads to drift | 🎯 **Semantic Grounding**: Blends text, icons & UI tree structure to adapt to UI changes |
+| **Popup Interception** | ❌ Blocked and crashed immediately | ❌ Loops endlessly on unfamiliar screens | 🩹 **Pre-Execution Self-Healing**: Verifies target state before clicking; dismisses popups |
+| **Dynamic & Video Tasks** | ❌ Blind static sleep only | ❌ Blind to dynamic video playback | ⏱️ **Real-Time Multimedia**: Live video stream analysis, countdown timers & speculative chaining |
+| **IDE & Tooling Integration** | ❌ Standalone test runner | ❌ Web-only with high integration friction | 🔌 **Native MCP Server**: Directly callable inside Cursor, Claude Desktop, etc. |
+
+<a id="benchmarks"></a>
+## 🏆 Benchmarks: AndroidWorld (SOTA 99%+)
+
+Evaluated on [AndroidWorld](https://github.com/google-research/android_world) — Google Research's gold-standard benchmark spanning 20+ real apps and 100+ complex multi-step tasks: **Artemis demonstrated exceptional robustness across the entire benchmark suite, achieving a 99%+ completion rate.**
+
+<p align="center">
+  <img src="./docs/assets/androidworld_benchmark_comparison.png" alt="AndroidWorld Benchmark Comparison" width="85%" />
+</p>
+
+## 🚀 How ARTEMIS is Architected
+
+* ⚡ **Optimistic Asynchronous Pipeline**: The front-facing loop responds in milliseconds, while memory pruning and assertion verification run concurrently in the background without blocking execution;
+* 🛡️ **Safety Net Pre-Execution Gate**: Dual-layer pre-check validates target availability milliseconds before action dispatch, instantly intercepting unexpected popups to eliminate blind clicks;
+* ⏱️ **Time-Sensitive Speculative Chaining**: Overcomes LLM inference latency for transient UI elements (e.g. video fullscreen) by predicting target coordinates and executing rapid chained taps.
+
+<details>
+<summary><b>🔍 Click to expand: Architecture Deep Dive & Pipeline Diagram</b></summary>
+
+<br>
+
+### 1. ⚡ Optimistic Asynchronous Pipeline
+* **Status Quo & Pain Points**: Conventional mobile agents rely on a **fully synchronous blocking model** — every single action must wait sequentially for the LLM to prune historical context, check milestone assertions, and audit long-term plans. This inflates per-step latency to 20–40 seconds, creating a sluggish user experience.
+* **Artemis's Architectural Solution**: Inspired by **Optimistic Concurrency Control (OCC) and Snapshot Isolation** in database systems, Artemis completely decouples the main execution loop from heavy auxiliary computation:
+  * **High-Throughput Main Loop**: The front-facing execution path is strictly narrowed to a high-speed "Perception → Decision → Safety Gate → Execution" pipeline;
+  * **Background Concurrent Tasks**: Context token pruning, milestone checkers (`Checker`), and planner validations (`Planner`) run dynamically in parallel without halting device interaction;
+  * **Snapshot Isolation & Rollback**: The agent optimistically charges forward. If background verification detects a deviation, Artemis instantly **rolls back via state snapshots (Rollback)** and injects self-healing feedback.
+
+<p align="center">
+  <img src="./docs/assets/artemis-architecture-pipeline.png" alt="Artemis Optimistic Async Pipeline Architecture" width="100%" />
+</p>
+
+### 2. 🛡️ Pre-Execution Safety Net & Time-Sensitive Speculative Chaining
+* **Status Quo & The Transient UI Dilemma**:
+  * Mobile applications feature numerous **time-sensitive transient UI controls** (e.g. video fullscreen: tapping the screen wakes up the floating overlay, followed immediately by tapping the fullscreen icon).
+  * Traditional agents tap the screen to reveal controls, take a new screenshot, and wait 3–15 seconds for LLM reasoning. By the time the click is dispatched, **the player controls have already auto-faded away** — causing the click to strike the underlying video, triggering an endless loop of accidental pausing and waking.
+* **Artemis's Architectural Solution**:
+  * **Speculative Chained Actions**: Upon recognizing time-sensitive dependencies, the agent dispatches compound chained actions (Wakeup → Millisecond Chained Tap) to hit the target within its transient visibility window;
+  * **Two Pillars Ensuring Reliable Chaining**:
+    1. **Historical UI Prior Prediction**: Predicts the target control's wake-up coordinates based on prior interaction history and app layout heuristics;
+    2. **Safety Net Pre-Execution Gate**: Milliseconds before the chained action lands, the Safety Net instantly verifies that the target control was successfully revealed at the expected coordinates. If the wakeup failed or an unexpected popup intercepted it, execution is **immediately blocked to prevent blind clicks**.
+
+</details>
 
 ## ⚡ Execution Profiles: Flash vs. Pro
 
-| Feature | ARTEMIS Flash (`--profile flash`) | ARTEMIS Pro (`--profile default`) |
+| Feature / Dimension | ⚡ **ARTEMIS Flash** (`--profile flash`) | 🧠 **ARTEMIS Pro** (`--profile pro`) |
 | :--- | :--- | :--- |
-| **Model Loop** | Single reactive agent (Observe-Think-Act) | Multi-node LangGraph orchestration |
-| **Best For** | Short, deterministic tasks (< 35 steps) | Deep, complex, multi-stage workflows |
-| **Step Latency** | ~3–5 seconds / step | ~15–30 seconds / turn (with planning & validation) |
-| **Planning** | Direct goal execution | Hierarchical multi-step plan decomposition |
-| **Diagnostics** | Basic error reporting | Deep diagnostics, log analysis & self-healing |
+| **Design Purpose** | **Lightweight & Fast**: Direct deterministic UI actions | **Deep Reasoning**: Multi-step planning & complex self-healing |
+| **Step Latency** | **3–5 seconds** / step | **15–30 seconds** / turn (includes planning & verification) |
+| **Task Duration** | Minute-level short tasks (typically ≤35 steps) | Runs stably for **10+ hours**; monitoring tasks support **24/7 execution** |
+| **Best Suited For** | Well-defined standard UI tasks | Complex cross-app workflows, failure self-healing, continuous monitoring |
+| **Self-Healing** | Local step retries | **Safety Net Gate** + dialog suppression + crash recovery + snapshot rollback |
+| **Media Analysis** | **Basic visual perception** + High-Speed OCR | Full `scrcpy`/`ffmpeg` video stream analysis + Logcat logs |
 
----
+## 🗺️ Roadmap
 
-## 🔌 Model Context Protocol (MCP) Integration
+- [x] **Optimistic Asynchronous Pipeline**: Ultra-lean main loop + background context compression & milestone checks.
+- [x] **Pre-Execution Safety Net**: Millisecond pre-check gate & speculative chained actions.
+- [x] **Time-Sensitive Media Tasks**: Fullscreen video and audio stream analysis with `scrcpy` & `ffmpeg`.
+- [x] **Native MCP Server**: Seamless integration with tools like Cursor and Claude Desktop.
+- [x] **Web Visual Console**: Live screen projection, interactive playground, and trajectory review.
+- [x] **AndroidWorld SOTA**: Achieved 99%+ task completion rate.
+- [ ] **Cross-Platform Extensions**: Exploring iOS and desktop Web perception and execution.
+- [ ] **On-Device Lightweight VLMs**: Zero-cloud local execution with lightweight edge vision models.
+- [ ] **Real-time Duplex Voice Mode**: Natural voice input with real-time interruption (barge-in) control.
 
-ARTEMIS includes built-in MCP servers and tools to allow AI IDEs (such as Claude Desktop, Cursor, and Gemini Jetski) to control Android devices directly:
+## 🤝 Community & Contributing
 
-| Tool Name | Description |
-| :--- | :--- |
-| `mobile_run_task` | Launches an autonomous background automation task on the connected device. |
-| `mobile_manage_task` | Inspects status, terminates tasks, or injects real-time steering instructions. |
-| `mobile_get_device_state` | Retrieves real-time screenshots or simplified accessibility UI trees. |
-| `mobile_inspect_trace` | Inspects step-by-step screenshots, visual action overlays, and execution logs. |
-
----
-
-## ⚙️ Configuration Guide
-
-All model configurations, thinking budgets, agent capabilities, and tool filtering are consolidated into a single self-explanatory configuration file: [`config/artemis.jsonc`](config/artemis.jsonc).
-
-```jsonc
-{
-  // 1. Global Default Model (Applied across all sub-agents unless overridden)
-  "default": {
-    "provider": "google",
-    "model": "gemini-3.6-flash",
-    "thinking_level": "medium",
-    "fallback": {
-      "provider": "google",
-      "model": "gemini-3.5-flash"
-    }
-  },
-
-  // 2. Built-in Presets
-  "presets": {
-    "gemini-flagship": { "provider": "google", "model": "gemini-3.6-flash" },
-    "openai-gpt4o": { "provider": "openai", "model": "gpt-4o" },
-    "cost-saving": { "provider": "google", "model": "gemini-3.5-flash-lite" },
-    "local-ollama": { "provider": "openai", "model": "llama3.2-vision" }
-  },
-
-  // 3. Agent & Sub-Agent Node Customizations (Optional overrides)
-  "nodes": {
-    // 🧠 Planner: High-level goal decomposition and strategic step planning
-    "planner": { "thinking_level": "medium" },
-
-    // 🎯 Operator: Screen perception, element interaction, and direct execution
-    "operator": { "thinking_level": "medium", "include_thoughts": true },
-
-    // 🛡️ Validator & Failure Analyzer: Self-healing and auto-recovery
-    "validator_failure_analyzer": { "thinking_level": "medium" }
-  },
-
-  // 4. Agent Capabilities & Tool Filtering
-  "agent": {
-    "explorer_versions": { "operator": "flash", "validator": "flash" },
-    "denylisted_tools": {
-      "explorer": ["ask_image_processor", "get_ocr_list", "inspect_region"]
-    }
-  }
-}
-```
-
-> [!TIP]
-> **Zero-Friction Global Change**: To switch the entire platform from Gemini to GPT-4o or Claude, simply edit the `"default"` block once in `config/artemis.jsonc`. All 15 sub-agents automatically inherit the new model!
-
-### Using Non-Google LLMs
-
-ARTEMIS supports multi-provider LLM backends via standard LangChain integrations (Google Gemini, OpenAI, OpenRouter, xAI / Grok, or Google Vertex AI).
-
-#### Supported Providers & API Key Setup
-
-| Provider | Provider Key | Environment Variable | Base URL Override | Example Models |
-| :--- | :--- | :--- | :--- | :--- |
-| **Google Gemini** | `google` *(default)* | `GEMINI_API_KEY` | N/A | `gemini-3.6-flash`, `gemini-3.5-flash` |
-| **Google Vision OCR** | `ocr` | `OCR_API_KEY` | N/A | Google Cloud Vision Text Detection |
-| **Google Vertex AI** | `vertexai` | Google ADC (`gcloud auth application-default login`) | N/A | `gemini-3.6-flash` |
-| **OpenAI** | `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | `gpt-4o`, `gpt-4o-mini`, `o3` |
-| **OpenRouter** | `openrouter` | `OPEN_ROUTER_API_KEY` | N/A | `anthropic/claude-3.5-sonnet`, `meta-llama/llama-3.3-70b-instruct` |
-| **xAI (Grok)** | `xai` | `XAI_API_KEY` | N/A | `grok-2-vision-1212`, `grok-beta` |
-
-> [!NOTE]
-> ARTEMIS uses multimodal visual grounding (screenshots) for UI navigation. When assigning non-Google models to vision-dependent agents (such as `operator`), ensure the selected model supports image/vision inputs.
-
-#### Switching Provider in `config/artemis.jsonc`
-
-To use OpenAI or Claude globally, simply change the `default` section in [`config/artemis.jsonc`](config/artemis.jsonc):
-
-```jsonc
-{
-  "default": {
-    "provider": "openai",
-    "model": "gpt-4o",
-    "fallback": {
-      "provider": "openai",
-      "model": "gpt-4o-mini"
-    }
-  }
-}
-```
-
-#### Custom / Local OpenAI-Compatible Endpoints (Ollama, vLLM, LocalAI)
-
-To connect ARTEMIS to local or self-hosted LLM endpoints (e.g., Ollama or vLLM), set `OPENAI_BASE_URL` in `.env` and specify `openai` as the provider in your configuration:
-
-```bash
-# Route OpenAI provider calls to local Ollama / vLLM endpoint
-OPENAI_API_KEY=ollama  # dummy key if required by client
-OPENAI_BASE_URL=http://localhost:11434/v1
-```
-
----
-
-## 📊 Trace Inspection & Observability
-
-Every task execution can record rich execution artifacts stored in `./traces/<trace_id>/`:
-- **`notes/`**: High-level planner notes, step summaries, and generated reports (`output.md`).
-- **`screenshots/`**:
-  - `before_screenshot.jpg`: Initial screen observed by the agent.
-  - `action_overlay_screenshot.jpg`: Screen with visual tap markers (red circles) and swipe vectors (red arrows).
-- **`logs/`**: Raw framework, operator, and failure analyzer diagnostic logs.
-
----
-
-## 🛠 Development & Testing
-
-ARTEMIS provides standard `make` targets for development:
-
-```bash
-# Setup environment and pre-commit hooks
-make setup
-
-# Run test suite
-make test
-
-# Run code formatters (ruff)
-make format
-
-# Run linter checks
-make lint
-
-# Run static type checker (pyright)
-make typecheck
-```
-
----
+Contributions are warmly welcomed!
+* ⭐ **Star the repo** to follow updates and releases
+* 💬 Join the [Discord Community](https://discord.gg/wF2FN4WHGY) for technical discussions
+* 🐛 Open an [Issue](https://github.com/google/artemis/issues) or submit a [Pull Request](https://github.com/google/artemis/pulls)
 
 ## 📄 License
 

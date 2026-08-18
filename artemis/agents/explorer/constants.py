@@ -32,14 +32,14 @@ EXPLORE_DESCRIPTIONS = {
     "pro": {
         "description": (
             "[EXPLORER] Call this to ask the UI Explorer agent to locate"
-            " coordinates on the screen layout by executing XML, OCR,"
+            " coordinates on the screen layout by executing UI search,"
             " coordinate search, and object detection."
         ),
         "query_description": (
             "The target element or information to search for, including descriptions."
         ),
         "rule_prompt": (
-            "Call the explorer tool to search, OCR, or inspect it (maximum {max_iterations} tries)."
+            "Call the explorer tool to search or inspect it (maximum {max_iterations} tries)."
         ),
         "version_prompt": (
             "You are running with a maximum of {max_iterations} turns: on your"

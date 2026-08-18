@@ -26,10 +26,9 @@ except ImportError:
 router = APIRouter(tags=["media"])
 
 
-@router.get("/", response_class=HTMLResponse)
 @router.get("/admin", response_class=HTMLResponse)
 @router.get("/debug", response_class=HTMLResponse)
-async def get_index():
+async def get_admin_index():
     admin_index = Path(__file__).resolve().parent.parent / "index.html"
     if admin_index.exists():
         return admin_index.read_text(encoding="utf-8")

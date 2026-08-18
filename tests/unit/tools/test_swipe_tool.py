@@ -112,7 +112,7 @@ async def test_swipe_direct_execution_with_ctx_direction(mock_ctx):
         mock_controller_cls.return_value = mock_controller_inst
 
         result = await swipe.execute(ctx=mock_ctx, action="down", duration=400)
-        mock_controller_inst.swipe_coords.assert_called_once_with(540, 480, 540, 1920, 400)
+        mock_controller_inst.swipe_coords.assert_called_once_with(648, 720, 648, 1680, 400)
         assert "Swipe completed successfully." in result
 
 
@@ -253,3 +253,74 @@ def test_parse_swipe_parameters_direct():
     k, t, d = parse_swipe_parameters({"action": "up"})
     assert k == "direction"
     assert t == "up"
+
+
+def test_compute_smart_swipe_coordinates_fallback():
+    """Verify fallback smart swipe coordinates on full screen."""
+    from artemis.utils.coordinates import compute_smart_swipe_coordinates
+
+    sx, sy, ex, ey, dur = compute_smart_swipe_coordinates("up", width=1080, height=2400)
+    assert sx == 648
+    assert ex == 648
+    assert sy == 1680
+    assert ey == 720
+    assert 700 <= dur <= 900
+
+
+def test_compute_smart_swipe_coordinates_with_target_element():
+    """Verify container-aware coordinates when target element index is specified."""
+    from artemis.utils.coordinates import compute_smart_swipe_coordinates
+
+    indexed_elements = [
+        {"bounds": "[0, 200][1080, 1200]"},  # Element 1
+        {"bounds": "[100, 500][900, 1500]"},  # Element 2 (width=800, height=1000)
+    ]
+    # Swipe up within element 2
+    sx, sy, ex, ey, dur = compute_smart_swipe_coordinates(
+        direction="up",
+        target=2,
+        indexed_elements=indexed_elements,
+        width=1080,
+        height=2400,
+    )
+    # c_left=100, c_top=500, c_width=800, c_height=1000
+    # sx = ex = 100 + 800 * 0.6 = 580
+    # sy = 500 + 1000 * 0.7 = 1200
+    # ey = 500 + 1000 * 0.3 = 800
+    assert sx == 580
+    assert ex == 580
+    assert sy == 1200
+    assert ey == 800
+
+
+def test_compute_smart_swipe_coordinates_with_scrollable_hierarchy():
+    """Verify auto-detection of scrollable container in UI hierarchy."""
+    from artemis.utils.coordinates import compute_smart_swipe_coordinates
+
+    ui_hierarchy = [
+        {
+            "class": "android.widget.FrameLayout",
+            "bounds": "[0, 0][1080, 2400]",
+            "children": [
+                {
+                    "class": "androidx.recyclerview.widget.RecyclerView",
+                    "scrollable": True,
+                    "bounds": "[50, 300][1030, 2100]",  # width=980, height=1800
+                }
+            ],
+        }
+    ]
+    sx, sy, ex, ey, dur = compute_smart_swipe_coordinates(
+        direction="down",
+        ui_hierarchy=ui_hierarchy,
+        width=1080,
+        height=2400,
+    )
+    # c_left=50, c_top=300, c_width=980, c_height=1800
+    # sx = ex = 50 + 980 * 0.6 = 638
+    # sy = 300 + 1800 * 0.3 = 840
+    # ey = 300 + 1800 * 0.7 = 1560
+    assert sx == 638
+    assert ex == 638
+    assert sy == 840
+    assert ey == 1560

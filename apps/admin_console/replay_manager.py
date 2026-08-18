@@ -1493,7 +1493,7 @@ class ReplayManager:
             f" offset={start_offset:.3f}s, duration={duration:.3f}s"
         )
         try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            res = subprocess.run(cmd, capture_output=True, text=True)
             if res.returncode != 0:
                 print(
                     f"Warning: ffmpeg failed with exit code {res.returncode}. stderr: {res.stderr}"

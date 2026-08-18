@@ -28,7 +28,7 @@ async def test_video_analyzer_run():
     mock_ctx.data_engine = None
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.utils.video_analyzer = MagicMock()
-    mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.6-flash"
+    mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.7-flash"
 
     # Mock Gemini Client
     mock_client = MagicMock()
@@ -79,7 +79,7 @@ async def test_video_analyzer_preserves_thought_signature():
     mock_ctx.data_engine = None
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.utils.video_analyzer = MagicMock()
-    mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.6-flash"
+    mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.7-flash"
 
     # Mock MobileDeviceController
     mock_controller = MagicMock()
@@ -255,7 +255,7 @@ async def test_video_analyzer_sub_agent_confidence_validation():
     mock_ctx.data_engine = None
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.utils.video_analyzer = MagicMock()
-    mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.6-flash"
+    mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.7-flash"
 
     # Mock MobileDeviceController
     mock_controller = MagicMock()

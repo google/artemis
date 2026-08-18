@@ -227,10 +227,10 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
         "default",
         {
             "provider": "google",
-            "model": "gemini-3.6-flash",
+            "model": "gemini-3.7-flash",
             "fallback": {
                 "provider": "google",
-                "model": "gemini-3.5-flash",
+                "model": "gemini-3.6-flash",
             },
         },
     )

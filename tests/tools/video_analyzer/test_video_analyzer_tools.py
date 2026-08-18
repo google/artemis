@@ -32,7 +32,7 @@ async def test_video_analyzer_tools(artemis_context, mock_state, inputs_dir):
     agent.blackboard_entries = []
     agent.sub_system_prompt = "You are a sub agent"
     agent.audio_system_prompt = "You are an audio sub agent"
-    agent.model_name = "gemini-3.6-flash"
+    agent.model_name = "gemini-3.7-flash"
 
     # We must provide a valid FunctionDeclaration for the tool otherwise Pydantic will complain
     from google.genai import types

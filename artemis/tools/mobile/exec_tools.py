@@ -29,7 +29,10 @@ from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.tools.types import CyFunctionDetector
-from artemis.utils.coordinates import parse_swipe_parameters
+from artemis.utils.coordinates import (
+    compute_smart_swipe_coordinates,
+    parse_swipe_parameters,
+)
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -84,9 +87,7 @@ class SwipeArgs(BaseModel):
     direction: Literal["up", "down", "left", "right"] | None = Field(
         None,
         description=(
-            "Smart directional swipe ('up', 'down', 'left', 'right') for general page"
-            " scrolling/browsing. Automatically applies safe vectors and a ~40% visual"
-            " overlap anchor: 'up' (drags bottom-to-top, scrolling down to reveal content below),"
+            "Direction for scrolling and swiping: 'up' (drags bottom-to-top, scrolling down to reveal content below),"
             " 'down' (drags top-to-bottom, scrolling up to reveal content above),"
             " 'left' (drags right-to-left, scrolling right),"
             " 'right' (drags left-to-right, scrolling left)."
@@ -106,6 +107,12 @@ class SwipeArgs(BaseModel):
             " local interactions (e.g. adjusting sliders, SeekBars, fine range selection, or drag-and-drop)."
         ),
     )
+    target: int | list[int] | str | None = Field(
+        None,
+        description=(
+            "Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within."
+        ),
+    )
     action: Literal["up", "down", "left", "right"] | list[int] | None = Field(
         None,
         description=(
@@ -114,9 +121,9 @@ class SwipeArgs(BaseModel):
         ),
     )
     duration: int = Field(
-        400,
+        800,
         description=(
-            "Optional swipe/drag duration in milliseconds (default 400). For drag-and-drop,"
+            "Optional swipe/drag duration in milliseconds (default 800). For drag-and-drop,"
             " list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars),"
             " set duration >= 1000 (e.g. 1500). If omitted for directional swipe, duration is computed automatically."
         ),
@@ -438,16 +445,19 @@ def get_input_text_tool(ctx: ArtemisContext) -> BaseTool:
 SWIPE_DOCSTRING = (
     "[ACTION] Perform a swipe, drag, or slider-adjustment gesture on the"
     " screen.\n\n"
-    "• Smart Directional Scrolling ('direction'): Best for general browsing"
-    " and page scrolling. Automatically computes safe swipe vectors (locking"
-    " axes to prevent edge/sidebar mis-clicks), retains a ~40% visual overlap"
-    " anchor for zero-omission traversal, and prevents inertial flings.\n"
+    "• Directional Scrolling ('direction'): Recommended for general"
+    " browsing and standard page scrolling in most scenarios. Automatically"
+    " computes safe swipe vectors and adaptive duration, retains a ~40% visual overlap"
+    " anchor for zero-omission traversal, and prevents inertial flings. Supports"
+    " scoping to a sub-container via 'target'. If it fails on certain custom layouts,"
+    " fall back to specifying exact coordinates ('start' and 'end') directly.\n"
     "• Precise Coordinate Gestures ('start', 'end'): Best for local,"
     " fine-grained interactions such as adjusting sliders/SeekBars (e.g.,"
-    " volume, brightness, progress bars) or drag-and-drop / list reordering."
-    " Always drag slightly PAST the target position to overcome touch slop"
-    " and reliably trigger the update. When setting a slider to Maximum (100%)"
-    " or Minimum (0%), swipe fully to the extreme boundary."
+    " volume, brightness, progress bars), drag-and-drop / list reordering,"
+    " or as a reliable fallback when directional scrolling fails on specific"
+    " containers. Always drag slightly PAST the target position to overcome"
+    " touch slop and reliably trigger the update. When setting a slider to"
+    " Maximum (100%) or Minimum (0%), swipe fully to the extreme boundary."
 )
 
 
@@ -471,7 +481,7 @@ class SwipeTool(ArtemisTool):
         direction: Literal["up", "down", "left", "right"] | str | None = None,
         start: list[int] | None = None,
         end: list[int] | None = None,
-        duration: int = 400,
+        duration: int = 800,
         tool_call_id: str | None = None,
         state: State | None = None,
         **kwargs: Any,
@@ -488,7 +498,7 @@ class SwipeTool(ArtemisTool):
         if duration is not None:
             params["duration"] = duration
 
-        kind, target, dur = parse_swipe_parameters(params, default_duration=duration or 400)
+        kind, target, dur = parse_swipe_parameters(params, default_duration=duration or 800)
 
         tcid = tool_call_id if tool_call_id is not None else kwargs.get("tool_call_id")
         st = state if state is not None else kwargs.get("state")
@@ -534,38 +544,18 @@ class SwipeTool(ArtemisTool):
                 controller = UnifiedMobileController(ctx)
 
                 if kind == "direction" and isinstance(target, str):
-                    if target == "up":
-                        coords = [
-                            width // 2,
-                            int(height * 0.8),
-                            width // 2,
-                            int(height * 0.2),
-                        ]
-                    elif target == "down":
-                        coords = [
-                            width // 2,
-                            int(height * 0.2),
-                            width // 2,
-                            int(height * 0.8),
-                        ]
-                    elif target == "left":
-                        coords = [
-                            int(width * 0.8),
-                            height // 2,
-                            int(width * 0.2),
-                            height // 2,
-                        ]
-                    elif target == "right":
-                        coords = [
-                            int(width * 0.2),
-                            height // 2,
-                            int(width * 0.8),
-                            height // 2,
-                        ]
-                    else:
-                        raise ValueError(f"Invalid direction: {target}")
-
-                    start_x, start_y, end_x, end_y = coords
+                    indexed_elems = getattr(state, "indexed_elements", None) if state else None
+                    ui_hier = getattr(state, "ui_tree", None) if state else None
+                    start_x, start_y, end_x, end_y, smart_dur = compute_smart_swipe_coordinates(
+                        direction=target,
+                        target=params.get("target"),
+                        indexed_elements=indexed_elems,
+                        ui_hierarchy=ui_hier,
+                        width=width,
+                        height=height,
+                        duration=dur,
+                    )
+                    dur = smart_dur
                 elif kind == "coords" and isinstance(target, list) and len(target) == 4:
                     nx1, ny1, nx2, ny2 = target
                     start_x = int(max(0, min(width - 1, nx1 * width / 1000)))

@@ -30,7 +30,7 @@ from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.utils.logger import get_logger
-from artemis.utils.ocr_api import perform_ocr
+from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 
 
 class OcrArgs(BaseModel):
@@ -144,6 +144,9 @@ class OcrRecognitionTool(ArtemisTool):
             category=category,
         )
 
+    def is_available(self, ctx: Any = None) -> bool:
+        return is_ocr_configured()
+
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     async def execute(
         self,
@@ -207,4 +210,5 @@ ocr_recognition_wrapper = ToolWrapper(
     tool_fn_getter=get_ocr_tool,
     on_success_fn=lambda output: f"OCR Recognition successful. Results:\n{output}",
     on_failure_fn=lambda error: f"OCR Recognition failed: {error}",
+    is_available_fn=lambda ctx: is_ocr_configured(),
 )

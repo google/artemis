@@ -53,7 +53,7 @@ from artemis.mcp.xml_search_server import (
     search_ui as search_ui_func,
 )
 from artemis.utils.logger import get_logger
-from artemis.utils.ocr_api import perform_ocr
+from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
 from artemis.utils.visualization import draw_dots, format_minimal_list_with_points
 
@@ -73,7 +73,7 @@ UNIVERSAL_EXPLORER_TOOLS = [
                 "properties": {
                     "search_query": {
                         "type": "string",
-                        "description": "Required. Text query to search for in XML/OCR elements.",
+                        "description": "Required. Text query to search for in UI elements.",
                     },
                     "nx": {
                         "type": "integer",
@@ -234,8 +234,8 @@ class Explorer:
                 " in parallel, including database search, coordinate search,"
                 " and visual object detection on the screen.\n\nOutput"
                 " Format:\nReturns:'text' (str): A single string consolidating"
-                " results with 0-1000 normalized coordinates, including xml"
-                " search matches labeled [X], ocr search matches labeled [O],"
+                " results with 0-1000 normalized coordinates, including UI"
+                " search matches labeled [X],"
                 " coordinate search matches labeled [X], and visually detected"
                 " object targets labeled [D].\n(Annotated screenshots are also"
                 " added to the context containing corresponding colored label"
@@ -246,7 +246,7 @@ class Explorer:
                 properties={
                     "search_query": types.Schema(
                         type=types.Type.STRING,
-                        description=("Required. Text query to search for in XML/OCR elements."),
+                        description=("Required. Text query to search for in UI elements."),
                     ),
                     "nx": types.Schema(
                         type=types.Type.INTEGER,
@@ -463,10 +463,10 @@ class Explorer:
         llm_config = getattr(ctx, "llm_config", None)
         llm_cfg = getattr(llm_config, "explorer", None) if llm_config else None
         model_str = (
-            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.6-flash"
+            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.7-flash"
         ).lower()
         self.model_name = (
-            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.6-flash"
+            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.7-flash"
         )
         if "/" in self.model_name:
             self.model_name = self.model_name.split("/")[-1]
@@ -514,8 +514,11 @@ class Explorer:
             ]
 
     def get_exposed_tools(self, only_submit: bool = False) -> list[types.FunctionDeclaration]:
-        """Returns the list of tools, filtering out denylisted ones."""
-        tools = [tool for tool in self.TOOLS if tool.name not in self.denylisted_tools]
+        """Returns the list of tools, filtering out denylisted and unconfigured ones."""
+        denylisted = set(self.denylisted_tools)
+        if not is_ocr_configured():
+            denylisted.add("get_ocr_list")
+        tools = [tool for tool in self.TOOLS if tool.name not in denylisted]
         if only_submit:
             tools = [tool for tool in tools if tool.name == "submit_answer"]
         return tools
@@ -855,7 +858,7 @@ class Explorer:
 
         xml_text = results[0].get("text", "No matches found.")
         if xml_text and xml_text != "No matches found.":
-            text_parts.append(f"XML/OCR Text Search Results are: {xml_text}")
+            text_parts.append(f"Text Search Results are: {xml_text}")
 
         coord_text = results[1].get("text", "No elements found.")
         if coord_text and coord_text != "No elements found.":
@@ -1012,7 +1015,7 @@ class Explorer:
             record = storage.get_ui_record(self.image_name)
             if not record or not record.ocr_result:
                 return {
-                    "text": ("No OCR results found in Data Engine for the current screen."),
+                    "text": "No text elements detected on the screen.",
                     "image_path": None,
                 }
 
@@ -1143,11 +1146,12 @@ class Explorer:
         """Executes Explorer reasoning loop via Universal LangChain ChatModel."""
         llm = get_llm(self.ctx, name="explorer")
 
-        # Filter universal tools based on denylist
+        # Filter universal tools based on denylist and OCR configuration
+        denylisted = set(self.denylisted_tools)
+        if not is_ocr_configured():
+            denylisted.add("get_ocr_list")
         exposed_tools = [
-            t
-            for t in UNIVERSAL_EXPLORER_TOOLS
-            if t["function"]["name"] not in self.denylisted_tools
+            t for t in UNIVERSAL_EXPLORER_TOOLS if t["function"]["name"] not in denylisted
         ]
         bound_llm = llm.bind_tools(exposed_tools)
 
@@ -1447,6 +1451,9 @@ class Explorer:
                 "inspect_region",
             }
 
+        if not is_ocr_configured():
+            version_denylist.add("get_ocr_list")
+
         try:
             denylisted_config = (
                 self.ctx.agent_config.denylisted_tools.get("explorer", [])
@@ -1517,7 +1524,7 @@ class Explorer:
                 if "/" in fallback_model:
                     fallback_model = fallback_model.split("/")[-1]
         else:
-            model_name = "gemini-3.6-flash"
+            model_name = "gemini-3.7-flash"
 
         # 5. Construct Prompt & Initial Message List
         prompt_path = Path(__file__).parent / "explorer.json"
@@ -1567,13 +1574,20 @@ class Explorer:
                 ui_tree = record.ui_tree
                 ocr_results = getattr(record, "ocr_result", None)
                 if ocr_results is None:
-                    try:
-                        logger.info("Previous screenshot OCR is missing. Running OCR on-the-fly...")
-                        with open(screenshot_path, "rb") as img_file:
-                            img_b64 = base64.b64encode(img_file.read()).decode("utf-8")
-                        ocr_results = await perform_ocr(img_b64, client=self.http_client)
-                    except Exception as ocr_err:
-                        logger.error(f"On-the-fly OCR failed for previous screenshot: {ocr_err}")
+                    if is_ocr_configured():
+                        try:
+                            logger.info(
+                                "Previous screenshot OCR is missing. Running OCR on-the-fly..."
+                            )
+                            with open(screenshot_path, "rb") as img_file:
+                                img_b64 = base64.b64encode(img_file.read()).decode("utf-8")
+                            ocr_results = await perform_ocr(img_b64, client=self.http_client)
+                        except Exception as ocr_err:
+                            logger.error(
+                                f"On-the-fly OCR failed for previous screenshot: {ocr_err}"
+                            )
+                            ocr_results = []
+                    else:
                         ocr_results = []
 
                 fused_xml = fuse_ocr_with_xml(ui_tree, ocr_results or [])

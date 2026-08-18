@@ -21,6 +21,7 @@ from artemis.core.state import ExecutionContextState, ExecutionStatus, StepRecor
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.engine.base_runner import BaseRunner
 from artemis.graph.graph import get_graph
+from artemis.platform import platform
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -48,7 +49,7 @@ class GraphRunner(BaseRunner):
                 if artemis_ctx is None:
                     artemis_ctx = ArtemisContext(
                         device=DeviceContext(
-                            host_platform="LINUX",
+                            host_platform=platform.os_type.name,
                             device_serial=self.driver.device_id,
                         )
                     )

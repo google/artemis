@@ -26,18 +26,18 @@ class ModelService:
             if "pro" in p_lower:
                 return {
                     "name": "Pro",
-                    "id": "gemini-3.6-pro",
+                    "id": "gemini-3.7-pro",
                     "provider": "google",
                 }
             elif "flash" in p_lower:
                 return {
                     "name": "Flash",
-                    "id": "gemini-3.6-flash",
+                    "id": "gemini-3.7-flash",
                     "provider": "google",
                 }
 
         model_name = "Flash"
-        model_id = "gemini-3.6-flash"
+        model_id = "gemini-3.7-flash"
         provider = "google"
         try:
             from artemis.config import parse_llm_config
@@ -118,7 +118,8 @@ class ModelService:
 
                             m_str = str(p_obj.get("model") or p_obj.get("model_name") or "").lower()
                             if (
-                                "gemini-3.6-pro" in m_str
+                                "gemini-3.7-pro" in m_str
+                                or "gemini-3.6-pro" in m_str
                                 or "gemini-1.5-pro" in m_str
                                 or "gpt-4" in m_str
                                 or "claude" in m_str

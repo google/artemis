@@ -14,7 +14,7 @@
 
 """System, environment, and device diagnostics (artemis doctor)."""
 
-import shutil
+import platform as sys_platform
 import subprocess
 import sys
 
@@ -26,16 +26,21 @@ from artemis.config import (
     parse_llm_config,
     settings,
 )
+from artemis.platform import OSType, platform
+from artemis.toolchain import toolchain
+from artemis.utils.ocr_api import is_ocr_configured
 
 
 def doctor_command() -> None:
     """Run diagnostics to inspect system dependencies, device connectivity, and configuration."""
     console = Console()
     console.print()
+    os_name = sys_platform.system()
+    arch_name = sys_platform.machine()
     console.print(
         Panel(
-            "[bold cyan]☕ Artemis System & Environment Doctor[/bold cyan]\n"
-            "[dim]Checking prerequisites for autonomous mobile testing...[/dim]",
+            f"[bold cyan]☕ Artemis System & Environment Doctor[/bold cyan]\n"
+            f"[dim]Platform: {os_name} ({arch_name}) | PAL: {platform.os_type.value}[/dim]",
             expand=False,
         )
     )
@@ -53,7 +58,7 @@ def doctor_command() -> None:
         table.add_row(
             "Python Runtime",
             "[bold green]✔ OK[/bold green]",
-            f"Python {py_ver} (64-bit)",
+            f"Python {py_ver} ({arch_name}, 64-bit)",
         )
     else:
         all_passed = False
@@ -64,7 +69,7 @@ def doctor_command() -> None:
         )
 
     # 2. ADB Installation & Server
-    adb_path = shutil.which("adb")
+    adb_path = toolchain.resolve("adb")
     if adb_path:
         try:
             res = subprocess.run(
@@ -72,6 +77,8 @@ def doctor_command() -> None:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                encoding="utf-8",
+                errors="replace",
             )
             adb_info = res.stdout.splitlines()[0] if res.stdout else "Installed"
             table.add_row(
@@ -81,10 +88,17 @@ def doctor_command() -> None:
             table.add_row("Android ADB", "[bold green]✔ OK[/bold green]", f"{adb_path}")
     else:
         all_passed = False
+        hint = (
+            "Run: winget install Google.PlatformTools"
+            if platform.os_type == OSType.WINDOWS
+            else "Run: brew install android-platform-tools"
+            if platform.os_type == OSType.MACOS
+            else "Run: sudo apt-get install -y adb"
+        )
         table.add_row(
             "Android ADB",
             "[bold red]✖ Missing[/bold red]",
-            "adb not found in PATH. Install Android Platform-Tools.",
+            f"adb not found in PATH or Android SDK. {hint}",
         )
 
     # 3. Connected Android Devices
@@ -96,6 +110,8 @@ def doctor_command() -> None:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                encoding="utf-8",
+                errors="replace",
             )
             lines = [line_str.strip() for line_str in res.stdout.splitlines() if line_str.strip()]
             for line in lines[1:]:  # skip 'List of devices attached'
@@ -123,7 +139,7 @@ def doctor_command() -> None:
             table.add_row(
                 "Android Devices",
                 "[bold yellow]⚠ Unauthorized[/bold yellow]",
-                "Device detected but unauthorized. Check phone screen for USB Debugging permission prompt.",
+                "Device detected but unauthorized. Check phone screen for USB Debugging prompt.",
             )
     else:
         table.add_row(
@@ -160,11 +176,11 @@ def doctor_command() -> None:
         table.add_row(
             "LLM Providers",
             "[bold red]✖ Missing[/bold red]",
-            "No LLM key found in .env. Run [bold cyan]artemis init[/bold cyan] to configure in 10 seconds.",
+            "No LLM key found in .env. Run [bold cyan]artemis init[/bold cyan] to configure.",
         )
 
-    # 5. Vision OCR Key Check
-    if ocr_key:
+    # 5. Vision OCR Key Check (Optional)
+    if is_ocr_configured() and ocr_key:
         val = ocr_key.get_secret_value()
         masked = f"{val[:6]}...{val[-4:]}" if len(val) > 10 else "***"
         table.add_row(
@@ -175,8 +191,8 @@ def doctor_command() -> None:
     else:
         table.add_row(
             "Vision OCR",
-            "[bold yellow]⚠ Missing[/bold yellow]",
-            "OCR_API_KEY / API_KEY not set. Perception fast path will use fallback.",
+            "[bold cyan]○ Optional[/bold cyan]",
+            "OCR_API_KEY is not set. Perception operates in pure XML layout mode.",
         )
 
     # 6. Configuration File Health
@@ -197,33 +213,45 @@ def doctor_command() -> None:
         )
 
     # 7. Video Recording Tools (FFmpeg & scrcpy)
-    ffmpeg_path = shutil.which("ffmpeg")
-    scrcpy_path = shutil.which("scrcpy")
+    ffmpeg_path = toolchain.resolve("ffmpeg")
+    scrcpy_path = toolchain.resolve("scrcpy")
 
     if ffmpeg_path:
         table.add_row(
-            "FFmpeg Tools",
-            "[bold green]✔ Installed[/bold green]",
-            f"{ffmpeg_path} (Video encoding/trimming ready)",
+            "FFmpeg Tools", "[bold green]✔ Installed[/bold green]", f"{ffmpeg_path} (Video ready)"
         )
     else:
+        hint = (
+            "winget install Gyan.FFmpeg"
+            if platform.os_type == OSType.WINDOWS
+            else "brew install ffmpeg"
+            if platform.os_type == OSType.MACOS
+            else "sudo apt-get install -y ffmpeg"
+        )
         table.add_row(
             "FFmpeg Tools",
             "[dim]⚪ Optional[/dim]",
-            "Not found. Install ffmpeg for video compression and audio analysis.",
+            f"Not found. ({hint})",
         )
 
     if scrcpy_path:
         table.add_row(
             "Screen Recorder",
             "[bold green]✔ Installed[/bold green]",
-            f"{scrcpy_path} (Live screen recording ready)",
+            f"{scrcpy_path} (Live stream ready)",
         )
     else:
+        hint = (
+            "winget install Genymobile.scrcpy"
+            if platform.os_type == OSType.WINDOWS
+            else "brew install scrcpy"
+            if platform.os_type == OSType.MACOS
+            else "sudo apt-get install -y scrcpy"
+        )
         table.add_row(
             "Screen Recorder",
             "[dim]⚪ Optional[/dim]",
-            "scrcpy not found. Install scrcpy for --with-video-recording-tools.",
+            f"scrcpy not found. ({hint})",
         )
 
     console.print(table)

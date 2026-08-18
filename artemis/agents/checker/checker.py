@@ -42,7 +42,7 @@ from artemis.tools.tool_wrapper import (
 )
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path, get_notes_dir
-from artemis.utils.ocr_api import perform_ocr
+from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 from artemis.utils.ocr_xml_fusion import (
     _crop_image_remove_status_bar,
     _detect_status_bar_height,
@@ -143,18 +143,19 @@ async def run_async_check(
             height = device_data.height
 
             ocr_results = []
-            try:
-                status_bar_height = _detect_status_bar_height(xml_hierarchy, height)
-                if status_bar_height > 0:
-                    cropped_b64, _, _ = _crop_image_remove_status_bar(
-                        screenshot_b64, status_bar_height
-                    )
-                    raw_ocr_results = await perform_ocr(cropped_b64)
-                    ocr_results = _map_coordinates_back(raw_ocr_results, status_bar_height)
-                else:
-                    ocr_results = await perform_ocr(screenshot_b64)
-            except Exception as e:
-                logger.error(f"Checker OCR failed, proceeding without OCR: {e}")
+            if is_ocr_configured():
+                try:
+                    status_bar_height = _detect_status_bar_height(xml_hierarchy, height)
+                    if status_bar_height > 0:
+                        cropped_b64, _, _ = _crop_image_remove_status_bar(
+                            screenshot_b64, status_bar_height
+                        )
+                        raw_ocr_results = await perform_ocr(cropped_b64)
+                        ocr_results = _map_coordinates_back(raw_ocr_results, status_bar_height)
+                    else:
+                        ocr_results = await perform_ocr(screenshot_b64)
+                except Exception as e:
+                    logger.warning(f"Checker OCR failed, proceeding without OCR: {e}")
 
             fused_xml = fuse_ocr_with_xml(xml_hierarchy, ocr_results)
 
@@ -356,10 +357,10 @@ async def run_async_check(
                     tool_status = "success"
                     try:
                         if ":" in tool_name:
-                            tool_to_run = get_tool_by_name(tool_name, traced_tools)
+                            tool_to_run = get_tool_by_name(tool_name, tools_to_bind)
                         else:
                             tool_to_run = next(
-                                (t for t in traced_tools if t.name == tool_name),
+                                (t for t in tools_to_bind if t.name == tool_name),
                                 None,
                             )
                         if tool_to_run:

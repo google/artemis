@@ -23,7 +23,7 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
 from artemis.utils.logger import get_logger
-from artemis.utils.ocr_api import perform_ocr
+from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 from artemis.utils.ocr_xml_fusion import (
     _crop_image_remove_status_bar,
     _detect_status_bar_height,
@@ -124,25 +124,35 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
         ctx.device.device_height = device_data.height
         logger.info(f"Updated context device dimensions: {device_data.width}x{device_data.height}")
 
-    # 3. Perform OCR
-    screen_height = device_data.height
-    status_bar_height = _detect_status_bar_height(xml_hierarchy, screen_height)
-    if status_bar_height > 0:
-        logger.info(
-            f"Detected status bar height: {status_bar_height}. Cropping screenshot for OCR."
-        )
-        cropped_b64, _, _ = await asyncio.to_thread(
-            _crop_image_remove_status_bar,
-            latest_screenshot_b64,
-            status_bar_height,
-        )
-        raw_ocr_results = await perform_ocr(cropped_b64)
-        ocr_results = _map_coordinates_back(raw_ocr_results, status_bar_height)
+    # 3. Perform OCR (if configured, else fallback to pure XML layout)
+    ocr_results = []
+    if is_ocr_configured():
+        screen_height = device_data.height
+        status_bar_height = _detect_status_bar_height(xml_hierarchy, screen_height)
+        try:
+            if status_bar_height > 0:
+                logger.info(
+                    f"Detected status bar height: {status_bar_height}. Cropping screenshot for OCR."
+                )
+                cropped_b64, _, _ = await asyncio.to_thread(
+                    _crop_image_remove_status_bar,
+                    latest_screenshot_b64,
+                    status_bar_height,
+                )
+                raw_ocr_results = await perform_ocr(cropped_b64)
+                ocr_results = _map_coordinates_back(raw_ocr_results, status_bar_height)
+            else:
+                logger.info("No status bar detected. Performing OCR on full screenshot.")
+                ocr_results = await perform_ocr(latest_screenshot_b64)
+        except Exception as ocr_err:
+            logger.warning(
+                f"Perception OCR execution encountered error: {ocr_err}. Proceeding with XML-only layout."
+            )
+            ocr_results = []
     else:
-        logger.info("No status bar detected. Performing OCR on full screenshot.")
-        ocr_results = await perform_ocr(latest_screenshot_b64)
+        logger.debug("OCR is not configured. Proceeding with XML-only layout.")
 
-    # 4. Fuse OCR with XML
+    # 4. Fuse OCR with XML (if ocr_results is empty, returns original xml_hierarchy intact)
     fused_xml = fuse_ocr_with_xml(xml_hierarchy, ocr_results)
 
     # 5. Save to Data Engine in background thread

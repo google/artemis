@@ -75,7 +75,7 @@ class DeviceContext(BaseModel):
         extra="allow",
     )
 
-    host_platform: Literal["WINDOWS", "LINUX"]
+    host_platform: Literal["WINDOWS", "LINUX", "DARWIN", "MACOS"] | str
     mobile_platform: DevicePlatform
     device_id: str
 

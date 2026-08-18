@@ -36,25 +36,96 @@ class ServerState:
         self.active_connections: dict[str, dict[str, Any]] = {}
         self.active_session_id: str | None = None
         self.was_stopped_manually: bool = False
+        self.cancelled_session_ids: set[str] = set()
 
-        # FIFO Task queue
-        self.task_queue: asyncio.Queue = asyncio.Queue()
-        self.queue_tasks: list[dict[str, Any]] = []
+        # Unified single source of truth for task queue
+        self.queue_items: list[dict[str, Any]] = []
+        self._wake_event: asyncio.Event | None = None
         self.worker_task: asyncio.Task | None = None
+
+    @property
+    def wake_event(self) -> asyncio.Event:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if self._wake_event is None or (
+            loop
+            and getattr(self._wake_event, "_loop", None) is not None
+            and self._wake_event._loop != loop
+        ):
+            self._wake_event = asyncio.Event()
+        return self._wake_event
+
+    @property
+    def task_queue(self) -> list[dict[str, Any]]:
+        """Backward compatibility alias for queue_items."""
+        return self.queue_items
+
+    @property
+    def queue_tasks(self) -> list[dict[str, Any]]:
+        """Returns all currently pending tasks in the queue."""
+        return [t for t in self.queue_items if isinstance(t, dict) and t.get("status") == "pending"]
+
+    @queue_tasks.setter
+    def queue_tasks(self, val: list[dict[str, Any]]):
+        # Compatibility setter
+        self.queue_items = list(val)
 
     @property
     def queue_goals(self) -> list[str]:
         """Backward compatibility helper for queue goals."""
-        return [t.get("goal", "") for t in self.queue_tasks if isinstance(t, dict)]
+        return [t.get("goal", "") for t in self.queue_tasks]
 
     @queue_goals.setter
     def queue_goals(self, val: list[Any]):
-        # Allow setting if legacy code updates it
         pass
 
     @property
     def is_running(self) -> bool:
-        return self.current_process is not None and self.current_process.returncode is None
+        has_proc = False
+        if self.current_process is not None:
+            if self.current_process.returncode is not None:
+                has_proc = False
+                self.current_process = None
+            else:
+                pid = getattr(self.current_process, "pid", None)
+                if pid:
+                    try:
+                        import os
+
+                        os.kill(pid, 0)
+                        has_proc = True
+                    except (ProcessLookupError, PermissionError, OSError):
+                        has_proc = False
+                        self.current_process = None
+                else:
+                    has_proc = False
+                    self.current_process = None
+
+        has_running_item = any(
+            isinstance(t, dict) and t.get("status") == "running" for t in self.queue_items
+        )
+
+        has_live_connection = False
+        for sid, conn in list(self.active_connections.items()):
+            c_pid = conn.get("pid")
+            if c_pid:
+                try:
+                    import os
+
+                    os.kill(c_pid, 0)
+                    has_live_connection = True
+                except (ProcessLookupError, PermissionError, OSError):
+                    self.active_connections.pop(sid, None)
+
+        if not has_proc and not has_running_item and not has_live_connection:
+            self.active_session_id = None
+            self.current_process = None
+            return False
+
+        return True
 
     @property
     def is_paused(self) -> bool:
@@ -69,13 +140,10 @@ class ServerState:
             self.ipc_subscribers.remove(callback)
 
     def clear_queue(self):
-        while not self.task_queue.empty():
-            try:
-                self.task_queue.get_nowait()
-                self.task_queue.task_done()
-            except (asyncio.QueueEmpty, ValueError):
-                break
-        self.queue_tasks.clear()
+        """Clears all pending items from the task queue."""
+        self.queue_items = [t for t in self.queue_items if t.get("status") == "running"]
+        if self._wake_event:
+            self._wake_event.set()
 
 
 # Global shared instance

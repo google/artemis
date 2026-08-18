@@ -15,6 +15,7 @@
 """Server and cloud proxy commands (artemis server)."""
 
 import http.server
+import os
 import socketserver
 import subprocess
 import time
@@ -50,7 +51,7 @@ def get_identity_token() -> str:
 
 
 class CloudRunProxyHandler(http.server.BaseHTTPRequestHandler):
-    target_url: str = "https://artemis-cloud-brain-971929466682.us-central1.run.app"
+    target_url: str = os.getenv("ARTEMIS_CLOUD_URL", "http://127.0.0.1:8000")
 
     def log_message(self, format, *args):
         logger.info(f"[{self.log_date_time_string()}] {format % args}")
@@ -81,7 +82,9 @@ class CloudRunProxyHandler(http.server.BaseHTTPRequestHandler):
         token = get_identity_token()
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        headers["X-Artemis-Token"] = "alice-token"
+        tenant_token = os.getenv("ARTEMIS_TENANT_TOKEN")
+        if tenant_token:
+            headers["X-Artemis-Token"] = tenant_token
 
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else None
@@ -119,8 +122,10 @@ def web_proxy_command(
     port: Annotated[int, typer.Option("--port", "-p", help="Local port to bind.")] = 8080,
     target: Annotated[
         str,
-        typer.Option("--target", "-t", help="Target Cloud Run URL."),
-    ] = "https://artemis-cloud-brain-971929466682.us-central1.run.app",
+        typer.Option(
+            "--target", "-t", help="Target Artemis Cloud URL.", envvar="ARTEMIS_CLOUD_URL"
+        ),
+    ] = "http://127.0.0.1:8000",
 ) -> None:
     """Start the local authenticated proxy for ARTEMIS Cloud Web Dashboard."""
     CloudRunProxyHandler.target_url = target

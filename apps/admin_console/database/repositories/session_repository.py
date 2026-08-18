@@ -33,13 +33,6 @@ class SessionRepository:
             cursor.execute("SELECT * FROM sessions ORDER BY start_time DESC")
             return [dict(r) for r in cursor.fetchall()]
 
-    def get_session_by_id(self, session_id: str) -> dict[str, Any] | None:
-        with db_session(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM sessions WHERE session_id = ?", (str(session_id),))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-
     def get_video_recordings_map(self) -> dict[str, str]:
         with db_session(self.db_path) as conn:
             cursor = conn.cursor()

@@ -23,6 +23,7 @@ try:
     from admin_console.schemas.task_schema import RunRequest
     from admin_console.services.ipc_service import ipc_service
     from admin_console.services.model_service import model_service
+    from admin_console.services.task_preset_catalog import task_recommendation_engine
     from admin_console.services.task_queue_service import task_queue_service
 except ImportError:
     from apps.admin_console.core.state import state
@@ -30,10 +31,35 @@ except ImportError:
     from apps.admin_console.schemas.task_schema import RunRequest
     from apps.admin_console.services.ipc_service import ipc_service
     from apps.admin_console.services.model_service import model_service
+    from apps.admin_console.services.task_preset_catalog import task_recommendation_engine
     from apps.admin_console.services.task_queue_service import task_queue_service
 
 
 router = APIRouter(tags=["tasks"])
+
+
+@router.get("/api/tasks/presets")
+async def get_task_presets(
+    category: str = "recommended",
+    packages: str | None = None,
+    limit: int = 24,
+):
+    """Retrieve smart task recommendations optionally tailored to detected device packages."""
+    pkg_list = [p.strip() for p in packages.split(",") if p.strip()] if packages else None
+    return task_recommendation_engine.recommend_tasks(
+        installed_packages=pkg_list,
+        category=category,
+        limit=limit,
+    )
+
+
+@router.get("/api/tasks/catalog")
+async def get_task_catalog():
+    """Retrieve full catalog of predefined tasks and app package registry."""
+    return {
+        "tasks": [t.model_dump() for t in task_recommendation_engine.get_all_tasks()],
+        "app_registry": task_recommendation_engine.get_app_registry(),
+    }
 
 
 @router.post("/api/run")
@@ -51,7 +77,12 @@ async def run_task(request: RunRequest):
         )
 
     return await task_queue_service.enqueue_tasks(
-        incoming_goals, profile=request.profile or "flash"
+        incoming_goals,
+        profile=request.profile or "flash",
+        expected_output=request.expected_output,
+        enable_outputter=request.enable_outputter,
+        locked_app_package=request.locked_app_package,
+        app_path=request.app_path,
     )
 
 
@@ -73,15 +104,33 @@ async def resume_task():
 
 @router.get("/api/status")
 async def get_status():
+    # Watchdog check to ensure background worker is alive
+    task_queue_service.ensure_worker_running()
+
     latest_session = session_repo.get_latest_session()
     latest_session_id = latest_session.get("session_id") if latest_session else None
     bg_tasks = session_repo.get_background_tasks(latest_session_id) if latest_session_id else []
 
     is_running = state.is_running
-    running_sid = state.active_session_id or (
-        session_repo.get_running_session_id() if is_running else None
+    running_task = next(
+        (t for t in state.queue_items if isinstance(t, dict) and t.get("status") == "running"), None
     )
-    active_profile = state.current_profile
+    if not running_task and is_running:
+        running_task = next(
+            (t for t in state.queue_items if isinstance(t, dict) and t.get("status") == "pending"),
+            None,
+        )
+
+    running_sid = (
+        state.active_session_id
+        or (running_task.get("session_id") if running_task else None)
+        or (session_repo.get_running_session_id() if is_running else None)
+    )
+    running_goal = state.current_goal or (running_task.get("goal") if running_task else None)
+
+    active_profile = state.current_profile or (
+        running_task.get("profile") if running_task else None
+    )
     if not active_profile and (running_sid or latest_session_id):
         check_sid = running_sid or latest_session_id
         sess_row = session_repo.get_session_by_id(check_sid)
@@ -95,30 +144,17 @@ async def get_status():
     model_info = model_service.get_active_model_info(active_profile)
     queue_data = state.queue_tasks
 
-    if state.current_process:
-        if state.current_process.returncode is None:
-            is_paused = state.is_paused
-            return {
-                "status": "paused" if is_paused else "running",
-                "goal": state.current_goal,
-                "pid": state.current_process.pid,
-                "session_id": running_sid,
-                "background_tasks": bg_tasks,
-                "queue": queue_data,
-                "model_info": model_info,
-            }
-        else:
-            completed_status = {
-                "status": "completed",
-                "goal": state.current_goal,
-                "returncode": state.current_process.returncode,
-                "session_id": latest_session_id,
-                "background_tasks": bg_tasks,
-                "queue": queue_data,
-                "model_info": model_info,
-            }
-            state.current_process = None
-            return completed_status
+    if is_running:
+        is_paused = state.is_paused
+        return {
+            "status": "paused" if is_paused else "running",
+            "goal": running_goal,
+            "pid": state.current_process.pid if state.current_process else None,
+            "session_id": running_sid,
+            "background_tasks": bg_tasks,
+            "queue": queue_data,
+            "model_info": model_info,
+        }
 
     if latest_session_id and str(latest_session_id) in state.active_connections:
         conn_info = state.active_connections[str(latest_session_id)]
@@ -151,21 +187,27 @@ async def stream_events(session_id: str, client: str | None = None):
 
         def callback(event_type, data):
             try:
-                # Filter events by session_id when subscribed to a specific session
-                if session_id and session_id not in ("all", "active"):
-                    evt_session_id = None
-                    if isinstance(data, dict):
-                        evt_session_id = data.get("session_id")
+                # Global queue lifecycle events should always be delivered
+                if event_type not in (
+                    "session_started",
+                    "session_ended",
+                    "background_tasks_updated",
+                ):
+                    # Filter events by session_id when subscribed to a specific session
+                    if session_id and session_id not in ("all", "active"):
+                        evt_session_id = None
+                        if isinstance(data, dict):
+                            evt_session_id = data.get("session_id")
 
-                    if evt_session_id and str(evt_session_id) != str(session_id):
-                        return
+                        if evt_session_id and str(evt_session_id) != str(session_id):
+                            return
 
-                    if (
-                        not evt_session_id
-                        and state.active_session_id
-                        and str(state.active_session_id) != str(session_id)
-                    ):
-                        return
+                        if (
+                            not evt_session_id
+                            and state.active_session_id
+                            and str(state.active_session_id) != str(session_id)
+                        ):
+                            return
 
                 sanitized_data = ipc_service.sanitize_event_data(event_type, data)
                 loop = asyncio.get_running_loop()

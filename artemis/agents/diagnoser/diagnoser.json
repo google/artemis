@@ -11,6 +11,7 @@
     "- **No Direct Operations**: Do not perform user actions or modify device state (e.g., tap, swipe, text input, BACK/HOME keys, or force-starting activities). Focus solely on analysis.",
     "- **Tool Constraints**: Video analysis is expensive. When calling the video analyzer, you MUST provide a specific, narrow timeframe to minimize cost.",
     "- **Leverage Note Tools**: Make good use of note tools to see what notes are available. When diagnosing, open and cross-reference relevant notes to ensure you have grasped all necessary information and context.",
+    "- **Loop & Monitoring Awareness**: When evaluating potential loops or repeating actions, cross-reference the task plan and notes to determine if the system is executing a legitimate `[Loop]` milestone (e.g., candidate iteration, periodic list polling with wait intervals, or continuous swipes for battery discharge). Do NOT misdiagnose planned iterations or paced polling checks as bugs or screen freezes.",
     "- **Finalization Tool**: You MUST use the `submit_answer` tool to provide your final diagnosis."
   ],
   "checker_feedback_template": [

@@ -57,6 +57,10 @@ class ArtemisTool:
         self.handler = handler
         self.category = category
 
+    def is_available(self, ctx: Any = None) -> bool:
+        """Determines if this tool is currently available and should be exposed to agents."""
+        return True
+
     async def execute(self, driver: BaseDeviceDriver, ctx: Any, **kwargs: Any) -> Any:
         """Executes the tool handler with injected driver and context."""
         # Inspect handler signature to only pass supported arguments
@@ -213,25 +217,32 @@ class ToolRegistry:
         return cls._tools.get(normalized)
 
     @classmethod
-    def list_tools(cls, category: ToolCategory | None = None) -> list[ArtemisTool]:
-        """Lists all registered tools, optionally filtered by category."""
+    def list_tools(
+        cls, category: ToolCategory | None = None, available_only: bool = True
+    ) -> list[ArtemisTool]:
+        """Lists all registered tools, optionally filtered by category and availability."""
+        tools = [t for t in cls._tools.values() if not available_only or t.is_available()]
         if category:
-            return [t for t in cls._tools.values() if t.category == category]
-        return list(cls._tools.values())
+            return [t for t in tools if t.category == category]
+        return list(tools)
 
     @classmethod
-    def get_langchain_tools(cls, ctx: Any, names: list[str] | None = None) -> list[BaseTool]:
+    def get_langchain_tools(
+        cls, ctx: Any, names: list[str] | None = None, available_only: bool = True
+    ) -> list[BaseTool]:
         """Returns LangChain tool wrappers for the requested or all registered tools."""
         tools = (
             [cls._tools[n] for n in names if n in cls._tools]
             if names
             else list(cls._tools.values())
         )
+        if available_only:
+            tools = [t for t in tools if t.is_available(ctx)]
         return [t.to_langchain_tool(ctx) for t in tools]
 
     @classmethod
     def get_genai_declarations(
-        cls, names: list[str] | None = None
+        cls, names: list[str] | None = None, available_only: bool = True
     ) -> list[genai_types.FunctionDeclaration]:
         """Returns Google GenAI function declarations for registered tools."""
         tools = (
@@ -239,6 +250,8 @@ class ToolRegistry:
             if names
             else list(cls._tools.values())
         )
+        if available_only:
+            tools = [t for t in tools if t.is_available()]
         return [t.to_genai_declaration() for t in tools]
 
     @classmethod

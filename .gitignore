@@ -1,109 +1,99 @@
-# ==============================================================================
-# ☕ Latte Framework - Master Git Ignore Configuration
-# ==============================================================================
-
-# --- 1. Environment Variables & Virtual Environments (Recursive) ---
-.env
-.env.*
-!.env.example
-uv.lock
-**/.venv/
-**/venv/
-**/ENV/
-**/env/
-**/.pyenv/
-.python-version
-
-# --- 2. Node & Web Frontend Dependencies / Artifacts (Recursive) ---
-**/node_modules/
-**/node_modules
-**/.angular/
-**/.angular/cache/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# --- 3. Python Caches, Bytecode & Build Artifacts (Recursive) ---
-**/__pycache__/
-**/*.py[cod]
-**/*$py.class
-**/*.so
-**/*.pyd
-**/*.c
-**/build/
-**/dist/
-**/*.egg-info/
-**/.eggs/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
 develop-eggs/
+dist/
 downloads/
 eggs/
+.eggs/
 lib/
 lib64/
 parts/
 sdist/
 var/
 wheels/
+share/python-wheels/
+*.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 
-# --- 4. Testing, Coverage & Linters (Recursive) ---
-**/.pytest_cache/
-**/.ruff_cache/
-**/.mypy_cache/
-**/.pytype/
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing & Coverage
+.pytest_cache/
 .coverage
 .coverage.*
 .cache
-coverage.xml
 nosetests.xml
-htmlcov/
-pytest_temp/
-tests_tmp/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.tox/
+.nox/
 tests/**/outputs/
+**/outputs/
 
-# --- 5. Runtime Logs, Spans, Replay & Traces (Recursive) ---
-traces/
-traces_test/
-latte-traces/
-data_engine.db*
-**/replay/outputs/
-**/replay/data/
-**/*.log
-**/*.log.*
-**/*.out
-**/*.tmp
-.latte_ipc_port
-.latte_paused
-.latte/
-.artemis_ipc_port
-.artemis_paused
-.artemis/
-*.bak
-live_screenshot*
-recording.mp4
-recording.mkv
-screenshot.jpg
-screen.png
+# Linters & Formatters
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.dmypy.json
+dmypy.json
 
-# --- 6. Workspace Scratch, Dumps & Temporary Experimentation ---
-scratch/
-artifacts/
-ignores/
-*.docx
-*gdoc.html
-*.bug.log
-
-# --- 7. AI Agent Workspace & IDE Metadata ---
-.agents/
-_agents/
-jetski/
-.jetski*
-.benchmarks/
-.idea/
+# IDEs & Editors
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
+.project
+.pydevproject
+.settings/
+
+# Node & Frontend (Showcase UI)
+apps/showcase_ui/node_modules/
+apps/showcase_ui/.angular/
+apps/showcase_ui/.angular/cache/
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Artemis Runtime & Telemetry
+traces/
+scratch/
+.artemis_paused
+*.log
+data_engine.db
+data_engine.db-journal
+.ipc_port
+.ls_address
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS Artifacts
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db

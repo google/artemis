@@ -15,7 +15,6 @@
 from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
-from fastapi import HTTPException
 
 try:
     from admin_console.core.config import DB_PATH
@@ -23,13 +22,29 @@ except ImportError:
     from apps.admin_console.core.config import DB_PATH
 
 
+_initialized_dbs = set()
+
+
 def get_db(db_path: Path | None = None) -> sqlite3.Connection:
     """Returns a SQLite connection with timeout and Row row_factory."""
     path = db_path or DB_PATH
-    if not path.exists():
-        raise HTTPException(status_code=500, detail=f"Database not found at {path}")
+    path_key = str(path)
+    if path_key not in _initialized_dbs:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from artemis.data_engine.storage import StorageManager
+
+            StorageManager(db_path=path, base_trace_dir=path.parent)
+            _initialized_dbs.add(path_key)
+        except Exception:
+            pass
     conn = sqlite3.connect(path, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+    except Exception:
+        pass
     return conn
 
 

@@ -42,6 +42,7 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
 
 try:
     from admin_console.core.config import (
@@ -59,7 +60,7 @@ try:
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.database.repositories.step_repository import step_repo
     from admin_console.database.repositories.trace_repository import trace_repo
-    from admin_console.routers import media, replay, sessions, steps, stream, tasks
+    from admin_console.routers import media, replay, sessions, steps, stream, system, tasks
     from admin_console.routers.replay import replay_manager
     from admin_console.services.ipc_service import ipc_service
     from admin_console.services.media_service import media_service
@@ -71,7 +72,7 @@ except ImportError:
     )
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
-    from apps.admin_console.routers import media, replay, sessions, steps, stream, tasks
+    from apps.admin_console.routers import media, replay, sessions, steps, stream, system, tasks
     from apps.admin_console.routers.replay import replay_manager
     from apps.admin_console.services.ipc_service import ipc_service
     from apps.admin_console.services.model_service import model_service
@@ -116,6 +117,7 @@ app.include_router(sessions.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
+app.include_router(system.router)
 
 # Mount cloud gateway router for Frappe / Cloud integration if present
 try:
@@ -129,6 +131,55 @@ except ImportError:
         app.include_router(cloud_router)
     except ImportError:
         pass
+
+
+# ------------------------------------------------------------------------------
+# Showcase UI (Angular 19) Unified Single-Port SPA Static Hosting
+# ------------------------------------------------------------------------------
+_showcase_dist = _workspace_root / "apps" / "showcase_ui" / "dist" / "frontend" / "browser"
+if not _showcase_dist.exists():
+    _showcase_dist = _workspace_root / "apps" / "showcase_ui" / "dist"
+
+if _showcase_dist.is_dir() and (_showcase_dist / "index.html").exists():
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_showcase_spa(full_path: str):
+        # Do not intercept API, media, or replay paths
+        if (
+            full_path.startswith("api/")
+            or full_path.startswith("images/")
+            or full_path.startswith("videos/")
+            or full_path.startswith("local_file")
+            or full_path == "docs"
+            or full_path == "openapi.json"
+            or full_path.startswith("redoc")
+        ):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="Endpoint not found")
+
+        # Admin / Debug Console routes
+        if full_path in ("admin", "debug"):
+            admin_index = _admin_console_dir / "index.html"
+            if admin_index.exists():
+                return HTMLResponse(admin_index.read_text(encoding="utf-8"))
+
+        # Exact static file match (js, css, images, fonts, favicon, logo)
+        target_file = _showcase_dist / full_path
+        if full_path and target_file.is_file():
+            return FileResponse(target_file)
+
+        # Default fallback to Angular SPA index.html
+        index_file = _showcase_dist / "index.html"
+        return HTMLResponse(index_file.read_text(encoding="utf-8"))
+else:
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    async def fallback_root():
+        admin_index = _admin_console_dir / "index.html"
+        if admin_index.exists():
+            return HTMLResponse(admin_index.read_text(encoding="utf-8"))
+        return HTMLResponse("<h1>Artemis Console</h1>")
 
 
 # ------------------------------------------------------------------------------

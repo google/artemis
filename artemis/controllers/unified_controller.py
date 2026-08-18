@@ -206,12 +206,11 @@ class UnifiedMobileController:
             for _ in range(nb_chars):
                 await self._driver.press_key("delete")
             return True
-        # Safe & robust full clear: Move to End -> Shift+Home selection -> Delete -> Fallback backspaces
+        # Best-effort full clear: End -> Ctrl+A -> Delete
         try:
             clear_cmd = (
                 "input keyevent 123 && "
-                "input keyevent --meta 1 122 && "
-                "input keyevent 67 && "
+                "input keycombination 113 29 && input keyevent 67 && "
                 "input keyevent 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67"
             )
             await self._driver.execute_shell(clear_cmd)

@@ -328,7 +328,10 @@ async def test_ocr_api_persistent_http_client_singleton_and_tls_reuse():
         ]
     }
 
-    with patch.object(client1, "post", new_callable=AsyncMock) as mock_post:
+    with (
+        patch.object(client1, "post", new_callable=AsyncMock) as mock_post,
+        patch.dict("os.environ", {"OCR_API_KEY": "mock_api_key"}),
+    ):
         mock_post.return_value = fake_ocr_resp
         result = await ocr_api.perform_ocr(screenshot_b64="ZHVtbXlfYjY0")
 
@@ -434,7 +437,10 @@ async def test_validator_pre_execution_loop_reverted_to_exact_safety_contract(
             new_callable=AsyncMock,
         ) as mock_analyze,
     ):
-        mock_get_screen.return_value = ("dummy_b64", "dummy_stem")
+        mock_get_screen.return_value = (
+            base64.b64encode(b"dummy_bytes_here").decode("utf-8"),
+            "dummy_stem",
+        )
         # 1. XML check returns failure (TARGET_OCCUPIED by 'Sign Up' button)
         mock_xml.return_value = (
             False,

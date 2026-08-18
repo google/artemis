@@ -358,6 +358,61 @@ class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
     pass
 
 
+def check_plan_mutation_rejections(
+    content_before: str, content_after: str, state: State | None = None
+) -> str | None:
+    """Checks if a task plan modification violates system safety or loop integrity rules."""
+    lines_after = content_after.splitlines()
+    top_level_after = [line for line in lines_after if line.startswith("- [")]
+
+    # 1. Incomplete nested subgoals check
+    if top_level_after and all(line.startswith("- [x]") for line in top_level_after):
+        has_incomplete = any(re.match(r"^\s*-\s*\[[ /]\]", line) for line in lines_after)
+        if has_incomplete:
+            return (
+                "Your changes to the task plan were not applied. Your changes would cause the"
+                " task to end completely, but there seem to be goals in the task plan"
+                " that have not been marked as completed. If you believe these goals"
+                " are already completed, please update their statuses."
+            )
+
+    # 2. Continuous monitoring / Loop milestone protection check
+    lines_before = content_before.splitlines()
+    top_level_before = [line for line in lines_before if line.startswith("- [")]
+
+    continuous_pattern = re.compile(r"\[Loop\].*?(?:continuous|until\s*manual)", re.IGNORECASE)
+    has_continuous_before = any(continuous_pattern.search(line) for line in top_level_before)
+
+    injected = getattr(state, "injected_instruction", None) if state else None
+    user_stopped = bool(
+        injected
+        and any(
+            w in str(injected).lower()
+            for w in ["stop", "finish", "end", "停止", "结束", "退出", "quit"]
+        )
+    )
+
+    if has_continuous_before and not user_stopped:
+        has_continuous_after = any(continuous_pattern.search(line) for line in top_level_after)
+        if not has_continuous_after:
+            return (
+                "Your changes to the task plan were rejected. You cannot delete an active [Loop] "
+                "continuous monitoring milestone or remove its [Loop] tag. Please keep the [Loop] "
+                "milestone active (in progress [/]) and record each check cycle as an indented "
+                "subtask."
+            )
+        for line in top_level_after:
+            if continuous_pattern.search(line) and line.startswith("- [x]"):
+                return (
+                    "Your changes to the task plan were rejected. Ongoing continuous monitoring "
+                    "milestones (exit condition: 'until manually stopped') must remain in progress "
+                    "([/]) and cannot be unilaterally marked as completed [x]. Please keep it "
+                    "active ([/]) and record each polling check as an indented subtask."
+                )
+
+    return None
+
+
 class NoteArgs(BaseModel):
     model_config = {"ignored_types": (CyFunctionDetector,)}
     key: str = Field(..., description=SAVE_NOTE_ARG_KEY_DESC)
@@ -392,36 +447,15 @@ def wrap_note_tool(ctx: ArtemisContext, original_tool):
             if task_plan_path.exists():
                 content_after = task_plan_path.read_text(encoding="utf-8")
 
-            lines = content_after.splitlines()
-            top_level_lines = [line for line in lines if line.startswith("- [")]
-            if top_level_lines and all(line.startswith("- [x]") for line in top_level_lines):
-                has_incomplete = any(re.match(r"^\s*-\s*\[[ /]\]", line) for line in lines)
-                if has_incomplete:
-                    logger.info(
-                        "Rejected: Top-level subgoals are complete but"
-                        " incomplete nested subgoals remain."
-                    )
-                    if task_plan_path.exists():
-                        task_plan_path.write_text(content_before, encoding="utf-8")
+            rejection_message = check_plan_mutation_rejections(content_before, content_after, state)
+            if rejection_message:
+                logger.info(f"Rejected task plan update: {rejection_message}")
+                if task_plan_path.exists():
+                    task_plan_path.write_text(content_before, encoding="utf-8")
 
-                    return Command(
-                        update={
-                            VALIDATOR_MESSAGES_KEY: [
-                                SystemMessage(
-                                    content=(
-                                        "Your changes to the task plan were not"
-                                        " applied. Your changes would cause the"
-                                        " task to end completely, but there"
-                                        " seem to be goals in the task plan"
-                                        " that have not been marked as"
-                                        " completed. If you believe these goals"
-                                        " are already completed, please update"
-                                        " their statuses."
-                                    )
-                                )
-                            ]
-                        }
-                    )
+                return Command(
+                    update={VALIDATOR_MESSAGES_KEY: [SystemMessage(content=rejection_message)]}
+                )
 
             threshold = (
                 ctx.execution_setup.planner_validation_threshold
@@ -558,36 +592,15 @@ def wrap_update_note_tool(ctx: ArtemisContext, original_tool):
             if task_plan_path.exists():
                 content_after = task_plan_path.read_text(encoding="utf-8")
 
-            lines = content_after.splitlines()
-            top_level_lines = [line for line in lines if line.startswith("- [")]
-            if top_level_lines and all(line.startswith("- [x]") for line in top_level_lines):
-                has_incomplete = any(re.match(r"^\s*-\s*\[[ /]\]", line) for line in lines)
-                if has_incomplete:
-                    logger.info(
-                        "Rejected: Top-level subgoals are complete but"
-                        " incomplete nested subgoals remain."
-                    )
-                    if task_plan_path.exists():
-                        task_plan_path.write_text(content_before, encoding="utf-8")
+            rejection_message = check_plan_mutation_rejections(content_before, content_after, state)
+            if rejection_message:
+                logger.info(f"Rejected task plan update via update_note: {rejection_message}")
+                if task_plan_path.exists():
+                    task_plan_path.write_text(content_before, encoding="utf-8")
 
-                    return Command(
-                        update={
-                            VALIDATOR_MESSAGES_KEY: [
-                                SystemMessage(
-                                    content=(
-                                        "Your changes to the task plan were not"
-                                        " applied. Your changes would cause the"
-                                        " task to end completely, but there"
-                                        " seem to be goals in the task plan"
-                                        " that have not been marked as"
-                                        " completed. If you believe these goals"
-                                        " are already completed, please update"
-                                        " their statuses."
-                                    )
-                                )
-                            ]
-                        }
-                    )
+                return Command(
+                    update={VALIDATOR_MESSAGES_KEY: [SystemMessage(content=rejection_message)]}
+                )
 
             threshold = (
                 ctx.execution_setup.planner_validation_threshold
@@ -710,6 +723,18 @@ async def get_graph(ctx: ArtemisContext) -> CompiledStateGraph:
 
         lines = task_plan_content.splitlines()
 
+        # Check for continuous monitoring loop that should not terminate prematurely
+        continuous_pattern = re.compile(r"\[Loop\].*?(?:continuous|until\s*manual)", re.IGNORECASE)
+        has_continuous_monitoring = any(continuous_pattern.search(line) for line in lines)
+        injected = getattr(state, "injected_instruction", None) if state else None
+        user_stopped = bool(
+            injected
+            and any(
+                w in str(injected).lower()
+                for w in ["stop", "finish", "end", "停止", "结束", "退出", "quit"]
+            )
+        )
+
         # Check for all completed
         top_level_lines = [line for line in lines if line.startswith("- [")]
 
@@ -719,6 +744,12 @@ async def get_graph(ctx: ArtemisContext) -> CompiledStateGraph:
 
         all_done = all(line.startswith("- [x]") for line in top_level_lines)
         if all_done:
+            if has_continuous_monitoring and not user_stopped:
+                logger.warning(
+                    "All subgoals marked [x] but task plan has active continuous monitoring"
+                    " without user stop signal. Continuing."
+                )
+                return "continue"
             logger.info("All subgoals are completed, ending the goal")
             return "end"
 

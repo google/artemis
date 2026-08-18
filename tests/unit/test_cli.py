@@ -27,7 +27,6 @@ def test_cli_help():
     assert "Artemis: Autonomous Multimodal Android Agent" in result.output
     assert "run" in result.output
     assert "batch" in result.output
-    assert "bench" in result.output
     assert "server" in result.output
     assert "trace" in result.output
     assert "mcp" in result.output
@@ -63,3 +62,19 @@ def test_cli_trace_help():
     assert result.exit_code == 0
     assert "list" in result.output
     assert "view" in result.output
+
+
+def test_cli_mcp_help():
+    """Verify 'artemis mcp --help' lists server options."""
+    result = runner.invoke(app, ["mcp", "--help"])
+    assert result.exit_code == 0
+    assert "--type" in result.output
+    assert "--generate-config" in result.output
+
+
+def test_cli_mcp_generate_config():
+    """Verify 'artemis mcp --generate-config cursor' produces valid configuration."""
+    result = runner.invoke(app, ["mcp", "--generate-config", "cursor"])
+    assert result.exit_code == 0
+    assert "mcpServers" in result.output
+    assert "mcp_server" in result.output

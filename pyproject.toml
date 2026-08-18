@@ -14,11 +14,11 @@
 
 [project]
 name = "artemis"
-version = "3.6.3"
-description = "Artemis Android Agent"
+version = "1.0"
+description = "Autonomous AI Assistant for Mobile Automation"
 
 authors = [
-    { name = "somew1nd", email = "wfq559@outlook.com" },
+    { name = "Farley Wang", email="farleyw@google.com" },
 ]
 
 requires-python = ">=3.12"
@@ -91,8 +91,14 @@ artemis-admin = "apps.admin_console.server:main"
 
 
 [build-system]
+# requires = ["uv_build>=0.7.20,<0.8.0"]
+# build-backend = "uv_build"
 requires = ["setuptools>=61.0", "Cython"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv.build-backend]
+module-root = ""
+module-name = "artemis"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -135,7 +141,18 @@ target-version = "py312"
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`) codes by default.
 # Also enable TID (flake8-tidy-imports) to enforce absolute imports
 select = ["E", "F", "TID", "UP"]
-ignore = ["E501"]
+ignore = [
+    "E501", # Line too long
+    "E402", # Module level import not at top of file
+    "E712", # Avoid equality comparisons to True/False
+    "F401", # Unused imports
+    "F841", # Local variable is assigned to but never used
+    "UP035", # Deprecated import
+    "UP036", # Outdated version block
+    "UP042", # Class inherits from both str and enum.Enum
+    "UP046", # Generic class uses Generic subclass instead of type parameters
+    "UP047", # Generic function should use type parameters
+]
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
@@ -207,6 +224,9 @@ disable = [
     "R0801", # duplicate-code
 ]
 
+[tool.pyright]
+exclude = [".venv/**"]
+
 [dependency-groups]
 dev = [
     "ruff>=0.15.2",
@@ -216,3 +236,4 @@ dev = [
     "pyright>=1.1.389",
     "pre-commit>=3.5.0",
 ]
+

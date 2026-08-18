@@ -30,13 +30,33 @@ def get_http_client() -> httpx.AsyncClient:
     return _HTTP_CLIENT
 
 
+def is_ocr_configured() -> bool:
+    """Checks if a valid Google Vision OCR API key is configured."""
+    ocr_secret = settings.get_api_key("ocr")
+    if ocr_secret and ocr_secret.get_secret_value().strip():
+        val = ocr_secret.get_secret_value().strip()
+        if val not in ("API_KEY", "your_google_cloud_vision_api_key_here"):
+            return True
+    for env_var in ("OCR_API_KEY", "VISION_API_KEY"):
+        val = os.environ.get(env_var)
+        if (
+            val
+            and val.strip()
+            and val.strip() not in ("API_KEY", "your_google_cloud_vision_api_key_here")
+        ):
+            return True
+    return False
+
+
 async def perform_ocr(
-    screenshot_b64: str, client: httpx.AsyncClient = None
+    screenshot_b64: str,
+    client: httpx.AsyncClient | None = None,
 ) -> list[dict[str, Any]]:
-    """Calls Google Vision API for OCR using a persistent client to reuse TLS handshakes.
+    """Calls Google Vision API for text recognition on an image.
 
     Args:
         screenshot_b64: Base64 encoded screenshot image.
+        client: Optional persistent httpx.AsyncClient.
 
     Returns:
         A list of dictionaries containing detected text and position vertices.
@@ -46,10 +66,9 @@ async def perform_ocr(
         (ocr_secret.get_secret_value() if ocr_secret else None)
         or os.environ.get("OCR_API_KEY")
         or os.environ.get("VISION_API_KEY")
-        or os.environ.get("API_KEY")
-        or os.environ.get("GOOGLE_API_KEY")
-        or "API_KEY"
     )
+    if not api_key:
+        return []
 
     url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
     headers = {"Content-Type": "application/json"}
@@ -62,13 +81,9 @@ async def perform_ocr(
         ]
     }
 
-    try:
-        active_client = client if client is not None else get_http_client()
-        response = await active_client.post(url, json=data, headers=headers, timeout=30.0)
-        return _parse_ocr_response(response)
-    except Exception as e:
-        logger.error(f"Failed to call Vision API for OCR: {e}")
-        raise e
+    active_client = client if client is not None else get_http_client()
+    response = await active_client.post(url, json=data, headers=headers, timeout=30.0)
+    return _parse_ocr_response(response)
 
 
 def _parse_ocr_response(response: httpx.Response) -> list[dict[str, Any]]:

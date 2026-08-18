@@ -1,0 +1,265 @@
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<div class="chat-interface-container">
+  <!-- Task Queue & History Header -->
+  <header class="chat-header">
+    <!-- Tab Selector Header inside row -->
+    <div class="tab-selector-bar">
+      <button 
+        class="tab-selector-btn" 
+        [class.active]="agentService.activeTab() === 'tasks'" 
+        (click)="agentService.activeTab.set('tasks')"
+      >
+        <span class="material-symbols-outlined tab-icon">list_alt</span>
+        <span class="tab-text">Task Queue</span>
+      </button>
+      <button 
+        class="tab-selector-btn" 
+        [class.active]="agentService.activeTab() === 'notes'" 
+        (click)="agentService.activeTab.set('notes')"
+      >
+        <span class="material-symbols-outlined tab-icon">description</span>
+        <span class="tab-text">Notes & Plans</span>
+      </button>
+    </div>
+
+    <div class="header-right">
+      <button 
+        *ngIf="agentService.sessions().length > 0 && agentService.activeTab() === 'tasks'"
+        class="btn-clear-history" 
+        (click)="clearHistory()" 
+        title="Clear all tasks and history"
+        aria-label="Clear all tasks and history"
+        [disabled]="isSubmitting"
+      >
+        <span class="material-symbols-outlined">delete</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Scrollable Messages/Content Area -->
+  <main class="chat-messages">
+    <!-- Tasks Tab Content -->
+    <ng-container *ngIf="agentService.activeTab() === 'tasks'">
+      <!-- Active Queue Section -->
+      <div class="queue-section-header">
+        <span class="material-symbols-outlined section-icon">bolt</span> Active Queue ({{ activeQueue().length }})
+      </div>
+
+      <div *ngIf="activeQueue().length === 0" class="empty-section-placeholder">
+        No active or queued tasks.
+      </div>
+
+      <div 
+        *ngFor="let session of activeQueue(); trackBy: trackSession"
+        class="task-card"
+        [class.selected]="agentService.currentSessionId() === session.session_id"
+        [class.running]="getTaskStatus(session) === 'running'"
+        (click)="selectTask(session.session_id)"
+      >
+        <div class="task-card-header">
+          <span class="task-badge" [ngClass]="getTaskStatus(session)">
+            <span class="status-dot" *ngIf="getTaskStatus(session) === 'running'"></span>
+            {{ getTaskStatus(session) | uppercase }}
+          </span>
+          <div class="task-card-header-actions">
+            <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
+            <button 
+              *ngIf="getTaskStatus(session) !== 'running'"
+              type="button"
+              class="btn-delete-card" 
+              (click)="deleteTask(session.session_id, $event)" 
+              title="Delete this task"
+              aria-label="Delete this task"
+              [disabled]="isSubmitting"
+            >
+              <span class="material-symbols-outlined">delete</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="task-goal" title="{{ session.initial_goal }}">
+          {{ session.initial_goal || 'Unnamed Task' }}
+        </div>
+
+        <div class="task-card-footer">
+          <span class="task-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+          <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
+        </div>
+      </div>
+
+      <!-- Collapsible History Section -->
+      <details class="history-section" open>
+        <summary class="history-summary">
+          <span class="material-symbols-outlined section-icon">history</span> Past Runs & History ({{ historyTasks().length }})
+        </summary>
+
+        <div class="history-list-wrapper">
+          <div *ngIf="historyTasks().length === 0" class="empty-section-placeholder">
+            No past tasks.
+          </div>
+
+          <div 
+            *ngFor="let session of historyTasks(); trackBy: trackSession"
+            class="task-card"
+            [class.selected]="agentService.currentSessionId() === session.session_id"
+            [class.running]="getTaskStatus(session) === 'running'"
+            (click)="selectTask(session.session_id)"
+          >
+            <div class="task-card-header">
+              <span class="task-badge" [ngClass]="getTaskStatus(session)">
+                <span class="status-dot" *ngIf="getTaskStatus(session) === 'running'"></span>
+                {{ getTaskStatus(session) | uppercase }}
+              </span>
+              <div class="task-card-header-actions">
+                <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
+                <button 
+                  *ngIf="getTaskStatus(session) !== 'running'"
+                  type="button"
+                  class="btn-delete-card" 
+                  (click)="deleteTask(session.session_id, $event)" 
+                  title="Delete this task"
+                  aria-label="Delete this task"
+                  [disabled]="isSubmitting"
+                >
+                  <span class="material-symbols-outlined">delete</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="task-goal" title="{{ session.initial_goal }}">
+              {{ session.initial_goal || 'Unnamed Task' }}
+            </div>
+
+            <div class="task-card-footer">
+              <span class="task-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+              <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
+            </div>
+          </div>
+        </div>
+      </details>
+    </ng-container>
+
+    <!-- Notes Tab Content -->
+    <ng-container *ngIf="agentService.activeTab() === 'notes'">
+      <div class="notes-tab-content">
+        <!-- Notes Selector / Pills (Only shown if there are multiple markdown notes) -->
+        <div class="notes-selector-container" *ngIf="noteKeys().length > 1">
+          <div class="notes-selector-list">
+            <button 
+              *ngFor="let key of noteKeys(); trackBy: trackNoteKey"
+              class="note-selector-pill"
+              [class.active]="agentService.selectedNoteKey() === key"
+              (click)="selectNote(key)"
+            >
+              <span class="material-symbols-outlined pill-icon">draft</span>
+              {{ key }}
+            </button>
+          </div>
+        </div>
+
+        <div *ngIf="noteKeys().length === 0" class="empty-notes-container">
+          <div class="empty-notes-icon">
+            <span class="material-symbols-outlined">description</span>
+          </div>
+          <h4 class="empty-notes-title">No Notes & Plans</h4>
+          <p class="empty-notes-subtitle">No notes or structured plans were recorded for this session.</p>
+        </div>
+
+        <!-- Notes Content Viewer (Clean card blocks matching the second screenshot style) -->
+        <div class="note-viewer-cards" *ngIf="noteKeys().length > 0">
+          <!-- Render Note Title if present -->
+          <h2 class="note-title" *ngIf="parsedNote().title">{{ parsedNote().title }}</h2>
+
+          <!-- Render Milestones list as Text Blocks -->
+          <div class="milestones-container" *ngIf="parsedNote().milestones.length > 0">
+            <div 
+              *ngFor="let milestone of parsedNote().milestones; trackBy: trackMilestone" 
+              class="milestone-block"
+              [ngClass]="milestone.type"
+            >
+              <!-- Milestone Title Row with status icon -->
+              <div class="milestone-title-row">
+                <ng-container [ngSwitch]="milestone.type">
+                  <span *ngSwitchCase="'checked'" class="material-symbols-outlined milestone-status-icon checked">check_box</span>
+                  <span *ngSwitchCase="'progress'" class="material-symbols-outlined milestone-status-icon progress">indeterminate_check_box</span>
+                  <span *ngSwitchCase="'unchecked'" class="material-symbols-outlined milestone-status-icon unchecked">check_box_outline_blank</span>
+                </ng-container>
+                <div class="milestone-text">
+                  <span 
+                    *ngFor="let seg of milestone.segments" 
+                    [class.bold-segment]="seg.bold"
+                    [class.code-segment]="seg.code"
+                  >{{ seg.text }}</span>
+                </div>
+              </div>
+
+              <!-- Sub-steps list if any -->
+              <div class="milestone-substeps" *ngIf="milestone.subSteps.length > 0">
+                <div 
+                  *ngFor="let step of milestone.subSteps; trackBy: trackMarkdownLine" 
+                  class="substep-row"
+                  [ngClass]="step.type"
+                  [style.padding-left.px]="(step.indent > 2 ? (step.indent - 2) * 12 : 0)"
+                >
+                  <ng-container [ngSwitch]="step.type">
+                    <span *ngSwitchCase="'checked'" class="material-symbols-outlined check-icon checked">check_box</span>
+                    <span *ngSwitchCase="'progress'" class="material-symbols-outlined check-icon progress">indeterminate_check_box</span>
+                    <span *ngSwitchCase="'unchecked'" class="material-symbols-outlined check-icon unchecked">check_box_outline_blank</span>
+                    <span *ngSwitchCase="'list-item'" class="bullet">•</span>
+                  </ng-container>
+                  <span class="line-text" *ngIf="step.type !== 'empty'">
+                    <span 
+                      *ngFor="let seg of step.segments" 
+                      [class.bold-segment]="seg.bold"
+                      [class.code-segment]="seg.code"
+                    >{{ seg.text }}</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Render any other lines (e.g. text/markdown blocks at the end) -->
+          <div class="other-lines-container" *ngIf="parsedNote().otherLines.length > 0">
+            <div 
+              *ngFor="let line of parsedNote().otherLines; trackBy: trackMarkdownLine"
+              class="md-line"
+              [ngClass]="line.type"
+              [style.margin-left.px]="line.indent * 12"
+            >
+              <ng-container [ngSwitch]="line.type">
+                <span *ngSwitchCase="'checked'" class="material-symbols-outlined check-icon checked">check_box</span>
+                <span *ngSwitchCase="'progress'" class="material-symbols-outlined check-icon progress">indeterminate_check_box</span>
+                <span *ngSwitchCase="'unchecked'" class="material-symbols-outlined check-icon unchecked">check_box_outline_blank</span>
+                <span *ngSwitchCase="'list-item'" class="bullet">•</span>
+              </ng-container>
+              <span class="line-text" *ngIf="line.type !== 'empty'">
+                <span 
+                  *ngFor="let seg of line.segments" 
+                  [class.bold-segment]="seg.bold"
+                  [class.code-segment]="seg.code"
+                >{{ seg.text }}</span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </ng-container>
+  </main>
+</div>
+

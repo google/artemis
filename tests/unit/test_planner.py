@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import asyncio
-from pathlib import Path
 from artemis.agents.planner.planner import run_async_planner_validation
+
+
+from pathlib import Path
 
 
 class DummyDataEngine:
@@ -24,23 +26,39 @@ class DummyDataEngine:
 
 class DummyCtx:
     data_engine = DummyDataEngine()
-    project_dir = str(Path(__file__).resolve().parent.parent.parent)
+    project_dir = str(Path(__file__).resolve().parents[2])
 
 
-async def test():
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from artemis.agents.planner.planner import ValidationResult
+
+
+@pytest.mark.asyncio
+async def test_planner_validation():
     content_before = "- [/] Click the button\n- [ ] Complete task"
     content_after = (
         "- [/] Click the button\n- [ ] Complete task\n- [ ] New subgoal appended at bottom"
     )
-    res = await run_async_planner_validation(
-        ctx=DummyCtx(),
-        initial_goal="Do the task",
-        content_before=content_before,
-        content_after=content_after,
-        operator_raw_thinking="I need to add a new subgoal",
-        operator_native_thinking="Thinking...",
+    mock_llm = MagicMock()
+    mock_structured = MagicMock()
+    mock_structured.ainvoke = AsyncMock(
+        return_value=ValidationResult(is_approved=True, feedback="Valid plan modification")
     )
-    print(res)
+    mock_llm.with_structured_output.return_value = mock_structured
+
+    with patch("artemis.agents.planner.planner.get_llm", return_value=mock_llm):
+        res = await run_async_planner_validation(
+            ctx=DummyCtx(),
+            initial_goal="Do the task",
+            content_before=content_before,
+            content_after=content_after,
+            operator_raw_thinking="I need to add a new subgoal",
+            operator_native_thinking="Thinking...",
+        )
+    assert res is not None
+    assert res.get("status") == "success"
 
 
-asyncio.run(test())
+if __name__ == "__main__":
+    asyncio.run(test_planner_validation())

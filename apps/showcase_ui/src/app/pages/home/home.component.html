@@ -1,0 +1,1751 @@
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<div class="home-container" [class.system-ready]="isReady()" [class.system-pending]="!isReady()" [class.pro-theme-active]="selectedProfile() === 'pro'">
+  <!-- Dynamic Aurora Glow Background -->
+  <div class="aurora-background">
+    <div class="glow glow-1"></div>
+    <div class="glow glow-2"></div>
+    <div class="glow glow-3"></div>
+    <div class="glow glow-pending"></div>
+    <div class="glow glow-ready"></div>
+    <div class="glow glow-pro"></div>
+  </div>
+
+
+  <!-- Main Content Layout -->
+  <main class="home-content">
+    
+    <!-- Hero Intent Section (Modern Linear / Claude Style) -->
+    <section class="hero-section">
+      <h1 class="hero-title">
+        What would you like to do on your phone?
+      </h1>
+    </section>
+
+    <!-- Top View Mode Stepper / Tab Switcher (Frosted Glass Segmented Control matching top-left nav) -->
+    <div class="mode-tabs-container">
+      <div class="mode-tabs">
+        <button
+          type="button"
+          class="mode-tab-btn"
+          [class.active]="activeTab() === 'diagnostics'"
+          (click)="setTab('diagnostics')"
+        >
+          @if (isReady()) {
+            <span class="material-symbols-outlined tab-icon icon-ready">check_circle</span>
+          } @else {
+            <span class="material-symbols-outlined tab-icon">tune</span>
+          }
+          <span class="tab-label">System Setup & Prerequisites</span>
+        </button>
+
+        <button
+          type="button"
+          class="mode-tab-btn"
+          [class.active]="activeTab() === 'launcher'"
+          (click)="setTab('launcher')"
+        >
+          @if (!isReady()) {
+            <span class="material-symbols-outlined tab-icon icon-locked">lock</span>
+          } @else {
+            <span class="material-symbols-outlined tab-icon">rocket_launch</span>
+          }
+          <span class="tab-label">Launch Autonomous Task</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- VIEW 1: SYSTEM SETUP & FOOLPROOF STEP-BY-STEP GUIDANCE                    -->
+    <!-- ========================================================================= -->
+    @if (activeTab() === 'diagnostics') {
+      <section class="setup-guide-view">
+
+<!-- =================================================================== -->
+<!-- STEP 1: ENVIRONMENT & SYSTEM DEPENDENCIES (FIRST & FOUNDATIONAL)    -->
+<!-- =================================================================== -->
+<div class="guide-card" [class.card-pass]="isEnvironmentReady()" [class.card-warn]="!isEnvironmentReady()">
+
+  <div class="guide-card-header">
+    <div class="step-badge" [class.step-pass]="isEnvironmentReady()">
+      @if (isEnvironmentReady()) {
+      <span class="material-symbols-outlined step-check-icon">check</span>
+      } @else {
+      <span>1</span>
+      }
+    </div>
+    <div class="step-info">
+      <div class="step-title-row">
+        <h3 class="step-title">System & Environment</h3>
+      </div>
+      <p class="step-desc">Core tools, Android debug bridge, and video recording runtime</p>
+    </div>
+
+    <button
+      type="button"
+      class="btn-header-action"
+      [disabled]="isRefreshingDiagnostics()"
+      (click)="refreshReadiness()"
+      title="Re-check all system dependencies"
+    >
+      <span class="material-symbols-outlined" [class.spinning]="isRefreshingDiagnostics()">refresh</span>
+      <span>{{ isRefreshingDiagnostics() ? 'Checking...' : 'Re-check' }}</span>
+    </button>
+  </div>
+
+  <div class="guide-card-body">
+    <!-- One-Click Dependency Installer Bar when any env dep is missing -->
+    @if (!isEnvironmentReady()) {
+    <div class="one-click-install-bar">
+      <div class="install-bar-left">
+        <div class="install-bar-icon-box">
+          <span class="material-symbols-outlined bolt-icon">bolt</span>
+        </div>
+        <div class="install-bar-text">
+          <div class="install-bar-title-row">
+            <div class="install-bar-title">Automated Dependency Setup</div>
+            <div class="os-selector-pills">
+              <button type="button" class="os-pill" [class.active]="effectiveOs() === 'linux'"
+                (click)="setSelectedOs('linux')">Linux</button>
+              <button type="button" class="os-pill" [class.active]="effectiveOs() === 'darwin'"
+                (click)="setSelectedOs('darwin')">macOS</button>
+              <button type="button" class="os-pill" [class.active]="effectiveOs() === 'windows'"
+                (click)="setSelectedOs('windows')">Windows</button>
+            </div>
+          </div>
+          <div class="install-bar-desc">Run in terminal to install ADB, FFmpeg, scrcpy, and project dependencies:</div>
+        </div>
+      </div>
+      <div class="code-box small-box">
+        <code>{{ oneClickSetupCmd() }}</code>
+        <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'one_click_deps'"
+          (click)="copyToClipboard(oneClickSetupCmd(), 'one_click_deps')">
+          <span class="material-symbols-outlined">{{ copiedId() === 'one_click_deps' ? 'check' : 'content_copy'
+            }}</span>
+          <span>{{ copiedId() === 'one_click_deps' ? 'Copied!' : 'Copy' }}</span>
+        </button>
+      </div>
+    </div>
+    }
+
+    <!-- 4-Card Environment Matrix Grid -->
+    <div class="env-matrix-grid">
+
+      <!-- 1. Python Runtime Probe Card -->
+      <div class="env-item-card" [class.item-pass]="pythonProbe()?.status === 'pass'"
+        [class.item-fail]="pythonProbe()?.status === 'fail'">
+        <div class="item-header">
+          <div class="item-icon-box">
+            <span class="material-symbols-outlined item-icon">terminal</span>
+          </div>
+          <div class="item-title-group">
+            <div class="item-name">Python Runtime</div>
+            <div class="item-subtitle">{{ pythonProbe()?.summary || 'Python 3.12+' }}</div>
+          </div>
+          <div class="item-status">
+            <span class="status-dot" [class.dot-pass]="pythonProbe()?.status === 'pass'" [class.dot-fail]="pythonProbe()?.status === 'fail'"></span>
+          </div>
+        </div>
+        @if (pythonProbe()?.status === 'fail') {
+        <div class="item-body">
+          <div class="item-action-box">
+            <div class="code-box small-box">
+              <span class="terminal-prefix">$</span>
+              <code class="code-text">uv python install 3.12</code>
+              <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'py_install'"
+                (click)="copyToClipboard('uv python install 3.12', 'py_install')">
+                <span class="material-symbols-outlined">{{ copiedId() === 'py_install' ? 'check' : 'content_copy'
+                  }}</span>
+                <span>{{ copiedId() === 'py_install' ? 'Copied!' : 'Copy' }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        }
+      </div>
+
+      <!-- 2. Android ADB Platform-Tools Card -->
+      <div class="env-item-card" [class.item-pass]="adbProbe()?.metadata?.['installed']"
+        [class.item-fail]="adbProbe()?.status === 'fail'">
+        <div class="item-header">
+          <div class="item-icon-box">
+            <span class="material-symbols-outlined item-icon">construction</span>
+          </div>
+          <div class="item-title-group">
+            <div class="item-name">Android Platform-Tools</div>
+            <div class="item-subtitle">{{ adbProbe()?.metadata?.['installed'] ? 'ADB Installed' : 'ADB Missing' }}</div>
+          </div>
+          <div class="item-status">
+            <span class="status-dot" [class.dot-pass]="adbProbe()?.metadata?.['installed']" [class.dot-fail]="adbProbe()?.status === 'fail'"></span>
+          </div>
+        </div>
+        @if (adbProbe()?.status === 'fail') {
+        <div class="item-body">
+          <div class="item-action-box">
+            <div class="code-box small-box">
+              <span class="terminal-prefix">$</span>
+              <code class="code-text">{{ adbInstallCmd() }}</code>
+              <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'env_adb_cmd'"
+                (click)="copyToClipboard(adbInstallCmd(), 'env_adb_cmd')">
+                <span class="material-symbols-outlined">{{ copiedId() === 'env_adb_cmd' ? 'check' : 'content_copy'
+                  }}</span>
+                <span>{{ copiedId() === 'env_adb_cmd' ? 'Copied!' : 'Copy' }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        }
+      </div>
+
+      <!-- 3. System Configuration Card -->
+      <div class="env-item-card" [class.item-pass]="configProbe()?.status === 'pass'"
+        [class.item-fail]="configProbe()?.status === 'fail'">
+        <div class="item-header">
+          <div class="item-icon-box">
+            <span class="material-symbols-outlined item-icon">tune</span>
+          </div>
+          <div class="item-title-group">
+            <div class="item-name">System Configuration</div>
+            <div class="item-subtitle">{{ configProbe()?.summary || 'Config Valid' }}</div>
+          </div>
+          <div class="item-status">
+            <span class="status-dot" [class.dot-pass]="configProbe()?.status === 'pass'" [class.dot-fail]="configProbe()?.status === 'fail'"></span>
+          </div>
+        </div>
+        @if (configProbe()?.status === 'fail') {
+        <div class="item-body">
+          <div class="item-action-box">
+            <div class="code-box small-box">
+              <span class="terminal-prefix">$</span>
+              <code class="code-text">artemis init</code>
+              <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'cfg_init'"
+                (click)="copyToClipboard('artemis init', 'cfg_init')">
+                <span class="material-symbols-outlined">{{ copiedId() === 'cfg_init' ? 'check' : 'content_copy'
+                  }}</span>
+                <span>{{ copiedId() === 'cfg_init' ? 'Copied!' : 'Copy' }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        }
+      </div>
+
+      <!-- 4. Video Recording Toolchain Card (FFmpeg & scrcpy) -->
+      <div class="env-item-card" [class.item-pass]="toolchainProbe()?.status === 'pass'"
+        [class.item-fail]="toolchainProbe()?.status !== 'pass'">
+        <div class="item-header">
+          <div class="item-icon-box">
+            <span class="material-symbols-outlined item-icon">videocam</span>
+          </div>
+          <div class="item-title-group">
+            <div class="item-name">Video Toolchain</div>
+            <div class="item-subtitle">{{ toolchainProbe()?.summary || 'FFmpeg & scrcpy' }}</div>
+          </div>
+          <div class="item-status">
+            <span class="status-dot" [class.dot-pass]="toolchainProbe()?.status === 'pass'" [class.dot-fail]="toolchainProbe()?.status !== 'pass'"></span>
+          </div>
+        </div>
+        @if (toolchainProbe()?.status !== 'pass') {
+        <div class="item-body">
+          <div class="item-action-box">
+            <div class="code-box small-box">
+              <span class="terminal-prefix">$</span>
+              <code class="code-text">{{ toolchainInstallCmd() }}</code>
+              <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'install_toolchain'"
+                (click)="copyToClipboard(toolchainInstallCmd(), 'install_toolchain')">
+                <span class="material-symbols-outlined">{{ copiedId() === 'install_toolchain' ? 'check' : 'content_copy'
+                  }}</span>
+                <span>{{ copiedId() === 'install_toolchain' ? 'Copied!' : 'Copy' }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        }
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- =================================================================== -->
+<!-- STEP 2: AI MODEL SETUP                                              -->
+<!-- =================================================================== -->
+<div class="guide-card" [class.card-pass]="isCredentialsReady()" [class.card-warn]="!isCredentialsReady()">
+
+  <div class="guide-card-header">
+    <div class="step-badge" [class.step-pass]="isCredentialsReady()">
+      @if (isCredentialsReady()) {
+      <span class="material-symbols-outlined step-check-icon">check</span>
+      } @else {
+      <span>2</span>
+      }
+    </div>
+    <div class="step-info">
+      <div class="step-title-row">
+        <h3 class="step-title">AI Model Setup</h3>
+      </div>
+      <p class="step-desc">Google Gemini or custom LLM providers (OpenAI, Claude, Ollama)</p>
+    </div>
+  </div>
+
+  <div class="guide-card-body">
+    <!-- 2 Big Visual Choice Cards -->
+    <div class="model-choice-cards-row">
+      <!-- Card 1: Gemini (Recommended) -->
+      <div class="choice-card" [class.selected]="modelSetupMode() === 'gemini'" (click)="setModelSetupMode('gemini')">
+        <div class="choice-card-top">
+          <div class="choice-radio">
+            <span class="radio-dot" [class.checked]="modelSetupMode() === 'gemini'"></span>
+          </div>
+          <div class="choice-icon-wrap">
+            <svg class="brand-svg gemini-svg" viewBox="0 0 24 24" fill="none">
+              <defs>
+                <linearGradient id="geminiChoiceGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#4285F4" />
+                  <stop offset="50%" stop-color="#9B72CB" />
+                  <stop offset="100%" stop-color="#D96570" />
+                </linearGradient>
+              </defs>
+              <path
+                d="M12 2C12 7.523 7.523 12 2 12C7.523 12 12 16.477 12 22C12 16.477 16.477 12 22 12C16.477 12 12 7.523 12 2Z"
+                fill="url(#geminiChoiceGrad)" />
+            </svg>
+          </div>
+          <div class="choice-text">
+            <div class="choice-title-row">
+              <span class="choice-title">Google Gemini</span>
+              <span class="tag-badge tag-rec">Recommended</span>
+            </div>
+            <p class="choice-desc">Fast multimodal reasoning with free API key from Google AI Studio.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Custom Configuration -->
+      <div class="choice-card" [class.selected]="modelSetupMode() === 'custom'" (click)="setModelSetupMode('custom')">
+        <div class="choice-card-top">
+          <div class="choice-radio">
+            <span class="radio-dot" [class.checked]="modelSetupMode() === 'custom'"></span>
+          </div>
+          <div class="choice-icon-wrap icon-gear">
+            <span class="material-symbols-outlined">tune</span>
+          </div>
+          <div class="choice-text">
+            <div class="choice-title-row">
+              <span class="choice-title">Custom Configuration</span>
+            </div>
+            <p class="choice-desc">Define models in <code>config/artemis.jsonc</code> & keys in <code>.env</code>
+              (OpenAI, Claude, Ollama).</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dynamic Panel Based on Choice -->
+    @if (modelSetupMode() === 'gemini') {
+    <!-- 1. Gemini API Key Box -->
+    <div class="credentials-input-box">
+      <div class="input-box-header">
+        <div class="header-label">
+          <span class="material-symbols-outlined label-icon">vpn_key</span>
+          <span>Enter Gemini API Key:</span>
+        </div>
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
+          class="btn-header-link">
+          <span class="material-symbols-outlined">open_in_new</span>
+          <span>Get Free API Key (Google AI Studio)</span>
+        </a>
+      </div>
+
+      <div class="unified-key-row">
+        <div class="unified-key-wrapper">
+          <span class="material-symbols-outlined key-prefix-icon">key</span>
+          <input [type]="showGeminiKey() ? 'text' : 'password'" class="unified-key-input"
+            [class.is-masked]="!showGeminiKey()" [ngModel]="geminiKeyInput()"
+            (ngModelChange)="onGeminiKeyChange($event)" placeholder="Enter Gemini API Key (e.g. AIzaSy...)"
+            spellcheck="false" autocomplete="off" />
+
+          <!-- Visibility Toggle -->
+          <button type="button" class="btn-icon-action" [title]="showGeminiKey() ? 'Mask Key' : 'Show Plaintext'"
+            (click)="toggleGeminiKeyVisibility()">
+            <span class="material-symbols-outlined">
+              {{ showGeminiKey() ? 'visibility_off' : 'visibility' }}
+            </span>
+          </button>
+
+          <!-- Copy Button -->
+          @if (geminiKeyInput()) {
+          <button type="button" class="btn-icon-action" title="Copy API Key"
+            (click)="copyToClipboard(geminiKeyInput(), 'gemini_key_field')">
+            <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'gemini_key_field'">
+              {{ copiedId() === 'gemini_key_field' ? 'check' : 'content_copy' }}
+            </span>
+          </button>
+          }
+        </div>
+
+        <!-- Save Button -->
+        <button type="button" class="btn-unified-save" [class.btn-dirty]="isGeminiModified()"
+          [disabled]="isSavingGeminiKey() || isTestingGeminiKey() || (!isGeminiModified() && !geminiKeyInput().trim())" (click)="saveGeminiKey()">
+          @if (isSavingGeminiKey()) {
+          <span class="material-symbols-outlined spin">sync</span>
+          <span>{{ geminiKeyInput().trim() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
+          } @else {
+          <span class="material-symbols-outlined">{{ geminiKeyInput().trim() ? 'save' : 'delete_outline' }}</span>
+          <span>{{ !geminiKeyInput().trim() ? 'Clear Key' : (isGeminiModified() ? 'Save & Apply' : 'Save Key') }}</span>
+          }
+        </button>
+
+        <!-- Test Button -->
+        <button type="button" class="btn-unified-test" title="Test if Gemini API key is valid"
+          [disabled]="isTestingGeminiKey() || isSavingGeminiKey() || !geminiKeyInput().trim()" (click)="testGeminiKey()">
+          @if (isTestingGeminiKey()) {
+          <span class="material-symbols-outlined spin">sync</span>
+          <span>Testing...</span>
+          } @else {
+          <span class="material-symbols-outlined">network_check</span>
+          <span>Test Key</span>
+          }
+        </button>
+      </div>
+
+      @if (geminiSaveMessage()) {
+      <div class="feedback-msg success">
+        <span class="material-symbols-outlined">check_circle</span>
+        <span>{{ geminiSaveMessage() }}</span>
+      </div>
+      }
+      @if (geminiSaveError()) {
+      <div class="feedback-msg error">
+        <span class="material-symbols-outlined">error</span>
+        <span>{{ geminiSaveError() }}</span>
+      </div>
+      }
+    </div>
+
+    <!-- 2. OCR Enhancement Option for Gemini Mode -->
+    <div class="ocr-enhancement-card">
+      <div class="ocr-card-toggle-bar" (click)="toggleOcrConfig()">
+        <div class="toggle-bar-left">
+          <span class="material-symbols-outlined icon-ocr">document_scanner</span>
+          <div class="toggle-bar-titles">
+            <span class="ocr-main-title">Optional: Google Cloud Vision OCR</span>
+          </div>
+        </div>
+
+        <div class="toggle-bar-right">
+          @if (isOcrConfigured()) {
+            <span class="status-dot dot-pass" title="OCR Configured"></span>
+          }
+          <span class="material-symbols-outlined caret-icon">
+            {{ showOcrConfig() ? 'expand_less' : 'expand_more' }}
+          </span>
+        </div>
+      </div>
+      
+      @if (showOcrConfig()) {
+      <div class="ocr-content-body">
+        <p class="ocr-help-desc">
+          Provides screen text coordinate grounding to improve element detection and interaction accuracy on text-heavy apps.
+        </p>
+
+        <!-- Input Box -->
+        <div class="credentials-input-box ocr-box">
+          <div class="input-box-header">
+            <div class="header-label">
+              <span class="material-symbols-outlined label-icon">key</span>
+              <span>Cloud Vision API Key:</span>
+            </div>
+          </div>
+
+          <div class="unified-key-row">
+            <div class="unified-key-wrapper">
+              <span class="material-symbols-outlined key-prefix-icon">key</span>
+              <input [type]="showOcrKey() ? 'text' : 'password'" class="unified-key-input" [class.is-masked]="!showOcrKey()"
+                [ngModel]="ocrKeyInput()" (ngModelChange)="onOcrKeyChange($event)"
+                placeholder="Enter Vision OCR API Key (e.g. AIzaSy...)" spellcheck="false" autocomplete="off" />
+          
+              <!-- Visibility Toggle -->
+              <button type="button" class="btn-icon-action" [title]="showOcrKey() ? 'Mask Key' : 'Show Plaintext'"
+                (click)="toggleOcrKeyVisibility()">
+                <span class="material-symbols-outlined">
+                  {{ showOcrKey() ? 'visibility_off' : 'visibility' }}
+                </span>
+              </button>
+          
+              <!-- Copy Button -->
+              @if (ocrKeyInput()) {
+              <button type="button" class="btn-icon-action" title="Copy API Key"
+                (click)="copyToClipboard(ocrKeyInput(), 'ocr_key_field')">
+                <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'ocr_key_field'">
+                  {{ copiedId() === 'ocr_key_field' ? 'check' : 'content_copy' }}
+                </span>
+              </button>
+              }
+            </div>
+            
+            <!-- Save Button -->
+            <button type="button" class="btn-unified-save" [class.btn-dirty]="isOcrModified()"
+              [disabled]="isSavingOcrKey() || isTestingOcrKey() || (!isOcrModified() && !ocrKeyInput().trim())" (click)="saveOcrKey()">
+              @if (isSavingOcrKey()) {
+              <span class="material-symbols-outlined spin">sync</span>
+              <span>{{ ocrKeyInput().trim() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
+              } @else {
+              <span class="material-symbols-outlined">{{ ocrKeyInput().trim() ? 'save' : 'delete_outline' }}</span>
+              <span>{{ !ocrKeyInput().trim() ? 'Clear Key' : (isOcrModified() ? 'Save & Apply' : 'Save Key') }}</span>
+              }
+            </button>
+
+            <!-- Test Button -->
+            <button type="button" class="btn-unified-test" title="Test if Vision OCR key is valid"
+              [disabled]="isTestingOcrKey() || isSavingOcrKey() || !ocrKeyInput().trim()" (click)="testOcrKey()">
+              @if (isTestingOcrKey()) {
+              <span class="material-symbols-outlined spin">sync</span>
+              <span>Testing...</span>
+              } @else {
+              <span class="material-symbols-outlined">network_check</span>
+              <span>Test Key</span>
+              }
+            </button>
+          </div>
+          
+          @if (ocrSaveMessage()) {
+          <div class="feedback-msg success">
+            <span class="material-symbols-outlined">check_circle</span>
+            <span>{{ ocrSaveMessage() }}</span>
+          </div>
+          }
+          @if (ocrSaveError()) {
+          <div class="feedback-msg error">
+            <span class="material-symbols-outlined">error</span>
+            <span>{{ ocrSaveError() }}</span>
+          </div>
+          }
+        </div>
+      </div>
+      }
+    </div>
+    } @else {
+          <!-- CUSTOM CONFIGURATION & .ENV INSPECTOR (NO OCR HERE) -->
+          <div class="custom-config-inspector">
+
+      <!-- Section 1: Active Model Config (artemis.jsonc) -->
+      <div class="inspector-card">
+        <div class="inspector-card-header">
+          <div class="inspector-header-left">
+            <span class="material-symbols-outlined header-icon">tune</span>
+            <div class="inspector-header-titles">
+              <span class="inspector-title">Active Model Configuration</span>
+              <span class="inspector-subtitle">Defined in
+                <code>{{ modelConfigEnv()?.config_path || 'config/artemis.jsonc' }}</code></span>
+            </div>
+          </div>
+          <div class="inspector-header-actions">
+            <button type="button" class="btn-file-action" title="Copy file path"
+              (click)="copyToClipboard(modelConfigEnv()?.config_path || 'config/artemis.jsonc', 'config_path_btn')"
+            >
+              <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'config_path_btn'">
+                {{ copiedId() === 'config_path_btn' ? 'check' : 'content_copy' }}
+              </span>
+              <span>Copy Path</span>
+              </button>
+              <button type="button" class="btn-file-action btn-toggle-code" (click)="toggleFullConfigFile()">
+                <span class="material-symbols-outlined">
+                  {{ showFullConfigFile() ? 'unfold_less' : 'code' }}
+                </span>
+                <span>{{ showFullConfigFile() ? 'Hide JSONC' : 'View JSONC' }}</span>
+            </button>
+          </div>
+          </div>
+          
+          <!-- Model Summary Row -->
+          <div class="inspector-summary-row">
+            <div class="summary-metric">
+              <span class="metric-label">Default Model</span>
+              <div class="metric-val-pill">
+                <span class="provider-dot"></span>
+                <span class="provider-name">{{ modelConfigEnv()?.default_model?.provider || 'google' }}</span>
+                <span class="model-divider">/</span>
+                <span class="model-name">{{ modelConfigEnv()?.default_model?.model || 'gemini-3.7-flash' }}</span>
+              </div>
+            </div>
+          
+            @if (modelConfigEnv()?.default_model?.fallback) {
+            <div class="summary-metric">
+              <span class="metric-label">Fallback Model</span>
+              <div class="metric-val-pill secondary">
+                <span>{{ modelConfigEnv()?.default_model?.fallback?.provider }}/{{
+                  modelConfigEnv()?.default_model?.fallback?.model }}</span>
+              </div>
+            </div>
+            }
+          
+          </div>
+          
+          <!-- Full JSONC Viewer -->
+          @if (showFullConfigFile()) {
+          <div class="jsonc-viewer-box">
+            <pre class="jsonc-code"><code>{{ modelConfigEnv()?.config_content }}</code></pre>
+          </div>
+          }
+          </div>
+
+      <!-- Section 2: Environment API Keys (.env) -->
+      <div class="inspector-card">
+        <div class="inspector-card-header">
+          <div class="inspector-header-left">
+            <span class="material-symbols-outlined header-icon">vpn_key</span>
+            <div class="inspector-header-titles">
+              <span class="inspector-title">Environment Variables & API Keys</span>
+              <span class="inspector-subtitle">Loaded from <code>{{ modelConfigEnv()?.env_path || '.env' }}</code></span>
+            </div>
+          </div>
+      
+          <button type="button" class="btn-file-action" title="Copy file path"
+            (click)="copyToClipboard(modelConfigEnv()?.env_path || '.env', 'env_path_btn')">
+          <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'env_path_btn'">
+            {{ copiedId() === 'env_path_btn' ? 'check' : 'content_copy' }}
+          </span>
+          <span>Copy Path</span>
+          </button>
+        </div>
+        
+        <!-- Env Keys Table -->
+        <div class="env-keys-table">
+          @for (envItem of modelConfigEnv()?.env_vars || []; track envItem.name) {
+          <div class="env-key-row" [class.is-configured]="envItem.is_set">
+            <div class="env-name-col">
+              <code class="env-key-name">{{ envItem.name }}</code>
+            </div>
+            <div class="env-status-col">
+              @if (envItem.is_set) {
+              <span class="badge-env-pass">
+                <span class="material-symbols-outlined">check_circle</span>
+                <span>Configured</span>
+                @if (envItem.preview) {
+                <code class="key-preview">({{ envItem.preview }})</code>
+                }
+              </span>
+              } @else {
+              <span class="badge-env-unset">
+                <span class="material-symbols-outlined">radio_button_unchecked</span>
+                <span>Not Set</span>
+              </span>
+              }
+            </div>
+          </div>
+          }
+        </div>
+        </div>
+        
+        </div>
+    }
+    </div>
+    </div>
+
+        <!-- =================================================================== -->
+        <!-- STEP 3: ANDROID DEVICE & EMULATOR CONNECTION                        -->
+        <!-- =================================================================== -->
+        <div class="guide-card" [class.card-pass]="isDeviceReady()" [class.card-warn]="!isDeviceReady()">
+          
+          <div class="guide-card-header">
+            <div class="step-badge" [class.step-pass]="isDeviceReady()">
+              @if (isDeviceReady()) {
+              <span class="material-symbols-outlined step-check-icon">check</span>
+              } @else {
+              <span>3</span>
+              }
+            </div>
+            <div class="step-info">
+              <div class="step-title-row">
+                <h3 class="step-title">Android Device & Emulator Connection</h3>
+              </div>
+              <p class="step-desc">Physical Android phone or local Android Virtual Device (AVD)</p>
+            </div>
+
+            <button
+              type="button"
+              class="btn-restart-adb"
+              [disabled]="isRestartingAdb()"
+              (click)="restartAdbServer()"
+              title="Restart local ADB daemon"
+            >
+              @if (isRestartingAdb()) {
+              <span class="material-symbols-outlined spinning">sync</span>
+              <span>Restarting...</span>
+              } @else if (adbRestartFeedback()) {
+              <span class="material-symbols-outlined feedback-done">check</span>
+              <span class="feedback-text">{{ adbRestartFeedback() }}</span>
+              } @else {
+              <span class="material-symbols-outlined">sync</span>
+              <span>Restart ADB</span>
+              }
+            </button>
+          </div>
+
+          <div class="guide-card-body">
+
+            <!-- STATE A: CONNECTED & READY -->
+            @if (isDeviceReady()) {
+              <div class="connected-device-panel">
+                <div class="device-hero-card">
+                  <div class="device-avatar">
+                    <span class="material-symbols-outlined device-hero-icon">
+                      phone_android
+                    </span>
+                  </div>
+                  <div class="device-hero-details">
+                    <div class="device-hero-name">
+                      {{ activeDevice()?.model || activeDevice()?.serial }}
+                    </div>
+                    <div class="device-hero-meta">
+                      @if (activeDevice()?.is_emulator) {
+                        <span>Virtual Device</span>
+                        <span class="meta-dot">·</span>
+                      }
+                      <span>{{ activeDevice()?.serial }}</span>
+                      @if (activeDevice()?.screen_resolution) {
+                        <span class="meta-dot">·</span>
+                        <span>{{ activeDevice()?.screen_resolution }}</span>
+                      }
+                      @if (activeDevice()?.android_version) {
+                        <span class="meta-dot">·</span>
+                        <span>Android {{ activeDevice()?.android_version }}</span>
+                      }
+                    </div>
+                  </div>
+                  <div class="device-hero-status">
+                    <span class="status-dot dot-pass"></span>
+                    <span class="status-text">Connected</span>
+                  </div>
+                </div>
+
+                <!-- Multi-Device Switcher if multiple devices detected -->
+                @if (connectedDevices().length > 1) {
+                  <div class="multi-device-switcher">
+                    <span class="switcher-label">Select Active Device:</span>
+                    <div class="switcher-chips">
+                      @for (dev of connectedDevices(); track dev.serial) {
+                        <button
+                          type="button"
+                          class="device-chip-btn"
+                          [class.selected]="dev.serial === activeDevice()?.serial"
+                          (click)="selectTargetDevice(dev.serial)"
+                        >
+                          <span class="material-symbols-outlined chip-icon">
+                            phone_android
+                          </span>
+                          <span>{{ dev.model || dev.serial }}</span>
+                          @if (dev.serial === activeDevice()?.serial) {
+                            <span class="active-check">✓ Active</span>
+                          }
+                        </button>
+                      }
+                    </div>
+                  </div>
+                }
+              </div>
+            }
+
+            <!-- STATE B-1: EMULATOR LAUNCHING / DEVICE BOOTING LIVE TRACKER -->
+            @if (isEmulatorLaunching() || (!isDeviceReady() && adbProbe()?.summary === 'Device Booting')) {
+              <div class="emulator-boot-tracker-container">
+                <div class="emulator-boot-tracker-card">
+                  <div class="tracker-header">
+                    <div class="tracker-title-group">
+                      <div class="tracker-icon-box">
+                        <span class="material-symbols-outlined spinning-icon">sync</span>
+                      </div>
+                      <div class="tracker-titles">
+                        <div class="tracker-main-heading">
+                          <h4 class="tracker-title">
+                            Launching Android Emulator: <span class="avd-highlight">{{ emulatorLaunchState()?.avd_name || activeDevice()?.serial || 'Virtual Device' }}</span>
+                          </h4>
+                          <span class="stage-tag-badge">{{ emulatorLaunchState()?.status === 'booting' ? 'OS Booting' : 'Starting' }}</span>
+                        </div>
+                        <p class="tracker-subtitle">{{ emulatorLaunchState()?.stage_message || 'Initializing Android Virtual Device...' }}</p>
+                      </div>
+                    </div>
+                    <div class="tracker-actions">
+                      <button type="button" class="btn-toggle-logs" [class.active]="showLaunchLogs()" (click)="toggleLaunchLogs()">
+                        <span class="material-symbols-outlined">terminal</span>
+                        <span>{{ showLaunchLogs() ? 'Hide Logs' : 'View Boot Logs' }}</span>
+                      </button>
+                      <button type="button" class="btn-stop-emu" (click)="stopEmulator()" title="Terminate emulator process">
+                        <span class="material-symbols-outlined">cancel</span>
+                        <span>Stop</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Boot Stepper Progress Flow -->
+                  <div class="boot-stepper">
+                    <div class="step-item" [class.done]="emulatorLaunchState()?.progress_percent! >= 35" [class.active]="emulatorLaunchState()?.status === 'starting'">
+                      <div class="step-circle">
+                        @if (emulatorLaunchState()?.progress_percent! >= 35) {
+                          <span class="material-symbols-outlined check-icon">check</span>
+                        } @else {
+                          <span class="spinner-tiny"></span>
+                        }
+                      </div>
+                      <span class="step-label">1. Process Start</span>
+                    </div>
+
+                    <div class="step-line" [class.done]="emulatorLaunchState()?.progress_percent! >= 35"></div>
+
+                    <div class="step-item" [class.done]="emulatorLaunchState()?.progress_percent! >= 65" [class.active]="emulatorLaunchState()?.status === 'waiting_for_adb'">
+                      <div class="step-circle">
+                        @if (emulatorLaunchState()?.progress_percent! >= 65) {
+                          <span class="material-symbols-outlined check-icon">check</span>
+                        } @else if (emulatorLaunchState()?.status === 'waiting_for_adb') {
+                          <span class="spinner-tiny"></span>
+                        } @else {
+                          <span>2</span>
+                        }
+                      </div>
+                      <span class="step-label">2. ADB Handshake</span>
+                    </div>
+
+                    <div class="step-line" [class.done]="emulatorLaunchState()?.progress_percent! >= 65"></div>
+
+                    <div class="step-item" [class.done]="emulatorLaunchState()?.status === 'ready'" [class.active]="emulatorLaunchState()?.status === 'booting' || adbProbe()?.summary === 'Device Booting'">
+                      <div class="step-circle">
+                        @if (emulatorLaunchState()?.status === 'ready') {
+                          <span class="material-symbols-outlined check-icon">check</span>
+                        } @else if (emulatorLaunchState()?.status === 'booting' || adbProbe()?.summary === 'Device Booting') {
+                          <span class="spinner-tiny"></span>
+                        } @else {
+                          <span>3</span>
+                        }
+                      </div>
+                      <span class="step-label">3. Android OS Boot</span>
+                    </div>
+
+                    <div class="step-line" [class.done]="emulatorLaunchState()?.status === 'ready'"></div>
+
+                    <div class="step-item" [class.done]="emulatorLaunchState()?.status === 'ready'">
+                      <div class="step-circle">
+                        <span class="material-symbols-outlined check-icon">check_circle</span>
+                      </div>
+                      <span class="step-label">4. Ready</span>
+                    </div>
+                  </div>
+
+                  <!-- Animated Progress Bar -->
+                  <div class="progress-bar-container">
+                    <div class="progress-bar-track">
+                      <div class="progress-bar-fill" [style.width.%]="emulatorLaunchState()?.progress_percent || 25"></div>
+                    </div>
+                    <div class="progress-bar-meta">
+                      <span class="progress-percent">{{ emulatorLaunchState()?.progress_percent || 25 }}% Complete</span>
+                      <span class="progress-timer">
+                        <span class="material-symbols-outlined timer-icon">timer</span>
+                        Elapsed: {{ emulatorLaunchState()?.elapsed_seconds || 0 }}s
+                      </span>
+                    </div>
+                  </div>
+
+                  <!-- Helpful Status Notice -->
+                  <div class="boot-tip-banner">
+                    <span class="material-symbols-outlined tip-icon">info</span>
+                    <span>Android virtualization cold boot usually takes 20-45 seconds. Live progress is actively tracked above—please do not click launch repeatedly.</span>
+                  </div>
+
+                  <!-- Expandable Console Log Stream -->
+                  @if (showLaunchLogs()) {
+                    <div class="boot-logs-drawer">
+                      <div class="logs-header">
+                        <div class="logs-header-left">
+                          <span class="material-symbols-outlined">terminal</span>
+                          <span>Emulator Console Stream (stdout / stderr)</span>
+                        </div>
+                        <button type="button" class="btn-copy-logs" (click)="copyToClipboard(emulatorLaunchState()?.logs?.join('\n') || '', 'boot_logs')">
+                          <span class="material-symbols-outlined">{{ copiedId() === 'boot_logs' ? 'check' : 'content_copy' }}</span>
+                          <span>{{ copiedId() === 'boot_logs' ? 'Copied' : 'Copy Logs' }}</span>
+                        </button>
+                      </div>
+                      <pre class="logs-body">@if (emulatorLaunchState()?.logs?.length) {@for (log of emulatorLaunchState()?.logs; track log) {<div class="log-line">{{ log }}</div>}} @else {<div class="log-empty">Waiting for process output...</div>}</pre>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+
+            <!-- STATE B-2: EMULATOR LAUNCH FAILED DIAGNOSTIC CARD -->
+            @if (!isDeviceReady() && !isEmulatorLaunching() && emulatorLaunchState()?.status === 'failed') {
+              <div class="emulator-failed-container">
+                <div class="emulator-failed-card">
+                  <div class="failed-header">
+                    <div class="failed-header-left">
+                      <div class="failed-icon-box">
+                        <span class="material-symbols-outlined failed-icon">error</span>
+                      </div>
+                      <div class="failed-titles">
+                        <h4 class="failed-title">Emulator Launch Failed</h4>
+                        <p class="failed-desc">{{ emulatorLaunchState()?.error || 'The Android emulator process failed to start or crashed during initialization.' }}</p>
+                      </div>
+                    </div>
+                    <button type="button" class="btn-dismiss-failed" (click)="dismissEmulatorStatus()" title="Dismiss error">
+                      <span class="material-symbols-outlined">close</span>
+                    </button>
+                  </div>
+
+                  @if (emulatorLaunchState()?.logs?.length) {
+                    <div class="failed-logs-box">
+                      <div class="logs-header">
+                        <span>Process Output / Failure Logs:</span>
+                        <button type="button" class="btn-copy-logs" (click)="copyToClipboard(emulatorLaunchState()?.logs?.join('\n') || '', 'fail_logs')">
+                          <span class="material-symbols-outlined">{{ copiedId() === 'fail_logs' ? 'check' : 'content_copy' }}</span>
+                          <span>{{ copiedId() === 'fail_logs' ? 'Copied' : 'Copy Logs' }}</span>
+                        </button>
+                      </div>
+                      <pre class="failed-logs-pre">@for (log of emulatorLaunchState()?.logs; track log) {<div class="log-line">{{ log }}</div>}</pre>
+                    </div>
+                  }
+
+                  <div class="failed-actions-bar">
+                    @if (emulatorLaunchState()?.avd_name) {
+                      <button type="button" class="btn-retry-launch" (click)="launchAvdEmulator(emulatorLaunchState()!.avd_name!)">
+                        <span class="material-symbols-outlined">refresh</span>
+                        <span>Retry Launch ({{ emulatorLaunchState()?.avd_name }})</span>
+                      </button>
+                    }
+                    <button type="button" class="btn-restart-adb-sub" (click)="restartAdbServer()">
+                      <span class="material-symbols-outlined">sync</span>
+                      <span>Restart ADB Server</span>
+                    </button>
+                    <button type="button" class="btn-dismiss-flat" (click)="dismissEmulatorStatus()">
+                      <span>Dismiss</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            }
+
+            <!-- STATE B-3: NO DEVICE DETECTED / READY TO CONNECT GUIDE -->
+            @if (!isDeviceReady() && !isEmulatorLaunching() && adbProbe()?.summary !== 'Device Booting' && adbProbe()?.summary !== 'Device Unauthorized' && adbProbe()?.status !== 'fail' && emulatorLaunchState()?.status !== 'failed') {
+              <div class="foolproof-guide-container">
+                <!-- Method Selection Nav Cards -->
+                <div class="connection-methods-nav">
+                  <button
+                    type="button"
+                    class="method-nav-card"
+                    [class.active]="activeAdbGuideTab() === 'emulator'"
+                    (click)="setAdbGuideTab('emulator')"
+                  >
+                    <div class="method-card-left">
+                      <div class="method-icon-box">
+                        <span class="material-symbols-outlined">smartphone</span>
+                      </div>
+                      <div class="method-info">
+                        <div class="method-title-row">
+                          <span class="method-title">Android Emulator</span>
+                          @if (installedAvds().length > 0) {
+                          <span class="method-badge-pill detected">{{ installedAvds().length }} DETECTED</span>
+                          } @else {
+                          <span class="method-badge-pill recommended">RECOMMENDED</span>
+                          }
+                        </div>
+                        <span class="method-desc">Launch local Android Virtual Device</span>
+                      </div>
+                    </div>
+                    <div class="method-card-right">
+                      <span class="radio-indicator" [class.checked]="activeAdbGuideTab() === 'emulator'"></span>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="method-nav-card"
+                    [class.active]="activeAdbGuideTab() === 'usb'"
+                    (click)="setAdbGuideTab('usb')"
+                  >
+                    <div class="method-card-left">
+                      <div class="method-icon-box">
+                        <span class="material-symbols-outlined">usb</span>
+                      </div>
+                      <div class="method-info">
+                        <div class="method-title-row">
+                          <span class="method-title">USB Cable</span>
+                          <span class="method-badge-pill neutral">4 STEPS</span>
+                        </div>
+                        <span class="method-desc">Connect physical phone via USB</span>
+                      </div>
+                      </div>
+                      <div class="method-card-right">
+                        <span class="radio-indicator" [class.checked]="activeAdbGuideTab() === 'usb'"></span>
+                      </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="method-nav-card"
+                    [class.active]="activeAdbGuideTab() === 'wifi'"
+                    (click)="setAdbGuideTab('wifi')"
+                  >
+                    <div class="method-card-left">
+                      <div class="method-icon-box">
+                        <span class="material-symbols-outlined">wifi</span>
+                      </div>
+                      <div class="method-info">
+                        <div class="method-title-row">
+                          <span class="method-title">Wireless ADB</span>
+                          <span class="method-badge-pill info">WI-FI</span>
+                        </div>
+                        <span class="method-desc">Connect over local Wi-Fi</span>
+                      </div>
+                      </div>
+                      <div class="method-card-right">
+                        <span class="radio-indicator" [class.checked]="activeAdbGuideTab() === 'wifi'"></span>
+                      </div>
+                  </button>
+                </div>
+
+                <!-- Method 1: Emulator -->
+                @if (activeAdbGuideTab() === 'emulator') {
+                  <div class="method-details-panel">
+                    
+                    @if (installedAvds().length > 0) {
+                      <div class="avds-section">
+                        <div class="section-header-bar">
+                          <div class="section-title-group">
+                            <span class="material-symbols-outlined header-icon">devices</span>
+                            <span class="section-title">Installed Virtual Devices (AVD)</span>
+                            <span class="count-badge">{{ installedAvds().length }} Available</span>
+                          </div>
+                        </div>
+
+                        <div class="avds-list">
+                          @for (avd of installedAvds(); track avd) {
+                            <div class="avd-card-item">
+                              <div class="avd-item-main">
+                                <div class="avd-avatar">
+                                  <span class="material-symbols-outlined">smartphone</span>
+                                </div>
+                                <div class="avd-meta">
+                                  <div class="avd-heading">
+                                    <span class="avd-name">{{ avd }}</span>
+                                    <span class="avd-type-pill">Virtual Device</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div class="avd-item-actions">
+                                <button
+                                  type="button"
+                                  class="btn-avd-launch"
+                                  [class.launching]="launchingAvd() === avd || (isEmulatorLaunching() && emulatorLaunchState()?.avd_name === avd)"
+                                  [disabled]="isEmulatorLaunching()"
+                                  (click)="launchAvdEmulator(avd)"
+                                  [title]="isEmulatorLaunching() ? 'An emulator is currently launching...' : 'Launch ' + avd"
+                                >
+                                  @if (launchingAvd() === avd || (isEmulatorLaunching() && emulatorLaunchState()?.avd_name === avd)) {
+                                    <span class="spinner-icon"></span>
+                                    <span>{{ emulatorLaunchState()?.status === 'booting' ? 'Booting OS' : 'Starting' }} ({{ emulatorLaunchState()?.elapsed_seconds || 0 }}s)</span>
+                                  } @else {
+                                    <span class="material-symbols-outlined action-icon">play_arrow</span>
+                                    <span>Launch</span>
+                                  }
+                                </button>
+                              </div>
+                            </div>
+                          }
+                        </div>
+                      </div>
+                    } @else {
+                      <div class="emulator-setup-guide-container">
+                        <div class="empty-avd-banner">
+                          <div class="banner-left">
+                            <div class="empty-avd-icon-box">
+                              <span class="material-symbols-outlined">devices_off</span>
+                            </div>
+                            <div class="banner-titles">
+                              <div class="banner-title-row">
+                                <h4 class="empty-title">No Android Virtual Devices (AVD) Detected</h4>
+                                <div class="os-selector-pills">
+                                  <button type="button" class="os-pill" [class.active]="effectiveOs() === 'linux'"
+                                    (click)="setSelectedOs('linux')">Linux</button>
+                                  <button type="button" class="os-pill" [class.active]="effectiveOs() === 'darwin'"
+                                    (click)="setSelectedOs('darwin')">macOS</button>
+                                  <button type="button" class="os-pill" [class.active]="effectiveOs() === 'windows'"
+                                    (click)="setSelectedOs('windows')">Windows</button>
+                                </div>
+                              </div>
+                              <p class="empty-desc">Follow the step-by-step instructions below to install and start an emulator:</p>
+                            </div>
+                          </div>
+
+                          <div class="mode-switch-pills">
+                            <button
+                              type="button"
+                              class="pill-btn"
+                              [class.active]="emulatorSetupMode() === 'studio'"
+                              (click)="setEmulatorSetupMode('studio')"
+                            >
+                              <span class="material-symbols-outlined pill-icon">desktop_windows</span>
+                              <span>Android Studio (GUI)</span>
+                            </button>
+                            <button
+                              type="button"
+                              class="pill-btn"
+                              [class.active]="emulatorSetupMode() === 'cli'"
+                              (click)="setEmulatorSetupMode('cli')"
+                            >
+                              <span class="material-symbols-outlined pill-icon">terminal</span>
+                              <span>Command Line (CLI)</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <!-- Option 1: Android Studio Guide -->
+                        @if (emulatorSetupMode() === 'studio') {
+                          <div class="steps-flow-grid emu-flow-grid">
+                            <div class="flow-step-card">
+                              <div class="step-card-header">
+                                <span class="step-number-badge">1</span>
+                                <span class="material-symbols-outlined step-card-icon">download</span>
+                              </div>
+                              <div class="step-card-title">Install Android Studio</div>
+                              <div class="step-card-desc">
+                                Download for {{ effectiveOs() === 'darwin' ? 'macOS' : (effectiveOs() === 'windows' ? 'Windows' : 'Linux') }} from <a href="https://developer.android.com/studio" target="_blank" rel="noopener" class="guide-link">developer.android.com/studio</a> and install.
+                              </div>
+                            </div>
+
+                            <div class="flow-step-card">
+                              <div class="step-card-header">
+                                <span class="step-number-badge">2</span>
+                                <span class="material-symbols-outlined step-card-icon">developer_mode</span>
+                              </div>
+                              <div class="step-card-title">Open Device Manager</div>
+                              <div class="step-card-desc">
+                                On Studio welcome screen, open <strong>More Actions &gt; Virtual Device Manager</strong> (or <strong>Tools &gt; Device Manager</strong>).
+                              </div>
+                            </div>
+
+                            <div class="flow-step-card">
+                              <div class="step-card-header">
+                                <span class="step-number-badge">3</span>
+                                <span class="material-symbols-outlined step-card-icon">add_circle</span>
+                              </div>
+                              <div class="step-card-title">Create Virtual Device</div>
+                              <div class="step-card-desc">
+                                Click <strong>Create Device</strong>, choose <strong>Pixel 8</strong>, select <strong>Android 14 (API 34)</strong>, and click <strong>Finish</strong>.
+                              </div>
+                            </div>
+
+                            <div class="flow-step-card">
+                              <div class="step-card-header">
+                                <span class="step-number-badge">4</span>
+                                <span class="material-symbols-outlined step-card-icon">play_arrow</span>
+                              </div>
+                              <div class="step-card-title">Launch Emulator</div>
+                              <div class="step-card-desc">
+                                Click ▶ <strong>Play</strong> in Device Manager. Artemis will detect and connect to it automatically!
+                              </div>
+                            </div>
+                          </div>
+                        }
+
+                        <!-- Option 2: Command Line Guide -->
+                        @if (emulatorSetupMode() === 'cli') {
+                          <div class="cli-steps-list">
+                            <div class="cli-step-item">
+                              <div class="step-badge-num">1</div>
+                              <div class="step-content">
+                                <div class="step-title">{{ emuHypervisorTitle() }}</div>
+                                <p class="step-text">{{ emuHypervisorDesc() }}</p>
+                                <div class="code-box small-box">
+                                  <span class="terminal-prefix">{{ effectiveOs() === 'windows' ? 'PS>' : '$' }}</span>
+                                  <code class="code-text">{{ emuHypervisorCmd() }}</code>
+                                  <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'emu_kvm'"
+                                    (click)="copyToClipboard(emuHypervisorCmd(), 'emu_kvm')">
+                                    <span class="material-symbols-outlined">{{ copiedId() === 'emu_kvm' ? 'check' : 'content_copy' }}</span>
+                                    <span>{{ copiedId() === 'emu_kvm' ? 'Copied!' : 'Copy' }}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div class="cli-step-item">
+                              <div class="step-badge-num">2</div>
+                              <div class="step-content">
+                                <div class="step-title">Download Emulator & System Image (API 34)</div>
+                                <p class="step-text">Install Android 14 Google APIs system image using SDK Manager:</p>
+                                <div class="code-box small-box">
+                                  <span class="terminal-prefix">{{ effectiveOs() === 'windows' ? 'PS>' : '$' }}</span>
+                                  <code class="code-text">{{ emuSdkInstallCmd() }}</code>
+                                  <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'emu_sdk'"
+                                    (click)="copyToClipboard(emuSdkInstallCmd(), 'emu_sdk')">
+                                    <span class="material-symbols-outlined">{{ copiedId() === 'emu_sdk' ? 'check' : 'content_copy' }}</span>
+                                    <span>{{ copiedId() === 'emu_sdk' ? 'Copied!' : 'Copy' }}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div class="cli-step-item">
+                              <div class="step-badge-num">3</div>
+                              <div class="step-content">
+                                <div class="step-title">Create Virtual Device (Pixel 8 AVD)</div>
+                                <p class="step-text">Initialize a new Android Virtual Device named <code>Pixel_8_API_34</code>:</p>
+                                <div class="code-box small-box">
+                                  <span class="terminal-prefix">{{ effectiveOs() === 'windows' ? 'PS>' : '$' }}</span>
+                                  <code class="code-text">{{ emuCreateAvdCmd() }}</code>
+                                  <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'emu_create'"
+                                    (click)="copyToClipboard(emuCreateAvdCmd(), 'emu_create')">
+                                    <span class="material-symbols-outlined">{{ copiedId() === 'emu_create' ? 'check' : 'content_copy' }}</span>
+                                    <span>{{ copiedId() === 'emu_create' ? 'Copied!' : 'Copy' }}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div class="cli-step-item">
+                              <div class="step-badge-num">4</div>
+                              <div class="step-content">
+                                <div class="step-title">Start the Emulator</div>
+                                <p class="step-text">Launch the virtual device (or add <code>-no-window</code> for headless execution):</p>
+                                <div class="code-box small-box">
+                                  <span class="terminal-prefix">{{ effectiveOs() === 'windows' ? 'PS>' : '$' }}</span>
+                                  <code class="code-text">emulator -avd Pixel_8_API_34 -no-boot-anim</code>
+                                  <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'emu_run'"
+                                    (click)="copyToClipboard('emulator -avd Pixel_8_API_34 -no-boot-anim', 'emu_run')">
+                                    <span class="material-symbols-outlined">{{ copiedId() === 'emu_run' ? 'check' : 'content_copy' }}</span>
+                                    <span>{{ copiedId() === 'emu_run' ? 'Copied!' : 'Copy' }}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        }
+                      </div>
+                    }
+
+                  </div>
+                }
+
+                <!-- Method 2: Physical Phone via USB -->
+                @if (activeAdbGuideTab() === 'usb') {
+                  <div class="method-details-panel">
+                    <div class="usb-guide-intro">
+                      <span class="material-symbols-outlined intro-icon">cable</span>
+                      <span>Connect your Android phone via USB cable and enable USB Debugging:</span>
+                    </div>
+
+                    <div class="steps-flow-grid">
+                      <div class="flow-step-card">
+                        <div class="step-card-header">
+                          <span class="step-number-badge">1</span>
+                          <span class="material-symbols-outlined step-card-icon">usb</span>
+                        </div>
+                        <div class="step-card-title">Connect USB Cable</div>
+                        <div class="step-card-desc">Plug your Android phone into this computer with a data cable.</div>
+                      </div>
+
+                      <div class="flow-step-card">
+                        <div class="step-card-header">
+                          <span class="step-number-badge">2</span>
+                          <span class="material-symbols-outlined step-card-icon">touch_app</span>
+                        </div>
+                        <div class="step-card-title">Enable Developer Options</div>
+                        <div class="step-card-desc">In phone <strong>Settings > About Phone</strong>, tap <strong>Build Number</strong> 7
+                          times.</div>
+                      </div>
+
+                      <div class="flow-step-card">
+                        <div class="step-card-header">
+                          <span class="step-number-badge">3</span>
+                          <span class="material-symbols-outlined step-card-icon">toggle_on</span>
+                        </div>
+                        <div class="step-card-title">Enable USB Debugging</div>
+                        <div class="step-card-desc">In <strong>Settings > Developer Options</strong>, turn <strong>USB Debugging</strong> ON.
+                        </div>
+                      </div>
+
+                      <div class="flow-step-card">
+                        <div class="step-card-header">
+                          <span class="step-number-badge">4</span>
+                          <span class="material-symbols-outlined step-card-icon">verified_user</span>
+                        </div>
+                        <div class="step-card-title">Authorize Computer</div>
+                        <div class="step-card-desc">Check <strong>"Always allow"</strong> and tap <strong>Allow</strong> on the phone prompt.
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                }
+
+                <!-- Method 3: Wireless ADB -->
+                @if (activeAdbGuideTab() === 'wifi') {
+                  <div class="method-details-panel">
+                    <div class="wifi-guide-intro">
+                      <span class="material-symbols-outlined intro-icon">wifi</span>
+                      <span>Connect your phone and computer on the same Wi-Fi network:</span>
+                    </div>
+                  
+                    <!-- Interactive Wi-Fi Connection Generator Box -->
+                    <div class="wifi-interactive-box">
+                      <div class="wifi-form-row">
+                        <div class="wifi-input-col ip-col">
+                          <label class="wifi-label">Device IP Address</label>
+                          <div class="wifi-input-wrap">
+                            <span class="material-symbols-outlined wrap-icon">router</span>
+                            <input type="text" class="wifi-input" [ngModel]="wifiHost()" (ngModelChange)="wifiHost.set($event)"
+                              placeholder="e.g. 192.168.1.108" spellcheck="false" />
+                          </div>
+                        </div>
+                  
+                        <div class="wifi-input-col port-col">
+                          <label class="wifi-label">Port</label>
+                          <div class="wifi-input-wrap">
+                            <span class="material-symbols-outlined wrap-icon">tag</span>
+                            <input type="text" class="wifi-input" [ngModel]="wifiPort()" (ngModelChange)="wifiPort.set($event)"
+                              placeholder="5555" spellcheck="false" />
+                          </div>
+                        </div>
+                  
+                        <div class="wifi-btn-col">
+                          <button type="button" class="btn-wifi-connect" [disabled]="isConnectingWifi() || !wifiHost().trim()"
+                            (click)="connectWifiDevice()">
+                            @if (isConnectingWifi()) {
+                            <span class="material-symbols-outlined spinning">sync</span>
+                            <span>Connecting...</span>
+                            } @else {
+                            <span class="material-symbols-outlined">bolt</span>
+                            <span>Connect</span>
+                            }
+                          </button>
+                        </div>
+                        </div>
+                        
+                        @if (wifiConnectMessage()) {
+                        <div class="wifi-status-alert success">
+                          <span class="material-symbols-outlined">check_circle</span>
+                          <span>{{ wifiConnectMessage() }}</span>
+                        </div>
+                        }
+                        @if (wifiConnectError()) {
+                        <div class="wifi-status-alert error">
+                          <span class="material-symbols-outlined">error</span>
+                          <span>{{ wifiConnectError() }}</span>
+                        </div>
+                        }
+                    </div>
+                  <div class="info-callout-box">
+                    <span class="material-symbols-outlined callout-icon">help_outline</span>
+                    <div class="callout-text">
+                      Find IP & port in phone <strong>Settings > Developer Options > Wireless Debugging</strong>.
+                      </div>
+                    </div>
+                  </div>
+                }
+
+              </div>
+            }
+
+            <!-- STATE C: UNAUTHORIZED DEVICE -->
+            @if (adbProbe()?.status === 'warn' && adbProbe()?.summary === 'Device Unauthorized') {
+              <div class="unauthorized-panel">
+                <div class="unauthorized-card">
+                  <span class="material-symbols-outlined alert-icon">screen_lock_portrait</span>
+                  <div class="unauth-details">
+                    <div class="unauth-title">USB Debugging Authorization Pending</div>
+                    <div class="unauth-desc">
+                      Your Android device was detected, but it requires authorization. Please unlock your phone screen and tap <strong>"Allow USB Debugging"</strong>.
+                    </div>
+                  </div>
+                  <button type="button" class="btn-retry-auth" (click)="restartAdbServer()">
+                    <span class="material-symbols-outlined">refresh</span>
+                    <span>Restart ADB & Check</span>
+                  </button>
+                </div>
+              </div>
+            }
+
+            <!-- STATE D: ADB MISSING -->
+            @if (adbProbe()?.status === 'fail') {
+              <div class="adb-missing-panel">
+                <div class="error-msg-box">
+                  <span class="material-symbols-outlined err-icon">error</span>
+                  <div>
+                    <strong>Android Platform Tools (adb) not found.</strong> Please install ADB on your operating system:
+                  </div>
+                </div>
+
+                <div class="install-commands-row">
+                  <div class="install-card" [class.highlight-os]="effectiveOs() === 'linux'">
+                    <div class="install-os">
+                      <span>Linux (Ubuntu / Debian)</span>
+                      @if (effectiveOs() === 'linux') {
+                      <span class="detected-badge">Detected</span>
+                      }
+                    </div>
+                    <div class="code-box small-box">
+                      <span class="terminal-prefix">$</span>
+                      <code class="code-text">sudo apt-get install -y adb</code>
+                      <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'linux_adb'"
+                        (click)="copyToClipboard('sudo apt-get install -y adb', 'linux_adb')">
+                        <span class="material-symbols-outlined">{{ copiedId() === 'linux_adb' ? 'check' : 'content_copy' }}</span>
+                        <span>{{ copiedId() === 'linux_adb' ? 'Copied!' : 'Copy' }}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="install-card" [class.highlight-os]="effectiveOs() === 'darwin'">
+                    <div class="install-os">
+                      <span>macOS (Homebrew)</span>
+                      @if (effectiveOs() === 'darwin') {
+                      <span class="detected-badge">Detected</span>
+                      }
+                    </div>
+                    <div class="code-box small-box">
+                      <span class="terminal-prefix">$</span>
+                      <code class="code-text">brew install android-platform-tools</code>
+                      <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'mac_adb'"
+                        (click)="copyToClipboard('brew install android-platform-tools', 'mac_adb')">
+                        <span class="material-symbols-outlined">{{ copiedId() === 'mac_adb' ? 'check' : 'content_copy' }}</span>
+                        <span>{{ copiedId() === 'mac_adb' ? 'Copied!' : 'Copy' }}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="install-card" [class.highlight-os]="effectiveOs() === 'windows'">
+                    <div class="install-os">
+                      <span>Windows (WinGet)</span>
+                      @if (effectiveOs() === 'windows') {
+                      <span class="detected-badge">Detected</span>
+                      }
+                    </div>
+                    <div class="code-box small-box">
+                      <span class="terminal-prefix">></span>
+                      <code class="code-text">winget install Google.PlatformTools</code>
+                      <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'win_adb'"
+                        (click)="copyToClipboard('winget install Google.PlatformTools', 'win_adb')">
+                        <span class="material-symbols-outlined">{{ copiedId() === 'win_adb' ? 'check' : 'content_copy' }}</span>
+                        <span>{{ copiedId() === 'win_adb' ? 'Copied!' : 'Copy' }}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            }
+
+          </div>
+        </div>
+
+        <!-- Ready Banner Footer: Direct One-Click Launch -->
+        @if (isReady()) {
+          <div class="ready-banner-footer">
+            <div class="ready-banner-left">
+              <div class="step-badge step-pass">
+                <span class="material-symbols-outlined step-check-icon">check</span>
+              </div>
+              <div class="ready-text-group">
+                <h4 class="ready-title">System Ready for Autonomous Tasks</h4>
+                <p class="ready-desc">All dependencies, AI model credentials, and Android device are verified and ready to run.</p>
+              </div>
+            </div>
+            <button type="button" class="btn-proceed-launch" (click)="setTab('launcher')">
+              <span>Launch Autonomous Task</span>
+              <span class="material-symbols-outlined rocket-icon">rocket_launch</span>
+            </button>
+          </div>
+        }
+
+      </section>
+    }
+
+    <!-- ========================================================================= -->
+    <!-- VIEW 2: TASK EXECUTION LAUNCHER (UNIFIED SCULPTURED COMPOSER)            -->
+    <!-- ========================================================================= -->
+    @if (activeTab() === 'launcher') {
+      <section class="task-launcher-view">
+
+        <!-- Prerequisites Drop Alert if any blocker probe is not passing -->
+        @if (!isReady()) {
+          <div class="launcher-warning-bar" (click)="setTab('diagnostics')">
+            <span class="material-symbols-outlined warn-icon">warning</span>
+            <span>Prerequisites incomplete: runtime, credentials, or Android device is not ready. Click here to open Setup Guide.</span>
+            <span class="material-symbols-outlined arrow">arrow_forward</span>
+          </div>
+        }
+
+        <!-- Unified Intelligent Composer Surface (Apple / Linear / Claude Grade) -->
+        <div class="composer-card" [class.is-pro-active]="selectedProfile() === 'pro'">
+          
+          <!-- Smart Intent Recommendation Strip (if detected) -->
+          @if (showIntentSuggestion()) {
+            <div class="intent-suggestion-strip">
+              <div class="suggestion-left">
+                <span class="material-symbols-outlined sparkle-icon">auto_awesome</span>
+                <span class="suggestion-text">
+                  Continuous monitoring or complex task detected. Recommended: <strong>Pro Mode</strong>
+                </span>
+              </div>
+              <button type="button" class="btn-switch-pro" (click)="setProfile('pro')">
+                <span>Switch to Pro</span>
+                <span class="material-symbols-outlined btn-arrow">arrow_forward</span>
+              </button>
+            </div>
+          }
+
+          <!-- Borderless Seamless Textarea Input Area -->
+          <div class="composer-input-area">
+            <textarea
+              id="task-input-field"
+              class="composer-textarea"
+              rows="3"
+              [(ngModel)]="taskGoal"
+              [disabled]="isSubmitting()"
+              placeholder="Describe what you want to achieve on your phone (e.g. Open Gmail and search for latest emails)..."
+              (keydown.control.enter)="runTask()"
+              (keydown.meta.enter)="runTask()"
+            ></textarea>
+          </div>
+
+          <!-- Contextual Model Descriptor Strip (Clean & Unified for Flash & Pro) -->
+          <div class="composer-model-descriptor" [class.is-pro]="selectedProfile() === 'pro'">
+            <div class="descriptor-icon-wrap">
+              <span class="material-symbols-outlined">{{ selectedProfile() === 'flash' ? 'bolt' : 'psychology' }}</span>
+            </div>
+            <div class="descriptor-body">
+              @if (selectedProfile() === 'flash') {
+                <p class="desc-line">
+                  <span class="mode-name">Flash</span>
+                  <span class="bullet">·</span>
+                  <span>Token-efficient, rapid <strong>3–5s/step</strong> reactive decisions. Best for routine daily tasks within <strong>25 steps</strong>.</span>
+                  <span class="limitation-tag">(No long-term monitoring or video analysis)</span>
+                </p>
+              } @else {
+                <p class="desc-line">
+                  <span class="mode-name">Pro</span>
+                  <span class="bullet">·</span>
+                  <span>Our most powerful agent architecture. Handles <strong>100+ step</strong> workflows and direct phone state monitoring (<strong>20–40s</strong> / step).</span>
+                </p>
+              }
+            </div>
+          </div>
+
+          <!-- Error Banner if any -->
+          @if (errorMessage()) {
+            <div class="error-banner">
+              <span class="material-symbols-outlined error-icon">error</span>
+              <span>{{ errorMessage() }}</span>
+            </div>
+          }
+
+          <!-- Composer Bottom Action Bar -->
+          <div class="composer-action-bar">
+            <div class="bar-left">
+              <!-- Frosted Glass Model Toggle Capsule -->
+              <div class="model-toggle-capsule">
+                <button
+                  type="button"
+                  class="model-toggle-btn btn-flash"
+                  [class.active]="selectedProfile() === 'flash'"
+                  (click)="setProfile('flash')"
+                >
+                  <span class="material-symbols-outlined btn-icon">bolt</span>
+                  <span class="btn-text">Flash</span>
+                </button>
+                <button
+                  type="button"
+                  class="model-toggle-btn btn-pro"
+                  [class.active]="selectedProfile() === 'pro'"
+                  (click)="setProfile('pro')"
+                >
+                  <span class="material-symbols-outlined btn-icon">psychology</span>
+                  <span class="btn-text">Pro</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="bar-right">
+              @if (taskGoal().length > 0) {
+                <span class="char-count">{{ taskGoal().length }} chars</span>
+              }
+
+              <!-- Run Button -->
+              <button
+                type="button"
+                class="btn-run-composer"
+                [class.btn-run-pro]="selectedProfile() === 'pro'"
+                [disabled]="!taskGoal().trim() || isSubmitting()"
+                (click)="runTask()"
+              >
+                @if (isSubmitting()) {
+                  <span class="spinner"></span><span>Starting...</span>
+                } @else {
+                  <span class="material-symbols-outlined run-icon">play_arrow</span><span>Run Task</span>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pro Mode Standalone Expected Output Card (Clean & Minimalist) -->
+        @if (selectedProfile() === 'pro') {
+          <div class="pro-outputter-standalone-card">
+            <div class="outputter-card-header">
+              <span class="outputter-title">Expected Output</span>
+              <span class="outputter-optional-tag">(Optional)</span>
+            </div>
+
+            <div class="outputter-input-wrapper">
+              <input
+                type="text"
+                class="outputter-standalone-input"
+                [ngModel]="expectedOutput()"
+                (ngModelChange)="expectedOutput.set($event)"
+                placeholder="Specify expected output or schema (e.g. 'Extract SMS verification code as JSON' or 'Summary of discounts and total price')..."
+                spellcheck="false"
+              />
+              @if (expectedOutput().trim()) {
+                <button
+                  type="button"
+                  class="btn-clear-standalone"
+                  (click)="expectedOutput.set('')"
+                  title="Clear expected output"
+                >
+                  <span class="material-symbols-outlined">close</span>
+                </button>
+              }
+            </div>
+          </div>
+        }
+
+        <!-- Recommended Tasks Hub (Clean & Direct) -->
+        <div class="smart-suggestions-container">
+          <!-- Header Bar: Clean Category Tabs & Shuffle -->
+          <div class="suggestions-header-bar">
+            <div class="header-left">
+              <div class="section-label">
+                <span class="material-symbols-outlined section-icon">auto_awesome</span>
+                <span class="label-text">Recommended Tasks</span>
+              </div>
+
+              <!-- Filter Tabs -->
+              <div class="category-tabs-group">
+                <button
+                  type="button"
+                  class="cat-tab-btn"
+                  [class.active]="selectedCategory() === 'all'"
+                  (click)="setCategory('all')"
+                >
+                  <span>All</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="cat-tab-btn cat-flash"
+                  [class.active]="selectedCategory() === 'flash'"
+                  (click)="setCategory('flash')"
+                >
+                  <span class="material-symbols-outlined tab-mini-icon">bolt</span>
+                  <span>Flash</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="cat-tab-btn cat-pro"
+                  [class.active]="selectedCategory() === 'pro'"
+                  (click)="setCategory('pro')"
+                >
+                  <span class="material-symbols-outlined tab-mini-icon">psychology</span>
+                  <span>Pro</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="cat-tab-btn"
+                  [class.active]="selectedCategory() === 'cross_app'"
+                  (click)="setCategory('cross_app')"
+                >
+                  <span class="material-symbols-outlined tab-mini-icon">sync_alt</span>
+                  <span>Multi-App</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="cat-tab-btn"
+                  [class.active]="selectedCategory() === 'monitor'"
+                  (click)="setCategory('monitor')"
+                >
+                  <span class="material-symbols-outlined tab-mini-icon">monitoring</span>
+                  <span>Monitor</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="header-right">
+              <button type="button" class="btn-shuffle-suggestions" (click)="shuffleSuggestions()" title="Discover more tasks">
+                <span class="material-symbols-outlined shuffle-icon">shuffle</span>
+                <span>Shuffle</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Suggestions Grid -->
+          <div class="suggestions-cards-grid">
+            @for (item of filteredSuggestions(); track item.id) {
+              <div
+                class="suggestion-card"
+                [class.is-pro-card]="item.profile === 'pro'"
+                [class.is-flash-card]="item.profile === 'flash'"
+                (click)="applySuggestion(item)"
+              >
+                <!-- Top Row: App Icon + Name + Mode Badge -->
+                <div class="card-top-row">
+                  <div class="app-icons-cluster">
+                    @for (app of item.apps; track app.name) {
+                      <div class="app-icon-badge" [title]="app.name">
+                        <span class="material-symbols-outlined">{{ app.icon }}</span>
+                      </div>
+                    }
+                    <span class="app-names-label">{{ getAppNamesDisplay(item.apps) }}</span>
+                  </div>
+
+                  <span class="mode-badge" [class.mode-pro]="item.profile === 'pro'" [class.mode-flash]="item.profile === 'flash'">
+                    {{ item.profile === 'pro' ? 'Pro' : 'Flash' }}
+                  </span>
+                </div>
+
+                <!-- Middle Content: Title + Description -->
+                <div class="card-body">
+                  <h4 class="card-title">{{ item.title }}</h4>
+                  <p class="card-desc">{{ item.description }}</p>
+                </div>
+
+                <!-- Bottom Footer Row: Tag & Action -->
+                <div class="card-footer-row">
+                  <span class="tag-pill">{{ item.tag }}</span>
+                  <div class="use-prompt-action">
+                    <span>Use</span>
+                    <span class="material-symbols-outlined action-arrow">arrow_forward</span>
+                  </div>
+                </div>
+              </div>
+            }
+          </div>
+        </div>
+
+
+      </section>
+    }
+
+  </main>
+</div>

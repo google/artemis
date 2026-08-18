@@ -107,6 +107,47 @@ def test_settings_and_api_key_fallbacks(monkeypatch):
     assert custom_settings.get_api_key("xai").get_secret_value() == "xai_test_key"
 
 
+def test_placeholder_api_key_filtering(monkeypatch):
+    """Test that default template placeholders are filtered out and treated as unconfigured."""
+    from artemis.config.settings import is_placeholder_key
+
+    assert is_placeholder_key("your_gemini_api_key_here") is True
+    assert is_placeholder_key("your_google_cloud_vision_api_key_here") is True
+    assert is_placeholder_key("your_openai_api_key_here") is True
+    assert is_placeholder_key("your_custom_key_here") is True
+    assert is_placeholder_key("<your-api-key>") is True
+    assert is_placeholder_key("[api_key]") is True
+    assert is_placeholder_key("API_KEY") is True
+    assert is_placeholder_key("") is True
+    assert is_placeholder_key(None) is True
+    assert is_placeholder_key("AIzaSyValidGeminiKey12345") is False
+
+    for env_k in (
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "GCP_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPEN_ROUTER_API_KEY",
+        "XAI_API_KEY",
+        "OCR_API_KEY",
+        "VISION_API_KEY",
+        "API_KEY",
+    ):
+        monkeypatch.delenv(env_k, raising=False)
+
+    placeholder_settings = Settings(
+        _env_file=None,
+        GEMINI_API_KEY=SecretStr("your_gemini_api_key_here"),
+        OPENAI_API_KEY=SecretStr("your_openai_api_key_here"),
+        OCR_API_KEY=SecretStr("your_google_cloud_vision_api_key_here"),
+    )
+    assert placeholder_settings.get_api_key("google") is None
+    assert placeholder_settings.get_api_key("gemini") is None
+    assert placeholder_settings.get_api_key("openai") is None
+    assert placeholder_settings.get_api_key("ocr") is None
+
+
 def test_llm_config_parsing_and_merging():
     """Test LLMConfig parsing, agent querying, and deep merging."""
     llm_cfg = get_default_llm_config()

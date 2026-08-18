@@ -1,0 +1,865 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+$bg-base: #e2e5ea;
+$font-sans: 'Google Sans Text', 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+$primary: #0f172a;
+$primary-hover: #1e293b;
+$rose: #ef4444;
+$rose-dark: #dc2626;
+
+:host {
+  display: block;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  font-family: $font-sans;
+}
+
+.workspace-container {
+  position: relative;
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: $bg-base;
+  overflow: hidden;
+
+  &.is-resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+
+  /* --- Glassmorphism Panel --- */
+  .glass-panel {
+    position: relative;
+    z-index: 1; 
+    background: #f4fafb;
+    border: none;
+    box-shadow: none; 
+  }
+
+  .left-panel {
+    flex: 1 0 500px; 
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #f4fafb; 
+    border-right: 1px solid #e2e8f0;
+    border-left: none;
+    border-top: none;
+    border-bottom: none;
+    min-width: 450px;
+    height: 100%;
+  }
+
+  .right-panel {
+    flex: 0 1 auto; 
+    min-width: 250px;
+    max-width: 100%;
+    padding: 0;
+    border: none;
+    background-color: #ffffff;
+    box-shadow: -6px 0 24px rgba(0, 0, 0, 0.03);
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    z-index: 2;
+  }
+
+  .resizer {
+    width: 12px;
+    cursor: col-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    transition: background 0.2s ease;
+    margin: 0 -6px;
+
+    &:hover, .workspace-container.is-resizing & {
+      background: rgba(255, 255, 255, 0.15);
+      
+      .resizer-handle {
+        background: rgba(94, 114, 228, 0.8);
+        height: 60px;
+      }
+    }
+
+    .resizer-handle {
+      width: 4px;
+      height: 40px;
+      background: rgba(0, 0, 0, 0.15);
+      border-radius: 4px;
+      transition: all 0.2s ease;
+    }
+  }
+
+  /* ========================================================================= */
+  /* BOTTOM FLOATING COMMAND BAR (Proximity Reveal & Minimalist Glassmorphism) */
+  /* ========================================================================= */
+  .workspace-floating-bar-wrapper {
+    position: absolute;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: min(680px, calc(100% - 36px));
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    pointer-events: none;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+
+    /* Floating Toast / Error Notification */
+    .floating-dock-toast {
+      pointer-events: auto;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px;
+      border-radius: 12px;
+      font-size: 12.5px;
+      font-weight: 500;
+      box-shadow: 0 8px 24px -4px rgba(239, 68, 68, 0.15);
+      animation: slideUpFade 0.2s ease-out;
+      max-width: 90%;
+
+      &.error {
+        background: rgba(254, 242, 242, 0.88);
+        backdrop-filter: blur(20px) saturate(180%);
+        -webkit-backdrop-filter: blur(20px) saturate(180%);
+        border: 1px solid rgba(254, 202, 202, 0.9);
+        color: #991b1b;
+
+        .toast-icon {
+          font-size: 16px;
+          color: #ef4444;
+          flex-shrink: 0;
+        }
+
+        .toast-text {
+          flex: 1;
+          line-height: 1.4;
+        }
+
+        .btn-toast-close {
+          background: transparent;
+          border: none;
+          padding: 2px;
+          cursor: pointer;
+          color: #991b1b;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 4px;
+          opacity: 0.7;
+          transition: opacity 0.15s ease;
+
+          &:hover {
+            opacity: 1;
+            background: rgba(0, 0, 0, 0.05);
+          }
+
+          .material-symbols-outlined {
+            font-size: 15px;
+          }
+        }
+      }
+    }
+
+    /* Dock Row: Flex container holding Main Card + Standalone Stop Button */
+    .floating-dock-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      pointer-events: none;
+      transition: gap 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    /* Standalone Floating Stop Button (Separated from Capsule) */
+    .standalone-stop-btn {
+      pointer-events: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      min-width: 34px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.85);
+      background: rgba(239, 68, 68, 0.9);
+      backdrop-filter: blur(24px) saturate(190%) brightness(105%);
+      -webkit-backdrop-filter: blur(24px) saturate(190%) brightness(105%);
+      color: #ffffff;
+      box-shadow: 0 6px 18px -2px rgba(239, 68, 68, 0.4), inset 0 1px 1.5px rgba(255, 255, 255, 0.7);
+      cursor: pointer;
+      outline: none;
+      flex-shrink: 0;
+      transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                  transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                  width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                  min-width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                  margin 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                  background 0.2s ease,
+                  box-shadow 0.2s ease;
+      animation: popIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+
+      .material-symbols-outlined {
+        font-size: 17px;
+        line-height: 1;
+      }
+
+      &:hover:not(:disabled) {
+        background: #dc2626;
+        transform: scale(1.1);
+        box-shadow: 0 8px 22px rgba(239, 68, 68, 0.55), inset 0 1px 1.5px rgba(255, 255, 255, 0.9);
+      }
+
+      &:active:not(:disabled) {
+        transform: scale(0.93);
+      }
+
+      &:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+    }
+
+    /* Floating Dock Card Container */
+    .floating-dock-card {
+      pointer-events: auto;
+      position: relative;
+      width: 100%;
+      border-radius: 18px;
+      box-sizing: border-box;
+      overflow: hidden;
+      transition: max-width 0.32s cubic-bezier(0.16, 1, 0.3, 1),
+                  width 0.32s cubic-bezier(0.16, 1, 0.3, 1),
+                  border-radius 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                  box-shadow 0.28s ease,
+                  background 0.28s ease,
+                  transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                  border-color 0.28s ease;
+    }
+
+    /* ========================================================================= */
+    /* AMBIENT LIQUID WAVE COLOR BLOCKS (Soft Diffused Aurora Glow Waves)       */
+    /* ========================================================================= */
+    .dock-wave-container {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 100%;
+      pointer-events: none;
+      border-radius: inherit;
+      overflow: hidden;
+      z-index: 0;
+      opacity: 0.78;
+      transition: opacity 0.35s ease, filter 0.35s ease;
+
+      /* Flash Mode Color Stops (Soft Electric Blue, Violet, Amber, Cyan) */
+      .wave-stop-1 { stop-color: #3b82f6; stop-opacity: 0.65; }
+      .wave-stop-2 { stop-color: #8b5cf6; stop-opacity: 0.7; }
+      .wave-stop-3 { stop-color: #f59e0b; stop-opacity: 0.65; }
+      .wave-stop-4 { stop-color: #06b6d4; stop-opacity: 0.6; }
+
+      /* Pro Mode Color Stops (Soft Cosmic Nebula / Amethyst / Fuchsia) */
+      &.is-pro {
+        .wave-stop-1 { stop-color: #7c3aed; stop-opacity: 0.7; }
+        .wave-stop-2 { stop-color: #ec4899; stop-opacity: 0.75; }
+        .wave-stop-3 { stop-color: #6366f1; stop-opacity: 0.65; }
+        .wave-stop-4 { stop-color: #a855f7; stop-opacity: 0.7; }
+      }
+
+      /* Deep Ambient Aurora Glow Diffusion */
+      .wave-glow-ambient {
+        position: absolute;
+        bottom: -8px;
+        left: 5%;
+        right: 5%;
+        height: 30px;
+        border-radius: 50%;
+        background: radial-gradient(ellipse at center, rgba(99, 102, 241, 0.4) 0%, rgba(245, 158, 11, 0.2) 50%, transparent 80%);
+        filter: blur(16px);
+        opacity: 0.7;
+        animation: glowBreathe 5s ease-in-out infinite alternate;
+      }
+
+      &.is-pro .wave-glow-ambient {
+        background: radial-gradient(ellipse at center, rgba(168, 85, 247, 0.45) 0%, rgba(236, 72, 153, 0.25) 50%, transparent 80%);
+      }
+
+      /* Wave Tracks Wrapper with Soft Gaussian Blur */
+      .wave-tracks-wrapper {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        height: 22px;
+        overflow: hidden;
+        filter: blur(7px); /* Soften sharp vector wave edges into silky liquid light */
+        mask-image: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 60%, transparent 100%);
+        -webkit-mask-image: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 60%, transparent 100%);
+
+        .liquid-wave {
+          position: absolute;
+          bottom: 0;
+          left: 0;
+          width: 200%;
+          height: 100%;
+          will-change: transform;
+          filter: blur(3px); /* Secondary soft layer blur */
+
+          &.wave-back {
+            opacity: 0.45;
+            animation: waveSlide 12s ease-in-out infinite alternate;
+          }
+
+          &.wave-mid {
+            opacity: 0.6;
+            animation: waveSlideReverse 9s ease-in-out infinite alternate;
+          }
+
+          &.wave-front {
+            opacity: 0.75;
+            animation: waveSlide 6.5s ease-in-out infinite alternate;
+          }
+        }
+      }
+    }
+
+    /* ======================================================================= */
+    /* 1. DORMANT / RESTING CAPSULE STATE (Subtle Frosted Peek)                */
+    /* ======================================================================= */
+    &.is-dormant {
+      .floating-dock-card {
+        max-width: 160px;
+        width: 160px;
+        margin: 0;
+        background: rgba(255, 255, 255, 0.65);
+        backdrop-filter: blur(26px) saturate(190%) brightness(104%);
+        -webkit-backdrop-filter: blur(26px) saturate(190%) brightness(104%);
+        border: 1px solid rgba(255, 255, 255, 0.85);
+        border-radius: 17px;
+        box-shadow: 0 6px 18px -2px rgba(15, 23, 42, 0.07), inset 0 1px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1px 1px rgba(255, 255, 255, 0.3);
+        cursor: pointer;
+        opacity: 0.92;
+        transform: translateY(2px);
+
+        .dock-wave-container {
+          opacity: 0.78;
+          .wave-tracks-wrapper {
+            height: 12px;
+          }
+        }
+
+        &:hover {
+          opacity: 1;
+          transform: translateY(0);
+          background: rgba(255, 255, 255, 0.82);
+          border-color: rgba(255, 255, 255, 1);
+          box-shadow: 0 8px 24px -2px rgba(15, 23, 42, 0.12), inset 0 1px 1.5px rgba(255, 255, 255, 1);
+
+          .dock-wave-container {
+            opacity: 0.95;
+            filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.35));
+          }
+        }
+
+        .capsule-peek-view {
+          display: flex;
+          opacity: 1;
+        }
+
+        .expanded-card-content {
+          display: none;
+          opacity: 0;
+        }
+      }
+    }
+
+    /* Capsule Peek View Layout */
+    .capsule-peek-view {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 14px;
+      min-height: 34px;
+      box-sizing: border-box;
+      user-select: none;
+
+      .capsule-placeholder {
+        color: #475569;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.1px;
+        white-space: nowrap;
+        text-align: center;
+      }
+    }
+
+    /* ======================================================================= */
+    /* 2. EXPANDED / ACTIVE STATE (Rich Frosted Command Box)                   */
+    /* ======================================================================= */
+    &.is-expanded {
+      .floating-dock-row {
+        gap: 0;
+      }
+
+      .standalone-stop-btn {
+        opacity: 0;
+        width: 0;
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+        border-width: 0;
+        transform: scale(0.5);
+        pointer-events: none;
+      }
+
+      .floating-dock-card {
+        max-width: 100%;
+        width: 100%;
+        background: rgba(255, 255, 255, 0.68);
+        backdrop-filter: blur(32px) saturate(210%) brightness(105%);
+        -webkit-backdrop-filter: blur(32px) saturate(210%) brightness(105%);
+        border: 1px solid rgba(255, 255, 255, 0.82);
+        box-shadow: 0 16px 44px -8px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(0, 0, 0, 0.02), inset 0 1.5px 2px rgba(255, 255, 255, 0.95), inset 0 -1px 2px rgba(255, 255, 255, 0.3);
+        opacity: 1;
+        transform: translateY(0);
+
+        .dock-wave-container {
+          opacity: 0.88;
+          .wave-tracks-wrapper {
+            height: 22px;
+          }
+        }
+
+        .capsule-peek-view {
+          display: none;
+          opacity: 0;
+        }
+
+        .expanded-card-content {
+          display: block;
+          opacity: 1;
+          animation: cardFadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+      }
+    }
+
+    /* Focused State Glow */
+    &.is-focused .floating-dock-card {
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(36px) saturate(220%) brightness(106%);
+      -webkit-backdrop-filter: blur(36px) saturate(220%) brightness(106%);
+      border-color: rgba(59, 130, 246, 0.55);
+      box-shadow: 0 20px 48px -6px rgba(37, 99, 235, 0.16), 0 0 0 2.5px rgba(59, 130, 246, 0.18), inset 0 1.5px 2px rgba(255, 255, 255, 1);
+
+      .dock-wave-container {
+        opacity: 1;
+        filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.35));
+      }
+    }
+
+    /* Expanded Content Rows */
+    .expanded-card-content {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+
+      .card-main-input-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 10px 3px 14px;
+        min-height: 48px;
+        box-sizing: border-box;
+
+        .leading-status-icon {
+          width: 14px;
+          height: 14px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+
+          .pulse-indicator-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ef4444;
+            box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
+            animation: pulseDot 1.4s infinite;
+          }
+        }
+
+        .input-content-area {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          align-items: center;
+
+          .dock-textarea {
+            width: 100%;
+            border: none;
+            outline: none;
+            background: transparent;
+            resize: none;
+            font-family: inherit;
+            font-size: 13.5px;
+            font-weight: 450;
+            line-height: 1.5;
+            color: #0f172a;
+            padding: 3px 0;
+            max-height: 120px;
+            box-sizing: border-box;
+            display: block;
+
+            &::placeholder {
+              color: #64748b;
+              font-size: 12.5px;
+              font-weight: 400;
+              transition: color 0.15s ease;
+            }
+
+            &:disabled {
+              opacity: 0.6;
+              cursor: not-allowed;
+            }
+          }
+        }
+
+        .dock-circle-btn {
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border: none;
+          cursor: pointer;
+          outline: none;
+          flex-shrink: 0;
+          transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+
+          .material-symbols-outlined {
+            font-size: 18px;
+            line-height: 1;
+          }
+
+          .spinning-icon {
+            font-size: 17px;
+            animation: spin 1s linear infinite;
+          }
+
+          /* Clear Button */
+          &.btn-clear {
+            width: 26px;
+            height: 26px;
+            background: rgba(255, 255, 255, 0.45);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            color: #64748b;
+
+            &:hover {
+              background: rgba(255, 255, 255, 0.75);
+              color: #0f172a;
+            }
+          }
+
+          /* Stop Button (Frosted Red) */
+          &.btn-stop {
+            width: 36px;
+            height: 36px;
+            background: rgba(239, 68, 68, 0.9);
+            backdrop-filter: blur(8px);
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+            animation: popIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+
+            &:hover:not(:disabled) {
+              background: #dc2626;
+              transform: scale(1.05);
+              box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4);
+            }
+
+            &:active:not(:disabled) {
+              transform: scale(0.95);
+            }
+
+            &:disabled {
+              opacity: 0.6;
+              cursor: not-allowed;
+            }
+          }
+
+          /* Send Button */
+          &.btn-send {
+            width: 36px;
+            height: 36px;
+            background: rgba(15, 23, 42, 0.88);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            color: #ffffff;
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.25);
+
+            &:disabled {
+              background: rgba(226, 232, 240, 0.6);
+              color: #94a3b8;
+              cursor: not-allowed;
+              box-shadow: none;
+              border-color: rgba(255, 255, 255, 0.5);
+              transform: none;
+            }
+
+            &.has-content:not(:disabled) {
+              background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.98));
+              box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+
+              &:hover {
+                background: linear-gradient(135deg, #2563eb, #1d4ed8);
+                transform: scale(1.05);
+                box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35);
+              }
+            }
+
+            &:active:not(:disabled) {
+              transform: scale(0.95);
+            }
+          }
+        }
+      }
+
+      /* Model Profile Selector & Status Footer Row */
+      .card-footer-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 3px 14px 8px 14px;
+        box-sizing: border-box;
+
+        .footer-left-group {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+
+          /* Segmented Model Toggle with Frosted Glass */
+          .model-profile-toggle {
+            display: inline-flex;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.45);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255, 255, 255, 0.65);
+            box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.8), 0 1px 3px rgba(0, 0, 0, 0.03);
+            border-radius: 8px;
+            padding: 2px;
+            gap: 2px;
+
+            .profile-toggle-pill {
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              gap: 3.5px;
+              width: 62px;
+              min-width: 62px;
+              height: 22px;
+              border-radius: 6px;
+              border: none;
+              background: transparent;
+              color: #64748b;
+              font-family: inherit;
+              font-size: 11px;
+              font-weight: 550;
+              cursor: pointer;
+              transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+              outline: none;
+              user-select: none;
+              box-sizing: border-box;
+
+              .pill-icon {
+                font-size: 13px;
+                line-height: 1;
+                flex-shrink: 0;
+              }
+
+              .pill-label {
+                line-height: 1;
+              }
+
+              &:hover:not(.active) {
+                color: #1e293b;
+                background: rgba(255, 255, 255, 0.65);
+              }
+
+              &.active {
+                background: rgba(255, 255, 255, 0.92);
+                backdrop-filter: blur(8px);
+                color: #0f172a;
+                font-weight: 700;
+                box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.08), inset 0 1px 1.5px rgba(255, 255, 255, 1);
+
+                .icon-flash {
+                  color: #d97706;
+                }
+
+                .icon-pro {
+                  color: #7c3aed;
+                }
+              }
+            }
+          }
+        }
+
+        .footer-right-status {
+          .running-status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 4.5px;
+            font-size: 10.5px;
+            font-weight: 600;
+            color: #dc2626;
+            background: rgba(254, 226, 226, 0.7);
+            padding: 2px 7px;
+            border-radius: 10px;
+
+            .running-pulse-dot {
+              width: 5.5px;
+              height: 5.5px;
+              border-radius: 50%;
+              background: #ef4444;
+              animation: pulseDot 1.2s infinite;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /* When viewport shrinks to approximately 2/3 of standard desktop width (<= 1150px), hide right panel and leave only agent-stream */
+  @media (max-width: 1150px) {
+    .right-panel, .resizer {
+      display: none !important;
+    }
+
+    .left-panel {
+      border-right: none !important;
+      width: 100% !important;
+      flex: 1 1 100% !important;
+      min-width: 0 !important;
+    }
+  }
+}
+
+/* Animations */
+@keyframes popIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes slideUpFade {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cardFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes pulseDot {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+/* Fluid Wave Horizontal Slide (Seamless loop) */
+@keyframes waveSlide {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+@keyframes waveSlideReverse {
+  0% {
+    transform: translate3d(-50%, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Ambient Radial Glow Breathing */
+@keyframes glowBreathe {
+  0% {
+    opacity: 0.55;
+    transform: scaleX(0.92);
+  }
+  100% {
+    opacity: 0.95;
+    transform: scaleX(1.08);
+  }
+}

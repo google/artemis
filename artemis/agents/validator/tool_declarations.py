@@ -17,8 +17,10 @@
 import ast
 import asyncio
 import base64
+import hashlib
 import inspect
 import json
+from pathlib import Path
 import time
 from typing import Any, Literal
 
@@ -35,7 +37,10 @@ from artemis.tools.explorer_tool import _run_explorer_logic
 from artemis.graph.state import State
 from artemis.tools.mobile.launch_app import find_package
 from artemis.utils.app_launch_utils import launch_app_with_retries
-from artemis.utils.coordinates import parse_swipe_parameters
+from artemis.utils.coordinates import (
+    compute_smart_swipe_coordinates,
+    parse_swipe_parameters,
+)
 from artemis.utils.logger import get_logger
 from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
 from artemis.utils.visualization import format_minimal_list_with_elements
@@ -282,6 +287,31 @@ def normalize_coordinate_target(target: Any) -> int | list[int] | Any:
     return target
 
 
+def serialize_mobile_action_result(result: Any) -> dict[str, Any]:
+    """Serializes MobileActionExecutor execution results into a clean structured dict.
+
+    Extracts the post-action screenshot hash from the captured image to eliminate guesswork.
+    """
+    if not isinstance(result, tuple) or len(result) < 3:
+        return {"outcome": str(result) if result is not None else ""}
+    outcome, img_bytes, shot_path, *rest = result
+    xml_list = rest[0] if rest else None
+
+    post_image_name = None
+    if shot_path:
+        post_image_name = Path(shot_path).stem
+    elif img_bytes:
+        post_image_name = hashlib.sha256(img_bytes).hexdigest()
+
+    is_err = bool(outcome and ("Error" in outcome or "Failed" in outcome))
+    return {
+        "outcome": outcome,
+        "post_image_name": post_image_name,
+        "has_xml": bool(xml_list),
+        "status": "error" if is_err else "success",
+    }
+
+
 class MobileActionExecutor:
     """Encapsulates device action execution, observation capture, and result reporting."""
 
@@ -289,7 +319,7 @@ class MobileActionExecutor:
         self.ctx = ctx
         self.controller = controller or UnifiedMobileController(ctx)
 
-    @trace(type="tool", name="click")
+    @trace(type="action", name="click", serializer=serialize_mobile_action_result)
     async def exec_click(
         self,
         target: list[int] | Any,
@@ -327,7 +357,7 @@ class MobileActionExecutor:
 
         return outcome, img_bytes, shot_path, xml_list
 
-    @trace(type="tool", name="click_sequence")
+    @trace(type="action", name="click_sequence", serializer=serialize_mobile_action_result)
     async def exec_click_sequence(
         self,
         sequence: list[int | list[int] | str] | str,
@@ -407,7 +437,7 @@ class MobileActionExecutor:
         except Exception as e:
             return f"Error executing click sequence: {e}", None, None, None
 
-    @trace(type="tool", name="long_press")
+    @trace(type="action", name="long_press", serializer=serialize_mobile_action_result)
     async def exec_long_press(
         self,
         target: list[int] | Any,
@@ -449,7 +479,7 @@ class MobileActionExecutor:
 
         return outcome, img_bytes, shot_path, xml_list
 
-    @trace(type="tool", name="input_text")
+    @trace(type="action", name="input_text", serializer=serialize_mobile_action_result)
     async def exec_input_text(
         self,
         text: str,
@@ -484,11 +514,11 @@ class MobileActionExecutor:
 
         return outcome, img_bytes, shot_path, xml_list
 
-    @trace(type="tool", name="swipe")
+    @trace(type="action", name="swipe", serializer=serialize_mobile_action_result)
     async def exec_swipe(
         self,
         action: str | list[int] | Any = None,
-        duration: int = 400,
+        duration: int = 800,
         state: State | None = None,
         duration_ms: int | None = None,
         **kwargs: Any,
@@ -510,33 +540,16 @@ class MobileActionExecutor:
         try:
             if kind == "direction":
                 dir_name = target
-                dir_map = {
-                    "up": (
-                        int(width * 0.6),
-                        int(height * 0.8),
-                        int(width * 0.6),
-                        int(height * 0.2),
-                    ),
-                    "down": (
-                        int(width * 0.6),
-                        int(height * 0.2),
-                        int(width * 0.6),
-                        int(height * 0.8),
-                    ),
-                    "left": (
-                        int(width * 0.8),
-                        int(height * 0.5),
-                        int(width * 0.2),
-                        int(height * 0.5),
-                    ),
-                    "right": (
-                        int(width * 0.2),
-                        int(height * 0.5),
-                        int(width * 0.8),
-                        int(height * 0.5),
-                    ),
-                }
-                x1, y1, x2, y2 = dir_map[dir_name]
+                x1, y1, x2, y2, smart_dur = compute_smart_swipe_coordinates(
+                    direction=target,
+                    target=swipe_input.get("target"),
+                    indexed_elements=getattr(state, "indexed_elements", None) if state else None,
+                    ui_hierarchy=getattr(state, "ui_tree", None) if state else None,
+                    width=width,
+                    height=height,
+                    duration=final_duration,
+                )
+                final_duration = smart_dur
                 err = await self.controller.swipe_coords(x1, y1, x2, y2, final_duration)
                 if err:
                     return f"Error swiping {dir_name}: {err}", None, None, None
@@ -569,7 +582,7 @@ class MobileActionExecutor:
 
         return outcome, img_bytes, shot_path, xml_list
 
-    @trace(type="tool", name="press_key")
+    @trace(type="action", name="press_key", serializer=serialize_mobile_action_result)
     async def exec_press_key(
         self,
         key: str,
@@ -603,7 +616,7 @@ class MobileActionExecutor:
 
         return outcome, img_bytes, shot_path, xml_list
 
-    @trace(type="tool", name="manage_app")
+    @trace(type="action", name="manage_app", serializer=serialize_mobile_action_result)
     async def exec_manage_app(
         self,
         action: str,
@@ -649,7 +662,7 @@ class MobileActionExecutor:
 
         return outcome, img_bytes, shot_path, xml_list
 
-    @trace(type="tool", name="wait_for_delay")
+    @trace(type="action", name="wait_for_delay", serializer=serialize_mobile_action_result)
     async def exec_wait_for_delay(
         self,
         time_in_ms: int,
@@ -668,7 +681,7 @@ class MobileActionExecutor:
 
         return outcome, img_bytes, shot_path, xml_list
 
-    @trace(type="tool", name="wait_for_text")
+    @trace(type="action", name="wait_for_text", serializer=serialize_mobile_action_result)
     async def exec_wait_for_text(
         self,
         text: str,
@@ -979,24 +992,51 @@ INPUT_TEXT_TOOL = ToolDeclaration(
 SWIPE_TOOL = ToolDeclaration(
     name="swipe",
     description=(
-        "[ACTION] Scroll or swipe on the screen. The screen after swipe will be"
-        " returned automatically. Set duration >= 1000 to drag-and-drop."
+        "[ACTION] Perform a swipe, drag, or slider-adjustment gesture on the screen. The screen and UI hierarchy after swipe will be returned automatically.\n\n"
+        "• Directional Scrolling ('direction' or 'action'): Recommended for general browsing and standard page scrolling in most scenarios. Automatically computes safe swipe vectors and adaptive duration, retains a ~40% visual overlap anchor for zero-omission traversal, and prevents inertial flings. Supports scoping to a sub-container via 'target'. If it fails on certain custom layouts, fall back to specifying exact coordinates ('start' and 'end') directly.\n"
+        "• Precise Coordinate Gestures ('start', 'end' or coordinates list): Best for local, fine-grained interactions such as adjusting sliders/SeekBars (e.g., volume, brightness, progress bars), drag-and-drop / list reordering, or as a reliable fallback when directional scrolling fails on specific containers. Always drag slightly PAST the target position to overcome touch slop and reliably trigger the update. When setting a slider to Maximum (100%) or Minimum (0%), swipe fully to the extreme boundary."
     ),
     parameters={
         "type": "object",
         "properties": {
+            "direction": {
+                "type": "string",
+                "enum": ["up", "down", "left", "right"],
+                "description": (
+                    "Direction for scrolling and swiping: 'up' (drags bottom-to-top, scrolling down to reveal content below),"
+                    " 'down' (drags top-to-bottom, scrolling up to reveal content above),"
+                    " 'left' (drags right-to-left, scrolling right),"
+                    " 'right' (drags left-to-right, scrolling left)."
+                ),
+            },
+            "start": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Start normalized coordinates [start_x, start_y] in 0-1000 scale.",
+            },
+            "end": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "End normalized coordinates [end_x, end_y] in 0-1000 scale.",
+            },
+            "target": {
+                "description": "Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within.",
+            },
             "action": {
                 "description": (
-                    "Swipe action direction string ('up', 'down', 'left', 'right') OR custom"
-                    " coordinates [start_x, start_y, end_x, end_y] in 0-1000 scale."
-                )
+                    "Backward-compatible swipe gesture: smart direction string ('up', 'down', 'left', 'right')"
+                    " OR precise custom coordinates [start_x, start_y, end_x, end_y] in 0-1000 scale."
+                ),
             },
             "duration": {
                 "type": "integer",
-                "description": "Swipe duration in milliseconds (default 400).",
+                "description": (
+                    "Optional swipe/drag duration in milliseconds (default 800). For drag-and-drop,"
+                    " list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars),"
+                    " set duration >= 1000 (e.g. 1500). If omitted for directional swipe, duration is computed automatically."
+                ),
             },
         },
-        "required": ["action"],
     },
 )
 
@@ -1074,7 +1114,7 @@ MANAGE_APP_TOOL = ToolDeclaration(
 WAIT_FOR_DELAY_TOOL = ToolDeclaration(
     name="wait_for_delay",
     description=(
-        "[ACTION] Pause execution and wait for a fixed duration in milliseconds."
+        "[ACTION] Pause execution and wait for a specified duration in milliseconds."
         " The screen after pause will be returned automatically."
     ),
     parameters={
@@ -1082,7 +1122,11 @@ WAIT_FOR_DELAY_TOOL = ToolDeclaration(
         "properties": {
             "time_in_ms": {
                 "type": "integer",
-                "description": "The exact duration to pause in milliseconds (e.g., 2000).",
+                "description": (
+                    "The exact duration to pause in milliseconds (e.g., 2000 for 2s,"
+                    " 60000 for 1 min, 180000 for 3 mins, 300000 for 5 mins)."
+                    " Convert any required waiting duration into milliseconds."
+                ),
             }
         },
         "required": ["time_in_ms"],

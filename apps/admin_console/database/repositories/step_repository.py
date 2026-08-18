@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import re
 from typing import Any
 
 try:
@@ -183,9 +184,27 @@ class StepRepository:
             )
 
         args = payload_obj.get("args", payload_obj)
-        if isinstance(args, dict):
-            return {"args": self._clean_value(args)}
-        return {"args": self._clean_value(args)}
+        cleaned_args = (
+            self._clean_value(args) if isinstance(args, dict) else self._clean_value(args)
+        )
+        result_payload: dict[str, Any] = {"args": cleaned_args}
+
+        # Extract structured action execution results
+        res = payload_obj.get("result")
+        if isinstance(res, dict):
+            if res.get("post_image_name"):
+                result_payload["post_image_name"] = res["post_image_name"]
+            if res.get("pre_image_name"):
+                result_payload["pre_image_name"] = res["pre_image_name"]
+            if res.get("outcome"):
+                result_payload["outcome"] = res["outcome"]
+        elif res:
+            res_str = str(res)
+            match = re.search(r"([a-f0-9]{64})", res_str)
+            if match:
+                result_payload["post_image_name"] = match.group(1)
+
+        return result_payload
 
     def get_session_steps(self, session_id: str, client: str | None = None) -> list[dict[str, Any]]:
         with db_session(self.db_path) as conn:
@@ -221,7 +240,7 @@ class StepRepository:
                 if pre_img and step_dict.get("post_image_name") == pre_img:
                     step_dict["post_image_name"] = None
 
-                # Fetch generic tool traces for this step
+                # Fetch action and generic tool traces for this step
                 step_id = step_dict.get("step_id")
                 if step_id:
                     cursor.execute(
@@ -229,7 +248,7 @@ class StepRepository:
                         " t1.type, t1.name, t1.timestamp, t1.duration, t1.status,"
                         " t1.payload, t2.name as agent_name FROM traces t1 LEFT"
                         " JOIN traces t2 ON t1.parent_trace_id = t2.trace_id WHERE"
-                        " t1.step_id = ? AND (t1.type = 'tool' OR (t1.type ="
+                        " t1.step_id = ? AND (t1.type = 'tool' OR t1.type = 'action' OR (t1.type ="
                         " 'llm_call' AND t1.status = 'failed')) ORDER BY"
                         " t1.timestamp ASC",
                         (step_id,),

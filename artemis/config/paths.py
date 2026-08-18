@@ -27,6 +27,7 @@ from artemis.config.constants import (
     IPC_PORT_FILENAME,
     LS_ADDRESS_FILENAME,
 )
+from artemis.platform import platform
 
 # Project root directory (3 levels up from artemis/config/paths.py)
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -43,22 +44,10 @@ def get_app_dir() -> Path:
 
     Order of precedence:
     1. ARTEMIS_APP_DIR or ANTIGRAVITY_APP_DIR environment variable.
-    2. Legacy ~/.gemini/jetski directory if it exists.
-    3. Default ~/.artemis directory.
+    2. Legacy ~/.gemini/jetski or ~/.artemis directory if it exists.
+    3. OS-standard data directory via Platform Abstraction Layer (PAL).
     """
-    env_dir = os.getenv(ENV_ARTEMIS_APP_DIR) or os.getenv(ENV_ANTIGRAVITY_APP_DIR)
-    if env_dir:
-        path = Path(env_dir)
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    legacy_dir = Path(os.path.expanduser("~/.gemini/jetski"))
-    if legacy_dir.exists():
-        return legacy_dir
-
-    default_dir = Path(os.path.expanduser("~/.artemis"))
-    default_dir.mkdir(parents=True, exist_ok=True)
-    return default_dir
+    return platform.paths.resolve_app_dir()
 
 
 def get_default_traces_path() -> Path:
@@ -97,10 +86,7 @@ def get_temp_dir(subfolder: str | None = None) -> Path:
     Returns:
         Path object pointing to the initialized temporary directory.
     """
-    base_temp = get_app_dir() / "temp"
-    target_dir = base_temp / subfolder if subfolder else base_temp
-    target_dir.mkdir(parents=True, exist_ok=True)
-    return target_dir
+    return platform.paths.temp_dir(subfolder)
 
 
 def get_data_engine_db_path() -> Path:
@@ -132,7 +118,7 @@ def get_config_path(filename: str, default_bundled_path: Path | None = None) -> 
     2. Central `config/` directory: `<ROOT_DIR>/config/<filename>`
     3. Project root directory: `<ROOT_DIR>/<filename>`
     4. Custom default bundled path (if provided and exists)
-    5. User application directory: `<APP_DIR>/<filename>`
+    5. User application/config directory via PAL: `<CONFIG_DIR>/<filename>` or `<APP_DIR>/<filename>`
     """
     env_var = f"ARTEMIS_{filename.upper().replace('.', '_').replace('-', '_')}"
     env_path_str = os.getenv(env_var)
@@ -154,6 +140,11 @@ def get_config_path(filename: str, default_bundled_path: Path | None = None) -> 
     # Check bundled fallback
     if default_bundled_path and default_bundled_path.exists():
         return default_bundled_path
+
+    # Check user PAL config directory
+    pal_config_path = platform.paths.config_dir / filename
+    if pal_config_path.exists():
+        return pal_config_path
 
     # Check user app directory
     app_dir_path = get_app_dir() / filename

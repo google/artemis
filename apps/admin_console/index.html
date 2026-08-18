@@ -20,6 +20,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Artemis Debug UI</title>
+    <link rel="icon" type="image/png" sizes="192x192" href="/logo.png?v=2">
+    <link rel="icon" type="image/png" sizes="32x32" href="/logo.png?v=2">
+    <link rel="icon" type="image/svg+xml" href="/logo.svg?v=2">
+    <link rel="shortcut icon" href="/favicon.ico?v=2">
+    <link rel="apple-touch-icon" href="/logo.png?v=2">
     <style>
         pre.light-code {
             background: transparent !important;
@@ -385,21 +390,33 @@
             marker.style.top = `${pctY}%`;
             marker.style.transform = 'translate(-50%, -50%)';
             marker.style.zIndex = '10';
+            marker.style.pointerEvents = 'none';
             
+            const dotSize = sequenceIndex !== undefined ? 20 : 14;
             const dot = document.createElement('div');
-            dot.style.width = '14px';
-            dot.style.height = '14px';
+            dot.style.width = `${dotSize}px`;
+            dot.style.height = `${dotSize}px`;
             dot.style.borderRadius = '50%';
             dot.style.backgroundColor = '#ef4444';
             dot.style.border = '2px solid white';
             dot.style.boxShadow = '0 0 6px rgba(0,0,0,0.4)';
+            if (sequenceIndex !== undefined) {
+                dot.style.display = 'flex';
+                dot.style.alignItems = 'center';
+                dot.style.justifyContent = 'center';
+                dot.style.fontSize = '11px';
+                dot.style.fontWeight = 'bold';
+                dot.style.color = 'white';
+                dot.innerText = String(sequenceIndex);
+            }
             
+            const pulseSize = dotSize * 2;
             const pulse = document.createElement('div');
             pulse.style.position = 'absolute';
-            pulse.style.top = '-9px';
-            pulse.style.left = '-9px';
-            pulse.style.width = '28px';
-            pulse.style.height = '28px';
+            pulse.style.top = `-${dotSize / 2 + 2}px`;
+            pulse.style.left = `-${dotSize / 2 + 2}px`;
+            pulse.style.width = `${pulseSize}px`;
+            pulse.style.height = `${pulseSize}px`;
             pulse.style.borderRadius = '50%';
             pulse.style.border = '2px solid #ef4444';
             pulse.style.animation = 'pulse-animation 1.5s infinite ease-out';
@@ -409,14 +426,18 @@
             marker.appendChild(dot);
             
             const label = document.createElement('div');
-            label.innerText = actionType.toUpperCase();
+            if (sequenceIndex !== undefined) {
+                label.innerText = totalSequence && totalSequence > 1 ? `#${sequenceIndex} TAP` : actionType.toUpperCase();
+            } else {
+                label.innerText = actionType.toUpperCase();
+            }
             label.style.position = 'absolute';
-            label.style.top = '16px';
+            label.style.top = `${dotSize + 2}px`;
             label.style.left = '50%';
             label.style.transform = 'translateX(-50%)';
-            label.style.backgroundColor = 'rgba(15, 23, 42, 0.8)';
+            label.style.backgroundColor = 'rgba(15, 23, 42, 0.9)';
             label.style.color = 'white';
-            label.style.padding = '1px 5px';
+            label.style.padding = '1.5px 5px';
             label.style.borderRadius = '3px';
             label.style.fontSize = '8px';
             label.style.fontWeight = 'bold';
@@ -425,6 +446,66 @@
             
             marker.appendChild(label);
             overlay.appendChild(marker);
+        }
+
+        function createSequenceConnector(x1, y1, x2, y2, overlay, isNormalized) {
+            let pctX1 = x1 / 10;
+            let pctY1 = y1 / 10;
+            let pctX2 = x2 / 10;
+            let pctY2 = y2 / 10;
+            
+            const container = overlay.parentElement;
+            const img = container ? container.querySelector('img') : null;
+            if (!isNormalized && img && img.naturalWidth && img.naturalHeight) {
+                if (x1 > 1000 || y1 > 1000 || x2 > 1000 || y2 > 1000 || (x1 > 100 && y1 > 100 && img.naturalWidth > 500)) {
+                    pctX1 = (x1 / img.naturalWidth) * 100;
+                    pctY1 = (y1 / img.naturalHeight) * 100;
+                    pctX2 = (x2 / img.naturalWidth) * 100;
+                    pctY2 = (y2 / img.naturalHeight) * 100;
+                }
+            }
+            
+            let svg = overlay.querySelector('svg');
+            if (!svg) {
+                svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                svg.setAttribute('width', '100%');
+                svg.setAttribute('height', '100%');
+                svg.style.position = 'absolute';
+                svg.style.top = '0';
+                svg.style.left = '0';
+                svg.style.pointerEvents = 'none';
+                
+                const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+                const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+                marker.setAttribute('id', 'seq-arrow');
+                marker.setAttribute('viewBox', '0 0 10 10');
+                marker.setAttribute('refX', '5');
+                marker.setAttribute('refY', '5');
+                marker.setAttribute('markerWidth', '6');
+                marker.setAttribute('markerHeight', '6');
+                marker.setAttribute('orient', 'auto');
+                
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                path.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+                path.setAttribute('fill', '#ef4444');
+                
+                marker.appendChild(path);
+                defs.appendChild(marker);
+                svg.appendChild(defs);
+                overlay.appendChild(svg);
+            }
+            
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', `${pctX1}%`);
+            line.setAttribute('y1', `${pctY1}%`);
+            line.setAttribute('x2', `${pctX2}%`);
+            line.setAttribute('y2', `${pctY2}%`);
+            line.setAttribute('stroke', '#ef4444');
+            line.setAttribute('stroke-width', '2.5');
+            line.setAttribute('marker-end', 'url(#seq-arrow)');
+            line.setAttribute('stroke-dasharray', '4,4');
+            
+            svg.appendChild(line);
         }
 
         function createLineMarker(x1, y1, x2, y2, overlay, isNormalized) {
@@ -518,9 +599,37 @@
                     return;
                 }
 
+                // 1. Multi-point click sequence
+                const isSequenceAction = actionName.includes('sequence') || Boolean(act.sequence || args.sequence || act.normalized_sequence || args.normalized_sequence);
+                let rawSeq = act.normalized_sequence || args.normalized_sequence || act.sequence || args.sequence || act.targets || args.targets;
+                if (typeof rawSeq === 'string') {
+                    try { rawSeq = JSON.parse(rawSeq); } catch (e) {}
+                }
+                if (Array.isArray(rawSeq) && rawSeq.length > 0) {
+                    const validPoints = [];
+                    rawSeq.forEach(pt => {
+                        if (typeof pt === 'string') {
+                            try { pt = JSON.parse(pt); } catch (e) {}
+                        }
+                        if (Array.isArray(pt) && pt.length >= 2 && typeof pt[0] === 'number' && typeof pt[1] === 'number') {
+                            validPoints.push([pt[0], pt[1]]);
+                        }
+                    });
+                    if (validPoints.length > 0 && (isSequenceAction || validPoints.length > 1)) {
+                        const isNormSeq = Boolean(act.normalized_sequence || args.normalized_sequence) || validPoints.every(p => p[0] <= 1000 && p[1] <= 1000);
+                        for (let i = 0; i < validPoints.length - 1; i++) {
+                            createSequenceConnector(validPoints[i][0], validPoints[i][1], validPoints[i+1][0], validPoints[i+1][1], overlayElement, isNormSeq);
+                        }
+                        validPoints.forEach((pt, idx) => {
+                            createPointMarker(pt[0], pt[1], actionName, overlayElement, isNormSeq, idx + 1, validPoints.length);
+                        });
+                        return;
+                    }
+                }
+
                 const isSwipeLike = actionName.includes('swipe') || actionName.includes('scroll') || actionName.includes('drag') || actionName.includes('slide');
 
-                // 1. Separate start and end coordinates
+                // 2. Separate start and end coordinates
                 const normStart = act.normalized_start_coordinates || args.normalized_start_coordinates;
                 const normEnd = act.normalized_end_coordinates || args.normalized_end_coordinates;
                 const startCoords = normStart || act.start_coordinates || act.start_point || act.start || act.from || 
@@ -538,11 +647,11 @@
                     return;
                 }
 
-                // 2. 4-coordinate array
+                // 3. 4-coordinate array
                 const normCoords = act.normalized_coordinates || args.normalized_coordinates;
                 const isNorm = Boolean(normCoords);
                 const rawCoords = normCoords || act.coordinates || act.coords || act.target || 
-                                  args.target || args.coordinates || args.coords || args.sequence ||
+                                  args.target || args.coordinates || args.coords ||
                                   (isSwipeLike && Array.isArray(args.action) ? args.action : null) ||
                                   (isSwipeLike && Array.isArray(act.action) ? act.action : null) ||
                                   (isSwipeLike && Array.isArray(args.gesture) ? args.gesture : null) ||
@@ -557,17 +666,10 @@
                             createPointMarker(rawCoords[0], rawCoords[1], actionName, overlayElement, isNorm);
                             return;
                         }
-                    } else if (Array.isArray(rawCoords[0]) && rawCoords[0].length === 2) {
-                        rawCoords.forEach(pt => {
-                            if (Array.isArray(pt) && pt.length === 2 && typeof pt[0] === 'number') {
-                                createPointMarker(pt[0], pt[1], actionName, overlayElement, isNorm);
-                            }
-                        });
-                        return;
                     }
                 }
 
-                // 3. Directional swipe / scroll ONLY for swipe-like actions
+                // 4. Directional swipe / scroll ONLY for swipe-like actions
                 if (isSwipeLike) {
                     const rawDir = (typeof args.action === 'string' ? args.action : null) ||
                                    (typeof act.action === 'string' && act.action !== actionName ? act.action : null) ||

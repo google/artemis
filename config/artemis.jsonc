@@ -8,11 +8,11 @@
   // ------------------------------------------------------------------------------
   "default": {
     "provider": "google",
-    "model": "gemini-3.6-flash",
+    "model": "gemini-3.7-flash",
     "thinking_level": "medium",
     "fallback": {
       "provider": "google",
-      "model": "gemini-3.5-flash",
+      "model": "gemini-3.6-flash",
       "thinking_level": "medium"
     }
   },
@@ -23,8 +23,8 @@
   "presets": {
     "gemini-flagship": {
       "provider": "google",
-      "model": "gemini-3.6-flash",
-      "fallback": { "provider": "google", "model": "gemini-3.5-flash" }
+      "model": "gemini-3.7-flash",
+      "fallback": { "provider": "google", "model": "gemini-3.6-flash" }
     },
     "gemini-flash": {
       "provider": "google",
@@ -54,7 +54,7 @@
   "nodes": {
     // 🧠 Planner: High-level goal decomposition and strategic step planning
     "planner": {
-      "thinking_level": "medium"
+      "thinking_level": "high"
     },
 
     // 🎯 Operator: Screen perception, element interaction, and direct execution

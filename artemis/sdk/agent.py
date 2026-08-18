@@ -197,11 +197,11 @@ class Agent:
             client = genai.Client(api_key=key)
 
             # 2. Pre-warm LangChain client
-            chat = ChatGoogleGenerativeAI(model="gemini-3.6-flash", google_api_key=key)
+            chat = ChatGoogleGenerativeAI(model="gemini-3.7-flash", google_api_key=key)
 
             # Fire both calls concurrently in the background
             await asyncio.gather(
-                client.aio.models.count_tokens(model="gemini-3.6-flash", contents="ping"),
+                client.aio.models.count_tokens(model="gemini-3.7-flash", contents="ping"),
                 chat.ainvoke("ping"),
                 return_exceptions=True,
             )
@@ -1001,8 +1001,10 @@ class Agent:
             logger.warning("UIAutomator client not available, using default dimensions")
             device_width, device_height = 1080, 2340
 
+        from artemis.platform import platform as pal_platform
+
         return DeviceContext(
-            host_platform="WINDOWS" if host_platform == "Windows" else "LINUX",
+            host_platform=pal_platform.os_type.name,
             mobile_platform=platform,
             device_id=device_id,
             device_width=device_width,

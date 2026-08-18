@@ -118,7 +118,7 @@ def _patch_langchain_google_genai():
         from langchain_google_genai.chat_models import ChatGoogleGenerativeAI
         from google.genai.types import ToolConfig
 
-        if getattr(ChatGoogleGenerativeAI, "_is_latte_patched", False):
+        if getattr(ChatGoogleGenerativeAI, "_is_artemis_patched", False):
             return
 
         original_process = ChatGoogleGenerativeAI._process_tool_config
@@ -169,7 +169,7 @@ def _patch_langchain_google_genai():
             return config
 
         ChatGoogleGenerativeAI._process_tool_config = patched_process_tool_config
-        ChatGoogleGenerativeAI._is_latte_patched = True
+        ChatGoogleGenerativeAI._is_artemis_patched = True
     except Exception as e:
         logger.warning(f"Could not patch ChatGoogleGenerativeAI._process_tool_config: {e}")
 

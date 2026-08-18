@@ -158,7 +158,7 @@ async def test_perform_action_validation():
     assert err is None
     assert actions[0]["action"] == "swipe"
     assert len(actions[0]["coordinates"]) == 4
-    assert actions[0]["duration"] == 380
+    assert actions[0]["duration"] == 800
 
     # Test click with float target index (coercion)
     actions, err = node._translate_and_validate_tool(
@@ -1547,7 +1547,7 @@ async def test_operator_swipe_translation():
     assert err is None
     assert len(actions) == 1
     assert actions[0]["action"] == "swipe"
-    assert actions[0]["coordinates"] == [648, 1920, 648, 480]
+    assert actions[0]["coordinates"] == [648, 1680, 648, 720]
 
     # 2. Start & End coordinate swipe (drag)
     actions, err = node._translate_and_validate_tool(
@@ -1587,4 +1587,4 @@ async def test_operator_swipe_translation():
     assert err is None
     assert len(actions) == 1
     assert actions[0]["action"] == "swipe"
-    assert actions[0]["coordinates"] == [648, 480, 648, 1920]
+    assert actions[0]["coordinates"] == [648, 720, 648, 1680]

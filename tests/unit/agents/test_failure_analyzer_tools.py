@@ -339,7 +339,7 @@ async def test_swipe_happy_path_direction(mock_context, mock_controller):
         ctx=mock_context,
     )
     assert "Swipe completed successfully" in outcome
-    mock_controller.swipe_coords.assert_called_once_with(648, 1920, 648, 480, 400)
+    mock_controller.swipe_coords.assert_called_once_with(648, 1680, 648, 720, 400)
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,10 @@ class RunRequest(BaseModel):
     goal: str | None = None
     goals: list[str] | None = None
     profile: str | None = "flash"
+    expected_output: str | None = None
+    enable_outputter: bool | None = None
+    locked_app_package: str | None = None
+    app_path: str | None = None
 
 
 class ReplayRequest(BaseModel):

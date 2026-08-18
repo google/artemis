@@ -26,6 +26,8 @@ def get_tools_from_wrappers(
     """Instantiate and wrap LangChain tools from a list of ToolWrappers."""
     tools: list[BaseTool] = []
     for wrapper in wrappers:
+        if wrapper.is_available_fn is not None and not wrapper.is_available_fn(ctx):
+            continue
         if isinstance(wrapper, CompositeToolWrapper):
             comp_tools = wrapper.composite_tools_fn_getter(ctx)
             for t in comp_tools:

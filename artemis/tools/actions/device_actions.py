@@ -18,7 +18,10 @@ import asyncio
 from typing import Any, Literal
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.tools.base import artemis_tool
-from artemis.utils.coordinates import parse_swipe_parameters
+from artemis.utils.coordinates import (
+    compute_smart_swipe_coordinates,
+    parse_swipe_parameters,
+)
 from artemis.utils.logger import get_logger
 from pydantic import BaseModel, Field
 
@@ -53,9 +56,7 @@ class SwipeArgs(BaseModel):
     direction: Literal["up", "down", "left", "right"] | None = Field(
         None,
         description=(
-            "Smart directional swipe ('up', 'down', 'left', 'right') for general page"
-            " scrolling/browsing. Automatically applies safe vectors and a ~40% visual"
-            " overlap anchor: 'up' (drags bottom-to-top, scrolling down to reveal content below),"
+            "Direction for scrolling and swiping: 'up' (drags bottom-to-top, scrolling down to reveal content below),"
             " 'down' (drags top-to-bottom, scrolling up to reveal content above),"
             " 'left' (drags right-to-left, scrolling right),"
             " 'right' (drags left-to-right, scrolling left)."
@@ -83,9 +84,9 @@ class SwipeArgs(BaseModel):
         ),
     )
     duration: int = Field(
-        400,
+        800,
         description=(
-            "Swipe/drag duration in milliseconds (default 400). For drag-and-drop, "
+            "Swipe/drag duration in milliseconds (default 800). For drag-and-drop, "
             "list reordering, or sliding/adjusting sliders (e.g. volume, brightness, SeekBars), "
             "set duration >= 1000 (e.g. 1500)."
         ),
@@ -101,7 +102,11 @@ class PressKeyArgs(BaseModel):
 
 class WaitForDelayArgs(BaseModel):
     seconds: float = Field(
-        ..., description="Duration in seconds to wait for animations, pages, or state updates."
+        ...,
+        description=(
+            "Duration in seconds to wait (e.g., 2 for 2s, 60 for 1 min, 180 for 3 mins)."
+            " Use whenever time needs to elapse for animations, loading, or scheduled delays."
+        ),
     )
 
 
@@ -182,7 +187,7 @@ async def swipe(
     direction: str | None = None,
     start: list[int] | None = None,
     end: list[int] | None = None,
-    duration: int = 400,
+    duration: int = 800,
     driver: BaseDeviceDriver = None,
     **kwargs: Any,
 ) -> str:
@@ -200,7 +205,15 @@ async def swipe(
     kind, target, dur = parse_swipe_parameters(params, default_duration=duration)
 
     if kind == "direction" and isinstance(target, str):
-        success = await driver.swipe_direction(target, duration_ms=dur)
+        width, height = driver.screen_size
+        sx, sy, ex, ey, smart_dur = compute_smart_swipe_coordinates(
+            direction=target,
+            target=params.get("target"),
+            width=width,
+            height=height,
+            duration=dur,
+        )
+        success = await driver.swipe(sx, sy, ex, ey, duration_ms=smart_dur)
         return f"Swiped {target}" if success else f"Swipe {target} failed"
     elif kind == "coords" and isinstance(target, list) and len(target) == 4:
         width, height = driver.screen_size

@@ -18,13 +18,13 @@ import importlib.metadata
 from typing import Annotated
 
 from artemis.interfaces.cli.commands.batch import batch_command
-from artemis.interfaces.cli.commands.bench import bench_command
 from artemis.interfaces.cli.commands.doctor import doctor_command
 from artemis.interfaces.cli.commands.init import init_command
 from artemis.interfaces.cli.commands.mcp import mcp_command
 from artemis.interfaces.cli.commands.run import run_command
 from artemis.interfaces.cli.commands.server import server_app
 from artemis.interfaces.cli.commands.trace import trace_app
+from artemis.interfaces.cli.commands.ui import ui_command
 from artemis.utils.logger import get_logger
 from rich.console import Console
 from rich.panel import Panel
@@ -41,6 +41,9 @@ app = typer.Typer(
 )
 
 # Register subcommands
+app.command(name="ui", help="Launch the unified Showcase UI & Admin Console in your browser.")(
+    ui_command
+)
 app.command(name="run", help="Execute an autonomous task on a mobile device.")(run_command)
 app.command(name="init", help="Interactive quickstart wizard to configure API keys & device.")(
     init_command
@@ -49,7 +52,6 @@ app.command(name="doctor", help="Check system prerequisites, device status, and 
     doctor_command
 )
 app.command(name="batch", help="Execute a batch sequence of automation tasks.")(batch_command)
-app.command(name="bench", help="Run AndroidWorld benchmark task evaluations.")(bench_command)
 app.command(name="mcp", help="Start the Artemis Model Context Protocol (MCP) server.")(mcp_command)
 app.add_typer(server_app, name="server", help="Cloud Run proxy and web dashboard server.")
 app.add_typer(trace_app, name="trace", help="Inspect and query execution traces.")

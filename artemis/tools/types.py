@@ -62,7 +62,7 @@ class Target(BaseModel):
 
     @model_validator(mode="after")
     def _default_indices(self):
-        # Treat empty strings like "not provided"
+        # Treat empty strings like “not provided”
         if (
             self.resource_id is not None and self.resource_id != ""
         ) and self.resource_id_index is None:

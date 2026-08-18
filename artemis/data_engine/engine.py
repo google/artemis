@@ -78,6 +78,7 @@ class DataEngine:
         self._pending_threads = []
         self._accumulated_logs = {}
         self._bg_task_to_trace_id = {}
+        self._trace_name_cache = {}
         # Background tasks are written directly to SQLite storage
 
         self.ipc_socket = None
@@ -429,8 +430,15 @@ class DataEngine:
             traces = self.storage.get_step_traces(step_id)
             generic_tools = []
             for t in traces:
-                if t.type == "tool":
-                    generic_tools.append(t.model_dump())
+                if t.type in ("tool", "action") or (t.type == "llm_call" and t.status == "failed"):
+                    t_dict = t.model_dump()
+                    if t.parent_trace_id and "agent_name" not in t_dict:
+                        parent_name = getattr(self, "_trace_name_cache", {}).get(
+                            t.parent_trace_id
+                        ) or getattr(self, "_trace_name_cache", {}).get(str(t.parent_trace_id))
+                        if parent_name:
+                            t_dict["agent_name"] = parent_name
+                    generic_tools.append(t_dict)
             step_dict["generic_tools"] = generic_tools
         except Exception as e:
             logger.error(f"Failed to fetch step traces for SSE: {e}")
@@ -486,6 +494,10 @@ class DataEngine:
         with self.lock:
             self._trace_counter = getattr(self, "_trace_counter", 0) + 1
             trace_ts = time.time() + (self._trace_counter * 1e-7)
+            if not hasattr(self, "_trace_name_cache"):
+                self._trace_name_cache = {}
+            self._trace_name_cache[trace_id] = name
+            self._trace_name_cache[str(trace_id)] = name
 
         trace = TraceRecord(
             trace_id=trace_id,
@@ -519,7 +531,14 @@ class DataEngine:
             thread.start()
 
         # Publish event
-        self._publish("trace_recorded", trace.model_dump())
+        trace_dict = trace.model_dump()
+        if parent_trace_id:
+            parent_name = getattr(self, "_trace_name_cache", {}).get(parent_trace_id) or getattr(
+                self, "_trace_name_cache", {}
+            ).get(str(parent_trace_id))
+            if parent_name:
+                trace_dict["agent_name"] = parent_name
+        self._publish("trace_recorded", trace_dict)
 
         return trace_id
 

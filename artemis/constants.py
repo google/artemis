@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-RECURSION_LIMIT = 400
+RECURSION_LIMIT = 30000
 MAX_MESSAGES_IN_HISTORY = 25
 VALIDATOR_MESSAGES_KEY = "validator_messages"
 

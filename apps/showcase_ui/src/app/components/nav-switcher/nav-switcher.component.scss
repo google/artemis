@@ -1,0 +1,110 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.floating-nav-switcher {
+  position: fixed;
+  top: 12px;
+  left: 24px;
+  z-index: 1100;
+  height: 36px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  border-radius: 18px;
+  padding: 3px;
+  gap: 3px;
+  box-shadow: 0 2px 8px -1px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(0, 0, 0, 0.02), inset 0 1px 1px rgba(255, 255, 255, 0.9);
+  user-select: none;
+  font-family: 'Google Sans', 'Google Sans Text', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 4px 14px -2px rgba(15, 23, 42, 0.1), 0 2px 4px rgba(0, 0, 0, 0.03), inset 0 1px 1px rgba(255, 255, 255, 1);
+    border-color: rgba(203, 213, 225, 0.9);
+  }
+
+  .nav-tab-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 14px;
+    box-sizing: border-box;
+    border-radius: 15px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #475569;
+    text-decoration: none;
+    cursor: pointer;
+    line-height: 1;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    outline: none;
+    white-space: nowrap;
+
+    .tab-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748b;
+      transition: color 0.15s ease, transform 0.15s ease;
+    }
+
+    .tab-label {
+      color: #475569;
+      transition: color 0.15s ease;
+    }
+
+    &:hover:not(.active) {
+      background: rgba(255, 255, 255, 0.7);
+      color: #0f172a;
+
+      .tab-icon {
+        color: #1a73e8;
+      }
+      .tab-label {
+        color: #0f172a;
+      }
+    }
+
+    &.active {
+      background: rgba(26, 115, 232, 0.95) !important;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: #ffffff !important;
+      font-weight: 700;
+      box-shadow: 0 2px 8px rgba(26, 115, 232, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+
+      .tab-icon,
+      .tab-label,
+      span {
+        color: #ffffff !important;
+      }
+    }
+
+    &:active {
+      transform: scale(0.97);
+    }
+  }
+}

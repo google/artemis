@@ -25,6 +25,13 @@ if _REPO_ROOT not in sys.path:
 # pylint: disable=wrong-import-position
 from mcp.server.fastmcp import FastMCP
 
+try:
+    from mcp.server.fastmcp.server import Settings as FastMCPSettings
+
+    FastMCPSettings.model_rebuild()
+except Exception:
+    pass
+
 from artemis.data_engine.storage import StorageManager
 
 mcp = FastMCP("Android_XML_Fuzzy_Search")
@@ -83,7 +90,7 @@ def serialize_node(node, max_depth=1):
 
 @mcp.tool()
 def search_ui(image_hash: str, query: str, threshold: float = 0.6) -> dict:
-    """Search for text in UI data (XML and OCR) retrieved from Data Engine by image hash.
+    """Search for text in UI data retrieved from Data Engine by image hash.
 
     Args:
         image_hash: The SHA-256 hash of the image.
@@ -153,7 +160,7 @@ def parse_bounds(bounds_str):
 
 @mcp.tool()
 def search_by_coordinates(image_hash: str, x: int, y: int) -> str:
-    """Search for elements in UI data (XML and OCR) retrieved from Data Engine by image hash that overlap with the given coordinates.
+    """Search for elements in UI data retrieved from Data Engine by image hash that overlap with the given coordinates.
 
     Args:
         image_hash: The SHA-256 hash of the image.
@@ -161,7 +168,7 @@ def search_by_coordinates(image_hash: str, x: int, y: int) -> str:
         y: The Y coordinate.
 
     Returns:
-        A string containing the matching nodes and OCR results.
+        A string containing the matching nodes.
     """
     db_path = os.getenv("DATA_ENGINE_DB_PATH")
     if not db_path:

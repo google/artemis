@@ -20,7 +20,7 @@ from typing import Any
 
 def parse_swipe_parameters(
     args: Any,
-    default_duration: int | None = 400,
+    default_duration: int | None = 800,
 ) -> tuple[str | None, str | list[int] | None, int | None]:
     """Parses swipe/drag/scroll parameters from various possible input formats into a standardized tuple:
 
@@ -130,6 +130,188 @@ def parse_swipe_parameters(
     return None, None, duration_int
 
 
+def _extract_bounds(val: Any) -> list[int] | None:
+    """Safely parses bounds representation into [left, top, right, bottom]."""
+    if val is None:
+        return None
+    if isinstance(val, (list, tuple)) and len(val) == 4:
+        try:
+            return [int(float(x)) for x in val]
+        except (ValueError, TypeError):
+            return None
+    if isinstance(val, str):
+        match = re.match(r"\[(\-?\d+),(\-?\d+)\]\[(\-?\d+),(\-?\d+)\]", val.strip())
+        if match:
+            return [int(x) for x in match.groups()]
+        nums = re.findall(r"-?\d+", val)
+        if len(nums) == 4:
+            return [int(x) for x in nums]
+    return None
+
+
+def resolve_scrollable_container_bounds(
+    target: Any = None,
+    indexed_elements: list[dict[str, Any]] | None = None,
+    ui_hierarchy: list[dict[str, Any]] | None = None,
+    screen_width: int = 1080,
+    screen_height: int = 2400,
+) -> list[int]:
+    """Resolves the best-effort bounding box [left, top, right, bottom] for scrolling.
+
+    Heuristic Priority:
+    1. Explicit target element bounds (if target index/element/bounds passed).
+    2. Primary active scrollable container (RecyclerView, ScrollView, ListView, WebView, ViewPager).
+    3. Fallback to full screen [0, 0, screen_width, screen_height].
+    """
+    # 1. Target element reference
+    if target is not None:
+        direct_b = _extract_bounds(target)
+        if direct_b and len(direct_b) == 4:
+            return direct_b
+
+        target_idx = None
+        if isinstance(target, (int, float)):
+            target_idx = int(target)
+        elif isinstance(target, str) and target.strip().isdigit():
+            target_idx = int(target.strip())
+
+        if target_idx is not None and indexed_elements:
+            if 1 <= target_idx <= len(indexed_elements):
+                elem = indexed_elements[target_idx - 1]
+                b = _extract_bounds(elem.get("bounds"))
+                if b and len(b) == 4:
+                    return b
+
+    # 2. Look for primary scrollable container in ui_hierarchy or indexed_elements
+    candidates: list[list[int]] = []
+
+    def scan_hierarchy(nodes: list[dict[str, Any]]):
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            is_scroll = (
+                node.get("scrollable") is True or str(node.get("scrollable", "")).lower() == "true"
+            )
+            cls_name = str(node.get("class") or node.get("className") or "").lower()
+            if not is_scroll:
+                for kw in ("scrollview", "recyclerview", "listview", "webview", "viewpager"):
+                    if kw in cls_name:
+                        is_scroll = True
+                        break
+            if is_scroll:
+                b = _extract_bounds(node.get("bounds"))
+                if b and len(b) == 4:
+                    w = b[2] - b[0]
+                    h = b[3] - b[1]
+                    if w >= int(screen_width * 0.25) and h >= int(screen_height * 0.15):
+                        candidates.append(b)
+            children = node.get("children")
+            if isinstance(children, list) and children:
+                scan_hierarchy(children)
+
+    if ui_hierarchy:
+        scan_hierarchy(ui_hierarchy)
+    elif indexed_elements:
+        for elem in indexed_elements:
+            b = _extract_bounds(elem.get("bounds"))
+            cls_name = str(elem.get("class") or elem.get("className") or "").lower()
+            if any(
+                kw in cls_name
+                for kw in ("scrollview", "recyclerview", "listview", "webview", "viewpager")
+            ):
+                if b and len(b) == 4:
+                    candidates.append(b)
+
+    if candidates:
+
+        def area(b: list[int]) -> int:
+            return max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+
+        candidates.sort(key=area, reverse=True)
+        return candidates[0]
+
+    return [0, 0, screen_width, screen_height]
+
+
+def compute_smart_swipe_coordinates(
+    direction: str,
+    target: Any = None,
+    indexed_elements: list[dict[str, Any]] | None = None,
+    ui_hierarchy: list[dict[str, Any]] | None = None,
+    width: int = 1080,
+    height: int = 2400,
+    duration: int | None = None,
+) -> tuple[int, int, int, int, int]:
+    """Computes best-effort container-aware intelligent swipe coordinates and duration.
+
+    Returns: (start_x, start_y, end_x, end_y, duration_ms)
+    """
+    container = resolve_scrollable_container_bounds(
+        target=target,
+        indexed_elements=indexed_elements,
+        ui_hierarchy=ui_hierarchy,
+        screen_width=width,
+        screen_height=height,
+    )
+
+    c_left = max(0, min(width - 1, container[0]))
+    c_top = max(0, min(height - 1, container[1]))
+    c_right = max(c_left + 50, min(width, container[2]))
+    c_bottom = max(c_top + 50, min(height, container[3]))
+
+    c_width = c_right - c_left
+    c_height = c_bottom - c_top
+
+    dir_str = str(direction or "up").strip().lower()
+
+    if dir_str == "up":
+        # Drag upwards -> reveal content below
+        sx = ex = int(c_left + c_width * 0.60)
+        sy = int(c_top + c_height * 0.70)
+        ey = int(c_top + c_height * 0.30)
+    elif dir_str == "down":
+        # Drag downwards -> reveal content above
+        sx = ex = int(c_left + c_width * 0.60)
+        sy = int(c_top + c_height * 0.30)
+        ey = int(c_top + c_height * 0.70)
+    elif dir_str == "left":
+        # Drag leftwards -> page right
+        sy = ey = int(c_top + c_height * 0.50)
+        sx = int(c_left + c_width * 0.75)
+        ex = int(c_left + c_width * 0.25)
+    elif dir_str == "right":
+        # Drag rightwards -> page left
+        sy = ey = int(c_top + c_height * 0.50)
+        sx = int(c_left + c_width * 0.25)
+        ex = int(c_left + c_width * 0.75)
+    else:
+        # Default up
+        sx = ex = int(c_left + c_width * 0.60)
+        sy = int(c_top + c_height * 0.70)
+        ey = int(c_top + c_height * 0.30)
+
+    # Clamp coordinates to screen bounds
+    sx = max(0, min(width - 1, sx))
+    ex = max(0, min(width - 1, ex))
+    sy = max(0, min(height - 1, sy))
+    ey = max(0, min(height - 1, ey))
+
+    if duration is None:
+        dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
+        if dist <= 300:
+            duration_ms = 350
+        elif dist <= 600:
+            duration_ms = 550
+        elif dist <= 1000:
+            duration_ms = 800
+        else:
+            duration_ms = 900
+    else:
+        duration_ms = int(duration)
+
+    return sx, sy, ex, ey, duration_ms
+
+
 def normalize_point(x: int, y: int, width: int, height: int) -> list[int]:
     """Convert physical pixels to normalized 0-1000 coordinates."""
     nx = int(round(x * 1000.0 / width))
@@ -216,13 +398,13 @@ def normalize_step_actions(step_dict: dict[str, Any]) -> dict[str, Any]:
                     item["coordinates"] = target
             elif kind == "direction" and isinstance(target, str):
                 if target == "up":
-                    norm = [600, 800, 600, 200]
+                    norm = [600, 700, 600, 300]
                 elif target == "down":
-                    norm = [600, 200, 600, 800]
+                    norm = [600, 300, 600, 700]
                 elif target == "left":
-                    norm = [800, 500, 200, 500]
+                    norm = [750, 500, 250, 500]
                 elif target == "right":
-                    norm = [200, 500, 800, 500]
+                    norm = [250, 500, 750, 500]
                 else:
                     norm = None
                 if norm:
@@ -255,6 +437,43 @@ def normalize_step_actions(step_dict: dict[str, Any]) -> dict[str, Any]:
                     item["normalized_end_coordinates"] = [nx2, ny2]
             else:
                 item["normalized_coordinates"] = coords
+
+        seq = item.get("sequence") or item.get("targets")
+        if seq:
+            if isinstance(seq, str):
+                try:
+                    seq = json.loads(seq)
+                except Exception:
+                    try:
+                        import ast
+
+                        seq = ast.literal_eval(seq)
+                    except Exception:
+                        pass
+                if isinstance(seq, (list, tuple)):
+                    item["sequence"] = list(seq)
+            if isinstance(item.get("sequence"), list) and "normalized_sequence" not in item:
+                norm_seq = []
+                for pt in item["sequence"]:
+                    if (
+                        isinstance(pt, (list, tuple))
+                        and len(pt) == 2
+                        and all(isinstance(c, (int, float)) for c in pt)
+                    ):
+                        if any(c > 1000 for c in pt) or item.get("target_bounds"):
+                            norm_seq.append(
+                                [
+                                    int(round(pt[0] * 1000.0 / width)),
+                                    int(round(pt[1] * 1000.0 / height)),
+                                ]
+                            )
+                        else:
+                            norm_seq.append([int(round(pt[0])), int(round(pt[1]))])
+                    elif isinstance(pt, int):
+                        norm_seq.append(pt)
+                if norm_seq:
+                    item["normalized_sequence"] = norm_seq
+
         return item
 
     action_taken = step_dict.get("action_taken")
@@ -326,16 +545,26 @@ def normalize_step_actions(step_dict: dict[str, Any]) -> dict[str, Any]:
                     and isinstance(action_taken[0], dict)
                     else (action_taken if isinstance(action_taken, dict) else {})
                 )
-                # Enrich missing coordinates/target/input from action_taken
-                if "target" not in args and "coordinates" not in args:
-                    if first_act.get("coordinates"):
-                        args["coordinates"] = first_act["coordinates"]
-                    if first_act.get("args", {}).get("target"):
-                        args["target"] = first_act["args"]["target"]
-                if "normalized_coordinates" not in args and first_act.get("normalized_coordinates"):
-                    args["normalized_coordinates"] = first_act["normalized_coordinates"]
-                if "text" not in args and first_act.get("text"):
-                    args["text"] = first_act["text"]
+
+                is_seq_tool = (
+                    raw_name in ("click_sequence", "tap_sequence")
+                    or "sequence" in args
+                    or "targets" in args
+                )
+
+                # Enrich missing coordinates/target/input from action_taken only if not a multi-point sequence action
+                if not is_seq_tool:
+                    if "target" not in args and "coordinates" not in args:
+                        if first_act.get("coordinates"):
+                            args["coordinates"] = first_act["coordinates"]
+                        if first_act.get("args", {}).get("target"):
+                            args["target"] = first_act["args"]["target"]
+                    if "normalized_coordinates" not in args and first_act.get(
+                        "normalized_coordinates"
+                    ):
+                        args["normalized_coordinates"] = first_act["normalized_coordinates"]
+                    if "text" not in args and first_act.get("text"):
+                        args["text"] = first_act["text"]
 
                 args = _enrich_action_item(args)
                 payload["args"] = args

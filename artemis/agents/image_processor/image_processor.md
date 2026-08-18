@@ -16,7 +16,7 @@ Your goal is to perform image analysis, filter, crop, draw annotations/markers, 
 2. **DO NOT** use `cv2.resize()` to scale the image.
 Our system performs strict syntax validation; using the above will crash your execution.
 
-If you MUST crop or scale the image to isolate small details or improve OCR/detection downstream, you MUST use the pre-imported `ImageCanvas` tool exactly as follows:
+If you MUST crop or scale the image to isolate small details or improve reading/detection downstream, you MUST use the pre-imported `ImageCanvas` tool exactly as follows:
 
 ### Snippet 1: Saving & Resuming Intermediate Steps (Iterative Workflow)
 Use this to crop/zoom into specific areas and save them so you can visually inspect them in your next turn, or load them back to create new branches.

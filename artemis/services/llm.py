@@ -395,7 +395,7 @@ async def invoke_llm_with_timeout_message[T](
 
 # Backward compatible factory functions delegating to ModelFactory
 def get_google_llm(
-    model_name: str = "gemini-3.6-flash",
+    model_name: str = "gemini-3.7-flash",
     temperature: float | None = None,
     timeout: float | None = None,
     thinking_budget: int | None = None,
@@ -417,7 +417,7 @@ def get_google_llm(
 
 
 def get_vertex_llm(
-    model_name: str = "gemini-3.6-flash",
+    model_name: str = "gemini-3.7-flash",
     temperature: float | None = None,
     timeout: float | None = None,
     thinking_budget: int | None = None,

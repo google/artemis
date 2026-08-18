@@ -583,35 +583,88 @@ def draw_action_overlay_on_image(
 
         # 2. Click Sequence
         elif action in ("click_sequence", "tap_sequence"):
-            sequence = action_args.get("sequence") or action_args.get("targets") or []
+            sequence = (
+                action_args.get("sequence")
+                or action_args.get("targets")
+                or action_args.get("coordinates")
+                or []
+            )
+            if isinstance(sequence, str):
+                sequence_str = sequence.strip()
+                try:
+                    import json
+
+                    sequence = json.loads(sequence_str)
+                except Exception:
+                    try:
+                        import ast
+
+                        sequence = ast.literal_eval(sequence_str)
+                    except Exception:
+                        pass
+
             if isinstance(sequence, list):
-                for idx, coord in enumerate(sequence, 1):
+                pts = []
+                for coord in sequence:
                     pt = _resolve_coordinates(coord, width, height)
                     if pt:
-                        x, y = pt
-                        draw.ellipse(
-                            [x - dot_radius, y - dot_radius, x + dot_radius, y + dot_radius],
-                            fill="red",
-                            outline="white",
-                            width=line_width,
+                        pts.append(pt)
+
+                # Draw connecting lines/arrows between consecutive sequence points
+                for i in range(len(pts) - 1):
+                    p1, p2 = pts[i], pts[i + 1]
+                    draw.line([p1, p2], fill="white", width=line_width + 3)
+                    draw.line([p1, p2], fill="red", width=line_width)
+
+                    # Arrow head
+                    dx = p2[0] - p1[0]
+                    dy = p2[1] - p1[1]
+                    angle = math.atan2(dy, dx)
+                    arrow_len = max(16, int(base_dim * 0.025))
+                    arrow_angle = math.pi / 6
+                    x1 = p2[0] - arrow_len * math.cos(angle - arrow_angle)
+                    y1 = p2[1] - arrow_len * math.sin(angle - arrow_angle)
+                    x2 = p2[0] - arrow_len * math.cos(angle + arrow_angle)
+                    y2 = p2[1] - arrow_len * math.sin(angle + arrow_angle)
+                    draw.polygon([p2, (x1, y1), (x2, y2)], fill="red", outline="white")
+
+                # Draw numbered circular touch points
+                for idx, (x, y) in enumerate(pts, 1):
+                    # Outer aura
+                    draw.ellipse(
+                        [
+                            x - dot_radius * 1.3,
+                            y - dot_radius * 1.3,
+                            x + dot_radius * 1.3,
+                            y + dot_radius * 1.3,
+                        ],
+                        outline="white",
+                        width=line_width + 1,
+                    )
+                    # Colored circle
+                    draw.ellipse(
+                        [x - dot_radius, y - dot_radius, x + dot_radius, y + dot_radius],
+                        fill="red",
+                        outline="white",
+                        width=line_width,
+                    )
+                    label = str(idx)
+                    try:
+                        font = ImageFont.load_default(size=int(dot_radius * 1.2))
+                        draw.text(
+                            (x - dot_radius // 3, y - dot_radius // 2),
+                            label,
+                            fill="white",
+                            font=font,
+                            stroke_width=2,
+                            stroke_fill="black",
                         )
-                        label = str(idx)
-                        try:
-                            font = ImageFont.load_default(size=int(dot_radius * 1.2))
-                            draw.text(
-                                (x - dot_radius // 3, y - dot_radius // 2),
-                                label,
-                                fill="white",
-                                font=font,
-                                stroke_width=2,
-                                stroke_fill="black",
-                            )
-                        except Exception:
-                            draw.text(
-                                (x - 4, y - 6),
-                                label,
-                                fill="white",
-                            )
+                    except Exception:
+                        draw.text(
+                            (x - 4, y - 6),
+                            label,
+                            fill="white",
+                        )
 
         # 3. Swipe / Drag / Scroll
         elif action in ("swipe", "drag", "scroll"):

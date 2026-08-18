@@ -29,9 +29,17 @@ if _REPO_ROOT not in sys.path:
 from adbutils import AdbClient
 from mcp.server.fastmcp import Context, FastMCP
 
+try:
+    from mcp.server.fastmcp.server import Settings as FastMCPSettings
+
+    FastMCPSettings.model_rebuild()
+except Exception:
+    pass
+
 from artemis.clients.ui_automator_client import UIAutomatorClient
 from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
 from artemis.controllers.unified_controller import UnifiedMobileController
+from artemis.platform import platform
 from artemis.utils.app_launch_utils import launch_app_with_retries
 
 # Redirect stdio to prevent logs from breaking MCP JSON-RPC protocol and causing deadlocks.
@@ -130,7 +138,7 @@ def _get_controller():
     ctx = ArtemisContext(
         trace_id="mcp-session",
         device=DeviceContext(
-            host_platform="LINUX",
+            host_platform=platform.os_type.name,
             mobile_platform=DevicePlatform.ANDROID,
             device_id=device_id,
             device_width=width,

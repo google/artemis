@@ -17,10 +17,22 @@ from google.genai import types
 from google.genai.errors import APIError
 import pytest
 
+pytestmark = pytest.mark.skip(
+    reason="Exploratory live API verification test for Gemini SDK role support"
+)
+
 
 @pytest.fixture
 def client():
     """Initializes the Gemini client. Requires GEMINI_API_KEY in environment."""
+    import os
+    from artemis.config.settings import is_placeholder_key
+
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key or is_placeholder_key(key):
+        pytest.skip(
+            "Valid GEMINI_API_KEY / GOOGLE_API_KEY not configured for live Gemini role tests"
+        )
     try:
         return genai.Client()
     except Exception as e:
@@ -38,7 +50,7 @@ def test_gemini_role_tool_fails(client):
 
     with pytest.raises(APIError) as exc_info:
         client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-3.7-flash",
             contents=contents,
         )
 
@@ -60,7 +72,7 @@ def test_gemini_role_user_succeeds(client):
 
     # This should not raise any exceptions
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
+        model="gemini-3.7-flash",
         contents=contents,
     )
 

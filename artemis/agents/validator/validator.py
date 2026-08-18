@@ -47,6 +47,7 @@ from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import CURRENT_TRACE_ID, trace
 from artemis.graph.state import State
+from artemis.platform import platform
 from artemis.services.llm import get_llm
 from artemis.tools.mobile.launch_app import find_package
 from artemis.utils import app_launch_utils, image_diff, visualization
@@ -153,7 +154,7 @@ class ValidatorNode:
                     local_ctx = ArtemisContext(
                         trace_id="local-fallback",
                         device=DeviceContext(
-                            host_platform="LINUX",
+                            host_platform=platform.os_type.name,
                             mobile_platform=DevicePlatform.ANDROID,
                             device_id=device_id,
                             device_width=w,

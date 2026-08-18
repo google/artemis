@@ -22,6 +22,7 @@ import asyncio
 import base64
 import json
 from pathlib import Path
+import re
 import uuid
 
 from jinja2 import Template
@@ -439,13 +440,13 @@ class FlashRunner:
                                 elif kind == "direction" and isinstance(target_val, str):
                                     g_lower = target_val.lower()
                                     if "up" in g_lower:
-                                        norm_coords = [600, 800, 600, 200]
+                                        norm_coords = [600, 700, 600, 300]
                                     elif "down" in g_lower:
-                                        norm_coords = [600, 200, 600, 800]
+                                        norm_coords = [600, 300, 600, 700]
                                     elif "left" in g_lower:
-                                        norm_coords = [800, 500, 200, 500]
+                                        norm_coords = [750, 500, 250, 500]
                                     elif "right" in g_lower:
-                                        norm_coords = [200, 500, 800, 500]
+                                        norm_coords = [250, 500, 750, 500]
                                     if norm_coords:
                                         norm_start = norm_coords[:2]
                                         norm_end = norm_coords[2:]

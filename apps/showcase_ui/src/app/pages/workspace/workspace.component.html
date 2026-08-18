@@ -1,0 +1,189 @@
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<div class="workspace-container" [class.is-resizing]="isDragging">
+  <!-- Left Main Panel: Raw Agent Log Stream -->
+  <main class="left-panel glass-panel">
+    <app-agent-stream></app-agent-stream>
+
+    <!-- Bottom Floating Command Bar Dock -->
+    <div class="workspace-floating-bar-wrapper" [class.is-expanded]="isBarExpanded()" [class.is-dormant]="!isBarExpanded()"
+      [class.is-focused]="isInputFocused()" [class.has-text]="!!taskInput.trim()" [class.is-running]="isTaskRunning()">
+      <!-- Floating Error / Notification Toast -->
+      <div class="floating-dock-toast error" *ngIf="errorMessage">
+        <span class="material-symbols-outlined toast-icon">error</span>
+        <span class="toast-text">{{ errorMessage }}</span>
+        <button type="button" class="btn-toast-close" (click)="errorMessage = null" aria-label="Close error message">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+
+      <!-- Dock Row (Contains the Main Card and the Separate Stop Button when running) -->
+      <div class="floating-dock-row">
+        <!-- Floating Dock Main Card -->
+        <div class="floating-dock-card" (click)="onCardClick($event)"
+          (mouseenter)="isHoveringCard.set(true)" (mouseleave)="isHoveringCard.set(false)">
+          <!-- Ambient Liquid Wave / Aurora Background Layer (Active in both Dormant & Expanded) -->
+          <div class="dock-wave-container" [class.is-pro]="selectedProfile() === 'pro'">
+            <div class="wave-glow-ambient"></div>
+            <div class="wave-tracks-wrapper">
+              <!-- Back Fluid Wave -->
+              <svg class="liquid-wave wave-back" viewBox="0 0 2400 80" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="waveGradBack" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" class="wave-stop-1" />
+                    <stop offset="25%" class="wave-stop-2" />
+                    <stop offset="50%" class="wave-stop-3" />
+                    <stop offset="75%" class="wave-stop-4" />
+                    <stop offset="100%" class="wave-stop-1" />
+                  </linearGradient>
+                </defs>
+                <path d="M 0,25 Q 300,55 600,20 T 1200,25 Q 1500,55 1800,20 T 2400,25 L 2400,80 L 0,80 Z"
+                  fill="url(#waveGradBack)"></path>
+              </svg>
+        
+              <!-- Mid Fluid Wave -->
+              <svg class="liquid-wave wave-mid" viewBox="0 0 2400 80" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="waveGradMid" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" class="wave-stop-3" />
+                    <stop offset="35%" class="wave-stop-1" />
+                    <stop offset="70%" class="wave-stop-4" />
+                    <stop offset="100%" class="wave-stop-3" />
+                  </linearGradient>
+                </defs>
+                <path d="M 0,35 Q 300,5 600,45 T 1200,35 Q 1500,5 1800,45 T 2400,35 L 2400,80 L 0,80 Z"
+                  fill="url(#waveGradMid)"></path>
+              </svg>
+        
+              <!-- Front Fluid Wave -->
+              <svg class="liquid-wave wave-front" viewBox="0 0 2400 80" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="waveGradFront" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" class="wave-stop-2" />
+                    <stop offset="30%" class="wave-stop-4" />
+                    <stop offset="65%" class="wave-stop-1" />
+                    <stop offset="100%" class="wave-stop-2" />
+                  </linearGradient>
+                </defs>
+                <path d="M 0,18 Q 300,50 600,15 T 1200,18 Q 1500,50 1800,15 T 2400,18 L 2400,80 L 0,80 Z"
+                  fill="url(#waveGradFront)"></path>
+              </svg>
+            </div>
+          </div>
+        
+          <!-- Dormant / Capsule Peek View (Visible when mouse is away and input idle) -->
+          <div class="capsule-peek-view">
+            <span class="capsule-placeholder">Start a new task...</span>
+          </div>
+        
+          <!-- Expanded Full View Content (Visible on hover, focus, or text) -->
+          <div class="expanded-card-content">
+            <div class="card-main-input-row">
+              <!-- Textarea Container with Dynamic English Placeholder -->
+              <div class="input-content-area">
+                <textarea #dockInput [(ngModel)]="taskInput"
+                  (input)="onTextareaInput($event)"
+                  (keydown)="onKeyDown($event)"
+                  (focus)="onInputFocus()"
+                  (blur)="onInputBlur()"
+                  rows="1"
+                  [disabled]="isSubmitting"
+                  [placeholder]="selectedProfile() === 'pro' 
+                    ? 'Pro: Best for complex long-running tasks, deep reasoning & video analysis' 
+                    : 'Flash: Fast execution for direct actions and tasks within 25 steps'"
+                  class="dock-textarea"
+                  spellcheck="false"
+                ></textarea>
+              </div>
+
+              <!-- Clear Button (visible when text is entered) -->
+              <button *ngIf="taskInput.trim() && !isSubmitting" type="button" class="dock-circle-btn btn-clear"
+                (click)="clearInput($event)" title="Clear input text" aria-label="Clear input text">
+                <span class="material-symbols-outlined">close</span>
+              </button>
+              
+              <!-- Stop Button (Visible when task is running) -->
+              <button *ngIf="isTaskRunning()" type="button" class="dock-circle-btn btn-stop" [disabled]="isSubmitting"
+                (click)="stopTask($event)"
+                title="Stop running task"
+                aria-label="Stop running task"
+              >
+                <span class="material-symbols-outlined">stop</span>
+              </button>
+
+              <!-- Send Button -->
+              <button type="button" class="dock-circle-btn btn-send"
+                [class.has-content]="!!taskInput.trim()"
+                [disabled]="!taskInput.trim() || isSubmitting"
+                (click)="submitTask()"
+                [title]="isSubmitting ? 'Starting task...' : 'Start task (Enter)'"
+                aria-label="Start task"
+              >
+                <span class="material-symbols-outlined spinning-icon" *ngIf="isSubmitting">sync</span>
+                <span class="material-symbols-outlined" *ngIf="!isSubmitting">arrow_upward</span>
+              </button>
+            </div>
+
+            <!-- Bottom Segmented Controls Row -->
+            <div class="card-footer-row">
+              <div class="footer-left-group">
+                <!-- Segmented Model Toggle (Flash / Pro) -->
+                <div class="model-profile-toggle" role="group" aria-label="Select AI Model">
+                  <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'flash'"
+                    (mousedown)="$event.preventDefault()" (click)="setProfile('flash', $event)"
+                    title="Flash: Fast execution for standard app workflows">
+                    <span class="material-symbols-outlined pill-icon icon-flash">bolt</span>
+                    <span class="pill-label">Flash</span>
+                  </button>
+                  <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'pro'"
+                    (mousedown)="$event.preventDefault()" (click)="setProfile('pro', $event)"
+                    title="Pro: Deep multimodal reasoning for complex multi-step tasks">
+                    <span class="material-symbols-outlined pill-icon icon-pro">psychology</span>
+                    <span class="pill-label">Pro</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Separate Standalone Stop Button Beside the Capsule (Visible when task is running) -->
+        <button *ngIf="isTaskRunning()" type="button" class="standalone-stop-btn"
+          [disabled]="isSubmitting"
+          (click)="stopTask($event)"
+          title="Stop running task"
+          aria-label="Stop running task"
+        >
+          <span class="material-symbols-outlined">stop</span>
+        </button>
+      </div>
+    </div>
+  </main>
+        
+        <!-- Split Pane Drag Resizer -->
+        <div class="resizer" (mousedown)="onDragStart($event)">
+          <div class="resizer-handle"></div>
+        </div>
+        
+        <!-- Right Sidebar Panel: Chat Interface Mock -->
+        <aside class="right-panel" [style.width.px]="rightPanelWidth">
+          <app-chat-interface></app-chat-interface>
+        </aside>
+        
+        <!-- Floating Video Replay Player Modal / Window -->
+        <app-floating-video-player></app-floating-video-player>
+</div>

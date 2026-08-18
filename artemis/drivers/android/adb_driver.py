@@ -22,7 +22,9 @@ from typing import Any, Literal
 
 from adbutils import AdbClient, AdbDevice
 from artemis.clients.ui_automator_client import UIAutomatorClient
+from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
+from artemis.toolchain import find_ffmpeg, find_scrcpy
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -231,7 +233,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
         start_y: int,
         end_x: int,
         end_y: int,
-        duration_ms: int = 400,
+        duration_ms: int = 800,
     ) -> bool:
         try:
             cmd = f"input swipe {start_x} {start_y} {end_x} {end_y} {duration_ms}"
@@ -245,31 +247,33 @@ class AndroidAdbDriver(BaseDeviceDriver):
     async def swipe_direction(
         self,
         direction: SwipeDirection | Literal["up", "down", "left", "right"],
-        duration_ms: int = 400,
+        duration_ms: int = 800,
     ) -> bool:
         dir_str = str(direction).lower()
-        mid_x = self._width // 2
+        mid_x = int(
+            self._width * 0.6
+        )  # Lock to 60% width to avoid edge gestures and alphabet fast-scroll sidebar
         mid_y = self._height // 2
 
         if dir_str == "up":
-            # Drag bottom to top -> scrolls down
+            # Drag bottom to top -> scrolls down (0.7 -> 0.3 leaves ~50-60% overlap, 800ms prevents fling)
             return await self.swipe(
-                mid_x, int(self._height * 0.75), mid_x, int(self._height * 0.25), duration_ms
+                mid_x, int(self._height * 0.7), mid_x, int(self._height * 0.3), duration_ms
             )
         elif dir_str == "down":
             # Drag top to bottom -> scrolls up
             return await self.swipe(
-                mid_x, int(self._height * 0.25), mid_x, int(self._height * 0.75), duration_ms
+                mid_x, int(self._height * 0.3), mid_x, int(self._height * 0.7), duration_ms
             )
         elif dir_str == "left":
             # Drag right to left -> scrolls right
             return await self.swipe(
-                int(self._width * 0.8), mid_y, int(self._width * 0.2), mid_y, duration_ms
+                int(self._width * 0.75), mid_y, int(self._width * 0.25), mid_y, duration_ms
             )
         elif dir_str == "right":
             # Drag left to right -> scrolls left
             return await self.swipe(
-                int(self._width * 0.2), mid_y, int(self._width * 0.8), mid_y, duration_ms
+                int(self._width * 0.25), mid_y, int(self._width * 0.75), mid_y, duration_ms
             )
         return False
 
@@ -407,14 +411,15 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def start_video_recording(self, output_dir: Path | None = None) -> None:
         """Starts screen recording via scrcpy in background."""
-        out_dir = output_dir or Path("/tmp")
+        out_dir = output_dir or get_temp_dir("recordings")
         out_dir.mkdir(parents=True, exist_ok=True)
         self._recording_mkv_path = out_dir / "recording.mkv"
         self._recording_output_path = out_dir / "recording.mp4"
         logger.info(f"Starting scrcpy video recording to {self._recording_mkv_path}...")
         try:
+            scrcpy_bin = find_scrcpy()
             cmd = [
-                "scrcpy",
+                scrcpy_bin,
                 "--serial",
                 self.device_id,
                 "--no-window",
@@ -449,10 +454,8 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
         if mkv and mkv.exists() and mp4:
             try:
-                from artemis.utils.video import get_ffmpeg_path
-
                 proc = await asyncio.create_subprocess_exec(
-                    get_ffmpeg_path(),
+                    find_ffmpeg(),
                     "-y",
                     "-i",
                     str(mkv),

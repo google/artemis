@@ -46,7 +46,10 @@ from artemis.tools.tool_wrapper import (
     get_tool_result_content,
     invoke_tool_with_injection,
 )
-from artemis.utils.coordinates import parse_swipe_parameters
+from artemis.utils.coordinates import (
+    compute_smart_swipe_coordinates,
+    parse_swipe_parameters,
+)
 from artemis.utils.decorators import wrap_with_callbacks
 from artemis.utils.file import create_snapshot
 from artemis.utils.logger import get_logger
@@ -1056,22 +1059,24 @@ class OperatorNode:
         def swipe(
             direction: Annotated[
                 Literal["up", "down", "left", "right"] | None,
-                "Smart directional swipe ('up', 'down', 'left', 'right') for general page"
-                " scrolling/browsing. Automatically computes safe swipe vectors (locking axes"
-                " to prevent sidebar/edge mis-clicks), retains a ~40% visual overlap anchor,"
-                " and prevents inertial flings: 'up' (drags bottom-to-top, scrolls down to reveal content below),"
-                " 'down' (drags top-to-bottom, scrolls up to reveal content above),"
-                " 'left' (drags right-to-left, scrolls right), 'right' (drags left-to-right, scrolls left).",
+                "Direction for scrolling and swiping: 'up' (drags bottom-to-top, scrolling down to reveal content below),"
+                " 'down' (drags top-to-bottom, scrolling up to reveal content above),"
+                " 'left' (drags right-to-left, scrolling right),"
+                " 'right' (drags left-to-right, scrolling left).",
             ] = None,
             start: Annotated[
                 list[int] | None,
-                "Start point normalized coordinates [start_x, start_y] in 0-1000 scale for precise,"
+                "Start normalized coordinates [start_x, start_y] in 0-1000 scale for precise,"
                 " local interactions (e.g. adjusting sliders, SeekBars, fine range selection, or drag-and-drop).",
             ] = None,
             end: Annotated[
                 list[int] | None,
-                "End point normalized coordinates [end_x, end_y] in 0-1000 scale for precise,"
+                "End normalized coordinates [end_x, end_y] in 0-1000 scale for precise,"
                 " local interactions (e.g. adjusting sliders, SeekBars, fine range selection, or drag-and-drop).",
+            ] = None,
+            target: Annotated[
+                int | list[int] | str | None,
+                "Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within.",
             ] = None,
             gesture: Annotated[
                 Literal["up", "down", "left", "right"] | list[int] | None,
@@ -1080,23 +1085,23 @@ class OperatorNode:
             ] = None,
             duration: Annotated[
                 int | None,
-                "Optional swipe/drag duration in milliseconds. If specified, the gesture will run at this exact speed."
-                " For drag-and-drop, list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars),"
-                " set duration >= 1000 (e.g. 1500). If omitted for directional swipe, the system automatically"
-                " calculates the best duration based on the swipe distance to prevent unintended inertial flings.",
+                "Optional swipe/drag duration in milliseconds (default 800). For drag-and-drop,"
+                " list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars),"
+                " set duration >= 1000 (e.g. 1500). If omitted for directional swipe, duration is computed automatically.",
             ] = None,
         ):
             """[ACTION] Perform a swipe, drag, or slider-adjustment gesture on the screen.
 
-            • Smart Directional Scrolling ('direction'): Best for general browsing and page scrolling. Automatically computes safe swipe vectors (locking axes to prevent edge/sidebar mis-clicks), retains a ~40% visual overlap anchor for zero-omission traversal, and prevents inertial flings.
-            • Precise Coordinate Gestures ('start', 'end'): Best for local, fine-grained interactions such as adjusting sliders/SeekBars (e.g., volume, brightness, progress bars) or drag-and-drop / list reordering. Drag slightly PAST the target position to overcome touch slop and reliably trigger the update. When setting a slider to Maximum (100%) or Minimum (0%), always swipe fully to the extreme boundary to guarantee reaching the absolute limits.
+            • Directional Scrolling ('direction'): Recommended for general browsing and standard page scrolling in most scenarios. Automatically computes safe swipe vectors and adaptive duration, retains a ~40% visual overlap anchor for zero-omission traversal, and prevents inertial flings. Supports scoping to a sub-container via 'target'. If it fails on certain custom layouts, fall back to specifying exact coordinates ('start' and 'end') directly.
+            • Precise Coordinate Gestures ('start', 'end'): Best for local, fine-grained interactions such as adjusting sliders/SeekBars (e.g., volume, brightness, progress bars), drag-and-drop / list reordering, or as a reliable fallback when directional scrolling fails on specific containers. Always drag slightly PAST the target position to overcome touch slop and reliably trigger the update. When setting a slider to Maximum (100%) or Minimum (0%), swipe fully to the extreme boundary.
 
             Args:
-                direction: Smart directional scrolling ('up', 'down', 'left', 'right'). Automatically computes safe swipe vectors, retaining 40% of the previous screen's visible content as an overlapping anchor: 'up' (drags bottom-to-top, scrolling down to reveal content below), 'down' (drags top-to-bottom, scrolling up to reveal content above), 'left' (drags right-to-left), 'right' (drags left-to-right).
-                start: Start normalized coordinates [start_x, start_y] in 0-1000 scale for precise/local interactions.
-                end: End normalized coordinates [end_x, end_y] in 0-1000 scale for precise/local interactions.
+                direction: Smart directional scrolling ('up', 'down', 'left', 'right'). Automatically computes safe swipe vectors, retaining 40% visual overlap: 'up' (reveal content below), 'down' (reveal content above), 'left', 'right'.
+                start: Start normalized coordinates [start_x, start_y] in 0-1000 scale.
+                end: End normalized coordinates [end_x, end_y] in 0-1000 scale.
+                target: Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within.
                 gesture: Backward-compatible parameter: direction string OR custom coordinates list [start_x, start_y, end_x, end_y] in 0-1000 scale.
-                duration: Optional gesture duration in milliseconds. If omitted for directional swipe, the system automatically computes a reliable duration based on the swipe distance to prevent unintended inertial flings.
+                duration: Optional gesture duration in milliseconds (default 800).
             """
             return "Action Recorded"
 
@@ -1134,16 +1139,16 @@ class OperatorNode:
         def wait_for_delay(
             time_in_ms: Annotated[
                 int,
-                "The duration to wait in milliseconds (e.g., 2000 for 2"
-                " seconds, 5000 for 5 seconds). Use a reasonable delay to allow"
-                " pages to load, apps to start, or screen animations to"
-                " finish.",
+                "The exact duration to wait in milliseconds. Accurately convert the"
+                " required time duration into milliseconds based on your objective"
+                " or plan (e.g., 2000 for 2s, 5000 for 5s, 60000 for 1 minute,"
+                " 180000 for 3 minutes, 300000 for 5 minutes).",
             ],
         ):
-            """[ACTION] Pause execution and wait for a fixed duration.
+            """[ACTION] Pause execution and wait for a specified duration in milliseconds.
 
-            Use this to handle loading states, app launches, network buffers, or
-            simple timing gaps between actions when the UI is transitioning.
+            Use this whenever you need time to elapse—whether for UI loading, animations,
+            screen transitions, or longer scheduled delays and intervals specified in the task.
             """
             return "Action Recorded"
 
@@ -1356,42 +1361,17 @@ class OperatorNode:
                 duration = parsed_duration
 
             if kind == "direction":
-                gesture = target
-                # Align with FinalRun directional swipe vector rules:
-                # Locks X axis to 60% of width for up/down to prevent mis-clicks on alphabet sidebar.
-                # Horizontal Y axis is locked to 60% of height.
-                if gesture == "up":
-                    coords = [
-                        int(width * 0.6),
-                        int(height * 0.8),
-                        int(width * 0.6),
-                        int(height * 0.2),
-                    ]
-                elif gesture == "down":
-                    coords = [
-                        int(width * 0.6),
-                        int(height * 0.2),
-                        int(width * 0.6),
-                        int(height * 0.8),
-                    ]
-                elif gesture == "left":
-                    coords = [
-                        int(width * 0.8),
-                        int(height * 0.6),
-                        int(width * 0.2),
-                        int(height * 0.6),
-                    ]
-                elif gesture == "right":
-                    coords = [
-                        int(width * 0.2),
-                        int(height * 0.6),
-                        int(width * 0.8),
-                        int(height * 0.6),
-                    ]
-                else:
-                    return [], f"Error: Invalid swipe direction '{gesture}'."
-
-                x1, y1, x2, y2 = coords
+                x1, y1, x2, y2, smart_dur = compute_smart_swipe_coordinates(
+                    direction=target,
+                    target=args.get("target"),
+                    indexed_elements=getattr(state, "indexed_elements", None),
+                    ui_hierarchy=getattr(state, "ui_tree", None),
+                    width=width,
+                    height=height,
+                    duration=duration,
+                )
+                if duration is None:
+                    duration = smart_dur
             elif kind == "coords" and isinstance(target, list) and len(target) == 4:
                 try:
                     nx1, ny1, nx2, ny2 = map(float, target)
@@ -1413,19 +1393,17 @@ class OperatorNode:
                     ),
                 )
 
-            # Calculate duration automatically if not provided (safe range 280-400ms to avoid long-press and fling)
+            # Calculate duration automatically if not provided (safe range 350-900ms to eliminate Android inertial fling)
             if duration is None:
                 dist = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
-                if dist <= 400:
-                    duration = 280
-                elif dist <= 800:
-                    duration = 320
-                elif dist <= 1200:
+                if dist <= 300:
                     duration = 350
-                elif dist <= 1600:
-                    duration = 380
+                elif dist <= 600:
+                    duration = 550
+                elif dist <= 1000:
+                    duration = 800
                 else:
-                    duration = 400
+                    duration = 900
 
             nx1, ny1 = int(round(x1 * 1000.0 / width)), int(round(y1 * 1000.0 / height))
             nx2, ny2 = int(round(x2 * 1000.0 / width)), int(round(y2 * 1000.0 / height))

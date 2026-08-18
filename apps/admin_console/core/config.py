@@ -63,6 +63,12 @@ except ImportError:
 REPLAY_BASE_DIR = TRACES_PATH / "replay"
 TEST_DATA_DIR = REPLAY_BASE_DIR / "data"
 TEST_OUTPUTS_DIR = REPLAY_BASE_DIR / "outputs"
-
 IMAGES_DIR = TRACES_PATH / "images"
 PAUSE_FILE = WORKSPACE_ROOT / ".artemis_paused"
+
+# Ensure all essential runtime directories exist automatically
+for _d in (TRACES_PATH, REPLAY_BASE_DIR, TEST_DATA_DIR, TEST_OUTPUTS_DIR, IMAGES_DIR):
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
