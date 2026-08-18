@@ -1,6 +1,6 @@
 # 🔌 Universal MCP Server for ARTEMIS
 
-This directory contains the universal **Model Context Protocol (MCP)** server for **ARTEMIS**, enabling seamless mobile device automation inside AI IDEs and agents like **Cursor**, **Claude Code**, **OpenClaw**, **Windsurf**, and **Jetski**.
+This directory contains the universal **Model Context Protocol (MCP)** server for **ARTEMIS**, enabling seamless mobile device automation inside AI IDEs and agents like **Antigravity**, **Cursor**, **Claude Code**, **OpenClaw**, and **Windsurf**.
 
 ## 🏗️ Architecture
 
@@ -32,7 +32,7 @@ mcp_server/
 
 ## 🧠 AI Agent Behavioral Rules (`rules.md`)
 
-When connecting ARTEMIS to AI coding assistants like **Claude Code**, **Cursor**, or **Windsurf**, providing the assistant with domain-specific testing discipline is critical for generating reliable test code.
+When connecting ARTEMIS to AI coding assistants like **Antigravity**, **Claude Code**, **Cursor**, or **Windsurf**, providing the assistant with domain-specific testing discipline is critical for generating reliable test code.
 
 The included [`rules.md`](./rules.md) file contains the **Mobile Testing Mindset (ARTEMIS Integration)** guideline. It teaches the AI agent how to properly collaborate with ARTEMIS:
 
@@ -42,6 +42,7 @@ The included [`rules.md`](./rules.md) file contains the **Mobile Testing Mindset
 4. **"Dynamic-First, Coordinate-Fallback" Locator Pattern**: Teaches the AI to prioritize dynamic UI locators (Resource IDs, OCR text, semantics) for layout resilience, while implementing absolute coordinate fallbacks for maximum execution reliability.
 
 ### How to Apply `rules.md` in Your IDE
+* **Antigravity**: Add or copy the contents of `rules.md` into your Workspace Rules, Global Rules settings, or agent instructions.
 * **Claude Code**: Copy or include the contents of `rules.md` in your project's `CLAUDE.md` file (or reference it directly in your instructions).
 * **Cursor**: Copy the contents of `rules.md` into your `.cursorrules` or create a new rule file in `.cursor/rules/artemis.mdc`.
 * **Windsurf / OpenClaw**: Add the rules to your global/workspace rules or agent system prompts so the assistant always follows verified mobile testing principles.

@@ -842,7 +842,7 @@ def create_banner_html(lang="en"):
 """
     if lang == "cn":
         replacements = {
-            "__TAGLINE__": "用 <span>自主 AI</span> 测试任意安卓手机",
+            "__TAGLINE__": "用 <span>Autonomous Assistant Platform</span> 测试任意安卓手机",
             "__PROMPT_LABEL__": "目标 / 提示词",
             "__PROMPT_STATUS__": "设备实机运行中",
             "__PROMPT_TEXT__": "连接蓝牙耳机播放歌曲，并持续采集 CPU 性能指标",
@@ -868,7 +868,7 @@ def create_banner_html(lang="en"):
         }
     else:
         replacements = {
-            "__TAGLINE__": "Test Any Android Phone with <span>Autonomous AI</span>",
+            "__TAGLINE__": "Test Any Android Phone with <span>Autonomous Assistant Platform</span>",
             "__PROMPT_LABEL__": "Goal / Prompt",
             "__PROMPT_STATUS__": "RUNNING ON DEVICE",
             "__PROMPT_TEXT__": "Connect to Bluetooth earbuds, play a song, and capture CPU usage metrics",

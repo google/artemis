@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/artemis-banner.png?v=3" alt="ARTEMIS Banner" width="100%" />
+  <img src="./docs/assets/artemis-banner.png?v=4" alt="ARTEMIS Banner" width="100%" />
 </p>
 
 <p align="center">
@@ -146,7 +146,19 @@ artemis mcp --generate-config all
 }
 ```
 
-### 3. Prompt Your Phone in the IDE Chat
+### 3. Mount Behavioral Rules for AI Agents (Highly Recommended)
+
+To ensure your AI coding assistant acts with the rigor of a senior mobile test engineer and never hallucinates UI interactions, we provide a dedicated testing mindset rules file at [`mcp_server/rules.md`](./mcp_server/rules.md) (covering **Active Exploration before coding**, **Flash vs. Pro routing strategy**, **Latency & Timing compensation**, and the **"Dynamic-First, Coordinate-Fallback" locator pattern**).
+
+You can mount or copy [`mcp_server/rules.md`](./mcp_server/rules.md) into your AI IDE's rule configuration:
+* **Antigravity**: Add the contents of `rules.md` to your Workspace Rules, Global Rules settings, or agent instructions.
+* **Claude Code**: Copy or include the contents of `rules.md` in your project's `CLAUDE.md` file.
+* **Cursor**: Copy the contents into `.cursorrules` or create a rule file at `.cursor/rules/artemis.mdc`.
+* **Windsurf / OpenClaw**: Add the rules to your workspace rules or global system prompts.
+
+> 💡 For more details on the testing mindset and MCP architecture, see the [MCP Server README](./mcp_server/README.md).
+
+### 4. Prompt Your Phone in the IDE Chat
 In Antigravity or Claude Code, simply prompt:
 > 💬 *"Build the latest changes into an APK, install it on the connected device, open the login screen with a test account, verify if there are any unexpected popups after login, and return screenshots of the final page."*
 

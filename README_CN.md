@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/artemis-banner-cn.png?v=3" alt="ARTEMIS Banner" width="100%" />
+  <img src="./docs/assets/artemis-banner-cn.png?v=4" alt="ARTEMIS Banner" width="100%" />
 </p>
 
 <p align="center">
@@ -148,7 +148,19 @@ artemis mcp --generate-config all
 }
 ```
 
-### 3. 在 IDE 中体验真机协同
+### 3. 挂载智能体行为规范 Rules（强烈推荐）
+
+为使 AI 编程助手具备资深移动端测试工程师的严谨思维，避免凭空臆测 UI 交互，我们提供了专属的测试思维行为规范文件 [`mcp_server/rules.md`](./mcp_server/rules.md)（涵盖**可运行代码原则与真机探索**、**Flash 与 Pro 任务路由策略**、**延迟与时间补偿机制**以及**“动态优先、坐标兜底”定位模式**）。
+
+你可以将 [`mcp_server/rules.md`](./mcp_server/rules.md) 挂载或复制到你的 AI IDE 规则配置中：
+* **Antigravity**：将 `rules.md` 内容添加至工作区规则（Workspace Rules）或全局规则设置中。
+* **Claude Code**：将 `rules.md` 内容复制或引入至项目根目录的 `CLAUDE.md` 文件中。
+* **Cursor**：将内容复制到 `.cursorrules` 文件或在 `.cursor/rules/artemis.mdc` 中创建新规则。
+* **Windsurf / OpenClaw**：将内容添加到工作区规则或全局 System Prompt 中。
+
+> 💡 更多规范设计细节与 MCP 架构说明，请参阅 [MCP Server 文档](./mcp_server/README.md)。
+
+### 4. 在 IDE 中体验真机协同
 在 Antigravity / Claude Code 对话框中直接输入：
 > 💬 *"请帮我把刚刚修改的代码编译成 APK 并安装到手机上，打开登录页面输入测试账号，验证登录后是否有异常弹窗，并把最终页面截图回传。"*
 
