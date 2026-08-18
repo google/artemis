@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <em>⚡ Drive Real Devices from Antigravity & Claude Code • Cross-App Automation • Zero-Maintenance UI Testing • Bug Repro & Logcat Diagnostics</em>
+  <em>⚡ Drive Real Devices from Antigravity & Claude Code • Cross-App Automation • Zero-Maintenance Testing • Bug Repro & Logcat Diagnostics</em>
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
 ## ✨ Key Highlights
 
 * 🤖 **Cross-App Automation & Autonomous AI Assistant**: Operates not just as a robust testing framework, but as an autonomous agent capable of handling complex cross-app workflows and daily tasks via natural language;
-* 🧪 **Zero-Maintenance UI Test Automation**: Built upon a "Dynamic-First, Coordinate-Fallback" multimodal locating engine, eliminating fragile XPath/ID selector maintenance and remaining resilient to UI redesigns, system updates, and resolution drift;
+* 🧪 **Zero-Maintenance Test Automation**: Built upon a "Dynamic-First, Coordinate-Fallback" multimodal locating engine, eliminating fragile XPath/ID selector maintenance and remaining resilient to UI redesigns, system updates, and resolution drift;
 * 🐞 **One-Click Bug Repro & Logcat Diagnostics in IDE**: Native **Model Context Protocol (MCP)** integration allows **Antigravity, Claude Code, and Windsurf** to drive physical test devices via natural language, automatically capturing crash stacks from **Logcat** and keyframe screenshots;
 * ⚡ **Ultra-Fast Execution (3–5s per Step)**: Pioneered an **Optimistic Asynchronous Pipeline** that completely decouples UI interaction from heavy LLM reasoning, achieving rapid regression throughput in Flash mode;
 * 🛡️ **Popup Self-Healing & 10+ Hour Exploration**: Proprietary **Safety Net** double-checks targets before action execution to intercept and clear interfering system popups; Pro mode supports **10+ hours** of continuous exploratory & monkey-plus stability testing;
@@ -59,14 +59,14 @@ Experience seamless collaboration between **Antigravity** and **ARTEMIS** via na
     </td>
     <td width="50%" align="center">
       <b>2️⃣ Test Plan Generation</b><br>
-      <sub>Antigravity formulates a step-by-step test plan & architecture for review</sub><br><br>
+      <sub>Formulates a step-by-step test plan & architecture for review</sub><br><br>
       <img src="./docs/assets/workflow-2-plan.png" width="100%" alt="Step 2: Test Plan Generation" />
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
       <b>3️⃣ Autonomous Test Execution</b><br>
-      <sub>ARTEMIS drives the real device, navigates UI, and profiles performance</sub><br><br>
+      <sub>Drives real device, navigates UI, and profiles performance</sub><br><br>
       <img src="./docs/assets/workflow-3-exec.png" width="100%" alt="Step 3: Autonomous Test Execution" />
     </td>
     <td width="50%" align="center">

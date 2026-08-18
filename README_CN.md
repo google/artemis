@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <em>⚡ 让 Antigravity / Claude Code 接管真机 • 跨 App 复杂自动化 • 零脚本维护 UI 测试 • 智能 Bug 复现与 Logcat 诊断</em>
+  <em>⚡ 让 Antigravity / Claude Code 接管真机 • 跨 App 复杂自动化 • 零脚本维护自动化测试 • 智能 Bug 复现与 Logcat 诊断</em>
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
 ## ✨ 核心亮点
 
 * 🤖 **跨 App 复杂自动化与 AI 个人助理**：不仅能执行严格的自动化测试用例，更具备接管真机的自主决策与长流程操作能力，一句话处理跨应用复杂业务与任务；
-* 🧪 **零脚本维护 UI 自动化测试**：基于“动态优先、坐标兜底”的多模态语义定位，彻底告别传统 XPath / 控件 ID 频繁失效的痛点，无惧 App 改版、分辨率差异与系统升级；
+* 🧪 **零脚本维护自动化测试**：基于“动态优先、坐标兜底”的多模态语义定位，彻底告别传统 XPath / 控件 ID 频繁失效的痛点，无惧 App 改版、分辨率差异与系统升级；
 * 🐞 **IDE 内一键 Bug 复现与 Logcat 诊断**：原生支持 **MCP 协议**，可在 **Antigravity、Claude Code、Windsurf** 中直接用自然语言驱动真机复现缺陷，自动抓取关键帧截图与 **Logcat 崩溃堆栈**，完成研发测试闭环；
 * ⚡ **极速执行吞吐（单步 3–5 秒）**：首创**全链路乐观异步流水线 (Optimistic Async Pipeline)**，解耦重度推理与页面操作，在 Flash 模式下实现丝滑的高频交互与快速回归验证；
 * 🛡️ **干扰弹窗自愈与超长程巡检**：独创 **Safety Net** 执行前校验机制，自动识别并清除系统权限弹窗、通知遮挡等异常；Pro 模式支持连续 **10+ 小时** 无人值守稳定性巡检与探索性测试 (Exploratory / Monkey-plus Testing)；
@@ -60,19 +60,19 @@
     </td>
     <td width="50%" align="center">
       <b>2️⃣ 生成测试方案 (Test Plan Generation)</b><br>
-      <sub>Antigravity 自动拆解任务，生成详细测试步骤与架构图供确认</sub><br><br>
+      <sub>自动拆解任务，生成详细测试步骤与架构图供确认</sub><br><br>
       <img src="./docs/assets/workflow-2-plan.png" width="100%" alt="步骤二：生成测试方案" />
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
       <b>3️⃣ 自主执行测试 (Autonomous Test Execution)</b><br>
-      <sub>ARTEMIS 接管真机自动化操作，跳过广告并实时采集性能指标</sub><br><br>
+      <sub>接管真机自动化操作，跳过广告并实时采集性能指标</sub><br><br>
       <img src="./docs/assets/workflow-3-exec.png" width="100%" alt="步骤三：自主执行测试" />
     </td>
     <td width="50%" align="center">
       <b>4️⃣ 交付最终报告 (Comprehensive Final Report)</b><br>
-      <sub>生成结构化测试分析报告，包含性能数据表、结论与原始数据集</sub><br><br>
+      <sub>生成结构化测试报告，交付性能图表、结论与原始数据</sub><br><br>
       <img src="./docs/assets/workflow-4-report.png" width="100%" alt="步骤四：交付最终报告" />
     </td>
   </tr>
