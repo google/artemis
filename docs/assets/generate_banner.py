@@ -154,9 +154,23 @@ def create_banner_html():
     filter: drop-shadow(0 0 35px rgba(66, 133, 244, 0.4));
   }
 
+  .brand-acronym {
+    font-size: 13px;
+    font-weight: 600;
+    color: #94A3B8;
+    letter-spacing: 0.015em;
+    font-family: 'Google Sans Mono', 'Roboto Mono', monospace;
+    margin-top: -3px;
+  }
+
+  .brand-acronym span {
+    color: #60A5FA;
+    font-weight: 800;
+  }
+
   /* Clean Single Subtitle (Preserving Android) */
   .brand-tagline {
-    font-size: 24px;
+    font-size: 23px;
     font-weight: 700;
     line-height: 1.35;
     color: #F8FAFC;
@@ -216,7 +230,8 @@ def create_banner_html():
   }
 
   .prompt-text {
-    font-size: 13.5px;
+    font-size: 12px;
+    line-height: 1.35;
     font-family: 'Google Sans Mono', 'Roboto Mono', monospace;
     color: #E2E8F0;
     font-weight: 500;
@@ -377,6 +392,46 @@ def create_banner_html():
     gap: 8px;
     font-size: 11px;
     font-family: 'Google Sans Mono', 'Roboto Mono', monospace;
+  }
+
+  /* Host Telemetry Metrics Panel in Console */
+  .metrics-panel {
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 7px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 1px;
+  }
+
+  .metric-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: 'Google Sans Mono', 'Roboto Mono', monospace;
+    font-size: 9.5px;
+  }
+
+  .metric-label {
+    color: #94A3B8;
+  }
+
+  .metric-value {
+    color: #F1F5F9;
+    font-weight: 700;
+  }
+
+  .metric-value.cpu-highlight {
+    color: #34D399;
+    background: rgba(52, 211, 153, 0.15);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  .metric-value.status-ok {
+    color: #60A5FA;
   }
 
   /* Connected Mobile Phone Mockup */
@@ -657,9 +712,14 @@ def create_banner_html():
       <h1 class="brand-title">ARTEMIS</h1>
     </div>
 
+    <!-- Write out what ARTEMIS stands for -->
+    <div class="brand-acronym">
+      <span>A</span>utonomous <span>R</span>eal-time <span>T</span>esting, <span>E</span>xploration &amp; <span>M</span>obile <span>I</span>nteraction <span>S</span>ystem
+    </div>
+
     <!-- Clear, Crisp Subtitle -->
     <div class="brand-tagline">
-      Control Any Android App with <span>Autonomous AI</span>
+      Test Any Pixel / Android App with <span>Autonomous AI</span>
     </div>
 
     <!-- User Prompt Input Example -->
@@ -672,7 +732,7 @@ def create_banner_html():
         </div>
       </div>
       <div class="prompt-text">
-        <span>&gt;</span> Order an iced caramel latte with oat milk
+        <span>&gt;</span> Connect to Bluetooth earbuds, play a song, and capture CPU usage metrics
       </div>
     </div>
   </div>
@@ -685,70 +745,86 @@ def create_banner_html():
       <div class="console-header">
         <div class="console-title-group">
           <div class="console-dot"></div>
-          <span class="console-title">Agent Execution</span>
+          <span class="console-title">Host Agent Console</span>
         </div>
-        <span class="console-badge">STEP 3 / 4</span>
+        <span class="console-badge">MONITORING</span>
       </div>
 
       <div class="step-list">
         <div class="step-item">
           <span class="step-icon-done">✓</span>
-          <span class="step-text-done">1. Open app & search catalog</span>
+          <span class="step-text-done">1. Connect to Bluetooth earbuds</span>
         </div>
         <div class="step-item">
           <span class="step-icon-done">✓</span>
-          <span class="step-text-done">2. Select item & customize</span>
+          <span class="step-text-done">2. Launch music player & play song</span>
         </div>
 
         <!-- Active Step -->
         <div class="step-active-card">
           <div class="step-active-header">
-            <span class="step-active-title">▶ 3. Tap "Place Order"</span>
-            <span class="step-active-time">140ms</span>
+            <span class="step-active-title">▶ 3. Capture CPU usage metrics</span>
+            <span class="step-active-time">Active</span>
           </div>
           <div class="step-active-desc">
-            Vision target grounded at <span>(540, 1680)</span>
+            ADB polling top -n 1 <span>(pid: 14208)</span>
+          </div>
+        </div>
+
+        <!-- Host Telemetry Metrics Box -->
+        <div class="metrics-panel">
+          <div class="metric-row">
+            <span class="metric-label">Target App CPU</span>
+            <span class="metric-value cpu-highlight">4.2%</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Bluetooth Audio</span>
+            <span class="metric-value status-ok">● Connected</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Sample Rate</span>
+            <span class="metric-value">48kHz / A2DP</span>
           </div>
         </div>
 
         <div class="step-pending">
           <span>○</span>
-          <span>4. Verify receipt & return</span>
+          <span>4. Assert CPU &lt; 5.0% threshold</span>
         </div>
       </div>
     </div>
 
-    <!-- Real Connected Phone Executing the Tap -->
+    <!-- Real Connected Phone Displaying Actual App UI -->
     <div class="phone-frame">
       <div class="phone-screen">
         <div class="phone-island"></div>
 
         <div class="screen-header">
-          <span class="screen-title">Food & Drink</span>
-          <span class="device-tag">● ANDROID</span>
+          <span class="screen-title">Now Playing</span>
+          <span class="device-tag">● PIXEL LAB</span>
         </div>
 
         <div class="mock-item-card">
-          <div class="item-thumb">☕</div>
+          <div class="item-thumb">🎵</div>
           <div class="item-info">
-            <span class="item-title">Iced Caramel Latte</span>
-            <span class="item-sub">Double Shot · Oat Milk</span>
+            <span class="item-title">Coldplay - Yellow</span>
+            <span class="item-sub">Output: Pixel Buds Pro</span>
           </div>
-          <span class="item-price">$5.40</span>
+          <span class="item-price">Playing ▶</span>
         </div>
 
         <div class="mock-secondary-card">
-          <span class="secondary-text">Delivery Address</span>
-          <span class="secondary-val">Desk #42</span>
+          <span class="secondary-text">Active Audio Output Device</span>
+          <span class="secondary-val">🎧 Pixel Buds Pro (A2DP)</span>
         </div>
 
         <div class="action-target-wrapper">
-          <!-- AI Grounding Box on Target Button -->
+          <!-- AI Grounding Box on Real Mobile Target -->
           <div class="grounding-box">
             <div class="grounding-tag">🎯 GROUNDED (0.99)</div>
           </div>
           <div class="mock-btn">
-            Place Order ($5.40)
+            Media Output Controls
           </div>
           <!-- Tap Ripple -->
           <div class="tap-point">

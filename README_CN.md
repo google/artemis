@@ -3,16 +3,18 @@
 </p>
 
 <p align="center">
-  <strong>ARTEMIS: 全自动操控手机的 AI 个人助理</strong>
+  <strong>ARTEMIS: 下一代 AI 驱动的移动端自动化测试与个人助理平台</strong><br>
+  <sub><b>A</b>utonomous <b>R</b>eal-time <b>T</b>esting, <b>E</b>xploration &amp; <b>M</b>obile <b>I</b>nteraction <b>S</b>ystem</sub>
 </p>
 
 <p align="center">
-  <em>⚡ 让 Cursor / Claude Code 接管真机 • 跨 App 复杂自动化 • 零脚本维护 UI 测试 • Flash 模式单步最快 3-5 秒</em>
+  <em>⚡ 让 Antigravity / Claude Code 接管真机 • 跨 App 复杂自动化 • 零脚本维护 UI 测试 • 智能 Bug 复现与 Logcat 诊断</em>
 </p>
 
 <p align="center">
   <a href="./README.md">English</a> •
   <a href="./README_CN.md"><b>中文文档</b></a> •
+  <a href="#workflow-showcase">全流程演示</a> •
   <a href="#quick-start">快速上手</a> •
   <a href="#mcp-setup">MCP 接入 IDE</a> •
   <a href="#benchmarks">基准评测</a> •
@@ -36,11 +38,45 @@
 
 ## ✨ 核心亮点
 
-* ⚡ **极致响应速度**：首创**全链路乐观异步流水线 (Optimistic Async Pipeline)**，主干执行流与后台重度推理完全解耦；
-* 🔋 **超长程稳定运行**：**Pro 模式**可运行超 10 小时，监控任务甚至可以全天候运行；
-* 🔌 **原生 MCP (Model Context Protocol) 赋能**：让 **Cursor、Claude Code、OpenClaw、Windsurf** 直接长出“操作真机的双手”，在聊天窗口一句话完成真机测试与 Bug 复现；
-* 💾 **可视化控制台与持久化调试**：提供 Web UI 实时投屏、操作回放与任务持久化管理，支持通过自然语言生成测试用例，并对历史执行进行高保真可视化审查；
-* 🏆 **业界顶尖 SOTA**：在 Google Research **AndroidWorld** 基准评测（100+ 复杂长程任务）中取得 **99%+ 任务完成率**。
+* 🤖 **跨 App 复杂自动化与 AI 个人助理**：不仅能执行严格的自动化测试用例，更具备接管真机的自主决策与长流程操作能力，一句话处理跨应用复杂业务与任务；
+* 🧪 **零脚本维护 UI 自动化测试**：基于“动态优先、坐标兜底”的多模态语义定位，彻底告别传统 XPath / 控件 ID 频繁失效的痛点，无惧 App 改版、分辨率差异与系统升级；
+* 🐞 **IDE 内一键 Bug 复现与 Logcat 诊断**：原生支持 **MCP 协议**，可在 **Antigravity、Claude Code、Windsurf** 中直接用自然语言驱动真机复现缺陷，自动抓取关键帧截图与 **Logcat 崩溃堆栈**，完成研发测试闭环；
+* ⚡ **极速执行吞吐（单步 3–5 秒）**：首创**全链路乐观异步流水线 (Optimistic Async Pipeline)**，解耦重度推理与页面操作，在 Flash 模式下实现丝滑的高频交互与快速回归验证；
+* 🛡️ **干扰弹窗自愈与超长程巡检**：独创 **Safety Net** 执行前校验机制，自动识别并清除系统权限弹窗、通知遮挡等异常；Pro 模式支持连续 **10+ 小时** 无人值守稳定性巡检与探索性测试 (Exploratory / Monkey-plus Testing)；
+* 🏆 **业界顶尖 SOTA**：在 Google Research **AndroidWorld** 基准评测（100+ 复杂长程系统与应用交互任务）中取得 **99%+ 任务完成率**。
+
+<a id="workflow-showcase"></a>
+<a id="全流程演示"></a>
+## 🤝 Antigravity × ARTEMIS：全流程自主测试演示
+
+通过原生 MCP 协议，**Antigravity** 与 **ARTEMIS** 深度协同——只需一句自然语言指令，即可自动完成从需求理解、测试规划、真机执行到深度报告输出的完整闭环：
+
+<table width="100%">
+  <tr>
+    <td width="50%" align="center">
+      <b>1️⃣ 输入测试提示词 (Task Dispatch)</b><br>
+      <sub>在 Antigravity 中用自然语言描述测试需求与目标指标</sub><br><br>
+      <img src="./docs/assets/workflow-1-prompt.png" width="100%" alt="步骤一：输入测试提示词" />
+    </td>
+    <td width="50%" align="center">
+      <b>2️⃣ 生成测试方案 (Test Plan Generation)</b><br>
+      <sub>Antigravity 自动拆解任务，生成详细测试步骤与架构图供确认</sub><br><br>
+      <img src="./docs/assets/workflow-2-plan.png" width="100%" alt="步骤二：生成测试方案" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>3️⃣ 自主执行测试 (Autonomous Test Execution)</b><br>
+      <sub>ARTEMIS 接管真机自动化操作，跳过广告并实时采集性能指标</sub><br><br>
+      <img src="./docs/assets/workflow-3-exec.png" width="100%" alt="步骤三：自主执行测试" />
+    </td>
+    <td width="50%" align="center">
+      <b>4️⃣ 交付最终报告 (Comprehensive Final Report)</b><br>
+      <sub>生成结构化测试分析报告，包含性能数据表、结论与原始数据集</sub><br><br>
+      <img src="./docs/assets/workflow-4-report.png" width="100%" alt="步骤四：交付最终报告" />
+    </td>
+  </tr>
+</table>
 
 <a id="quick-start"></a>
 <a id="快速上手"></a>
@@ -65,7 +101,7 @@ start.bat
 <a id="mcp-setup"></a>
 <a id="mcp"></a>
 <details>
-<summary><b>🔌 接入 Cursor / Claude Code / Windsurf (MCP)（点击展开）</b></summary>
+<summary><b>🔌 接入 Antigravity / Claude Code / Windsurf (MCP)（点击展开）</b></summary>
 
 <br>
 
@@ -76,14 +112,14 @@ ARTEMIS 内置原生 **Model Context Protocol (MCP)** 服务。只需将以下�
 运行内置命令一键获取当前环境的完整配置 JSON：
 
 ```bash
-artemis mcp --generate-config cursor
+artemis mcp --generate-config antigravity
 # 或生成所有 IDE 配置：
 artemis mcp --generate-config all
 ```
 
 ### 2. 复制配置到 IDE
 
-* **Cursor** (`.cursor/mcp.json` 或 设置 ➔ MCP Servers)：
+* **Antigravity** (MCP 配置文件或 设置 ➔ MCP Servers)：
 ```json
 {
   "mcpServers": {
@@ -113,7 +149,7 @@ artemis mcp --generate-config all
 ```
 
 ### 3. 在 IDE 中体验真机协同
-在 Cursor / Claude Code 对话框中直接输入：
+在 Antigravity / Claude Code 对话框中直接输入：
 > 💬 *"请帮我把刚刚修改的代码编译成 APK 并安装到手机上，打开登录页面输入测试账号，验证登录后是否有异常弹窗，并把最终页面截图回传。"*
 
 </details>
@@ -132,15 +168,17 @@ from artemis.interfaces.sdk import ArtemisClient
 
 
 async def main():
-    # 初始化客户端（支持 "flash" 极速模式 或 "pro" 深度推理模式）
+    # 初始化测试客户端（支持 "flash" 极速校验模式 或 "pro" 深度推理与自愈模式）
     client = ArtemisClient(default_profile="flash")
 
-    # 执行自然语言任务
-    result = await client.run("打开计算器，计算 (128 * 45) + 330 的结果")
+    # 执行自然语言端到端测试用例
+    result = await client.run(
+        "打开系统设置，进入『电池』页面，验证是否正常显示电量百分比，确认页面无异常报错弹窗。"
+    )
 
-    print(f"执行状态: {result.status}")
-    print(f"消耗步数: {result.turns}")
-    print(f"Trace ID: {result.trace_id}")
+    # 结构化断言与执行追溯
+    assert result.status == "SUCCESS", f"测试执行失败: {result.failure_reason}"
+    print(f"✅ 测试通过！耗时步数: {result.turns} | Trace ID: {result.trace_id}")
 
 
 if __name__ == "__main__":
@@ -157,20 +195,20 @@ if __name__ == "__main__":
   <sub>💡 <b>控制台功能布局</b>：<b>① 顶栏视图切换</b>（主页与工作区） · <b>② 运行模式与录屏回放</b>（Flash/Pro 状态与视频回放） · <b>③ 实时感知推理流</b>（动作分解、点击坐标与结构化总结） · <b>④ 自然语言下发胶囊</b>（自然语言驱动真机） · <b>⑤ 任务队列看板</b>（状态流转与历史回溯）</sub>
 </p>
 
-* 🖥️ **Web 可视化控制台 (`artemis ui`)**：集成设备实时投屏与交互面板，支持通过自然语言下发任务，实时观测推理过程、操作轨迹与状态回放；
-* 🔌 **MCP 协议集成 (IDE 联动)**：作为标准 MCP 服务器无缝接入 **Cursor、Claude Code、OpenClaw** 等环境，直接在 IDE 中调用移动端真机操作能力；
-* 💻 **命令行工具 (`artemis run`)**：支持通过 CLI 直接执行自动化任务、测试用例或 AndroidWorld 基准评测，提供高保真结构化终端输出；
-* 🐍 **Python SDK**：作为标准 Python 库集成至现有自动化测试框架或流水线，提供基于 Pydantic 的强类型结构化输出。
+* 🖥️ **Web 可视化测试控制台 (`artemis ui`)**：集成设备实时投屏与交互面板，支持通过自然语言下发测试用例，实时观测推理步骤、操作轨迹、截图留存与异常状态回放；
+* 🔌 **MCP 协议集成 (AI IDE 协同)**：作为标准 MCP 服务器无缝接入 **Antigravity、Claude Code、Windsurf** 等开发环境，在 IDE 中直接驱动真机完成自动化测试与 Bug 复现验证；
+* 💻 **命令行工具 (`artemis run`)**：支持通过 CLI 直接执行自动化用例、稳定性巡检或 AndroidWorld 基准评测，提供高保真结构化终端输出；
+* 🐍 **Python SDK**：作为标准 Python 库无缝集成至现有自动化测试框架（如 pytest）或 CI/CD 流水线，提供基于 Pydantic 的强类型结构化结果与断言支持。
 
 ## 📊 方案横向对比
 
-| 场景 / 维度 | 传统自动化框架 | 常见屏幕 Agent | **ARTEMIS ☕** |
+| 评估维度 | 传统自动化测试框架 (Appium / Maestro) | 常见移动端 VLM Agent | **ARTEMIS ☕ (下一代 AI 测试平台)** |
 | :--- | :--- | :--- | :--- |
-| **自然语言指令支持** | ❌ 仅支持硬编码脚本，无语义理解 | ⚠️ 响应较慢，单步交互通常需 20-30 秒 | ⚡ **高效执行**：Flash 模式下单步最快约 3-5 秒，交互流畅 |
-| **UI 改版适应能力** | ❌ 元素变更易导致脚本执行中断 | ⚠️ 依赖绝对坐标，存在位置偏移风险 | 🎯 **多模态语义定位**：结合文本、图标与层次结构，自适应 UI 变化 |
-| **异常弹窗处理** | ❌ 弹窗遮挡易导致定位失败 | ❌ 面对未知弹窗易陷入无效循环 | 🩹 **执行前校验与自愈**：操作前确认目标状态，自动识别并处理干扰弹窗 |
-| **动态与视频场景** | ❌ 仅支持静态等待 (sleep)，无动态感知 | ❌ 无法识别视频与动态流媒体内容 | ⏱️ **流媒体分析**：支持视频流分析、倒计时识别与预测性连点 |
-| **开发环境集成** | ❌ 独立运行，难以直接与 AI IDE 联动 | ❌ 通常仅提供独立网页，集成成本高 | 🔌 **原生 MCP 支持**：可在 Cursor、Claude Desktop 等环境中直接调用 |
+| **用例编写与维护** | ❌ 强依赖 XPath/ID，UI 微调即导致大面积报错 | ⚠️ 缺乏工程化封装，执行不可靠，无法作为用例复用 | 🧪 **零脚本维护**：自然语言直接定义用例，无惧 UI 漂移与改版 |
+| **执行延迟与吞吐** | ⚡ 脚本执行快，但编写与定位调试耗时极长 | ❌ 单步推理动辄 20-30 秒，无法满足回归测试要求 | ⚡ **高吞吐低延迟**：首创乐观异步流水线，单步仅需 3-5 秒 |
+| **异常遮挡与自愈** | ❌ 遇到系统权限弹窗或意外通知时直接中断报错 | ❌ 遇到非预期弹窗极易卡死或陷入无意义循环 | 🛡️ **执行前校验与自愈**：Safety Net 自动拦截并处理干扰弹窗 |
+| **缺陷诊断与多媒体** | ❌ 仅支持静态等待，难以对视频流/动效做自动化验证 | ❌ 仅看静态截图，无法获取底层日志及系统状态 | 🐞 **深层诊断**：支持流媒体分析与 **Logcat 崩溃堆栈抓取** |
+| **开发环境集成** | ❌ 独立运行，发现问题后需人工抓日志提单 | ❌ 多为独立网页 Demo，难以融入研发工具链 | 🔌 **原生 MCP & SDK**：在 Antigravity/Claude Code 中直接驱动真机测 Bug |
 
 <a id="benchmarks"></a>
 <a id="基准评测"></a>
@@ -232,7 +270,7 @@ if __name__ == "__main__":
 - [x] **全链路乐观异步流水线**：主流程轻量化，后台并发执行记忆压缩与断言校验。
 - [x] **Safety Net 执行前校验**：动作下发前双层核验与预测性链式执行。
 - [x] **时间敏感多媒体处理**：集成 `scrcpy` 与 `ffmpeg` 分析全屏视频与音频流。
-- [x] **原生 MCP 服务支持**：支持与 Cursor、Claude Desktop 等工具无缝集成。
+- [x] **原生 MCP 服务支持**：支持与 Antigravity、Claude Desktop 等工具无缝集成。
 - [x] **Web 可视化控制台**：提供设备投屏、交互演练与轨迹回溯。
 - [x] **AndroidWorld SOTA**：达到 99%+ 的任务完成率。
 - [ ] **跨平台扩展**：探索 iOS 与 Web 端的定位与操作能力。

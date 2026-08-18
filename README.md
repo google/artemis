@@ -3,16 +3,18 @@
 </p>
 
 <p align="center">
-  <strong>ARTEMIS: Autonomous AI Assistant for Mobile Automation</strong>
+  <strong>ARTEMIS: Next-Gen AI Mobile Test Automation & Autonomous Assistant Platform</strong><br>
+  <sub><b>A</b>utonomous <b>R</b>eal-time <b>T</b>esting, <b>E</b>xploration &amp; <b>M</b>obile <b>I</b>nteraction <b>S</b>ystem</sub>
 </p>
 
 <p align="center">
-  <em>⚡ Drive real phones from Cursor & Claude Code • Cross-App Automation • Zero-Maintenance UI Testing • Flash Mode as Fast as 3-5s</em>
+  <em>⚡ Drive Real Devices from Antigravity & Claude Code • Cross-App Automation • Zero-Maintenance UI Testing • Bug Repro & Logcat Diagnostics</em>
 </p>
 
 <p align="center">
   <a href="./README.md"><b>English</b></a> •
   <a href="./README_CN.md">中文文档</a> •
+  <a href="#workflow-showcase">Workflow Showcase</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#mcp-setup">MCP for IDEs</a> •
   <a href="#benchmarks">Benchmarks</a> •
@@ -36,11 +38,44 @@
 
 ## ✨ Key Highlights
 
-* ⚡ **Lightning Fast**: First-of-its-kind **Optimistic Asynchronous Pipeline** decouples the foreground execution stream from heavy LLM reasoning;
-* 🔋 **Ultra-Long Autonomous Execution**: **Pro mode** runs stably for over 10 hours, while monitoring tasks support around-the-clock 24/7 execution;
-* 🔌 **Native Model Context Protocol (MCP)**: Empowers **Cursor, Claude Code, OpenClaw, Windsurf** with direct mobile device manipulation from within your chat prompts;
-* 💾 **Visual Console & Persistent Debugging**: Real-time Web UI screen projection, execution replay, and task management with natural language test generation and high-fidelity historical review;
+* 🤖 **Cross-App Automation & Autonomous AI Assistant**: Operates not just as a robust testing framework, but as an autonomous agent capable of handling complex cross-app workflows and daily tasks via natural language;
+* 🧪 **Zero-Maintenance UI Test Automation**: Built upon a "Dynamic-First, Coordinate-Fallback" multimodal locating engine, eliminating fragile XPath/ID selector maintenance and remaining resilient to UI redesigns, system updates, and resolution drift;
+* 🐞 **One-Click Bug Repro & Logcat Diagnostics in IDE**: Native **Model Context Protocol (MCP)** integration allows **Antigravity, Claude Code, and Windsurf** to drive physical test devices via natural language, automatically capturing crash stacks from **Logcat** and keyframe screenshots;
+* ⚡ **Ultra-Fast Execution (3–5s per Step)**: Pioneered an **Optimistic Asynchronous Pipeline** that completely decouples UI interaction from heavy LLM reasoning, achieving rapid regression throughput in Flash mode;
+* 🛡️ **Popup Self-Healing & 10+ Hour Exploration**: Proprietary **Safety Net** double-checks targets before action execution to intercept and clear interfering system popups; Pro mode supports **10+ hours** of continuous exploratory & monkey-plus stability testing;
 * 🏆 **Industry-Leading SOTA**: Achieved **99%+ task completion** on Google Research's **AndroidWorld** benchmark (100+ complex multi-step tasks).
+
+<a id="workflow-showcase"></a>
+## 🤝 Antigravity × ARTEMIS: Autonomous Testing Workflow
+
+Experience seamless collaboration between **Antigravity** and **ARTEMIS** via native MCP integration — taking you from a natural language requirement to a production-grade diagnostic report in four automated steps:
+
+<table width="100%">
+  <tr>
+    <td width="50%" align="center">
+      <b>1️⃣ Prompt Input (Task Dispatch)</b><br>
+      <sub>Describe your test scenario and target metrics in Antigravity</sub><br><br>
+      <img src="./docs/assets/workflow-1-prompt.png" width="100%" alt="Step 1: Prompt Input in Antigravity" />
+    </td>
+    <td width="50%" align="center">
+      <b>2️⃣ Test Plan Generation</b><br>
+      <sub>Antigravity formulates a step-by-step test plan & architecture for review</sub><br><br>
+      <img src="./docs/assets/workflow-2-plan.png" width="100%" alt="Step 2: Test Plan Generation" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>3️⃣ Autonomous Test Execution</b><br>
+      <sub>ARTEMIS drives the real device, navigates UI, and profiles performance</sub><br><br>
+      <img src="./docs/assets/workflow-3-exec.png" width="100%" alt="Step 3: Autonomous Test Execution" />
+    </td>
+    <td width="50%" align="center">
+      <b>4️⃣ Comprehensive Final Report</b><br>
+      <sub>Delivers structured audit findings, metric tables, and raw datasets</sub><br><br>
+      <img src="./docs/assets/workflow-4-report.png" width="100%" alt="Step 4: Final Report" />
+    </td>
+  </tr>
+</table>
 
 <a id="quick-start"></a>
 ## ⚡ Quick Start
@@ -64,7 +99,7 @@ start.bat
 <a id="mcp-setup"></a>
 <a id="mcp"></a>
 <details>
-<summary><b>🔌 MCP Setup for Cursor / Claude Code / Windsurf (Click to expand)</b></summary>
+<summary><b>🔌 MCP Setup for Antigravity / Claude Code / Windsurf (Click to expand)</b></summary>
 
 <br>
 
@@ -75,14 +110,14 @@ ARTEMIS includes a native **Model Context Protocol (MCP)** server. Connect your 
 Run the built-in generator to produce ready-to-use JSON configuration:
 
 ```bash
-artemis mcp --generate-config cursor
+artemis mcp --generate-config antigravity
 # Or generate configs for all IDEs:
 artemis mcp --generate-config all
 ```
 
 ### 2. Copy Config to Your IDE
 
-* **Cursor** (`.cursor/mcp.json` or Settings ➔ MCP Servers):
+* **Antigravity** (MCP config file or Settings ➔ MCP Servers):
 ```json
 {
   "mcpServers": {
@@ -112,7 +147,7 @@ artemis mcp --generate-config all
 ```
 
 ### 3. Prompt Your Phone in the IDE Chat
-In Cursor or Claude Code, simply prompt:
+In Antigravity or Claude Code, simply prompt:
 > 💬 *"Build the latest changes into an APK, install it on the connected device, open the login screen with a test account, verify if there are any unexpected popups after login, and return screenshots of the final page."*
 
 </details>
@@ -131,15 +166,17 @@ from artemis.interfaces.sdk import ArtemisClient
 
 
 async def main():
-    # Initialize client (choose "flash" for speed or "pro" for deep reasoning)
+    # Initialize client (choose "flash" for fast UI checks or "pro" for deep reasoning & self-healing)
     client = ArtemisClient(default_profile="flash")
 
-    # Run autonomous task
-    result = await client.run("Open calculator and compute (128 * 45) + 330")
+    # Execute natural language end-to-end test case
+    result = await client.run(
+        "Open System Settings, go to 'Battery', verify battery percentage is displayed, and check for any crash dialogs."
+    )
 
-    print(f"Status: {result.status}")
-    print(f"Turns taken: {result.turns}")
-    print(f"Trace ID: {result.trace_id}")
+    # Structured assertions & execution tracing
+    assert result.status == "SUCCESS", f"Test failed: {result.failure_reason}"
+    print(f"✅ Test Passed! Turns: {result.turns} | Trace ID: {result.trace_id}")
 
 
 if __name__ == "__main__":
@@ -156,20 +193,20 @@ if __name__ == "__main__":
   <sub>💡 <b>Console Overview</b>: <b>① View Switcher</b> (Home / Workspace) · <b>② Model & Replay</b> (Flash/Pro status & video replay) · <b>③ Live Agent Stream</b> (Action perception, target coordinates & structured results) · <b>④ Prompt Dock</b> (Natural language dispatch) · <b>⑤ Task Queue & Dashboard</b> (Lifecycle & history)</sub>
 </p>
 
-* 🖥️ **Web Visual Console (`artemis ui`)**: Real-time screen projection and interactive panel, supporting natural language task dispatch, live reasoning telemetry, action trajectories, and execution replay;
-* 🔌 **Native MCP Protocol (IDE Integration)**: Operates as a standard MCP server seamlessly integrating with **Cursor, Claude Code, OpenClaw**, etc., directly invoking mobile device manipulation inside the IDE;
-* 💻 **Developer CLI (`artemis run`)**: Direct terminal execution for automated tasks, test cases, or AndroidWorld benchmarks with high-fidelity structured terminal output;
-* 🐍 **Python SDK**: Integrates as a standard Python library into existing automated testing frameworks or pipelines with strongly typed Pydantic structured outputs.
+* 🖥️ **Web Visual Test Console (`artemis ui`)**: Real-time screen projection and interactive panel, supporting natural language test dispatch, live reasoning telemetry, action trajectories, and execution replay;
+* 🔌 **Native MCP Protocol (IDE Collaboration)**: Operates as a standard MCP server seamlessly integrating with **Antigravity, Claude Code, Windsurf**, etc., directly driving real devices inside the IDE to verify bugs and run test cases;
+* 💻 **Developer CLI (`artemis run`)**: Direct terminal execution for automated test cases, exploratory stability inspection, or AndroidWorld benchmarks with high-fidelity structured terminal output;
+* 🐍 **Python SDK**: Integrates as a standard Python library into existing automated testing frameworks (e.g., pytest) or CI/CD pipelines with strongly typed Pydantic structured outputs and assertion support.
 
 ## 📊 Head-to-Head Comparison
 
-| Scenario / Dimension | Traditional Automation | Generic Screen AI Agents | **ARTEMIS ☕** |
+| Evaluation Dimension | Traditional Test Automation (Appium / Maestro) | Generic Mobile VLM Agents | **ARTEMIS ☕ (Next-Gen AI Testing)** |
 | :--- | :--- | :--- | :--- |
-| **Natural Language Execution** | ❌ Rigid hard-coded scripts only | ⚠️ Sluggish (waits 20-30s per tap) | ⚡ **High Throughput**: As fast as 3–5s per step in Flash mode with fluid responses |
-| **UI Redesign Resilience** | ❌ Layout changes break XPath selectors | ⚠️ Coordinate guessing leads to drift | 🎯 **Semantic Grounding**: Blends text, icons & UI tree structure to adapt to UI changes |
-| **Popup Interception** | ❌ Blocked and crashed immediately | ❌ Loops endlessly on unfamiliar screens | 🩹 **Pre-Execution Self-Healing**: Verifies target state before clicking; dismisses popups |
-| **Dynamic & Video Tasks** | ❌ Blind static sleep only | ❌ Blind to dynamic video playback | ⏱️ **Real-Time Multimedia**: Live video stream analysis, countdown timers & speculative chaining |
-| **IDE & Tooling Integration** | ❌ Standalone test runner | ❌ Web-only with high integration friction | 🔌 **Native MCP Server**: Directly callable inside Cursor, Claude Desktop, etc. |
+| **Test Case Maintenance** | ❌ Fragile XPath/ID dependencies; UI changes cause test failures | ⚠️ Unreliable execution; cannot be reused as regression tests | 🧪 **Zero Maintenance**: Natural language test cases resilient to UI drift & redesigns |
+| **Execution Latency & Throughput** | ⚡ Fast script execution, but extreme setup and locator debugging costs | ❌ Sluggish 20–30s per step; too slow for regression testing | ⚡ **High Throughput**: Optimistic Async Pipeline runs at 3–5s per step |
+| **Popup Resilience & Self-Healing** | ❌ System popups or permissions immediately crash the script | ❌ Easily gets stuck or loops endlessly on unexpected dialogs | 🛡️ **Pre-Execution Safety Net**: Automatically intercepts and clears interfering popups |
+| **Diagnostics & Multimedia** | ❌ Blind static waits (sleep); cannot assert dynamic video/animations | ❌ Static screenshots only; no system logs or underlying state | 🐞 **Deep Diagnostics**: Live video stream analysis & **Logcat crash stack capture** |
+| **Dev Environment Integration** | ❌ Standalone runner; requires manual log collection upon failure | ❌ Isolated web demos; difficult to embed into dev pipelines | 🔌 **Native MCP & SDK**: Drive physical test devices and debug directly inside Antigravity / Claude Code |
 
 <a id="benchmarks"></a>
 ## 🏆 Benchmarks: AndroidWorld (SOTA 99%+)
@@ -230,7 +267,7 @@ Evaluated on [AndroidWorld](https://github.com/google-research/android_world) �
 - [x] **Optimistic Asynchronous Pipeline**: Ultra-lean main loop + background context compression & milestone checks.
 - [x] **Pre-Execution Safety Net**: Millisecond pre-check gate & speculative chained actions.
 - [x] **Time-Sensitive Media Tasks**: Fullscreen video and audio stream analysis with `scrcpy` & `ffmpeg`.
-- [x] **Native MCP Server**: Seamless integration with tools like Cursor and Claude Desktop.
+- [x] **Native MCP Server**: Seamless integration with tools like Antigravity and Claude Desktop.
 - [x] **Web Visual Console**: Live screen projection, interactive playground, and trajectory review.
 - [x] **AndroidWorld SOTA**: Achieved 99%+ task completion rate.
 - [ ] **Cross-Platform Extensions**: Exploring iOS and desktop Web perception and execution.
