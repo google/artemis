@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <em>⚡ 让 Antigravity / Claude Code 接管真机 • 跨 App 复杂自动化 • 零脚本维护自动化测试 • 智能 Bug 复现与 Logcat 诊断</em>
+  <em>⚡ 让 Antigravity / Claude Code 测试真机 • 跨 App 复杂自动化 • 零脚本维护自动化测试 • 智能 Bug 复现与 Logcat 诊断</em>
 </p>
 
 <p align="center">

@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <em>⚡ Drive Real Devices from Antigravity & Claude Code • Cross-App Automation • Zero-Maintenance Testing • Bug Repro & Logcat Diagnostics</em>
+  <em>⚡ Test Real Devices from Antigravity & Claude Code • Cross-App Automation • Zero-Maintenance Testing • Bug Repro & Logcat Diagnostics</em>
 </p>
 
 <p align="center">
