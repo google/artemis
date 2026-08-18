@@ -16,8 +16,8 @@ import os
 import subprocess
 
 
-def create_banner_html():
-    return """<!DOCTYPE html>
+def create_banner_html(lang="en"):
+    html_template = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -719,20 +719,20 @@ def create_banner_html():
 
     <!-- Clear, Crisp Subtitle -->
     <div class="brand-tagline">
-      Test Any Pixel / Android App with <span>Autonomous AI</span>
+      __TAGLINE__
     </div>
 
     <!-- User Prompt Input Example -->
     <div class="prompt-box">
       <div class="prompt-header">
-        <span class="prompt-label">Goal / Prompt</span>
+        <span class="prompt-label">__PROMPT_LABEL__</span>
         <div class="prompt-status">
           <div class="status-pulse"></div>
-          <span>RUNNING ON DEVICE</span>
+          <span>__PROMPT_STATUS__</span>
         </div>
       </div>
       <div class="prompt-text">
-        <span>&gt;</span> Connect to Bluetooth earbuds, play a song, and capture CPU usage metrics
+        <span>&gt;</span> __PROMPT_TEXT__
       </div>
     </div>
   </div>
@@ -745,51 +745,51 @@ def create_banner_html():
       <div class="console-header">
         <div class="console-title-group">
           <div class="console-dot"></div>
-          <span class="console-title">Host Agent Console</span>
+          <span class="console-title">__CONSOLE_TITLE__</span>
         </div>
-        <span class="console-badge">MONITORING</span>
+        <span class="console-badge">__CONSOLE_BADGE__</span>
       </div>
 
       <div class="step-list">
         <div class="step-item">
           <span class="step-icon-done">✓</span>
-          <span class="step-text-done">1. Connect to Bluetooth earbuds</span>
+          <span class="step-text-done">__STEP_1__</span>
         </div>
         <div class="step-item">
           <span class="step-icon-done">✓</span>
-          <span class="step-text-done">2. Launch music player & play song</span>
+          <span class="step-text-done">__STEP_2__</span>
         </div>
 
         <!-- Active Step -->
         <div class="step-active-card">
           <div class="step-active-header">
-            <span class="step-active-title">▶ 3. Capture CPU usage metrics</span>
-            <span class="step-active-time">Active</span>
+            <span class="step-active-title">__STEP_3_TITLE__</span>
+            <span class="step-active-time">__STEP_3_TIME__</span>
           </div>
           <div class="step-active-desc">
-            ADB polling top -n 1 <span>(pid: 14208)</span>
+            __STEP_3_DESC__
           </div>
         </div>
 
         <!-- Host Telemetry Metrics Box -->
         <div class="metrics-panel">
           <div class="metric-row">
-            <span class="metric-label">Target App CPU</span>
+            <span class="metric-label">__METRIC_1_LABEL__</span>
             <span class="metric-value cpu-highlight">4.2%</span>
           </div>
           <div class="metric-row">
-            <span class="metric-label">Bluetooth Audio</span>
-            <span class="metric-value status-ok">● Connected</span>
+            <span class="metric-label">__METRIC_2_LABEL__</span>
+            <span class="metric-value status-ok">__METRIC_2_VAL__</span>
           </div>
           <div class="metric-row">
-            <span class="metric-label">Sample Rate</span>
+            <span class="metric-label">__METRIC_3_LABEL__</span>
             <span class="metric-value">48kHz / A2DP</span>
           </div>
         </div>
 
         <div class="step-pending">
           <span>○</span>
-          <span>4. Assert CPU &lt; 5.0% threshold</span>
+          <span>__STEP_4__</span>
         </div>
       </div>
     </div>
@@ -800,31 +800,31 @@ def create_banner_html():
         <div class="phone-island"></div>
 
         <div class="screen-header">
-          <span class="screen-title">Now Playing</span>
-          <span class="device-tag">● PIXEL LAB</span>
+          <span class="screen-title">__SCREEN_TITLE__</span>
+          <span class="device-tag">__DEVICE_TAG__</span>
         </div>
 
         <div class="mock-item-card">
           <div class="item-thumb">🎵</div>
           <div class="item-info">
             <span class="item-title">Coldplay - Yellow</span>
-            <span class="item-sub">Output: Pixel Buds Pro</span>
+            <span class="item-sub">__ITEM_SUB__</span>
           </div>
-          <span class="item-price">Playing ▶</span>
+          <span class="item-price">__ITEM_PRICE__</span>
         </div>
 
         <div class="mock-secondary-card">
-          <span class="secondary-text">Active Audio Output Device</span>
+          <span class="secondary-text">__SEC_TEXT__</span>
           <span class="secondary-val">🎧 Pixel Buds Pro (A2DP)</span>
         </div>
 
         <div class="action-target-wrapper">
           <!-- AI Grounding Box on Real Mobile Target -->
           <div class="grounding-box">
-            <div class="grounding-tag">🎯 GROUNDED (0.99)</div>
+            <div class="grounding-tag">__GROUNDING_TAG__</div>
           </div>
           <div class="mock-btn">
-            Media Output Controls
+            __MOCK_BTN__
           </div>
           <!-- Tap Ripple -->
           <div class="tap-point">
@@ -840,6 +840,62 @@ def create_banner_html():
 </body>
 </html>
 """
+    if lang == "cn":
+        replacements = {
+            "__TAGLINE__": "用 <span>自主 AI</span> 测试任意安卓手机",
+            "__PROMPT_LABEL__": "目标 / 提示词",
+            "__PROMPT_STATUS__": "设备实机运行中",
+            "__PROMPT_TEXT__": "连接蓝牙耳机播放歌曲，并持续采集 CPU 性能指标",
+            "__CONSOLE_TITLE__": "宿主智能体控制台",
+            "__CONSOLE_BADGE__": "实时监控中",
+            "__STEP_1__": "1. 自动连接蓝牙耳机",
+            "__STEP_2__": "2. 打开播放器并播放歌曲",
+            "__STEP_3_TITLE__": "▶ 3. 持续采集 CPU 性能指标",
+            "__STEP_3_TIME__": "运行中",
+            "__STEP_3_DESC__": "ADB 轮询 top -n 1 <span>(进程 ID: 14208)</span>",
+            "__METRIC_1_LABEL__": "目标应用 CPU",
+            "__METRIC_2_LABEL__": "蓝牙音频状态",
+            "__METRIC_2_VAL__": "● 已连接",
+            "__METRIC_3_LABEL__": "音频采样率",
+            "__STEP_4__": "4. 断言验证 CPU &lt; 5.0% 阈值",
+            "__SCREEN_TITLE__": "正在播放",
+            "__DEVICE_TAG__": "● PIXEL 实机",
+            "__ITEM_SUB__": "输出设备: Pixel Buds Pro",
+            "__ITEM_PRICE__": "播放中 ▶",
+            "__SEC_TEXT__": "当前音频输出设备",
+            "__GROUNDING_TAG__": "🎯 AI 视觉锚定 (0.99)",
+            "__MOCK_BTN__": "媒体输出控制器",
+        }
+    else:
+        replacements = {
+            "__TAGLINE__": "Test Any Android Phone with <span>Autonomous AI</span>",
+            "__PROMPT_LABEL__": "Goal / Prompt",
+            "__PROMPT_STATUS__": "RUNNING ON DEVICE",
+            "__PROMPT_TEXT__": "Connect to Bluetooth earbuds, play a song, and capture CPU usage metrics",
+            "__CONSOLE_TITLE__": "Host Agent Console",
+            "__CONSOLE_BADGE__": "MONITORING",
+            "__STEP_1__": "1. Connect to Bluetooth earbuds",
+            "__STEP_2__": "2. Launch music player & play song",
+            "__STEP_3_TITLE__": "▶ 3. Capture CPU usage metrics",
+            "__STEP_3_TIME__": "Active",
+            "__STEP_3_DESC__": "ADB polling top -n 1 <span>(pid: 14208)</span>",
+            "__METRIC_1_LABEL__": "Target App CPU",
+            "__METRIC_2_LABEL__": "Bluetooth Audio",
+            "__METRIC_2_VAL__": "● Connected",
+            "__METRIC_3_LABEL__": "Sample Rate",
+            "__STEP_4__": "4. Assert CPU &lt; 5.0% threshold",
+            "__SCREEN_TITLE__": "Now Playing",
+            "__DEVICE_TAG__": "● PIXEL LAB",
+            "__ITEM_SUB__": "Output: Pixel Buds Pro",
+            "__ITEM_PRICE__": "Playing ▶",
+            "__SEC_TEXT__": "Active Audio Output Device",
+            "__GROUNDING_TAG__": "🎯 GROUNDED (0.99)",
+            "__MOCK_BTN__": "Media Output Controls",
+        }
+
+    for key, val in replacements.items():
+        html_template = html_template.replace(key, val)
+    return html_template
 
 
 def render_image(html_str, output_path):
@@ -870,9 +926,11 @@ from pathlib import Path
 assets_dir = Path(__file__).resolve().parent
 os.makedirs(assets_dir, exist_ok=True)
 
-html_content = create_banner_html()
+# Generate English main banner and en banner
+en_html = create_banner_html(lang="en")
+render_image(en_html, str(assets_dir / "artemis-banner.png"))
+render_image(en_html, str(assets_dir / "artemis-banner-en.png"))
 
-# Generate main banner
-render_image(html_content, str(assets_dir / "artemis-banner.png"))
-# Also update en banner for consistency
-render_image(html_content, str(assets_dir / "artemis-banner-en.png"))
+# Generate Chinese banner
+cn_html = create_banner_html(lang="cn")
+render_image(cn_html, str(assets_dir / "artemis-banner-cn.png"))
