@@ -20,7 +20,9 @@ Modular entrypoint for full trace inspection, step replay, and task execution ma
 import asyncio
 import os
 from pathlib import Path
+import signal
 import sys
+from types import FrameType
 
 # Bootstrap sys.path to allow running from any CWD
 _current_p = Path(__file__).resolve().parent
@@ -43,6 +45,9 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
+import uvicorn
+
+from artemis.runtime import DeviceExecutionLock
 
 try:
     from admin_console.core.config import (
@@ -97,6 +102,11 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     """Startup lifecycle hooks."""
+    state.is_shutting_down = False
+    state.shutdown_event.clear()
+    cleaned_device_locks = DeviceExecutionLock.cleanup_stale_locks()
+    if cleaned_device_locks:
+        print(f"[ServerStartup] Removed {cleaned_device_locks} stale device lock(s).")
     asyncio.create_task(asyncio.to_thread(task_queue_service.archive_older_replays_on_launch))
     asyncio.create_task(
         asyncio.to_thread(task_queue_service.verify_chunks_exist_on_launch, replay_manager)
@@ -108,6 +118,39 @@ async def on_startup():
 
     await ipc_service.start_server()
     state.worker_task = asyncio.create_task(task_queue_service.queue_worker())
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Stop task and IPC children before the UI server exits."""
+    state.is_shutting_down = True
+    state.shutdown_event.set()
+    task_queue_service._broadcast_event("server_shutdown", {"status": "stopping"})
+    owned_session_ids = {
+        str(item["session_id"])
+        for item in state.queue_items
+        if isinstance(item, dict) and item.get("status") == "running" and item.get("session_id")
+    }
+
+    worker = state.worker_task
+    if worker is not None and not worker.done():
+        worker.cancel()
+        try:
+            await asyncio.wait_for(worker, timeout=5.0)
+        except (asyncio.CancelledError, TimeoutError):
+            pass
+    state.worker_task = None
+
+    if state.current_process is not None and state.current_process.returncode is None:
+        await task_queue_service._terminate_worker_process(state.current_process)
+    DeviceExecutionLock.cleanup_stale_locks()
+    state.current_process = None
+    state.queue_items.clear()
+    for session_id in owned_session_ids:
+        session_repo.update_session_status(session_id, "cancelled")
+
+    await ipc_service.stop_server()
+    state.ipc_subscribers.clear()
 
 
 # Mount modular routers
@@ -278,11 +321,80 @@ task_queue = state.task_queue
 queue_goals = state.queue_goals
 
 
-def main():
-    import uvicorn
+class ArtemisUvicornServer(uvicorn.Server):
+    """Notify application streams before Uvicorn waits for them to close."""
 
+    @staticmethod
+    def _task_is_active() -> bool:
+        """Check task state without doing process I/O from a signal handler."""
+        proc = state.current_process
+        if proc is not None and proc.returncode is None:
+            return True
+        return any(
+            isinstance(item, dict) and item.get("status") == "running" for item in state.queue_items
+        )
+
+    @staticmethod
+    def _schedule_signal_report(message: str) -> None:
+        """Defer console output so a signal cannot re-enter Colorama writes."""
+        try:
+            asyncio.get_running_loop().call_soon(print, message)
+        except RuntimeError:
+            try:
+                os.write(2, f"{message}\n".encode(errors="replace"))
+            except OSError:
+                pass
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        try:
+            signal_name = signal.Signals(sig).name
+        except ValueError:
+            signal_name = "UNKNOWN"
+        frame_location = "unknown"
+        if frame is not None:
+            frame_location = f"{frame.f_code.co_filename}:{frame.f_lineno}"
+        signal_report = (
+            f"[ServerSignal] Received {signal_name} ({sig}); "
+            f"server PID={os.getpid()}, parent PID={os.getppid()}, frame={frame_location}"
+        )
+        self._schedule_signal_report(signal_report)
+
+        if sys.platform == "win32" and sig == signal.SIGINT and self._task_is_active():
+            self._schedule_signal_report(
+                "[ServerSignal] Ignored Windows SIGINT while a mobile task is active. "
+                "Stop the task first, or press Ctrl+Break to force server shutdown."
+            )
+            return
+
+        state.is_shutting_down = True
+        state.shutdown_event.set()
+        super().handle_exit(sig, frame)
+
+
+def run_ui_server(host: str, port: int, reload: bool = False) -> None:
+    """Run the UI server with bounded, signal-aware graceful shutdown."""
+    if reload:
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            reload=True,
+            timeout_graceful_shutdown=5,
+        )
+        return
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        timeout_graceful_shutdown=5,
+    )
+    ArtemisUvicornServer(config).run()
+
+
+def main():
     port = int(os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    run_ui_server(host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":

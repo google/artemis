@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import asyncio
+import importlib
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
@@ -21,8 +23,13 @@ from apps.admin_console.services.task_queue_service import TaskQueueService, tas
 
 
 @pytest.fixture(autouse=True)
-def clean_state():
+def clean_state(tmp_path, monkeypatch):
     """Reset global state between tests."""
+    isolated_pause_file = tmp_path / ".artemis_paused"
+    state_module = importlib.import_module("apps.admin_console.core.state")
+    queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
+    monkeypatch.setattr(state_module, "PAUSE_FILE", isolated_pause_file)
+    monkeypatch.setattr(queue_module, "PAUSE_FILE", isolated_pause_file)
     state.clear_queue()
     state.queue_items.clear()
     state.current_process = None
@@ -39,6 +46,15 @@ def clean_state():
     if state.worker_task and not state.worker_task.done():
         state.worker_task.cancel()
     state.worker_task = None
+
+
+def test_paused_error_reads_persisted_reason(tmp_path):
+    pause_file = tmp_path / ".artemis_paused"
+    pause_file.write_text("LLM Error: 503 UNAVAILABLE: model overloaded", encoding="utf-8")
+
+    with patch("apps.admin_console.core.state.PAUSE_FILE", pause_file):
+        assert state.is_paused is True
+        assert state.paused_error == "503 UNAVAILABLE: model overloaded"
 
 
 @pytest.mark.asyncio
@@ -145,9 +161,11 @@ async def test_queue_worker_execution_lifecycle():
 @pytest.mark.asyncio
 async def test_queue_worker_cmd_construction():
     executed_cmds = []
+    executed_kwargs = []
 
     async def fake_subprocess_exec(*args, **kwargs):
         executed_cmds.append(list(args))
+        executed_kwargs.append(kwargs)
         proc = MagicMock()
         proc.pid = 88888
         proc.wait = AsyncMock(return_value=0)
@@ -184,6 +202,12 @@ async def test_queue_worker_cmd_construction():
         assert "com.google.android.apps.maps" in cmd
         assert "--app-path" in cmd
         assert "/path/to/app.apk" in cmd
+        if sys.platform == "win32":
+            import subprocess
+
+            assert executed_kwargs[0]["creationflags"] == subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            assert "creationflags" not in executed_kwargs[0]
 
         task = state.worker_task
         if task and not task.done():
@@ -244,7 +268,7 @@ async def test_cancel_task_triggers_next_pending_task():
         await task_queue_service.enqueue_tasks(["Task 1", "Task 2"])
 
         for _ in range(40):
-            if len(executed_goals) == 2:
+            if len(executed_goals) == 2 and len(state.queue_items) == 0:
                 break
             await asyncio.sleep(0.05)
 

@@ -78,8 +78,8 @@
           </span>
           <div class="task-card-header-actions">
             <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
-            <button 
-              *ngIf="getTaskStatus(session) !== 'running'"
+            <button
+              *ngIf="getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused'"
               type="button"
               class="btn-delete-card" 
               (click)="deleteTask(session.session_id, $event)" 
@@ -127,8 +127,8 @@
               </span>
               <div class="task-card-header-actions">
                 <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
-                <button 
-                  *ngIf="getTaskStatus(session) !== 'running'"
+              <button
+                *ngIf="getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused'"
                   type="button"
                   class="btn-delete-card" 
                   (click)="deleteTask(session.session_id, $event)" 

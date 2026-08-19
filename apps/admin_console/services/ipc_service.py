@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import suppress
 import json
 from typing import Any
 
@@ -134,73 +135,77 @@ class IPCService:
     async def start_server(cls):
         async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             current_session_id = None
-            while True:
-                line = await reader.readline()
-                if not line:
-                    break
-                try:
-                    payload = json.loads(line.decode("utf-8"))
-                    event_type = payload.get("event_type")
-                    data = payload.get("data")
+            try:
+                while not state.is_shutting_down:
+                    line = await reader.readline()
+                    if not line:
+                        break
+                    try:
+                        payload = json.loads(line.decode("utf-8"))
+                        event_type = payload.get("event_type")
+                        data = payload.get("data")
 
-                    if event_type == "session_started" and data:
-                        incoming_sid = data.get("session_id")
-                        if incoming_sid and str(incoming_sid) in getattr(
-                            state, "cancelled_session_ids", set()
-                        ):
+                        if event_type == "session_started" and data:
+                            incoming_sid = data.get("session_id")
+                            if incoming_sid and str(incoming_sid) in getattr(
+                                state, "cancelled_session_ids", set()
+                            ):
+                                print(
+                                    f"[IPC] Ignoring session_started for cancelled session: {incoming_sid}"
+                                )
+                                continue
+
+                            state.active_session_id = incoming_sid
+                            current_session_id = incoming_sid
+                            pid = data.get("pid")
+                            goal = data.get("initial_goal")
+                            device_info = data.get("device_info")
+                            if isinstance(device_info, dict) and device_info.get("profile"):
+                                state.current_profile = device_info.get("profile")
+                            if goal:
+                                state.current_goal = goal
                             print(
-                                f"[IPC] Ignoring session_started for cancelled session: {incoming_sid}"
+                                f"[IPC] Session started: {state.active_session_id} (profile: {state.current_profile})"
                             )
-                            continue
+                            if current_session_id:
+                                state.active_connections[str(current_session_id)] = {
+                                    "writer": writer,
+                                    "pid": pid,
+                                    "goal": goal,
+                                    "profile": state.current_profile,
+                                }
+                        elif event_type == "session_ended" and data:
+                            ended_sid = data.get("session_id")
+                            if state.active_session_id and str(state.active_session_id) == str(
+                                ended_sid
+                            ):
+                                state.active_session_id = None
+                                state.current_goal = None
+                                state.current_profile = None
 
-                        state.active_session_id = incoming_sid
-                        current_session_id = incoming_sid
-                        pid = data.get("pid")
-                        goal = data.get("initial_goal")
-                        device_info = data.get("device_info")
-                        if isinstance(device_info, dict) and device_info.get("profile"):
-                            state.current_profile = device_info.get("profile")
-                        if goal:
-                            state.current_goal = goal
-                        print(
-                            f"[IPC] Session started: {state.active_session_id} (profile: {state.current_profile})"
-                        )
-                        if current_session_id:
-                            state.active_connections[str(current_session_id)] = {
-                                "writer": writer,
-                                "pid": pid,
-                                "goal": goal,
-                                "profile": state.current_profile,
-                            }
-                    elif event_type == "session_ended" and data:
-                        ended_sid = data.get("session_id")
-                        if state.active_session_id and str(state.active_session_id) == str(
-                            ended_sid
-                        ):
-                            state.active_session_id = None
-                            state.current_goal = None
-                            state.current_profile = None
-
-                    for cb in list(state.ipc_subscribers):
-                        try:
-                            cb(event_type, data)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    print(f"IPC parse error: {e}")
-
-            if current_session_id and str(current_session_id) in state.active_connections:
-                try:
-                    del state.active_connections[str(current_session_id)]
-                except KeyError:
-                    pass
-            writer.close()
-            await writer.wait_closed()
+                        for cb in list(state.ipc_subscribers):
+                            try:
+                                cb(event_type, data)
+                            except Exception:
+                                pass
+                    except (ValueError, UnicodeDecodeError, TypeError) as e:
+                        print(f"IPC parse error: {e}")
+            except asyncio.CancelledError:
+                raise
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                # Normal when a task or the UI server is shutting down on Windows.
+                pass
+            finally:
+                if current_session_id and str(current_session_id) in state.active_connections:
+                    state.active_connections.pop(str(current_session_id), None)
+                writer.close()
+                with suppress(ConnectionResetError, BrokenPipeError, OSError):
+                    await writer.wait_closed()
 
         server = await asyncio.start_server(handle_client, "127.0.0.1", 0, limit=1024 * 1024 * 100)
         state.ipc_port = server.sockets[0].getsockname()[1]
         state.ipc_server = server
-        asyncio.create_task(server.serve_forever())
+        state.ipc_serve_task = asyncio.create_task(server.serve_forever())
         print(f"Internal IPC server started on port {state.ipc_port}")
         try:
             from artemis.config import write_ipc_port
@@ -208,6 +213,35 @@ class IPCService:
             write_ipc_port(state.ipc_port)
         except Exception as e:
             print(f"Failed to write IPC port file: {e}")
+
+    @classmethod
+    async def stop_server(cls):
+        """Close IPC listeners and task connections during application shutdown."""
+        for connection in list(state.active_connections.values()):
+            writer = connection.get("writer")
+            if writer is not None:
+                writer.close()
+                with suppress(ConnectionResetError, BrokenPipeError, OSError):
+                    await writer.wait_closed()
+        state.active_connections.clear()
+
+        if state.ipc_server is not None:
+            state.ipc_server.close()
+            await state.ipc_server.wait_closed()
+            state.ipc_server = None
+
+        if state.ipc_serve_task is not None:
+            state.ipc_serve_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await state.ipc_serve_task
+            state.ipc_serve_task = None
+        state.ipc_port = None
+        try:
+            from artemis.config import clear_ipc_port
+
+            clear_ipc_port()
+        except Exception as e:
+            print(f"Failed to clear IPC port state: {e}")
 
 
 ipc_service = IPCService()

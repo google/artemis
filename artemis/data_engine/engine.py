@@ -24,7 +24,7 @@ import time
 from typing import Any
 from uuid import UUID, uuid4
 
-from artemis.config import read_ipc_port, settings
+from artemis.config import get_ipc_port_file, read_ipc_port, settings
 from artemis.context import ArtemisContext
 from artemis.data_engine.models import (
     BackgroundTaskRecord,
@@ -82,17 +82,80 @@ class DataEngine:
         # Background tasks are written directly to SQLite storage
 
         self.ipc_socket = None
+        self._ipc_socket_lock = threading.Lock()
+        self._ipc_shutdown = False
+        with self._ipc_socket_lock:
+            self._connect_ipc_locked()
 
-        ipc_port = read_ipc_port()
-        if ipc_port:
+    @staticmethod
+    def _ipc_port_candidates() -> list[int]:
+        """Return inherited and freshly published UI ports, newest file included.
+
+        A worker inherits ``ARTEMIS_IPC_PORT`` when it starts. If the Windows UI
+        server restarts, that environment value is permanently stale while the
+        shared port file is updated by the new server.
+        """
+        candidates: list[int] = []
+        inherited_or_file_port = read_ipc_port()
+        if inherited_or_file_port:
+            candidates.append(inherited_or_file_port)
+
+        port_file = get_ipc_port_file()
+        if port_file.exists():
             try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.connect(("127.0.0.1", ipc_port))
-                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                self.ipc_socket = s
+                file_value = port_file.read_text(encoding="utf-8").strip()
+                if file_value.isdigit() and int(file_value) not in candidates:
+                    candidates.append(int(file_value))
+            except OSError as exc:
+                logger.debug(f"Could not read refreshed IPC port from {port_file}: {exc}")
+        return candidates
+
+    def _connect_ipc_locked(self) -> bool:
+        """Connect to the UI event bridge while holding ``_ipc_socket_lock``."""
+        if self._ipc_shutdown:
+            return False
+        if self.ipc_socket is not None:
+            return True
+
+        for ipc_port in self._ipc_port_candidates():
+            try:
+                sock = socket.create_connection(("127.0.0.1", ipc_port), timeout=1.0)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.settimeout(None)
+                self.ipc_socket = sock
                 logger.info(f"Connected to IPC server on port {ipc_port} with TCP_NODELAY")
-            except Exception as e:
-                logger.error(f"Failed to connect to IPC server on port {ipc_port}: {e}")
+                return True
+            except OSError as exc:
+                logger.warning(f"Failed to connect to IPC server on port {ipc_port}: {exc}")
+
+        self.ipc_socket = None
+        return False
+
+    def _send_ipc_event(self, event_type: str, data: Any) -> None:
+        """Send one complete event, reconnecting once if a stale socket is found.
+
+        Publishing can originate from LLM callbacks and background worker threads.
+        Serializing socket access keeps newline-delimited JSON frames from being
+        interleaved on Windows and prevents the event that detects a dead socket
+        from being silently lost.
+        """
+        payload = json.dumps({"event_type": event_type, "data": data}, default=str) + "\n"
+        encoded_payload = payload.encode("utf-8")
+
+        with self._ipc_socket_lock:
+            for _attempt in range(2):
+                if not self._connect_ipc_locked():
+                    return
+                try:
+                    self.ipc_socket.sendall(encoded_payload)
+                    return
+                except OSError as exc:
+                    logger.warning(f"IPC send failed; reconnecting: {exc}")
+                    try:
+                        self.ipc_socket.close()
+                    except Exception:
+                        pass
+                    self.ipc_socket = None
 
     @property
     def base_dir(self) -> Path:
@@ -144,28 +207,7 @@ class DataEngine:
             except Exception:
                 pass
 
-        # Auto-reconnect to IPC socket if disconnected or not yet connected
-        if not getattr(self, "ipc_socket", None):
-            ipc_port = read_ipc_port()
-            if ipc_port:
-                try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.connect(("127.0.0.1", ipc_port))
-                    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                    self.ipc_socket = s
-                except Exception:
-                    self.ipc_socket = None
-
-        if getattr(self, "ipc_socket", None):
-            try:
-                payload = json.dumps({"event_type": event_type, "data": data}, default=str) + "\n"
-                self.ipc_socket.sendall(payload.encode("utf-8"))
-            except Exception:
-                try:
-                    self.ipc_socket.close()
-                except Exception:
-                    pass
-                self.ipc_socket = None
+        self._send_ipc_event(event_type, data)
 
     def start_session(self, goal: str, device_info: dict[str, Any] | None = None) -> UUID:
         """Start a new session."""
@@ -601,11 +643,14 @@ class DataEngine:
                 if thread.is_alive():
                     await asyncio.to_thread(thread.join)
 
-        if getattr(self, "ipc_socket", None):
-            try:
-                self.ipc_socket.close()
-            except Exception:
-                pass
+        with self._ipc_socket_lock:
+            self._ipc_shutdown = True
+            if self.ipc_socket is not None:
+                try:
+                    self.ipc_socket.close()
+                except Exception:
+                    pass
+                self.ipc_socket = None
 
         logger.info("DataEngine shutdown complete. All data persisted.")
 

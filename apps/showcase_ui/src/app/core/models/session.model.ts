@@ -24,7 +24,7 @@ export interface TaskQueueItem {
   session_id: string;
   goal: string;
   profile?: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
   created_at?: number;
   start_time?: number;
 }
@@ -47,9 +47,10 @@ export interface AgentStatusResponse {
   queue?: (TaskQueueItem | string)[];
   background_tasks?: any[];
   model_info?: ModelInfo | null;
+  paused_error?: string | null;
 }
 
 export type AgentStatus = 'idle' | 'running' | 'completed' | 'offline' | string;
 
-export type TaskStatus = 'running' | 'completed' | 'pending' | 'failed' | 'cancelled';
+export type TaskStatus = 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled';
 

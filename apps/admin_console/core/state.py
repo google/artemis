@@ -28,7 +28,9 @@ class ServerState:
     def __init__(self):
         self.ipc_subscribers: list[Callable[[str, Any], None]] = []
         self.ipc_server: asyncio.Server | None = None
+        self.ipc_serve_task: asyncio.Task | None = None
         self.ipc_port: int | None = None
+        self.is_shutting_down: bool = False
 
         self.current_process: asyncio.subprocess.Process | None = None
         self.current_goal: str | None = None
@@ -41,6 +43,7 @@ class ServerState:
         # Unified single source of truth for task queue
         self.queue_items: list[dict[str, Any]] = []
         self._wake_event: asyncio.Event | None = None
+        self._shutdown_event: asyncio.Event | None = None
         self.worker_task: asyncio.Task | None = None
 
     @property
@@ -57,6 +60,22 @@ class ServerState:
         ):
             self._wake_event = asyncio.Event()
         return self._wake_event
+
+    @property
+    def shutdown_event(self) -> asyncio.Event:
+        """Event set as soon as the HTTP server receives a shutdown signal."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if self._shutdown_event is None or (
+            loop
+            and getattr(self._shutdown_event, "_loop", None) is not None
+            and self._shutdown_event._loop != loop
+        ):
+            self._shutdown_event = asyncio.Event()
+        return self._shutdown_event
 
     @property
     def task_queue(self) -> list[dict[str, Any]]:
@@ -130,6 +149,19 @@ class ServerState:
     @property
     def is_paused(self) -> bool:
         return PAUSE_FILE.exists()
+
+    @property
+    def paused_error(self) -> str | None:
+        """Return the persisted pause reason for clients that missed the SSE event."""
+        if not PAUSE_FILE.exists():
+            return None
+        try:
+            message = PAUSE_FILE.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return "AI model request failed. The task is paused."
+        if message.startswith("LLM Error: "):
+            message = message[len("LLM Error: ") :]
+        return message or "AI model request failed. The task is paused."
 
     def add_subscriber(self, callback: Callable[[str, Any], None]):
         if callback not in self.ipc_subscribers:

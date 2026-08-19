@@ -12,9 +12,93 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import MagicMock
+import asyncio
+import json
+from unittest.mock import MagicMock, patch
+
 from artemis.context import ArtemisContext
 from artemis.data_engine.engine import DataEngine
+
+
+def test_ipc_send_reconnects_and_retries_current_event(tmp_path):
+    """A stale Windows TCP socket must not make the triggering SSE event disappear."""
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    stale_socket = MagicMock()
+    stale_socket.sendall.side_effect = OSError("connection reset")
+    replacement_socket = MagicMock()
+
+    with (
+        patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
+        patch(
+            "artemis.data_engine.engine.socket.create_connection",
+            side_effect=[stale_socket, replacement_socket],
+        ) as create_connection,
+    ):
+        engine = DataEngine(mock_ctx)
+        engine._publish("llm_stream", {"session_id": "s1", "chunk": "hello"})
+
+    assert create_connection.call_count == 2
+    stale_socket.close.assert_called_once()
+    replacement_socket.sendall.assert_called_once()
+    frame = replacement_socket.sendall.call_args.args[0]
+    assert frame.endswith(b"\n")
+    assert json.loads(frame.decode("utf-8"))["data"]["chunk"] == "hello"
+
+
+def test_ipc_connect_falls_back_to_refreshed_port_file(tmp_path):
+    """A UI restart must supersede the worker's stale inherited Windows port."""
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path / "traces")
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    port_file = tmp_path / ".artemis_ipc_port"
+    port_file.write_text("51629", encoding="utf-8")
+    live_socket = MagicMock()
+
+    with (
+        patch("artemis.data_engine.engine.read_ipc_port", return_value=49555),
+        patch("artemis.data_engine.engine.get_ipc_port_file", return_value=port_file),
+        patch(
+            "artemis.data_engine.engine.socket.create_connection",
+            side_effect=[OSError("stale port"), live_socket],
+        ) as create_connection,
+    ):
+        engine = DataEngine(mock_ctx)
+
+    assert engine.ipc_socket is live_socket
+    assert create_connection.call_args_list[0].args[0] == ("127.0.0.1", 49555)
+    assert create_connection.call_args_list[1].args[0] == ("127.0.0.1", 51629)
+
+
+def test_ipc_does_not_reconnect_after_engine_shutdown(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+    connected_socket = MagicMock()
+
+    with (
+        patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
+        patch("artemis.data_engine.engine.get_ipc_port_file", return_value=tmp_path / "none"),
+        patch(
+            "artemis.data_engine.engine.socket.create_connection",
+            return_value=connected_socket,
+        ) as create_connection,
+    ):
+        engine = DataEngine(mock_ctx)
+        asyncio.run(engine.shutdown())
+        engine._publish("llm_stream", {"chunk": "after shutdown"})
+
+    assert create_connection.call_count == 1
+    connected_socket.close.assert_called_once()
 
 
 def test_get_or_create_image_updates_missing_data(tmp_path):

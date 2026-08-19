@@ -34,6 +34,18 @@ import typer
 logger = get_logger(__name__)
 console = Console()
 
+ARTEMIS_MCP_TOOLS = (
+    "mobile_run_task",
+    "mobile_manage_task",
+    "mobile_get_device_state",
+    "mobile_inspect_trace",
+)
+
+
+def _eager_tools_config() -> dict[str, dict[str, bool]]:
+    """Return the eager-loading extension used by clients that support it."""
+    return {tool_name: {"eager": True} for tool_name in ARTEMIS_MCP_TOOLS}
+
 
 def _get_vscode_user_dir() -> Path:
     """Returns the platform-specific VS Code user configuration directory."""
@@ -51,32 +63,94 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
     config_body = {
         "command": python_exe,
         "args": ["-m", "mcp_server"],
-        "cwd": project_root,
         "env": {
             "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": project_root,
         },
     }
+    config_with_cwd = {**config_body, "cwd": project_root}
 
-    if client in ("antigravity", "jetski"):
+    if client == "antigravity":
         return {
             "mcpServers": {
                 "artemis": {
-                    **config_body,
-                    "tools": {
-                        "mobile_run_task": {"eager": True},
-                        "mobile_manage_task": {"eager": True},
-                        "mobile_get_device_state": {"eager": True},
-                        "mobile_inspect_trace": {"eager": True},
-                    },
+                    **config_with_cwd,
+                    # This is the documented way to expose every tool. Avoid
+                    # proprietary eager fields in the current config so a
+                    # strict parser can always load the server.
+                    "disabledTools": [],
+                }
+            }
+        }
+    elif client == "jetski":
+        return {
+            "mcpServers": {
+                "artemis": {
+                    **config_with_cwd,
+                    "disabledTools": [],
+                    # Retain the legacy Jetski eager extension only in its
+                    # legacy config file. Current Antigravity gets the strict,
+                    # documented configuration above as a safe fallback.
+                    "tools": _eager_tools_config(),
                 }
             }
         }
     elif client == "openclaw":
-        return {"plugins": {"artemis_mcp": {"enabled": True, "type": "mcp", "server": config_body}}}
+        return {
+            "mcp": {
+                "servers": {
+                    "artemis": {
+                        **config_with_cwd,
+                        "enabled": True,
+                        "connectionTimeoutMs": 120000,
+                    }
+                }
+            }
+        }
     elif client == "codex":
-        return {"mcp_servers": {"artemis": config_body}}
-    else:  # cursor, windsurf, claude, vscode, cline, roo, generic
+        return {
+            "mcp_servers": {
+                "artemis": {
+                    **config_with_cwd,
+                    # Codex has no eager/deferred MCP setting. Requiring the
+                    # server makes it initialize during host startup, while an
+                    # explicit allow-list guarantees all Artemis tools are
+                    # registered. The host may still present schemas through
+                    # tool search to control context size.
+                    "enabled": True,
+                    "required": True,
+                    "startup_timeout_sec": 120,
+                    "enabled_tools": list(ARTEMIS_MCP_TOOLS),
+                }
+            }
+        }
+    elif client == "vscode":
+        return {"servers": {"artemis": {**config_with_cwd, "type": "stdio"}}}
+    elif client in ("claude", "claude_code", "claude_desktop"):
+        return {"mcpServers": {"artemis": {**config_body, "type": "stdio"}}}
+    elif client == "cline":
+        return {
+            "mcpServers": {
+                "artemis": {
+                    **config_body,
+                    "disabled": False,
+                    "autoApprove": [],
+                    "timeout": 120,
+                }
+            }
+        }
+    elif client in ("roo", "roo_code"):
+        return {
+            "mcpServers": {
+                "artemis": {
+                    **config_body,
+                    "disabled": False,
+                    "alwaysAllow": [],
+                    "timeout": 120,
+                }
+            }
+        }
+    else:  # cursor, windsurf, generic
         return {"mcpServers": {"artemis": config_body}}
 
 
@@ -100,7 +174,13 @@ def _parse_json_lenient(text: str) -> dict:
         return {}
 
 
-def _merge_json_file(file_path: Path, server_name: str, server_config: dict, key_name: str = "mcpServers") -> bool:
+def _merge_json_file(
+    file_path: Path,
+    server_name: str,
+    server_config: dict,
+    key_name: str | tuple[str, ...] = "mcpServers",
+    remove_paths: tuple[tuple[str, ...], ...] = (),
+) -> bool:
     """Merges server configuration into a target JSON file without overwriting existing servers."""
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,10 +197,25 @@ def _merge_json_file(file_path: Path, server_name: str, server_config: dict, key
                 except Exception:
                     pass
 
-        if key_name not in data or not isinstance(data.get(key_name), dict):
-            data[key_name] = {}
+        for remove_path in remove_paths:
+            parent = data
+            for part in remove_path[:-1]:
+                child = parent.get(part)
+                if not isinstance(child, dict):
+                    parent = {}
+                    break
+                parent = child
+            if parent:
+                parent.pop(remove_path[-1], None)
 
-        data[key_name][server_name] = server_config
+        key_path = (key_name,) if isinstance(key_name, str) else key_name
+        target = data
+        for part in key_path:
+            if not isinstance(target.get(part), dict):
+                target[part] = {}
+            target = target[part]
+
+        target[server_name] = server_config
         file_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return True
     except Exception as e:
@@ -141,6 +236,15 @@ def _codex_toml_block(server_config: dict) -> str:
         f"args = {args}",
         f"cwd = {cwd}",
     ]
+    for key in ("enabled", "required"):
+        if key in server_config:
+            lines.append(f"{key} = {'true' if server_config[key] else 'false'}")
+    if "startup_timeout_sec" in server_config:
+        lines.append(f"startup_timeout_sec = {int(server_config['startup_timeout_sec'])}")
+    if "enabled_tools" in server_config:
+        lines.append(
+            f"enabled_tools = {json.dumps(server_config['enabled_tools'], ensure_ascii=False)}"
+        )
     if env:
         lines.extend(["", "[mcp_servers.artemis.env]"])
         for key, value in env.items():
@@ -380,12 +484,22 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
     for target in targets:
         snippet = _get_config_snippet(target, python_exe, project_root)
         if target in ("antigravity", "jetski"):
-            server_cfg = snippet["mcpServers"]["artemis"]
+            current_server_cfg = _get_config_snippet("antigravity", python_exe, project_root)[
+                "mcpServers"
+            ]["artemis"]
+            legacy_server_cfg = _get_config_snippet("jetski", python_exe, project_root)[
+                "mcpServers"
+            ]["artemis"]
             jetski_path = Path.home() / ".gemini" / "jetski" / "mcp_config.json"
+            antigravity_legacy_path = (
+                Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
+            )
             config_path = Path.home() / ".gemini" / "config" / "mcp_config.json"
-            if _merge_json_file(jetski_path, "artemis", server_cfg):
+            if _merge_json_file(jetski_path, "artemis", legacy_server_cfg):
                 installed_paths.append(str(jetski_path))
-            if _merge_json_file(config_path, "artemis", server_cfg):
+            if _merge_json_file(antigravity_legacy_path, "artemis", current_server_cfg):
+                installed_paths.append(str(antigravity_legacy_path))
+            if _merge_json_file(config_path, "artemis", current_server_cfg):
                 installed_paths.append(str(config_path))
         elif target in ("claude", "claude_code", "claude_desktop"):
             server_cfg = snippet["mcpServers"]["artemis"]
@@ -414,24 +528,53 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
             if _merge_json_file(windsurf_path, "artemis", server_cfg):
                 installed_paths.append(str(windsurf_path))
         elif target == "vscode":
-            server_cfg = snippet["mcpServers"]["artemis"]
+            server_cfg = snippet["servers"]["artemis"]
             vscode_path = _get_vscode_user_dir() / "mcp.json"
-            if _merge_json_file(vscode_path, "artemis", server_cfg):
+            copilot_path = Path.home() / ".copilot" / "mcp-config.json"
+            if _merge_json_file(vscode_path, "artemis", server_cfg, key_name="servers"):
                 installed_paths.append(str(vscode_path))
+            if _merge_json_file(copilot_path, "artemis", server_cfg, key_name="servers"):
+                installed_paths.append(str(copilot_path))
         elif target == "cline":
             server_cfg = snippet["mcpServers"]["artemis"]
-            cline_path = _get_vscode_user_dir() / "globalStorage" / "saoudrizwan.claude-dev" / "settings" / "cline_mcp_settings.json"
-            if _merge_json_file(cline_path, "artemis", server_cfg):
-                installed_paths.append(str(cline_path))
+            cline_paths = (
+                Path.home() / ".cline" / "data" / "settings" / "cline_mcp_settings.json",
+                Path.home() / ".cline" / "mcp.json",
+                _get_vscode_user_dir()
+                / "globalStorage"
+                / "saoudrizwan.claude-dev"
+                / "settings"
+                / "cline_mcp_settings.json",
+            )
+            for cline_path in cline_paths:
+                if _merge_json_file(cline_path, "artemis", server_cfg):
+                    installed_paths.append(str(cline_path))
         elif target in ("roo", "roo_code"):
             server_cfg = snippet["mcpServers"]["artemis"]
-            roo_path = _get_vscode_user_dir() / "globalStorage" / "rooveterinaryinc.roo-cline" / "settings" / "cline_mcp_settings.json"
-            if _merge_json_file(roo_path, "artemis", server_cfg):
-                installed_paths.append(str(roo_path))
+            roo_settings_dir = (
+                _get_vscode_user_dir()
+                / "globalStorage"
+                / "rooveterinaryinc.roo-cline"
+                / "settings"
+            )
+            roo_paths = (
+                roo_settings_dir / "mcp_settings.json",
+                roo_settings_dir / "cline_mcp_settings.json",
+                Path(project_root) / ".roo" / "mcp.json",
+            )
+            for roo_path in roo_paths:
+                if _merge_json_file(roo_path, "artemis", server_cfg):
+                    installed_paths.append(str(roo_path))
         elif target == "openclaw":
-            plugin_cfg = snippet["plugins"]["artemis_mcp"]
+            server_cfg = snippet["mcp"]["servers"]["artemis"]
             openclaw_path = Path.home() / ".openclaw" / "openclaw.json"
-            if _merge_json_file(openclaw_path, "artemis_mcp", plugin_cfg, key_name="plugins"):
+            if _merge_json_file(
+                openclaw_path,
+                "artemis",
+                server_cfg,
+                key_name=("mcp", "servers"),
+                remove_paths=(("plugins", "artemis_mcp"),),
+            ):
                 installed_paths.append(str(openclaw_path))
         elif target == "codex":
             server_cfg = snippet["mcp_servers"]["artemis"]

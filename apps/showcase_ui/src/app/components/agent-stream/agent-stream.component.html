@@ -69,8 +69,8 @@
           </span>
           <div class="item-header-actions">
             <span class="item-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
-            <button 
-              *ngIf="getTaskStatus(session) !== 'running'"
+            <button
+              *ngIf="getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused'"
               type="button"
               class="btn-delete-card" 
               (click)="deleteTask(session.session_id, $event)" 
@@ -114,8 +114,8 @@
             </span>
             <div class="item-header-actions">
               <span class="item-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
-              <button 
-                *ngIf="getTaskStatus(session) !== 'running'"
+            <button
+              *ngIf="getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused'"
                 type="button"
                 class="btn-delete-card" 
                 (click)="deleteTask(session.session_id, $event)" 
@@ -285,7 +285,6 @@
 
   <!-- Event Logs Section -->
   <main class="stream-logs-content" (scroll)="onStreamScroll($event)">
-
     <div *ngIf="consolidatedBlocks().length === 0 && !showPlanningLoader()" class="empty-state">
       <div class="empty-icon"><span class="material-symbols-outlined">sensors</span></div>
       <h3>No Stream Activity Selected</h3>
@@ -516,13 +515,30 @@
                     <ng-container *ngIf="item.type === 'tool'">
                       <!-- Failed LLM Calls (Permanently maintain Action Card format in red) -->
                       <div class="step-android-action-card tool-action-card is-failed" *ngIf="item.data.type === 'llm_call' && item.data.status === 'failed'">
-                        <div class="action-card-header">
+                        <div class="action-card-header llm-failure-header">
                           <span class="material-symbols-outlined action-icon is-failed">error</span>
                           <span class="action-title">LLM Request Failed</span>
-                          <span class="action-status-badge is-failed">
-                            <span class="material-symbols-outlined status-icon">warning</span>
-                            Failed
+                          <span class="action-status-badge is-paused" *ngIf="isTerminalLLMFailure(item.data); else failedLlmStatus">
+                            <span class="material-symbols-outlined status-icon">pause_circle</span>
+                            Paused
                           </span>
+                          <ng-template #failedLlmStatus>
+                            <span class="action-status-badge is-failed">
+                              <span class="material-symbols-outlined status-icon">warning</span>
+                              Failed
+                            </span>
+                          </ng-template>
+                          <button
+                            type="button"
+                            class="btn-retry-llm"
+                            *ngIf="isTerminalLLMFailure(item.data)"
+                            (click)="retryPausedTask($event)"
+                            title="Retry the paused AI request"
+                            aria-label="Retry the paused AI request"
+                          >
+                            <span class="material-symbols-outlined">refresh</span>
+                            Retry
+                          </button>
                         </div>
                         <div class="action-card-body">
                           <div class="action-detail-row">

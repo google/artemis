@@ -14,6 +14,8 @@
 
 """UI Launch and Web Console CLI Command (artemis ui)."""
 
+from pathlib import Path
+import sys
 import threading
 import time
 from typing import Annotated
@@ -23,6 +25,27 @@ import webbrowser
 from rich.console import Console
 from rich.panel import Panel
 import typer
+
+
+def _showcase_build_required(showcase_dir: Path) -> bool:
+    """Return whether the compiled Angular app is missing or older than its inputs."""
+    base_dist = showcase_dir / "dist"
+    candidates = [
+        base_dist / "frontend" / "browser" / "index.html",
+        base_dist / "browser" / "index.html",
+        base_dist / "frontend" / "index.html",
+        base_dist / "index.html",
+    ]
+    built_indexes = [path for path in candidates if path.exists()]
+    if not built_indexes:
+        return True
+
+    build_time = max(path.stat().st_mtime for path in built_indexes)
+    input_paths = [showcase_dir / "package.json", showcase_dir / "angular.json"]
+    source_dir = showcase_dir / "src"
+    if source_dir.exists():
+        input_paths.extend(path for path in source_dir.rglob("*") if path.is_file())
+    return any(path.exists() and path.stat().st_mtime > build_time for path in input_paths)
 
 
 def _poll_and_open_browser(url: str, stop_event: threading.Event, timeout: float = 15.0) -> None:
@@ -74,7 +97,11 @@ def ui_command(
         f"📱 [bold green]Showcase UI & Onboarding:[/bold green] [cyan]{local_url}[/cyan]\n"
         f"🛠️ [bold magenta]Admin Debug Console:[/bold magenta]     [cyan]{local_url}/admin[/cyan]\n"
         f"📖 [dim]API Documentation:[/dim]         [dim]{local_url}/docs[/dim]\n\n"
-        f"[dim]Press Ctrl+C to stop the server.[/dim]"
+        + (
+            "[dim]Press Ctrl+C to stop while idle; Ctrl+Break forces shutdown during a task.[/dim]"
+            if sys.platform == "win32"
+            else "[dim]Press Ctrl+C to stop the server.[/dim]"
+        )
     )
     console.print(Panel(msg, title="🚀 Web Server Active", border_style="cyan", expand=False))
     # Ensure .env exists in workspace root
@@ -94,22 +121,15 @@ def ui_command(
             except Exception:
                 pass
 
-    base_dist = ROOT_DIR / "apps" / "showcase_ui" / "dist"
-    candidates = [
-        base_dist / "frontend" / "browser" / "index.html",
-        base_dist / "browser" / "index.html",
-        base_dist / "frontend" / "index.html",
-        base_dist / "index.html",
-    ]
-    if not any(p.exists() for p in candidates):
+    showcase_dir = ROOT_DIR / "apps" / "showcase_ui"
+    if _showcase_build_required(showcase_dir):
         import shutil
         import subprocess
 
         if shutil.which("npm"):
             console.print(
-                "   [yellow]🎨 Showcase UI build not found. Compiling Angular Showcase UI...[/yellow]"
+                "   [yellow]🎨 Showcase UI sources changed. Compiling Angular Showcase UI...[/yellow]"
             )
-            showcase_dir = ROOT_DIR / "apps" / "showcase_ui"
             try:
                 subprocess.run(["npm", "install", "--silent"], cwd=showcase_dir, check=True)
                 subprocess.run(["npm", "run", "build"], cwd=showcase_dir, check=True)
@@ -127,10 +147,9 @@ def ui_command(
         t.start()
 
     try:
-        import uvicorn
-        from apps.admin_console.server import app
+        from apps.admin_console.server import run_ui_server
 
-        uvicorn.run(app, host=host, port=port, reload=reload)
+        run_ui_server(host=host, port=port, reload=reload)
     except KeyboardInterrupt:
         console.print("\n[yellow]🛑 UI Server stopped.[/yellow]")
     finally:

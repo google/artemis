@@ -27,6 +27,7 @@ export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemDa
 })
 export class AgentService {
   private http = inject(HttpClient);
+  private activePauseCardKey: string | null = null;
 
   // Signals to expose state to components
   private rawSessions = signal<Session[]>([]);
@@ -43,38 +44,38 @@ export class AgentService {
 
     // 1. First add raw sessions from DB
     raw.forEach((s) => {
-      const isCurrentRunning = status === 'running' && runId === s.session_id;
-      const isPending = this.pendingQueue().some(p => p.session_id === s.session_id) && !isCurrentRunning;
-      let sStatus = isCurrentRunning ? 'running' : (isPending ? 'pending' : s.status);
-      if (sStatus === 'running' && !isCurrentRunning) {
+      const isCurrentActive = (status === 'running' || status === 'paused') && runId === s.session_id;
+      const isPending = this.pendingQueue().some(p => p.session_id === s.session_id) && !isCurrentActive;
+      let sStatus = isCurrentActive ? status : (isPending ? 'pending' : s.status);
+      if ((sStatus === 'running' || sStatus === 'paused') && !isCurrentActive) {
         const activeRun = raw.find(r => r.session_id === runId);
         sStatus = (activeRun && (s.start_time || 0) > (activeRun.start_time || 0)) ? 'pending' : 'completed';
       }
       sessionMap.set(s.session_id, {
         ...s,
         status: sStatus,
-        model_info: isCurrentRunning && this.activeModel() ? this.activeModel()! : s.model_info
+        model_info: isCurrentActive && this.activeModel() ? this.activeModel()! : s.model_info
       });
     });
 
     // 2. Add pending queue sessions if not yet in raw sessions
     pending.forEach((p) => {
       if (!sessionMap.has(p.session_id)) {
-        const isCurrentRunning = status === 'running' && runId === p.session_id;
+        const isCurrentRunning = (status === 'running' || status === 'paused') && runId === p.session_id;
         sessionMap.set(p.session_id, {
           ...p,
-          status: isCurrentRunning ? 'running' : 'pending'
+          status: isCurrentRunning ? status : 'pending'
         });
       }
     });
 
     // 3. Ensure currently active running session is present
-    if (status === 'running' && runId && !sessionMap.has(runId)) {
+    if ((status === 'running' || status === 'paused') && runId && !sessionMap.has(runId)) {
       sessionMap.set(runId, {
         session_id: runId,
         initial_goal: goal || '',
         start_time: Date.now() / 1000,
-        status: 'running',
+        status,
         model_info: this.activeModel() || undefined
       });
     }
@@ -127,8 +128,8 @@ export class AgentService {
    */
   public isCurrentSessionRunning = computed(() => {
     const session = this.currentSession();
-    if (session) return session.status === 'running';
-    return this.agentStatus() === 'running';
+    if (session) return session.status === 'running' || session.status === 'paused';
+    return this.agentStatus() === 'running' || this.agentStatus() === 'paused';
   });
 
   /**
@@ -153,8 +154,8 @@ export class AgentService {
    * Check if any task is currently running
    */
   public isRunningTask = computed(() => {
-    if (this.agentStatus() === 'running') return true;
-    return this.sessions().some(s => s.status === 'running');
+    if (this.agentStatus() === 'running' || this.agentStatus() === 'paused') return true;
+    return this.sessions().some(s => s.status === 'running' || s.status === 'paused');
   });
 
   /**
@@ -246,6 +247,7 @@ export class AgentService {
       next: () => {
         this.isPaused.set(false);
         this.pausedError.set(null);
+        this.fetchStatus();
       },
       error: (err) => {
         console.error('Failed to resume task:', err);
@@ -381,6 +383,7 @@ export class AgentService {
 
     this.currentSessionId.set(sessionId);
     this.sessionLogs.set([]); // Reset logs for new session selection
+    this.activePauseCardKey = null;
     this.isPaused.set(false);
     this.pausedError.set(null);
     this.fetchNotes(sessionId);
@@ -411,7 +414,24 @@ export class AgentService {
             data: step
           });
         });
-        this.sessionLogs.set(historicalLogs);
+        // The history request and EventSource start together. On slower Windows
+        // hosts, live events can arrive first; replacing the signal here would
+        // erase them until a browser refresh reloads the persisted steps.
+        this.sessionLogs.update((liveLogs) => {
+          if (liveLogs.length === 0) return historicalLogs;
+
+          const liveStepIds = new Set(
+            liveLogs
+              .filter((log) => log.type === 'step_recorded' || log.type === 'step_updated')
+              .map((log) => String(log.data?.step_id || log.data?.step_number || ''))
+              .filter(Boolean)
+          );
+          const missingHistorical = historicalLogs.filter((log) => {
+            const stepKey = String(log.data?.step_id || log.data?.step_number || '');
+            return !stepKey || !liveStepIds.has(stepKey);
+          });
+          return [...missingHistorical, ...liveLogs];
+        });
       },
       error: (err) => {
         console.error('Failed to pre-load historical steps:', err);
@@ -507,7 +527,14 @@ export class AgentService {
           if (eventType === 'task_paused') {
             this.isPaused.set(true);
             this.isRetrying.set(false);
-            this.pausedError.set(parsedData.error || 'AI call failed');
+            const pauseError = parsedData.error || 'AI call failed';
+            this.pausedError.set(pauseError);
+            this.appendPausedErrorCard(
+              pauseError,
+              sessionId,
+              parsedData.timestamp,
+              parsedData.step_id
+            );
             return;
           }
 
@@ -515,6 +542,7 @@ export class AgentService {
             this.isPaused.set(false);
             this.isRetrying.set(false);
             this.pausedError.set(null);
+            this.activePauseCardKey = null;
             return;
           }
 
@@ -637,6 +665,63 @@ export class AgentService {
     };
   }
 
+  /**
+   * Preserve pause failures in the normal failed-LLM card stream. New runners
+   * emit a persisted failed trace first; this fallback also supports older
+   * runners whose task_paused event only carried an error string.
+   */
+  private appendPausedErrorCard(
+    error: unknown,
+    sessionId: string,
+    timestamp?: number | string,
+    stepId?: string | null
+  ): void {
+    const errorText = typeof error === 'string' ? error : JSON.stringify(error);
+    const pauseKey = `${sessionId}:${errorText}`;
+    if (this.activePauseCardKey === pauseKey) return;
+
+    this.sessionLogs.update((logs) => {
+      const alreadyRecorded = logs.some((log) => {
+        const traces = log?.type === 'trace_recorded'
+          ? [log.data]
+          : (Array.isArray(log?.data?.generic_tools) ? log.data.generic_tools : []);
+        return traces.some((trace: any) =>
+          trace?.type === 'llm_call'
+          && trace?.status === 'failed'
+          && String(trace?.payload?.error ?? trace?.error ?? '') === errorText
+        );
+      });
+      if (alreadyRecorded) return logs;
+
+      const latestStepId = stepId || [...logs].reverse().find((log) =>
+        (log.type === 'step_updated' || log.type === 'step_recorded') && log.data?.step_id
+      )?.data?.step_id || null;
+      const timestampMs = typeof timestamp === 'number'
+        ? (timestamp < 1e11 ? timestamp * 1000 : timestamp)
+        : (timestamp ? new Date(timestamp).getTime() : Date.now());
+
+      return [
+        ...logs,
+        {
+          type: 'trace_recorded',
+          session_id: sessionId,
+          timestamp: new Date(timestampMs).toISOString(),
+          data: {
+            trace_id: `task-paused-${sessionId}-${timestampMs}`,
+            session_id: sessionId,
+            step_id: latestStepId,
+            type: 'llm_call',
+            name: 'llm_pause',
+            status: 'failed',
+            timestamp: timestampMs / 1000,
+            payload: { error: errorText, pause: true }
+          }
+        }
+      ];
+    });
+    this.activePauseCardKey = pauseKey;
+  }
+
   private pollCounter: number = 0;
 
   /**
@@ -665,7 +750,8 @@ export class AgentService {
           const oldRunningSessionId = this.runningSessionId();
           
           this.agentStatus.set(data.status);
-          if (data.status === 'running') {
+          const isActive = data.status === 'running' || data.status === 'paused';
+          if (isActive) {
             this.runningSessionId.set(data.session_id || null);
             this.runningGoal.set(data.goal || null);
             if (data.model_info) {
@@ -687,6 +773,21 @@ export class AgentService {
             } else if (data.model_info) {
               this.activeModel.set(data.model_info);
             }
+          }
+
+          this.isPaused.set(data.status === 'paused');
+          if (data.status === 'paused') {
+            this.isRetrying.set(false);
+            const pauseError = data.paused_error
+              || this.pausedError()
+              || 'AI model request failed. The task is paused.';
+            this.pausedError.set(pauseError);
+            if (data.session_id && this.currentSessionId() === data.session_id) {
+              this.appendPausedErrorCard(pauseError, data.session_id);
+            }
+          } else {
+            this.pausedError.set(null);
+            this.activePauseCardKey = null;
           }
 
           // Map backend pending queue to real Session / TaskQueueItem objects
@@ -713,7 +814,7 @@ export class AgentService {
           }
 
           // Auto-select the session if running and user hasn't explicitly chosen to inspect another task
-          if (data.status === 'running' && data.session_id) {
+          if (isActive && data.session_id) {
             const currentId = this.currentSessionId();
             const pinnedId = this.userPinnedSessionId();
             if (!currentId) {

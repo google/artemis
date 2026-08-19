@@ -358,6 +358,12 @@ $text-muted: #a1a1aa;
               animation: pulse-black-dot-small 1.5s infinite ease-in-out;
             }
           }
+          &.paused {
+            background: #fff7ed;
+            color: #c2410c;
+            border-color: #fdba74;
+            &::before { background-color: #f97316; }
+          }
           &.completed {
             background: #fafafa;
             color: #1f1f1f;

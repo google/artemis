@@ -216,12 +216,15 @@ def test_output_config_and_recording():
         assert "test_event" in output_file.read_text(encoding="utf-8")
 
 
-def test_runtime_state_and_ipc():
+def test_runtime_state_and_ipc(tmp_path, monkeypatch):
     """Test IPC port and LS address state helpers."""
+    ipc_state_file = tmp_path / ".artemis_ipc_port"
+    monkeypatch.setattr("artemis.config.runtime.get_ipc_port_file", lambda: ipc_state_file)
     # Test IPC port
     write_ipc_port(49152)
     assert read_ipc_port() == 49152
     clear_ipc_port()
+    assert read_ipc_port() is None
 
     # Test LS address
     write_ls_address("localhost:12345")

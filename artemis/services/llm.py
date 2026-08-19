@@ -25,6 +25,7 @@ import functools
 import logging
 from pathlib import Path
 import random
+import time
 from typing import Any, Literal, TypeVar, overload
 from uuid import uuid4
 
@@ -67,7 +68,29 @@ def _handle_llm_pause_and_resume(last_error: Exception) -> Path:
         pass
 
     if _CURRENT_DATA_ENGINE:
-        _CURRENT_DATA_ENGINE._publish("task_paused", {"error": err_msg})
+        step_id = getattr(_CURRENT_DATA_ENGINE, "current_step_id", None)
+        timestamp = time.time()
+        try:
+            # Persist exhausted LLM retries as a failed call so the same error
+            # card is available both in the live stream and after a refresh.
+            _CURRENT_DATA_ENGINE.record_trace(
+                type="llm_call",
+                name="llm_pause",
+                payload={"error": err_msg, "pause": True},
+                step_id=step_id,
+                status="failed",
+            )
+        except Exception as trace_error:
+            llm_logger.warning("Failed to persist paused LLM error trace: %s", trace_error)
+
+        _CURRENT_DATA_ENGINE._publish(
+            "task_paused",
+            {
+                "error": err_msg,
+                "step_id": str(step_id) if step_id else None,
+                "timestamp": timestamp,
+            },
+        )
 
     return pause_file
 

@@ -168,13 +168,13 @@ export class AgentStreamComponent implements AfterViewInit {
   public activeQueue = computed(() => {
     const list = this.agentService.sessions().filter((s) => {
       const status = this.getTaskStatus(s);
-      return status === 'running' || status === 'pending';
+      return status === 'running' || status === 'paused' || status === 'pending';
     });
     return list.sort((a, b) => {
       const statusA = this.getTaskStatus(a);
       const statusB = this.getTaskStatus(b);
-      if (statusA === 'running') return -1;
-      if (statusB === 'running') return 1;
+      if (statusA === 'running' || statusA === 'paused') return -1;
+      if (statusB === 'running' || statusB === 'paused') return 1;
       return a.start_time - b.start_time;
     });
   });
@@ -242,6 +242,28 @@ export class AgentStreamComponent implements AfterViewInit {
   public phases = computed<PhaseBlock[]>(() => {
     const currentSession = this.agentService.sessions().find(s => s.session_id === this.agentService.currentSessionId());
     return groupBlocksToPhases(this.consolidatedBlocks(), currentSession?.start_time || 0);
+  });
+
+  private retryablePauseTrace = computed<any | null>(() => {
+    if (!this.agentService.isPaused()) return null;
+
+    const blocks = this.consolidatedBlocks();
+    for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex--) {
+      const tools = blocks[blockIndex]?.data?.generic_tools;
+      if (!Array.isArray(tools)) continue;
+
+      for (let toolIndex = tools.length - 1; toolIndex >= 0; toolIndex--) {
+        const tool = tools[toolIndex];
+        if (
+          tool?.type === 'llm_call'
+          && tool?.status === 'failed'
+          && tool?.payload?.pause === true
+        ) {
+          return tool;
+        }
+      }
+    }
+    return null;
   });
 
   public hasVisibleBlocks(phase: any): boolean {
@@ -447,13 +469,13 @@ export class AgentStreamComponent implements AfterViewInit {
     this.isNotesDropdownOpen.set(false);
   }
 
-  public getTaskStatus(session: Session): 'running' | 'completed' | 'pending' | 'failed' | 'cancelled' {
-    if (session.session_id === this.agentService.runningSessionId() && this.agentService.agentStatus() === 'running') {
-      return 'running';
+  public getTaskStatus(session: Session): 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled' {
+    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
+      return this.agentService.agentStatus() as 'running' | 'paused';
     }
     if (session.status) {
       const s = session.status.toLowerCase();
-      if (s === 'running' || s === 'completed' || s === 'pending' || s === 'failed' || s === 'cancelled') {
+      if (s === 'running' || s === 'paused' || s === 'completed' || s === 'pending' || s === 'failed' || s === 'cancelled') {
         return s as any;
       }
     }
@@ -819,20 +841,12 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   public isTerminalLLMFailure(tool: any): boolean {
-    if (!tool) return false;
-    for (const block of this.consolidatedBlocks()) {
-      if (block?.data?.generic_tools) {
-        const tools = block.data.generic_tools;
-        const failedLLMs = tools.filter((t: any) => t && t.type === 'llm_call' && t.status === 'failed');
-        if (failedLLMs.length > 0) {
-          const lastFailed = failedLLMs[failedLLMs.length - 1];
-          if (lastFailed && lastFailed.trace_id === tool.trace_id) {
-            return this.agentService.isPaused() || block.id === this.consolidatedBlocks()[this.consolidatedBlocks().length - 1]?.id;
-          }
-        }
-      }
-    }
-    return false;
+    return !!tool && this.retryablePauseTrace() === tool;
+  }
+
+  public retryPausedTask(event: Event): void {
+    event.stopPropagation();
+    this.agentService.resumeTask();
   }
 
   public getLLMErrorText(tool: any): string {

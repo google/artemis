@@ -16,6 +16,7 @@ import asyncio
 from datetime import datetime
 import os
 import shutil
+import subprocess
 import sys
 import time
 from typing import Any
@@ -75,6 +76,31 @@ class TaskQueueService:
             for t in state.queue_items
             if not (isinstance(t, dict) and t.get("session_id") == session_id)
         ]
+
+    @staticmethod
+    def _subprocess_creation_kwargs() -> dict[str, int]:
+        """Keep task workers out of the UI server's Windows console group.
+
+        Without a new process group, a console control event intended for the
+        uvicorn server is also delivered to a task that is still importing
+        Artemis, causing STATUS_CONTROL_C_EXIT (0xC000013A).
+        """
+        if sys.platform == "win32":
+            return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        return {}
+
+    @staticmethod
+    async def _terminate_worker_process(proc: asyncio.subprocess.Process | None) -> None:
+        """Stop a worker without changing the established POSIX behavior."""
+        if proc is None or proc.returncode is not None:
+            return
+        if sys.platform == "win32":
+            await process_supervisor.stop_process(proc)
+            return
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
 
     @classmethod
     def ensure_worker_running(cls):
@@ -182,6 +208,7 @@ class TaskQueueService:
                     *cmd,
                     cwd=str(WORKSPACE_ROOT),
                     env=env,
+                    **cls._subprocess_creation_kwargs(),
                 )
                 state.current_process = proc
                 task_item["pid"] = proc.pid
@@ -193,10 +220,7 @@ class TaskQueueService:
                     print(
                         f"[QueueWorker] Task [{sess_id}] was cancelled during launch. Terminating."
                     )
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+                    await cls._terminate_worker_process(proc)
 
                 # 3. Await subprocess completion
                 returncode = await proc.wait()
@@ -225,10 +249,7 @@ class TaskQueueService:
             except asyncio.CancelledError:
                 print("[QueueWorker] Task received cancellation signal.")
                 if state.current_process and state.current_process.returncode is None:
-                    try:
-                        state.current_process.kill()
-                    except Exception:
-                        pass
+                    await cls._terminate_worker_process(state.current_process)
                 break
             except Exception as e:
                 print(f"[QueueWorker] Unexpected error executing task: {e}")

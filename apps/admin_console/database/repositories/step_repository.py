@@ -206,6 +206,48 @@ class StepRepository:
 
         return result_payload
 
+    @staticmethod
+    def _extract_legacy_pause_error(payload_raw: Any) -> str | None:
+        """Extract an LLM error from the warning trace used by older runners."""
+        payload_obj = payload_raw
+        if isinstance(payload_raw, str):
+            try:
+                payload_obj = json.loads(payload_raw)
+            except Exception:
+                return None
+        if not isinstance(payload_obj, dict):
+            return None
+
+        message = payload_obj.get("message")
+        if not isinstance(message, str) or "LLM Error:" not in message:
+            return None
+        pause_marker = ". Pausing execution"
+        if pause_marker not in message:
+            return None
+
+        error = message.split("LLM Error:", 1)[1].split(pause_marker, 1)[0].strip()
+        return error or None
+
+    def _normalize_display_trace(self, trace_dict: dict[str, Any]) -> dict[str, Any]:
+        """Normalize traces consumed by the task stream's tool/error cards."""
+        if trace_dict.get("type") == "log":
+            error = self._extract_legacy_pause_error(trace_dict.get("payload"))
+            if error:
+                trace_dict.update(
+                    {
+                        "type": "llm_call",
+                        "name": "llm_pause",
+                        "status": "failed",
+                        "payload": {"error": error, "pause": True},
+                    }
+                )
+                return trace_dict
+
+        trace_dict["payload"] = self._clean_tool_payload(
+            trace_dict.get("payload"), trace_dict.get("type")
+        )
+        return trace_dict
+
     def get_session_steps(self, session_id: str, client: str | None = None) -> list[dict[str, Any]]:
         with db_session(self.db_path) as conn:
             cursor = conn.cursor()
@@ -249,17 +291,18 @@ class StepRepository:
                         " t1.payload, t2.name as agent_name FROM traces t1 LEFT"
                         " JOIN traces t2 ON t1.parent_trace_id = t2.trace_id WHERE"
                         " t1.step_id = ? AND (t1.type = 'tool' OR t1.type = 'action' OR (t1.type ="
-                        " 'llm_call' AND t1.status = 'failed')) ORDER BY"
+                        " 'llm_call' AND t1.status = 'failed') OR (t1.type = 'log' AND"
+                        " t1.payload LIKE '%LLM Error:%Pausing execution%' AND NOT EXISTS"
+                        " (SELECT 1 FROM traces t3 WHERE t3.session_id = t1.session_id AND"
+                        " t3.type = 'llm_call' AND t3.status = 'failed' AND"
+                        " ABS(t3.timestamp - t1.timestamp) < 2))) ORDER BY"
                         " t1.timestamp ASC",
                         (step_id,),
                     )
                     trace_rows = cursor.fetchall()
                     generic_tools = []
                     for tr in trace_rows:
-                        trace_dict = dict(tr)
-                        trace_dict["payload"] = self._clean_tool_payload(
-                            trace_dict.get("payload"), trace_dict.get("type")
-                        )
+                        trace_dict = self._normalize_display_trace(dict(tr))
                         generic_tools.append(trace_dict)
                     step_dict["generic_tools"] = generic_tools
 
@@ -320,7 +363,11 @@ class StepRepository:
                 " t2.name as agent_name FROM traces t1 LEFT JOIN traces t2 ON"
                 " t1.parent_trace_id = t2.trace_id WHERE t1.session_id = ? AND"
                 " (t1.step_id IS NULL OR t1.step_id = '') AND (t1.type = 'tool' OR"
-                " (t1.type = 'llm_call' AND t1.status = 'failed')) ORDER BY"
+                " (t1.type = 'llm_call' AND t1.status = 'failed') OR (t1.type = 'log'"
+                " AND t1.payload LIKE '%LLM Error:%Pausing execution%' AND NOT EXISTS"
+                " (SELECT 1 FROM traces t3 WHERE t3.session_id = t1.session_id AND"
+                " t3.type = 'llm_call' AND t3.status = 'failed' AND"
+                " ABS(t3.timestamp - t1.timestamp) < 2))) ORDER BY"
                 " t1.timestamp ASC",
                 (session_id,),
             )
@@ -330,10 +377,7 @@ class StepRepository:
                 sorted_steps = sorted(steps, key=lambda s: s.get("timestamp") or 0)
 
                 for tr in stepless_rows:
-                    trace_dict = dict(tr)
-                    trace_dict["payload"] = self._clean_tool_payload(
-                        trace_dict.get("payload"), trace_dict.get("type")
-                    )
+                    trace_dict = self._normalize_display_trace(dict(tr))
 
                     tr_time = trace_dict.get("timestamp") or 0
                     target_step = None

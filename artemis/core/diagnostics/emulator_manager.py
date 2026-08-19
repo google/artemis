@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -72,6 +73,21 @@ class EmulatorManager:
         self._track_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self._reader_thread: threading.Thread | None = None
+
+    @staticmethod
+    def _subprocess_creation_kwargs() -> dict[str, Any]:
+        """Isolate the emulator from the UI server's console signals.
+
+        ``start_new_session`` is POSIX-only and is ignored by Python's Windows
+        subprocess implementation. Windows therefore needs explicit creation
+        flags so Ctrl+C or shutdown signals sent to the UI server do not also
+        terminate the emulator. The Linux/macOS behavior remains unchanged.
+        """
+        if sys.platform == "win32":
+            return {
+                "creationflags": (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
+            }
+        return {"start_new_session": True}
 
     def _locate_emulator(self) -> str | None:
         """Find the emulator binary path from PATH or standard SDK environments."""
@@ -191,7 +207,7 @@ class EmulatorManager:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
-                    start_new_session=True,
+                    **self._subprocess_creation_kwargs(),
                 )
                 self._proc = proc
                 now = time.time()

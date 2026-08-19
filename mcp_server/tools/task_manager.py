@@ -25,6 +25,7 @@ from typing import Any
 from mcp_server.base import mcp
 from mcp_server.notifiers import notify
 from mcp_server.utils import env_utils, trace_store
+from artemis.runtime import DeviceExecutionLock, process_supervisor
 
 
 @mcp.tool()
@@ -256,7 +257,18 @@ def mobile_manage_task(
             }
 
         try:
-            os.kill(pid, signal.SIGTERM)
+            if sys.platform == "win32":
+                if not process_supervisor.terminate_tree(pid):
+                    import psutil
+
+                    if psutil.pid_exists(pid):
+                        raise RuntimeError(
+                            f"Failed to terminate Windows process tree rooted at {pid}"
+                        )
+                DeviceExecutionLock.cleanup_stale_locks()
+            else:
+                # Preserve the existing POSIX signal behavior.
+                os.kill(pid, signal.SIGTERM)
             trace_store.update_trace_status(
                 trace_id, "cancelled", error="Task aborted by user request."
             )

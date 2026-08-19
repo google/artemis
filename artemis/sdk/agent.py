@@ -53,6 +53,7 @@ from artemis.controllers.controller_factory import get_controller
 from artemis.controllers.platform_specific_commands_controller import (
     get_first_device,
 )
+from artemis.runtime import DeviceExecutionLock
 from artemis.data_engine.engine import DataEngine
 from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
@@ -469,7 +470,13 @@ class Agent:
             last_state: State | None = None
             last_state_snapshot: dict | None = None
             output = None
+            device_lock = DeviceExecutionLock(
+                self._device_context.device_id,
+                description=f"automation task: {request.goal[:120]}",
+            )
             try:
+                if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
+                    await asyncio.to_thread(device_lock.acquire)
                 async with context:
                     recording_started = False
                     if self._config.video_recording_tools_enabled:
@@ -634,7 +641,11 @@ class Agent:
 
                 raise
             finally:
-                await self._finalize_tracing(task=task, context=context)
+                try:
+                    await self._finalize_tracing(task=task, context=context)
+                finally:
+                    if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
+                        await asyncio.to_thread(device_lock.release)
 
         async with self._task_lock:
             if self._current_task and not self._current_task.done():

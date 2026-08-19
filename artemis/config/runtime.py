@@ -63,7 +63,8 @@ def write_ipc_port(port: int) -> Path:
 
 
 def clear_ipc_port() -> None:
-    """Remove IPC port synchronization state file."""
+    """Remove IPC port synchronization state from the process and filesystem."""
+    os.environ.pop(ENV_ARTEMIS_IPC_PORT, None)
     port_file = get_ipc_port_file()
     if port_file.exists():
         try:

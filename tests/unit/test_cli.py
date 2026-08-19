@@ -81,12 +81,28 @@ def test_cli_mcp_generate_config():
 
 
 def test_cli_mcp_generate_config_antigravity():
-    """Verify 'artemis mcp --generate-config antigravity' produces valid configuration with tools."""
+    """Verify current Antigravity uses only documented, load-safe fields."""
+    from artemis.interfaces.cli.commands.mcp import _get_config_snippet
+
     result = runner.invoke(app, ["mcp", "--generate-config", "antigravity"])
     assert result.exit_code == 0
     assert "mcpServers" in result.output
-    assert "mobile_run_task" in result.output
-    assert "eager" in result.output
+    server_config = _get_config_snippet("antigravity", "python", "/project")["mcpServers"][
+        "artemis"
+    ]
+    assert server_config["disabledTools"] == []
+    assert "tools" not in server_config
+
+    legacy_config = _get_config_snippet("jetski", "python", "/project")["mcpServers"][
+        "artemis"
+    ]
+    assert set(legacy_config["tools"]) == {
+        "mobile_run_task",
+        "mobile_manage_task",
+        "mobile_get_device_state",
+        "mobile_inspect_trace",
+    }
+    assert all(tool["eager"] is True for tool in legacy_config["tools"].values())
 
 
 def test_cli_mcp_generate_config_all():
@@ -104,11 +120,26 @@ def test_cli_mcp_generate_config_all():
 
 
 def test_cli_mcp_generate_config_codex():
-    """Verify Codex generation produces a ready-to-use TOML server block."""
+    """Verify Codex initializes the server and enables every Artemis tool."""
+    from artemis.interfaces.cli.commands.mcp import _get_config_snippet
+
     result = runner.invoke(app, ["mcp", "--generate-config", "codex"])
     assert result.exit_code == 0
     assert "[mcp_servers.artemis]" in result.output
     assert "[mcp_servers.artemis.env]" in result.output
+    assert "enabled = true" in result.output
+    assert "required = true" in result.output
+    assert "startup_timeout_sec = 120" in result.output
+    assert "enabled_tools" in result.output
+    assert "mobile_run_task" in result.output
+    assert "mobile_manage_task" in result.output
+    server_config = _get_config_snippet("codex", "python", "/project")["mcp_servers"]["artemis"]
+    assert server_config["enabled_tools"] == [
+        "mobile_run_task",
+        "mobile_manage_task",
+        "mobile_get_device_state",
+        "mobile_inspect_trace",
+    ]
 
 
 def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
@@ -126,6 +157,11 @@ def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
     assert "mobile_run_task" in data["mcpServers"]["artemis"]["tools"]
     assert "PYTHONPATH" in data["mcpServers"]["artemis"]["env"]
 
+    current_file = tmp_path / ".gemini" / "config" / "mcp_config.json"
+    current_data = json.loads(current_file.read_text())
+    assert current_data["mcpServers"]["artemis"]["disabledTools"] == []
+    assert "tools" not in current_data["mcpServers"]["artemis"]
+
     # Verify global rule file installed
     gemini_md = tmp_path / ".gemini" / "GEMINI.md"
     assert gemini_md.exists()
@@ -138,6 +174,7 @@ def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
 def test_cli_mcp_install_all(tmp_path, monkeypatch):
     """Verify 'artemis mcp --install all' installs configs and global rules to all supported IDE locations."""
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
     monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
     result = runner.invoke(app, ["mcp", "--install", "all"])
     assert result.exit_code == 0
@@ -147,6 +184,39 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     assert (tmp_path / ".openclaw" / "openclaw.json").exists()
     assert (tmp_path / ".claude.json").exists()
     assert (tmp_path / ".codex" / "config.toml").exists()
+
+    import json
+
+    cursor_data = json.loads((tmp_path / ".cursor" / "mcp.json").read_text())
+    assert cursor_data["mcpServers"]["artemis"]["command"]
+
+    windsurf_data = json.loads(
+        (tmp_path / ".codeium" / "windsurf" / "mcp_config.json").read_text()
+    )
+    assert windsurf_data["mcpServers"]["artemis"]["command"]
+
+    claude_data = json.loads((tmp_path / ".claude.json").read_text())
+    assert claude_data["mcpServers"]["artemis"]["type"] == "stdio"
+
+    vscode_data = json.loads(
+        (tmp_path / "AppData" / "Roaming" / "Code" / "User" / "mcp.json").read_text()
+    )
+    assert vscode_data["servers"]["artemis"]["type"] == "stdio"
+    assert "mcpServers" not in vscode_data
+
+    copilot_data = json.loads((tmp_path / ".copilot" / "mcp-config.json").read_text())
+    assert copilot_data["servers"]["artemis"]["type"] == "stdio"
+
+    openclaw_data = json.loads((tmp_path / ".openclaw" / "openclaw.json").read_text())
+    assert openclaw_data["mcp"]["servers"]["artemis"]["enabled"] is True
+
+    cline_data = json.loads(
+        (tmp_path / ".cline" / "data" / "settings" / "cline_mcp_settings.json").read_text()
+    )
+    assert cline_data["mcpServers"]["artemis"]["disabled"] is False
+
+    roo_data = json.loads((tmp_path / ".roo" / "mcp.json").read_text())
+    assert roo_data["mcpServers"]["artemis"]["disabled"] is False
 
     # Verify global rule files installed across IDEs
     assert (tmp_path / ".gemini" / "GEMINI.md").exists()
@@ -192,6 +262,15 @@ def test_cli_mcp_install_codex_preserves_config_and_is_idempotent(tmp_path, monk
     assert data["model"] == "test-model"
     assert data["mcp_servers"]["existing"]["command"] == "echo"
     assert data["mcp_servers"]["artemis"]["args"] == ["-m", "mcp_server"]
+    assert data["mcp_servers"]["artemis"]["enabled"] is True
+    assert data["mcp_servers"]["artemis"]["required"] is True
+    assert data["mcp_servers"]["artemis"]["startup_timeout_sec"] == 120
+    assert data["mcp_servers"]["artemis"]["enabled_tools"] == [
+        "mobile_run_task",
+        "mobile_manage_task",
+        "mobile_get_device_state",
+        "mobile_inspect_trace",
+    ]
     assert data["mcp_servers"]["artemis"]["env"]["PYTHONPATH"] == str(tmp_path)
     assert config_text.count("# BEGIN ARTEMIS MCP CONFIG") == 1
 
@@ -229,5 +308,28 @@ def test_cli_mcp_install_jsonc_and_backup(tmp_path, monkeypatch):
     backup_file = cursor_dir / "mcp.json.bak"
     assert backup_file.exists()
     assert "INVALID JSON DATA" in backup_file.read_text(encoding="utf-8")
+
+
+def test_cli_mcp_install_openclaw_migrates_legacy_plugin_shape(tmp_path, monkeypatch):
+    """Verify reinstalling OpenClaw replaces the obsolete plugin wrapper with mcp.servers."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
+    config_path = tmp_path / ".openclaw" / "openclaw.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        '{"plugins":{"artemis_mcp":{"enabled":true},"keep":{"enabled":true}}}',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["mcp", "--install", "openclaw"])
+    assert result.exit_code == 0
+
+    import json
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "artemis_mcp" not in data["plugins"]
+    assert data["plugins"]["keep"]["enabled"] is True
+    assert data["mcp"]["servers"]["artemis"]["enabled"] is True
+    assert data["mcp"]["servers"]["artemis"]["command"]
 
 

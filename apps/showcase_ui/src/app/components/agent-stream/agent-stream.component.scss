@@ -610,6 +610,12 @@ $uniform-gap: 8px;
                 animation: pulse-black-dot-small 1.5s infinite ease-in-out;
               }
             }
+            &.paused {
+              background: #fff7ed;
+              color: #c2410c;
+              border-color: #fdba74;
+              &::before { background-color: #f97316; }
+            }
             &.completed {
               background: #fafafa;
               color: #1f1f1f;
@@ -2334,6 +2340,61 @@ $uniform-gap: 8px;
 
                      .status-icon {
                        color: #ef4444;
+                     }
+                   }
+
+                   &.is-paused {
+                     background: #fff7ed;
+                     color: #c2410c;
+                     border: 1px solid #fed7aa;
+
+                     .status-icon {
+                       color: #f97316;
+                     }
+                   }
+                 }
+
+                 &.llm-failure-header {
+                   flex-wrap: wrap;
+
+                   .btn-retry-llm {
+                     flex: 0 0 auto;
+                     min-height: 26px;
+                     padding: 3px 9px;
+                     display: inline-flex;
+                     align-items: center;
+                     justify-content: center;
+                     gap: 4px;
+                     box-sizing: border-box;
+                     border: 1px solid #bfdbfe;
+                     border-radius: 7px;
+                     background: #ffffff;
+                     color: #2563eb;
+                     font-family: inherit;
+                     font-size: 11px;
+                     font-weight: 700;
+                     line-height: 1;
+                     cursor: pointer;
+                     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+                     transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+
+                     .material-symbols-outlined {
+                       font-size: 15px;
+                     }
+
+                     &:hover {
+                       background: #eff6ff;
+                       border-color: #93c5fd;
+                       box-shadow: 0 2px 6px rgba(37, 99, 235, 0.12);
+                     }
+
+                     &:active {
+                       transform: scale(0.97);
+                     }
+
+                     &:focus-visible {
+                       outline: 2px solid rgba(37, 99, 235, 0.35);
+                       outline-offset: 2px;
                      }
                    }
                  }

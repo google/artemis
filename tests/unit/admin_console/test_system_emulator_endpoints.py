@@ -14,10 +14,29 @@
 
 """Unit tests for System Emulator Launch & Lifecycle Endpoints."""
 
+import subprocess
+import sys
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from apps.admin_console.server import app
+from artemis.core.diagnostics.emulator_manager import EmulatorManager
+
+
+def test_emulator_uses_posix_session_isolation(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    assert EmulatorManager._subprocess_creation_kwargs() == {"start_new_session": True}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows creation flags only exist on Windows")
+def test_emulator_uses_windows_console_isolation():
+    kwargs = EmulatorManager._subprocess_creation_kwargs()
+
+    assert "start_new_session" not in kwargs
+    assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    assert kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW
 
 
 @pytest.mark.asyncio

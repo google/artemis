@@ -14,9 +14,12 @@
 
 """Artemis cross-platform runtime and process supervisor subsystem."""
 
+from artemis.runtime.device_lock import DeviceBusyError, DeviceExecutionLock
 from artemis.runtime.supervisor import ProcessSupervisor, process_supervisor
 
 __all__ = [
+    "DeviceBusyError",
+    "DeviceExecutionLock",
     "ProcessSupervisor",
     "process_supervisor",
 ]

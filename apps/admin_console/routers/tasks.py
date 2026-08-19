@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import suppress
 import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -148,6 +149,7 @@ async def get_status():
         is_paused = state.is_paused
         return {
             "status": "paused" if is_paused else "running",
+            "paused_error": state.paused_error if is_paused else None,
             "goal": running_goal,
             "pid": state.current_process.pid if state.current_process else None,
             "session_id": running_sid,
@@ -163,6 +165,7 @@ async def get_status():
         conn_model_info = model_service.get_active_model_info(conn_profile)
         return {
             "status": "paused" if is_paused else "running",
+            "paused_error": state.paused_error if is_paused else None,
             "goal": conn_info.get("goal"),
             "pid": conn_info.get("pid"),
             "session_id": latest_session_id,
@@ -184,6 +187,7 @@ async def get_status():
 async def stream_events(session_id: str, client: str | None = None):
     async def event_generator():
         queue = asyncio.Queue()
+        event_loop = asyncio.get_running_loop()
 
         def callback(event_type, data):
             try:
@@ -210,22 +214,57 @@ async def stream_events(session_id: str, client: str | None = None):
                             return
 
                 sanitized_data = ipc_service.sanitize_event_data(event_type, data)
-                loop = asyncio.get_running_loop()
-                loop.call_soon_threadsafe(queue.put_nowait, (event_type, sanitized_data))
+                event_loop.call_soon_threadsafe(queue.put_nowait, (event_type, sanitized_data))
             except RuntimeError:
                 pass
 
         state.add_subscriber(callback)
         yield f'event: info\ndata: {{"message": "Subscribed to session {session_id}"}}\n\n'
 
+        shutdown_waiter = asyncio.create_task(state.shutdown_event.wait())
+        queue_waiter = None
         try:
-            while True:
-                try:
-                    event_type, data = await asyncio.wait_for(queue.get(), timeout=5.0)
+            while not state.is_shutting_down:
+                queue_waiter = asyncio.create_task(queue.get())
+                done, _ = await asyncio.wait(
+                    {queue_waiter, shutdown_waiter},
+                    timeout=5.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if shutdown_waiter in done:
+                    queue_waiter.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await queue_waiter
+                    queue_waiter = None
+                    break
+                if queue_waiter in done:
+                    event_type, data = queue_waiter.result()
+                    queue_waiter = None
                     yield f"event: {event_type}\ndata: {json.dumps(data, default=str)}\n\n"
-                except TimeoutError:
+                else:
+                    queue_waiter.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await queue_waiter
+                    queue_waiter = None
                     yield "event: keep-alive\ndata: {}\n\n"
         except asyncio.CancelledError:
+            raise
+        finally:
+            waiters = (queue_waiter, shutdown_waiter)
+            for waiter in waiters:
+                if waiter is not None and not waiter.done():
+                    waiter.cancel()
+            for waiter in waiters:
+                if waiter is not None:
+                    with suppress(asyncio.CancelledError):
+                        await waiter
             state.remove_subscriber(callback)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
