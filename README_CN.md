@@ -82,17 +82,19 @@
 <a id="快速上手"></a>
 ## ⚡ 快速上手
 
-确保电脑已连接 Android 实体机（已开启 **USB 调试**）或 Android 模拟器。
+确保电脑已连接 Android 实体机（已开启 **USB 调试**）或 Android 模拟器。一键启动脚本将会自动完成以下配置：
+- 🛠️ **安装系统环境依赖**：自动检测并安装 ADB、scrcpy、FFmpeg 与 Python（`uv`）运行时及项目依赖。
+- 🔌 **全局挂载 MCP 服务与测试准则 (Rules)**：主动引导并自动将全局 MCP 服务与 **Artemis 移动端测试思维准则 (`rules.md`)** 挂载至你使用的 AI IDE（支持 **Antigravity**、**Cursor**、**Claude Code**、**Windsurf**、**VS Code**、**Cline/Roo**、**OpenClaw**）。
 
 ```bash
 # 1. 克隆代码仓库并进入目录
 git clone https://github.com/google/artemis.git && cd artemis
 
-# 2. 一键启动（自动检测并安装 ADB、scrcpy、FFmpeg、uv 运行时等全部依赖，并拉起控制台）
+# 2. 一键启动
 # 🍎 macOS & 🐧 Linux
 ./start.sh
 
-# 🪟 Windows (CMD / PowerShell)
+# 🪟 Windows
 start.bat
 ```
 
@@ -109,10 +111,10 @@ ARTEMIS 内置原生 **Model Context Protocol (MCP)** 服务。只需将以下�
 
 ### 1. 一键自动安装到 IDE（推荐）
 
-运行 `./start.sh` 或 `start.bat` 启动脚本时会主动询问是否需要配置当前检测到的 AI IDE（支持跳过并在之后随时手动执行以下命令挂载）：
+运行 `./start.sh` 或 `start.bat` 启动脚本时会主动询问是否自动挂载全局 MCP 与测试行为准则（支持跳过并在之后随时手动执行以下命令挂载）：
 
 ```bash
-# 一键安装到 Antigravity / Jetski：
+# 一键安装全局 MCP 服务与 Rules 到 Antigravity / Jetski：
 uv run artemis mcp --install antigravity
 
 # 或一键安装到所有检测到的 AI IDE（Antigravity、Cursor、Claude Desktop/Code、OpenClaw）：

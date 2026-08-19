@@ -56,6 +56,16 @@ dmypy.json
 # IDEs & Editors
 .vscode/
 .idea/
+.cursor/
+.gemini/
+.claude/
+.windsurf/
+.cline/
+.roo/
+.openclaw/
+.clinerules
+.windsurfrules
+.roorules
 *.swp
 *.swo
 *~
@@ -80,6 +90,7 @@ scratch/
 data_engine.db
 data_engine.db-journal
 .ipc_port
+.artemis_ipc_port
 .ls_address
 .jetski_ls_address
 

@@ -76,18 +76,43 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
         return {"mcpServers": {"artemis": config_body}}
 
 
+def _parse_json_lenient(text: str) -> dict:
+    """Parses JSON or JSONC (JSON with comments / trailing commas) safely."""
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    import re
+    # Remove // single-line comments
+    cleaned = re.sub(r"//.*", "", text)
+    # Remove /* ... */ multi-line comments
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+    # Remove trailing commas before } or ]
+    cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    try:
+        data = json.loads(cleaned)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _merge_json_file(file_path: Path, server_name: str, server_config: dict, key_name: str = "mcpServers") -> bool:
     """Merges server configuration into a target JSON file without overwriting existing servers."""
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         data: dict = {}
         if file_path.exists() and file_path.stat().st_size > 0:
-            try:
-                data = json.loads(file_path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    data = {}
-            except Exception:
-                data = {}
+            raw_text = file_path.read_text(encoding="utf-8")
+            data = _parse_json_lenient(raw_text)
+            if not data and raw_text.strip():
+                # Backup unparseable existing file to prevent accidental loss
+                backup_path = file_path.with_suffix(file_path.suffix + ".bak")
+                try:
+                    backup_path.write_text(raw_text, encoding="utf-8")
+                    logger.warning(f"Existing JSON in {file_path} could not be parsed; backup created at {backup_path}")
+                except Exception:
+                    pass
 
         if key_name not in data or not isinstance(data.get(key_name), dict):
             data[key_name] = {}
@@ -100,8 +125,168 @@ def _merge_json_file(file_path: Path, server_name: str, server_config: dict, key
         return False
 
 
+def _inject_rules_block(file_path: Path, content: str) -> bool:
+    """Injects or updates a managed ARTEMIS block in a global rules file without overwriting user content."""
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        begin_marker = "<!-- BEGIN ARTEMIS MOBILE TESTING RULES -->"
+        end_marker = "<!-- END ARTEMIS MOBILE TESTING RULES -->"
+        new_block = f"{begin_marker}\n{content.strip()}\n{end_marker}\n"
+
+        existing = ""
+        if file_path.exists():
+            try:
+                existing = file_path.read_text(encoding="utf-8")
+            except Exception:
+                existing = ""
+
+        if begin_marker in existing and end_marker in existing:
+            prefix = existing.split(begin_marker)[0]
+            suffix = existing.split(end_marker)[1]
+            updated = f"{prefix.rstrip()}\n\n{new_block}\n{suffix.lstrip()}".strip() + "\n"
+        else:
+            updated = f"{existing.rstrip()}\n\n{new_block}".strip() + "\n"
+
+        if existing == updated:
+            return True
+
+        file_path.write_text(updated, encoding="utf-8")
+        return True
+    except Exception as e:
+        logger.warning(f"Could not inject rules block into {file_path}: {e}")
+        return False
+
+
+def _write_rule_file(file_path: Path, content: str) -> bool:
+    """Writes or overwrites a standalone rule file."""
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        new_text = content.strip() + "\n"
+        if file_path.exists():
+            try:
+                if file_path.read_text(encoding="utf-8") == new_text:
+                    return True
+            except Exception:
+                pass
+        file_path.write_text(new_text, encoding="utf-8")
+        return True
+    except Exception as e:
+        logger.warning(f"Could not write rule file {file_path}: {e}")
+        return False
+
+
+def _write_cursor_mdc(file_path: Path, content: str) -> bool:
+    """Writes a Cursor .mdc rule file with required YAML frontmatter."""
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        mdc_header = (
+            "---\n"
+            "description: Artemis Mobile Testing Mindset & Rules\n"
+            "globs: **/*\n"
+            "alwaysApply: true\n"
+            "---\n\n"
+        )
+        new_text = mdc_header + content.strip() + "\n"
+        if file_path.exists():
+            try:
+                if file_path.read_text(encoding="utf-8") == new_text:
+                    return True
+            except Exception:
+                pass
+        file_path.write_text(new_text, encoding="utf-8")
+        return True
+    except Exception as e:
+        logger.warning(f"Could not write Cursor rule file {file_path}: {e}")
+        return False
+
+
+def install_rules(client: str, project_root: str) -> list[str]:
+    """Auto-installs ARTEMIS testing rules globally into user IDE rule directories across any OS."""
+    installed_paths: list[str] = []
+    rules_src = Path(project_root) / "mcp_server" / "rules.md"
+    if not rules_src.exists():
+        alt_src = Path(__file__).resolve().parents[4] / "mcp_server" / "rules.md"
+        if alt_src.exists():
+            rules_src = alt_src
+        else:
+            logger.warning(f"Could not locate rules.md at {rules_src}")
+            return []
+
+    try:
+        raw_rules = rules_src.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.warning(f"Could not read rules file {rules_src}: {e}")
+        return []
+
+    targets = (
+        ["antigravity", "cursor", "claude", "windsurf", "vscode", "cline", "roo", "openclaw"]
+        if client == "all"
+        else [client]
+    )
+
+    for target in targets:
+        if target in ("antigravity", "jetski"):
+            gemini_md = Path.home() / ".gemini" / "GEMINI.md"
+            global_rule = Path.home() / ".gemini" / "rules" / "artemis.md"
+            if _inject_rules_block(gemini_md, raw_rules):
+                installed_paths.append(str(gemini_md))
+            if _write_rule_file(global_rule, raw_rules):
+                installed_paths.append(str(global_rule))
+        elif target == "cursor":
+            cursor_rules_file = Path.home() / ".cursorrules"
+            global_mdc = Path.home() / ".cursor" / "rules" / "artemis.mdc"
+            if _inject_rules_block(cursor_rules_file, raw_rules):
+                installed_paths.append(str(cursor_rules_file))
+            if _write_cursor_mdc(global_mdc, raw_rules):
+                installed_paths.append(str(global_mdc))
+        elif target in ("claude", "claude_code", "claude_desktop"):
+            claude_md = Path.home() / ".claude" / "CLAUDE.md"
+            global_rule = Path.home() / ".claude" / "rules" / "artemis.md"
+            if _inject_rules_block(claude_md, raw_rules):
+                installed_paths.append(str(claude_md))
+            if _write_rule_file(global_rule, raw_rules):
+                installed_paths.append(str(global_rule))
+        elif target == "windsurf":
+            global_rule = Path.home() / ".codeium" / "windsurf" / "rules" / "artemis.md"
+            global_mem = Path.home() / ".codeium" / "windsurf" / "memories" / "global_rules.md"
+            if _inject_rules_block(global_mem, raw_rules):
+                installed_paths.append(str(global_mem))
+            if _write_rule_file(global_rule, raw_rules):
+                installed_paths.append(str(global_rule))
+        elif target == "vscode":
+            global_rule = Path.home() / ".vscode" / "rules" / "artemis.md"
+            user_rule = _get_vscode_user_dir() / "rules" / "artemis.md"
+            if _write_rule_file(global_rule, raw_rules):
+                installed_paths.append(str(global_rule))
+            if _write_rule_file(user_rule, raw_rules):
+                installed_paths.append(str(user_rule))
+        elif target == "cline":
+            clinerules = Path.home() / ".clinerules"
+            global_rule = Path.home() / ".cline" / "rules" / "artemis.md"
+            if _inject_rules_block(clinerules, raw_rules):
+                installed_paths.append(str(clinerules))
+            if _write_rule_file(global_rule, raw_rules):
+                installed_paths.append(str(global_rule))
+        elif target in ("roo", "roo_code"):
+            roorules = Path.home() / ".roorules"
+            global_rule = Path.home() / ".roo" / "rules" / "artemis.md"
+            if _inject_rules_block(roorules, raw_rules):
+                installed_paths.append(str(roorules))
+            if _write_rule_file(global_rule, raw_rules):
+                installed_paths.append(str(global_rule))
+        elif target == "openclaw":
+            openclaw_md = Path.home() / ".openclaw" / "OPENCLAW.md"
+            global_rule = Path.home() / ".openclaw" / "rules" / "artemis.md"
+            if _inject_rules_block(openclaw_md, raw_rules):
+                installed_paths.append(str(openclaw_md))
+            if _write_rule_file(global_rule, raw_rules):
+                installed_paths.append(str(global_rule))
+
+    return installed_paths
+
+
 def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[str]:
-    """Auto-installs/merges ARTEMIS MCP configuration into IDE config files across any OS."""
+    """Auto-installs/merges ARTEMIS MCP configuration and testing rules into IDE config files across any OS."""
     installed_paths: list[str] = []
     targets = (
         ["antigravity", "cursor", "claude", "windsurf", "vscode", "cline", "roo", "openclaw"]
@@ -166,7 +351,14 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
             if _merge_json_file(openclaw_path, "artemis_mcp", plugin_cfg, key_name="plugins"):
                 installed_paths.append(str(openclaw_path))
 
-    return installed_paths
+    rules_paths = install_rules(client, project_root)
+    installed_paths.extend(rules_paths)
+
+    unique_paths: list[str] = []
+    for p in installed_paths:
+        if p not in unique_paths:
+            unique_paths.append(p)
+    return unique_paths
 
 
 def mcp_command(
@@ -205,7 +397,7 @@ def mcp_command(
         typer.Option(
             "--install",
             "-i",
-            help="Auto-install and merge ARTEMIS MCP configuration into 'antigravity', 'claude', 'cursor', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', or 'all'.",
+            help="Auto-install and merge ARTEMIS MCP configuration and testing rules into 'antigravity', 'claude', 'cursor', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', or 'all'.",
         ),
     ] = None,
     generate_config: Annotated[
@@ -243,7 +435,7 @@ def mcp_command(
             )
             raise typer.Exit(1)
         installed_paths = install_mcp_config(client, python_exe, project_root)
-        console.print("[bold green]✔ Successfully installed ARTEMIS MCP server configuration to:[/bold green]")
+        console.print("[bold green]✔ Successfully installed ARTEMIS MCP server configuration & rules to:[/bold green]")
         for path in installed_paths:
             console.print(f"  • [cyan]{path}[/cyan]")
         console.print("\n[dim]Please restart or reload your IDE window to activate the Artemis MCP tools.[/dim]")

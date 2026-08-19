@@ -41,11 +41,17 @@ The included [`rules.md`](./rules.md) file contains the **Mobile Testing Mindset
 3. **Latency & Timing Compensation**: Clarifies the difference between AI exploratory latency (e.g., model decision intervals) and the deterministic timing requirements of final test code.
 4. **"Dynamic-First, Coordinate-Fallback" Locator Pattern**: Teaches the AI to prioritize dynamic UI locators (Resource IDs, OCR text, semantics) for layout resilience, while implementing absolute coordinate fallbacks for maximum execution reliability.
 
-### How to Apply `rules.md` in Your IDE
-* **Antigravity**: Add or copy the contents of `rules.md` into your Workspace Rules, Global Rules settings, or agent instructions.
-* **Claude Code**: Copy or include the contents of `rules.md` in your project's `CLAUDE.md` file (or reference it directly in your instructions).
-* **Cursor**: Copy the contents of `rules.md` into your `.cursorrules` or create a new rule file in `.cursor/rules/artemis.mdc`.
-* **Windsurf / OpenClaw**: Add the rules to your global/workspace rules or agent system prompts so the assistant always follows verified mobile testing principles.
+### How Global Rules & MCP are Installed
+When you run `uv run artemis mcp --install all` (or target a specific IDE like `--install cursor`, `--install claude`, etc.), the installer **automatically synchronizes both global MCP server configuration and global testing rules** into the corresponding user home directories (without creating project-level rule files in your workspace):
+* **Antigravity / Jetski**: Automatically installs global rules to `~/.gemini/rules/artemis.md`.
+* **Cursor**: Automatically installs global YAML-frontmatter rule file at `~/.cursor/rules/artemis.mdc`.
+* **Claude Code / Desktop**: Automatically installs global rules to `~/.claude/rules/artemis.md`.
+* **Windsurf**: Automatically installs global rules to `~/.codeium/windsurf/rules/artemis.md`.
+* **VS Code**: Automatically installs global rules to `~/.vscode/rules/artemis.md`.
+* **Cline / Roo Code**: Automatically installs global rules to `~/.cline/rules/artemis.md` and `~/.roo/rules/artemis.md`.
+* **OpenClaw**: Automatically installs global rules to `~/.openclaw/rules/artemis.md`.
+
+*(Note: If you prefer manual configuration, you can also copy the contents of [`rules.md`](./rules.md) into your IDE's system prompt or global rules settings.)*
 
 ## 🛠️ MCP Tools Overview
 

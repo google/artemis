@@ -80,17 +80,19 @@ Experience seamless collaboration between **Antigravity** and **ARTEMIS** via na
 <a id="quick-start"></a>
 ## ⚡ Quick Start
 
-Ensure an Android device (with **USB Debugging** enabled) or emulator is connected.
+Ensure an Android device (with **USB Debugging** enabled) or emulator is connected. The one-click startup script will automatically:
+- 🛠️ **Install System Toolchains**: Detect and auto-install ADB, scrcpy, FFmpeg, and Python (`uv`) dependencies.
+- 🔌 **Mount Global MCP Server & AI Agent Rules**: Prompt to automatically install global MCP configurations and the **Artemis Mobile Testing Mindset (`rules.md`)** into your AI IDEs (**Antigravity**, **Cursor**, **Claude Code**, **Windsurf**, **VS Code**, **Cline/Roo**, **OpenClaw**).
 
 ```bash
 # 1. Clone repo & navigate to directory
 git clone https://github.com/google/artemis.git && cd artemis
 
-# 2. One-click launch (automatically installs ADB, scrcpy, FFmpeg, uv runtime, and opens console)
+# 2. One-click launch
 # 🍎 macOS & 🐧 Linux
 ./start.sh
 
-# 🪟 Windows (CMD / PowerShell)
+# 🪟 Windows
 start.bat
 ```
 
@@ -107,10 +109,10 @@ ARTEMIS includes a native **Model Context Protocol (MCP)** server. Connect your 
 
 ### 1. One-Click Auto Install (Recommended)
 
-Running `./start.sh` or `start.bat` will prompt you to configure MCP for detected IDEs (or you can install/update anytime later manually using the commands below):
+Running `./start.sh` or `start.bat` will prompt you to configure global MCP and testing rules for detected IDEs (or you can install/update anytime later manually using the commands below):
 
 ```bash
-# Auto-install for Antigravity / Jetski:
+# Auto-install MCP server & global rules for Antigravity / Jetski:
 uv run artemis mcp --install antigravity
 
 # Or install for all detected AI IDEs (Antigravity, Cursor, Claude Desktop/Code, OpenClaw):

@@ -155,17 +155,17 @@ fi
 
 # 7. Optionally configure MCP for detected AI IDEs
 echo ""
-echo -e "   ${CYAN}🔌 Would you like to configure ARTEMIS MCP for your AI IDEs?${NC}"
+echo -e "   ${CYAN}🔌 Would you like to configure ARTEMIS MCP & testing rules for your AI IDEs?${NC}"
 echo -e "      (Supported: Antigravity, Cursor, Claude Code/Desktop, OpenClaw, Windsurf)"
 if [ -t 0 ]; then
-    read -r -p "      Install MCP configuration now? [Y/n]: " INSTALL_MCP
+    read -r -p "      Install MCP configuration & rules now? [Y/n]: " INSTALL_MCP
     INSTALL_MCP=${INSTALL_MCP:-Y}
 else
     INSTALL_MCP="n"
 fi
 
 if [[ "${INSTALL_MCP}" =~ ^[Yy]$ ]]; then
-    echo -e "   ${GREEN}✔ Installing MCP server configuration...${NC}"
+    echo -e "   ${GREEN}✔ Installing MCP server configuration & testing rules...${NC}"
     uv run artemis mcp --install all >/dev/null 2>&1 || true
     echo -e "   ${CYAN}💡 Tip: You can update or re-install anytime with: ${BOLD}uv run artemis mcp --install all${NC}"
 else
