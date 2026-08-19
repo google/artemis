@@ -94,6 +94,29 @@ def ui_command(
             except Exception:
                 pass
 
+    base_dist = ROOT_DIR / "apps" / "showcase_ui" / "dist"
+    candidates = [
+        base_dist / "frontend" / "browser" / "index.html",
+        base_dist / "browser" / "index.html",
+        base_dist / "frontend" / "index.html",
+        base_dist / "index.html",
+    ]
+    if not any(p.exists() for p in candidates):
+        import shutil
+        import subprocess
+
+        if shutil.which("npm"):
+            console.print(
+                "   [yellow]🎨 Showcase UI build not found. Compiling Angular Showcase UI...[/yellow]"
+            )
+            showcase_dir = ROOT_DIR / "apps" / "showcase_ui"
+            try:
+                subprocess.run(["npm", "install", "--silent"], cwd=showcase_dir, check=True)
+                subprocess.run(["npm", "run", "build"], cwd=showcase_dir, check=True)
+                console.print("   [green]✓ Showcase UI built successfully.[/green]\n")
+            except Exception as e:
+                console.print(f"   [red]⚠ Failed to auto-build Showcase UI: {e}[/red]\n")
+
     stop_event = threading.Event()
     if open_browser:
         t = threading.Thread(

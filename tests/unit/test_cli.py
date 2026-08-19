@@ -78,3 +78,49 @@ def test_cli_mcp_generate_config():
     assert result.exit_code == 0
     assert "mcpServers" in result.output
     assert "mcp_server" in result.output
+
+
+def test_cli_mcp_generate_config_antigravity():
+    """Verify 'artemis mcp --generate-config antigravity' produces valid configuration with tools."""
+    result = runner.invoke(app, ["mcp", "--generate-config", "antigravity"])
+    assert result.exit_code == 0
+    assert "mcpServers" in result.output
+    assert "mobile_run_task" in result.output
+    assert "eager" in result.output
+
+
+def test_cli_mcp_generate_config_all():
+    """Verify 'artemis mcp --generate-config all' includes antigravity, cursor, windsurf, and claude."""
+    result = runner.invoke(app, ["mcp", "--generate-config", "all"])
+    assert result.exit_code == 0
+    assert "antigravity" in result.output
+    assert "cursor" in result.output
+    assert "windsurf" in result.output
+    assert "claude" in result.output
+
+
+def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
+    """Verify 'artemis mcp --install antigravity' writes configuration into target file."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    result = runner.invoke(app, ["mcp", "--install", "antigravity"])
+    assert result.exit_code == 0
+    assert "Successfully installed ARTEMIS MCP server configuration" in result.output
+    jetski_file = tmp_path / ".gemini" / "jetski" / "mcp_config.json"
+    assert jetski_file.exists()
+    import json
+    data = json.loads(jetski_file.read_text())
+    assert "artemis" in data["mcpServers"]
+    assert "mobile_run_task" in data["mcpServers"]["artemis"]["tools"]
+
+
+def test_cli_mcp_install_all(tmp_path, monkeypatch):
+    """Verify 'artemis mcp --install all' installs to all supported IDE locations."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    result = runner.invoke(app, ["mcp", "--install", "all"])
+    assert result.exit_code == 0
+    assert "Successfully installed ARTEMIS MCP server configuration" in result.output
+    assert (tmp_path / ".cursor" / "mcp.json").exists()
+    assert (tmp_path / ".codeium" / "windsurf" / "mcp_config.json").exists()
+    assert (tmp_path / ".openclaw" / "openclaw.json").exists()
+
+

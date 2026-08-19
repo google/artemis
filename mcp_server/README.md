@@ -66,4 +66,14 @@ artemis mcp
 ```
 
 ### IDE Configuration
-Run `artemis mcp --generate-config all` to generate ready-to-use configuration JSON for Cursor, Claude Code, OpenClaw, and Windsurf.
+
+#### One-Click Auto Install (Recommended)
+Run the automated installer to detect and configure your IDE (Antigravity, Cursor, Claude Code/Desktop, OpenClaw):
+```bash
+artemis mcp --install all
+# Or install specifically for Antigravity:
+artemis mcp --install antigravity
+```
+
+#### Manual JSON Config Generation
+Run `artemis mcp --generate-config antigravity` (or `all`) to output ready-to-use configuration JSON with resolved `.venv` Python and project paths.

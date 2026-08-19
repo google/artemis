@@ -15,6 +15,9 @@
 """Model Context Protocol (MCP) server command (artemis mcp)."""
 
 import json
+import os
+from pathlib import Path
+import sys
 from typing import Annotated
 
 from mcp_server.base import mcp as agent_mcp
@@ -40,7 +43,21 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
         },
     }
 
-    if client == "cursor":
+    if client in ("antigravity", "jetski"):
+        return {
+            "mcpServers": {
+                "artemis": {
+                    **config_body,
+                    "tools": {
+                        "mobile_run_task": {"eager": True},
+                        "mobile_manage_task": {"eager": True},
+                        "mobile_get_device_state": {"eager": True},
+                        "mobile_inspect_trace": {"eager": True},
+                    },
+                }
+            }
+        }
+    elif client in ("cursor", "windsurf"):
         return {"mcpServers": {"artemis": config_body}}
     elif client in ("claude", "claude_code", "claude_desktop"):
         return {"mcpServers": {"artemis": config_body}}
@@ -48,6 +65,68 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
         return {"plugins": {"artemis_mcp": {"enabled": True, "type": "mcp", "server": config_body}}}
     else:  # generic
         return {"mcpServers": {"artemis": config_body}}
+
+
+def _merge_json_file(file_path: Path, server_name: str, server_config: dict, key_name: str = "mcpServers") -> bool:
+    """Merges server configuration into a target JSON file without overwriting existing servers."""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict = {}
+    if file_path.exists() and file_path.stat().st_size > 0:
+        try:
+            data = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+
+    if key_name not in data or not isinstance(data.get(key_name), dict):
+        data[key_name] = {}
+
+    data[key_name][server_name] = server_config
+    file_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[str]:
+    """Auto-installs/merges ARTEMIS MCP configuration into IDE config files."""
+    installed_paths: list[str] = []
+    targets = ["antigravity", "cursor", "claude", "windsurf", "openclaw"] if client == "all" else [client]
+
+    for target in targets:
+        snippet = _get_config_snippet(target, python_exe, project_root)
+        if target in ("antigravity", "jetski"):
+            server_cfg = snippet["mcpServers"]["artemis"]
+            jetski_path = Path.home() / ".gemini" / "jetski" / "mcp_config.json"
+            config_path = Path.home() / ".gemini" / "config" / "mcp_config.json"
+            _merge_json_file(jetski_path, "artemis", server_cfg)
+            _merge_json_file(config_path, "artemis", server_cfg)
+            installed_paths.extend([str(jetski_path), str(config_path)])
+        elif target in ("claude", "claude_code", "claude_desktop"):
+            server_cfg = snippet["mcpServers"]["artemis"]
+            if sys.platform == "darwin":
+                claude_path = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+            elif sys.platform == "win32":
+                appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+                claude_path = Path(appdata) / "Claude" / "claude_desktop_config.json"
+            else:
+                claude_path = Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
+            _merge_json_file(claude_path, "artemis", server_cfg)
+            installed_paths.append(str(claude_path))
+        elif target == "cursor":
+            server_cfg = snippet["mcpServers"]["artemis"]
+            cursor_path = Path.home() / ".cursor" / "mcp.json"
+            _merge_json_file(cursor_path, "artemis", server_cfg)
+            installed_paths.append(str(cursor_path))
+        elif target == "windsurf":
+            server_cfg = snippet["mcpServers"]["artemis"]
+            windsurf_path = Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
+            _merge_json_file(windsurf_path, "artemis", server_cfg)
+            installed_paths.append(str(windsurf_path))
+        elif target == "openclaw":
+            plugin_cfg = snippet["plugins"]["artemis_mcp"]
+            openclaw_path = Path.home() / ".openclaw" / "openclaw.json"
+            _merge_json_file(openclaw_path, "artemis_mcp", plugin_cfg, key_name="plugins")
+            installed_paths.append(str(openclaw_path))
+
+    return installed_paths
 
 
 def mcp_command(
@@ -81,12 +160,20 @@ def mcp_command(
             help="Port number when running with SSE transport.",
         ),
     ] = 8001,
+    install_config: Annotated[
+        str | None,
+        typer.Option(
+            "--install",
+            "-i",
+            help="Auto-install and merge ARTEMIS MCP configuration into 'antigravity', 'claude', 'cursor', 'windsurf', 'openclaw', or 'all'.",
+        ),
+    ] = None,
     generate_config: Annotated[
         str | None,
         typer.Option(
             "--generate-config",
             "-g",
-            help="Output ready-to-use MCP configuration JSON for 'cursor', 'claude', 'openclaw', or 'all'.",
+            help="Output ready-to-use MCP configuration JSON for 'antigravity', 'cursor', 'claude', 'windsurf', 'openclaw', or 'all'.",
         ),
     ] = None,
 ) -> None:
@@ -94,15 +181,45 @@ def mcp_command(
     project_root = env_utils.get_project_root()
     python_exe = env_utils.resolve_python_executable(project_root)
 
+    if install_config:
+        client = install_config.lower()
+        if client not in (
+            "antigravity",
+            "jetski",
+            "claude",
+            "claude_code",
+            "claude_desktop",
+            "cursor",
+            "windsurf",
+            "openclaw",
+            "all",
+        ):
+            console.print(
+                f"[bold red]Unsupported install target: '{install_config}'. Use 'antigravity', 'claude', 'cursor', 'windsurf', 'openclaw', or 'all'.[/bold red]"
+            )
+            raise typer.Exit(1)
+        installed_paths = install_mcp_config(client, python_exe, project_root)
+        console.print("[bold green]✔ Successfully installed ARTEMIS MCP server configuration to:[/bold green]")
+        for path in installed_paths:
+            console.print(f"  • [cyan]{path}[/cyan]")
+        console.print("\n[dim]Please restart or reload your IDE window to activate the Artemis MCP tools.[/dim]")
+        raise typer.Exit(0)
+
     if generate_config:
         client = generate_config.lower()
         if client == "all":
             all_configs = {
+                "antigravity (~/.gemini/jetski/mcp_config.json)": _get_config_snippet(
+                    "antigravity", python_exe, project_root
+                ),
                 "cursor (.cursor/mcp.json)": _get_config_snippet(
                     "cursor", python_exe, project_root
                 ),
                 "claude (claude_desktop_config.json)": _get_config_snippet(
                     "claude", python_exe, project_root
+                ),
+                "windsurf (~/.codeium/windsurf/mcp_config.json)": _get_config_snippet(
+                    "windsurf", python_exe, project_root
                 ),
                 "openclaw (openclaw.json)": _get_config_snippet(
                     "openclaw", python_exe, project_root

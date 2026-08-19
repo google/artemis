@@ -107,28 +107,40 @@ start.bat
 
 ARTEMIS 内置原生 **Model Context Protocol (MCP)** 服务。只需将以下配置加入你的 IDE 配置文件中，即可在编写代码时直接驱动真机：
 
-### 1. 生成或查看配置
+### 1. 一键自动安装到 IDE（推荐）
 
-运行内置命令一键获取当前环境的完整配置 JSON：
+运行内置安装命令，即可自动配置或更新你的 AI IDE（会自动解析并填写虚拟环境 Python 和项目的绝对路径）：
 
 ```bash
-artemis mcp --generate-config antigravity
-# 或生成所有 IDE 配置：
-artemis mcp --generate-config all
+# 一键安装到 Antigravity / Jetski：
+artemis mcp --install antigravity
+
+# 或一键安装到所有检测到的 AI IDE（Antigravity、Cursor、Claude Desktop/Code、OpenClaw）：
+artemis mcp --install all
 ```
 
-### 2. 复制配置到 IDE
+> 💡 **提示**：你也可以在首次运行 `artemis init` 配置向导时，交互式完成 IDE 的 MCP 自动挂载。
 
-* **Antigravity** (MCP 配置文件或 设置 ➔ MCP Servers)：
+### 2. 手动配置（可选）
+
+如果你习惯手动复制配置，可运行 `artemis mcp --generate-config antigravity`（或 `all`）获取自动计算好路径的 JSON 代码段，也可以参考以下模板将 `command` 填写为项目下 `.venv` 虚拟环境中的 Python 绝对路径，并将 `/path/to/artemis` 替换为项目实际路径：
+
+* **Antigravity** (`~/.gemini/jetski/mcp_config.json`)：
 ```json
 {
   "mcpServers": {
     "artemis": {
-      "command": "python",
+      "command": "/path/to/artemis/.venv/bin/python",
       "args": ["-m", "mcp_server"],
       "cwd": "/path/to/artemis",
       "env": {
         "PYTHONUNBUFFERED": "1"
+      },
+      "tools": {
+        "mobile_run_task": { "eager": true },
+        "mobile_manage_task": { "eager": true },
+        "mobile_get_device_state": { "eager": true },
+        "mobile_inspect_trace": { "eager": true }
       }
     }
   }
@@ -140,7 +152,7 @@ artemis mcp --generate-config all
 {
   "mcpServers": {
     "artemis": {
-      "command": "python",
+      "command": "/path/to/artemis/.venv/bin/python",
       "args": ["-m", "mcp_server"],
       "cwd": "/path/to/artemis"
     }

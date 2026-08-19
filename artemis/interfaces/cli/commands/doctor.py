@@ -15,6 +15,7 @@
 """System, environment, and device diagnostics (artemis doctor)."""
 
 import platform as sys_platform
+import shutil
 import subprocess
 import sys
 
@@ -26,6 +27,7 @@ from artemis.config import (
     parse_llm_config,
     settings,
 )
+from artemis.config.paths import ROOT_DIR
 from artemis.platform import OSType, platform
 from artemis.toolchain import toolchain
 from artemis.utils.ocr_api import is_ocr_configured
@@ -252,6 +254,50 @@ def doctor_command() -> None:
             "Screen Recorder",
             "[dim]⚪ Optional[/dim]",
             f"scrcpy not found. ({hint})",
+        )
+
+    # 8. Node.js & npm (for UI compilation)
+    npm_path = shutil.which("npm")
+    if npm_path:
+        table.add_row(
+            "Node.js / npm",
+            "[bold green]✔ Installed[/bold green]",
+            f"{npm_path} (Ready to build Showcase UI)",
+        )
+    else:
+        hint = (
+            "winget install OpenJS.NodeJS.LTS"
+            if platform.os_type == OSType.WINDOWS
+            else "brew install node"
+            if platform.os_type == OSType.MACOS
+            else "sudo apt-get install -y nodejs npm"
+        )
+        table.add_row(
+            "Node.js / npm",
+            "[dim]⚪ Optional[/dim]",
+            f"Not found in PATH. ({hint})",
+        )
+
+    # 9. Showcase UI Build Status
+    base_dist = ROOT_DIR / "apps" / "showcase_ui" / "dist"
+    candidates = [
+        base_dist / "frontend" / "browser" / "index.html",
+        base_dist / "browser" / "index.html",
+        base_dist / "frontend" / "index.html",
+        base_dist / "index.html",
+    ]
+    found_showcase = next((p for p in candidates if p.exists()), None)
+    if found_showcase:
+        table.add_row(
+            "Showcase UI",
+            "[bold green]✔ Compiled[/bold green]",
+            f"{found_showcase.parent} (Angular ready)",
+        )
+    else:
+        table.add_row(
+            "Showcase UI",
+            "[bold yellow]○ Not Compiled[/bold yellow]",
+            "Run ./start.sh or artemis ui to auto-compile.",
         )
 
     console.print(table)

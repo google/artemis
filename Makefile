@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: help test install install-deps setup start ui doctor clean precommit-install precommit lint format typecheck
+.PHONY: help test install install-deps setup start ui build-ui doctor clean precommit-install precommit lint format typecheck
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -25,6 +25,10 @@ start: ## One-click start Artemis Showcase UI and auto-open browser
 
 ui: ## Launch the unified Showcase UI & Admin Console in browser
 	@uv run artemis ui --open
+
+build-ui: ## Build the Showcase UI Angular frontend
+	@echo "🎨 Building Showcase UI..."
+	@cd apps/showcase_ui && npm install && npm run build
 
 doctor: ## Run system, device, and toolchain diagnostics
 	@uv run artemis doctor
@@ -41,9 +45,10 @@ install-deps: ## One-click install all system dependencies (ADB, FFmpeg, scrcpy,
 	@echo "⚡ Running one-click dependency installer..."
 	@bash scripts/install_deps.sh
 
-setup: ## Setup project (install dependencies + pre-commit hooks)
+setup: ## Setup project (install dependencies + pre-commit hooks + build UI)
 	@echo "🚀 Setting up project..."
 	@$(MAKE) install
+	@$(MAKE) build-ui
 	@$(MAKE) precommit-install
 	@echo ""
 	@echo "✅ Setup complete! You're ready to start developing."

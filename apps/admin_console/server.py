@@ -136,50 +136,134 @@ except ImportError:
 # ------------------------------------------------------------------------------
 # Showcase UI (Angular 19) Unified Single-Port SPA Static Hosting
 # ------------------------------------------------------------------------------
-_showcase_dist = _workspace_root / "apps" / "showcase_ui" / "dist" / "frontend" / "browser"
-if not _showcase_dist.exists():
-    _showcase_dist = _workspace_root / "apps" / "showcase_ui" / "dist"
+def _get_showcase_dist() -> Path:
+    """Return the Showcase UI Angular build directory."""
+    base_dist = _workspace_root / "apps" / "showcase_ui" / "dist"
+    candidates = [
+        base_dist / "frontend" / "browser",
+        base_dist / "browser",
+        base_dist / "frontend",
+        base_dist,
+    ]
+    for candidate in candidates:
+        if candidate.is_dir() and (candidate / "index.html").exists():
+            return candidate
+    return base_dist / "frontend" / "browser"
 
-if _showcase_dist.is_dir() and (_showcase_dist / "index.html").exists():
 
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_showcase_spa(full_path: str):
-        # Do not intercept API, media, or replay paths
-        if (
-            full_path.startswith("api/")
-            or full_path.startswith("images/")
-            or full_path.startswith("videos/")
-            or full_path.startswith("local_file")
-            or full_path == "docs"
-            or full_path == "openapi.json"
-            or full_path.startswith("redoc")
-        ):
-            from fastapi import HTTPException
+@app.get("/", include_in_schema=False)
+async def serve_showcase_root():
+    """Explicitly serve the Showcase UI at the root path by default."""
+    return await serve_showcase_spa("")
 
-            raise HTTPException(status_code=404, detail="Endpoint not found")
 
-        # Admin / Debug Console routes
-        if full_path in ("admin", "debug"):
-            admin_index = _admin_console_dir / "index.html"
-            if admin_index.exists():
-                return HTMLResponse(admin_index.read_text(encoding="utf-8"))
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_showcase_spa(full_path: str):
+    # Do not intercept API, media, or replay paths
+    if (
+        full_path.startswith("api/")
+        or full_path.startswith("images/")
+        or full_path.startswith("videos/")
+        or full_path.startswith("local_file")
+        or full_path == "docs"
+        or full_path == "openapi.json"
+        or full_path.startswith("redoc")
+    ):
+        from fastapi import HTTPException
 
-        # Exact static file match (js, css, images, fonts, favicon, logo)
-        target_file = _showcase_dist / full_path
-        if full_path and target_file.is_file():
-            return FileResponse(target_file)
+        raise HTTPException(status_code=404, detail="Endpoint not found")
 
-        # Default fallback to Angular SPA index.html
-        index_file = _showcase_dist / "index.html"
-        return HTMLResponse(index_file.read_text(encoding="utf-8"))
-else:
+    clean_path = full_path.strip("/")
 
-    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-    async def fallback_root():
+    # Admin / Debug Console routes
+    if (
+        clean_path in ("admin", "debug")
+        or clean_path.startswith("admin/")
+        or clean_path.startswith("debug/")
+    ):
         admin_index = _admin_console_dir / "index.html"
         if admin_index.exists():
             return HTMLResponse(admin_index.read_text(encoding="utf-8"))
-        return HTMLResponse("<h1>Artemis Console</h1>")
+
+    showcase_dist = _get_showcase_dist()
+
+    # Exact static file match (js, css, images, fonts, favicon, logo)
+    if clean_path:
+        target_file = showcase_dist / clean_path
+        if target_file.is_file():
+            return FileResponse(target_file)
+
+        # Fallback for icons/logos if showcase UI hasn't been built yet
+        public_file = _workspace_root / "apps" / "showcase_ui" / "public" / clean_path
+        if public_file.is_file():
+            return FileResponse(public_file)
+
+    # Serve Showcase UI Angular SPA index.html
+    index_file = showcase_dist / "index.html"
+    if index_file.exists():
+        return HTMLResponse(index_file.read_text(encoding="utf-8"))
+
+    # Fallback message if Showcase UI is not built
+    fallback_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Artemis Showcase UI - Not Built</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .card {
+            background: #1e293b;
+            padding: 2.5rem;
+            border-radius: 1rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+            max-width: 500px;
+            text-align: center;
+            border: 1px solid #334155;
+        }
+        h1 { color: #38bdf8; margin-top: 0; }
+        code {
+            background: #0f172a;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.375rem;
+            color: #e2e8f0;
+            font-size: 0.9em;
+        }
+        .btn {
+            display: inline-block;
+            margin-top: 1.5rem;
+            padding: 0.75rem 1.5rem;
+            background: #38bdf8;
+            color: #0f172a;
+            font-weight: bold;
+            text-decoration: none;
+            border-radius: 0.5rem;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #0284c7; color: #fff; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>✨ Artemis Showcase UI</h1>
+        <p>The Showcase UI (Angular frontend) has not been built yet.</p>
+        <p>To compile the Showcase UI, run:</p>
+        <p><code>cd apps/showcase_ui && npm install && npm run build</code></p>
+        <p>Or launch using <code>./start.sh</code> or <code>artemis ui</code> to build automatically.</p>
+        <a class="btn" href="/admin">Go to Admin Debug Console →</a>
+    </div>
+</body>
+</html>"""
+    return HTMLResponse(fallback_html)
 
 
 # ------------------------------------------------------------------------------

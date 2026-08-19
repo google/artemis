@@ -105,28 +105,40 @@ start.bat
 
 ARTEMIS includes a native **Model Context Protocol (MCP)** server. Connect your real phone directly into AI IDEs:
 
-### 1. Generate MCP Config
+### 1. One-Click Auto Install (Recommended)
 
-Run the built-in generator to produce ready-to-use JSON configuration:
+Run the built-in installer to automatically configure or update your AI IDE (automatically resolves your virtual environment Python and repository path):
 
 ```bash
-artemis mcp --generate-config antigravity
-# Or generate configs for all IDEs:
-artemis mcp --generate-config all
+# Auto-install for Antigravity / Jetski:
+artemis mcp --install antigravity
+
+# Or install for all detected AI IDEs (Antigravity, Cursor, Claude Desktop/Code, OpenClaw):
+artemis mcp --install all
 ```
 
-### 2. Copy Config to Your IDE
+> 💡 **Tip**: You can also configure MCP interactively during first-time setup via `artemis init`.
 
-* **Antigravity** (MCP config file or Settings ➔ MCP Servers):
+### 2. Manual Configuration (Optional)
+
+If you prefer to configure manually, run `artemis mcp --generate-config antigravity` (or `all`) to output the exact JSON snippet, or paste the following into your IDE configuration (replace `/path/to/artemis` with your actual repo path and point `command` to your `.venv` Python executable):
+
+* **Antigravity** (`~/.gemini/jetski/mcp_config.json`):
 ```json
 {
   "mcpServers": {
     "artemis": {
-      "command": "python",
+      "command": "/path/to/artemis/.venv/bin/python",
       "args": ["-m", "mcp_server"],
       "cwd": "/path/to/artemis",
       "env": {
         "PYTHONUNBUFFERED": "1"
+      },
+      "tools": {
+        "mobile_run_task": { "eager": true },
+        "mobile_manage_task": { "eager": true },
+        "mobile_get_device_state": { "eager": true },
+        "mobile_inspect_trace": { "eager": true }
       }
     }
   }
@@ -138,7 +150,7 @@ artemis mcp --generate-config all
 {
   "mcpServers": {
     "artemis": {
-      "command": "python",
+      "command": "/path/to/artemis/.venv/bin/python",
       "args": ["-m", "mcp_server"],
       "cwd": "/path/to/artemis"
     }

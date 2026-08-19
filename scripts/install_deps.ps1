@@ -40,6 +40,9 @@ function Update-EnvironmentPath {
         "$env:LOCALAPPDATA\Microsoft\WinGet\Links",
         "$env:LOCALAPPDATA\Android\Sdk\platform-tools",
         "$env:ProgramFiles\Android\platform-tools",
+        "$env:ProgramFiles\nodejs",
+        "${env:ProgramFiles(x86)}\nodejs",
+        "$env:APPDATA\npm",
         "C:\ProgramData\chocolatey\bin",
         "$env:USERPROFILE\scoop\shims",
         "$env:USERPROFILE\.local\bin",
@@ -134,9 +137,42 @@ if (-not (Test-Path ".env")) {
     Write-Host "   ✔ .env configuration file exists." -ForegroundColor Green
 }
 
-# 5. Toolchain Readiness Summary
-Write-Host "`n5. Toolchain Readiness Summary:" -ForegroundColor Yellow
-$tools = @("adb", "ffmpeg", "scrcpy", "uv")
+# 5. Check and Build Showcase UI (Angular)
+Write-Host "`n5. Checking Showcase UI Build (Angular)..." -ForegroundColor Yellow
+$ShowcaseIndex = "$RootDir\apps\showcase_ui\dist\frontend\browser\index.html"
+$ShowcaseIndexAlt1 = "$RootDir\apps\showcase_ui\dist\browser\index.html"
+$ShowcaseIndexAlt2 = "$RootDir\apps\showcase_ui\dist\index.html"
+if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1)) -and (-not (Test-Path $ShowcaseIndexAlt2))) {
+    if (-not (Test-CommandExists "npm")) {
+        if (Test-CommandExists "winget") {
+            Write-Host "   ⚡ Node.js/npm not found. Installing Node.js LTS via WinGet..." -ForegroundColor Cyan
+            winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
+            Update-EnvironmentPath
+        }
+    }
+
+    if (Test-CommandExists "npm") {
+        Write-Host "   🎨 Compiling Angular Showcase UI..." -ForegroundColor Cyan
+        Push-Location "$RootDir\apps\showcase_ui"
+        try {
+            npm install --silent
+            npm run build
+            Write-Host "   ✔ Showcase UI compiled successfully." -ForegroundColor Green
+        } catch {
+            Write-Host "   ⚠ Failed to build Showcase UI: $_" -ForegroundColor DarkYellow
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Write-Host "   ⚠ Could not find npm. Showcase UI will show fallback notice on launch." -ForegroundColor DarkYellow
+    }
+} else {
+    Write-Host "   ✔ Showcase UI build already exists." -ForegroundColor Green
+}
+
+# 6. Toolchain Readiness Summary
+Write-Host "`n6. Toolchain Readiness Summary:" -ForegroundColor Yellow
+$tools = @("adb", "ffmpeg", "scrcpy", "uv", "npm")
 foreach ($t in $tools) {
     if (Test-CommandExists $t) {
         $p = (Get-Command $t).Source

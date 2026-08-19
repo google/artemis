@@ -247,11 +247,47 @@ setup_env_file() {
     fi
 }
 
+# Function to check and build Showcase UI
+setup_showcase_ui() {
+    echo -e "\n${BOLD}6. Checking Showcase UI Build (Angular)...${NC}"
+    local SHOWCASE_INDEX="${ROOT_DIR}/apps/showcase_ui/dist/frontend/browser/index.html"
+    local SHOWCASE_INDEX_ALT1="${ROOT_DIR}/apps/showcase_ui/dist/browser/index.html"
+    local SHOWCASE_INDEX_ALT2="${ROOT_DIR}/apps/showcase_ui/dist/index.html"
+    if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "${SHOWCASE_INDEX_ALT2}" ]; then
+        if ! has_cmd npm; then
+            echo -e "   ${YELLOW}⚡ npm/Node.js not found. Auto-installing Node.js...${NC}"
+            if [ "${OS_TYPE}" = "Darwin" ] && has_cmd brew; then
+                brew install node >/dev/null 2>&1 || true
+            elif [ "${OS_TYPE}" = "Linux" ]; then
+                local SUDO_CMD=""
+                if [ "$(id -u)" -ne 0 ] && has_cmd sudo; then SUDO_CMD="sudo"; fi
+                if has_cmd apt-get; then
+                    ${SUDO_CMD} apt-get update -qq && ${SUDO_CMD} apt-get install -y -qq nodejs npm >/dev/null 2>&1 || true
+                elif has_cmd dnf; then
+                    ${SUDO_CMD} dnf install -y nodejs npm >/dev/null 2>&1 || true
+                elif has_cmd pacman; then
+                    ${SUDO_CMD} pacman -S --noconfirm nodejs npm >/dev/null 2>&1 || true
+                fi
+            fi
+        fi
+
+        if has_cmd npm; then
+            echo -e "   ${YELLOW}🎨 Building Angular Showcase UI...${NC}"
+            (cd "${ROOT_DIR}/apps/showcase_ui" && npm install --silent && npm run build)
+            echo -e "   ${GREEN}✓ Showcase UI compiled successfully.${NC}"
+        else
+            echo -e "   ${YELLOW}⚠ Could not find npm. Showcase UI will show fallback notice on launch.${NC}"
+        fi
+    else
+        echo -e "   ${GREEN}✓ Showcase UI build already exists.${NC}"
+    fi
+}
+
 # Function to display system readiness report
 verify_readiness() {
-    echo -e "\n${BOLD}6. Toolchain Readiness Summary:${NC}"
+    echo -e "\n${BOLD}7. Toolchain Readiness Summary:${NC}"
 
-    local tools=("adb" "ffmpeg" "scrcpy" "uv" "python3")
+    local tools=("adb" "ffmpeg" "scrcpy" "uv" "python3" "npm")
     for t in "${tools[@]}"; do
         if has_cmd "$t"; then
             local loc
@@ -268,6 +304,7 @@ install_system_packages
 ensure_uv
 setup_python_env
 setup_env_file
+setup_showcase_ui
 verify_readiness
 
 echo -e "\n${BOLD}${CYAN}======================================================${NC}"

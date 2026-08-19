@@ -112,6 +112,48 @@ fi
 echo -e "   ${BLUE}📦 Synchronizing Python runtime and project dependencies...${NC}"
 uv sync --quiet
 
-# 6. Launch unified Showcase UI & auto-open browser
+# 6. Check and build Showcase UI if not already compiled
+SHOWCASE_INDEX="${SCRIPT_DIR}/apps/showcase_ui/dist/frontend/browser/index.html"
+SHOWCASE_INDEX_ALT1="${SCRIPT_DIR}/apps/showcase_ui/dist/browser/index.html"
+SHOWCASE_INDEX_ALT2="${SCRIPT_DIR}/apps/showcase_ui/dist/index.html"
+if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "${SHOWCASE_INDEX_ALT2}" ]; then
+    if ! command -v npm >/dev/null 2>&1; then
+        OS_NAME="$(uname -s)"
+        echo -e "   ${YELLOW}⚡ npm/Node.js not found. Auto-installing Node.js for Showcase UI compilation...${NC}"
+        if [ "${OS_NAME}" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+            brew install node >/dev/null 2>&1 || true
+        elif [ "${OS_NAME}" = "Linux" ]; then
+            if command -v apt-get >/dev/null 2>&1; then
+                if [ "$(id -u)" -eq 0 ]; then
+                    apt-get update -qq && apt-get install -y -qq nodejs npm >/dev/null 2>&1 || true
+                elif command -v sudo >/dev/null 2>&1; then
+                    sudo -n apt-get update -qq && sudo -n apt-get install -y -qq nodejs npm >/dev/null 2>&1 || true
+                fi
+            elif command -v dnf >/dev/null 2>&1; then
+                if [ "$(id -u)" -eq 0 ]; then
+                    dnf install -y nodejs npm >/dev/null 2>&1 || true
+                elif command -v sudo >/dev/null 2>&1; then
+                    sudo -n dnf install -y nodejs npm >/dev/null 2>&1 || true
+                fi
+            elif command -v pacman >/dev/null 2>&1; then
+                if [ "$(id -u)" -eq 0 ]; then
+                    pacman -S --noconfirm nodejs npm >/dev/null 2>&1 || true
+                elif command -v sudo >/dev/null 2>&1; then
+                    sudo -n pacman -S --noconfirm nodejs npm >/dev/null 2>&1 || true
+                fi
+            fi
+        fi
+    fi
+
+    if command -v npm >/dev/null 2>&1; then
+        echo -e "   ${YELLOW}🎨 Showcase UI build not found. Compiling Angular Showcase UI...${NC}"
+        (cd "${SCRIPT_DIR}/apps/showcase_ui" && npm install --silent && npm run build)
+    else
+        echo -e "   ${YELLOW}⚠ Could not auto-install Node.js. Showcase UI will serve fallback build notice.${NC}"
+    fi
+fi
+
+# 7. Launch unified Showcase UI & auto-open browser
 echo -e "   ${GREEN}🚀 Launching Artemis Showcase UI & Admin Console...${NC}"
+echo -e "   ${CYAN}💡 Tip: Connect to Antigravity / Claude Desktop anytime: ${BOLD}artemis mcp --install all${NC}"
 exec uv run artemis ui --open "$@"

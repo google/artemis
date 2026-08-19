@@ -81,6 +81,7 @@ data_engine.db
 data_engine.db-journal
 .ipc_port
 .ls_address
+.jetski_ls_address
 
 # Environment & Secrets
 .env
