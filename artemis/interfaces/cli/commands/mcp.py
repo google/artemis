@@ -66,6 +66,7 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
         "env": {
             "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": project_root,
+            "ARTEMIS_DESKTOP_NOTIFY": "true",
         },
     }
     config_with_cwd = {**config_body, "cwd": project_root}

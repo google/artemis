@@ -93,6 +93,10 @@ data_engine.db-journal
 .artemis_ipc_port
 .ls_address
 .jetski_ls_address
+.jetski_env
+.artemis_env
+live_screenshot*.jpg
+live_screenshot*.png
 
 # Environment & Secrets
 .env

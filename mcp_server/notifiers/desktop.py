@@ -27,14 +27,26 @@ logger = logging.getLogger("mcp_server.notifiers.desktop")
 
 
 class DesktopNotifier(BaseNotifier):
-    """Notifier that displays native desktop notifications when explicitly enabled."""
+    """Notifier that displays native desktop notifications across macOS, Linux, and Windows."""
 
     @property
     def name(self) -> str:
         return "desktop"
 
     def is_available(self) -> bool:
-        return os.getenv("ARTEMIS_DESKTOP_NOTIFY", "").lower() in ("1", "true", "yes")
+        try:
+            val = os.getenv("ARTEMIS_DESKTOP_NOTIFY", "").lower()
+            if val in ("0", "false", "no", "off"):
+                return False
+            if os.getenv("CI", "").lower() in ("1", "true", "yes") and val not in ("1", "true", "yes"):
+                return False
+            if sys.platform == "linux" and not shutil.which("notify-send"):
+                return False
+            if sys.platform == "darwin" and not shutil.which("osascript"):
+                return False
+            return True
+        except Exception:
+            return False
 
     def notify(
         self,

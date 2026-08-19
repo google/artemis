@@ -21,6 +21,7 @@ from mcp_server.notifiers.base import BaseNotifier
 from mcp_server.notifiers.composite import CompositeNotifier
 from mcp_server.notifiers.desktop import DesktopNotifier
 from mcp_server.notifiers.file import FileNotifier
+from mcp_server.notifiers.script import ScriptNotifier
 from mcp_server.notifiers.webhook import WebhookNotifier
 
 _default_notifier = CompositeNotifier()
@@ -38,14 +39,20 @@ def notify(
     event_type: str = "completed",
     payload: dict[str, Any] | None = None,
 ) -> bool:
-    """Dispatches a notification across all available channels (AgentAPI, Webhook, Desktop, File)."""
-    return _default_notifier.notify(
-        conversation_id=conversation_id,
-        message=message,
-        title=title,
-        event_type=event_type,
-        payload=payload,
-    )
+    """Dispatches a notification across all available channels (AgentAPI, Webhook, Desktop, Script, File)."""
+    try:
+        return _default_notifier.notify(
+            conversation_id=conversation_id,
+            message=message,
+            title=title,
+            event_type=event_type,
+            payload=payload,
+        )
+    except Exception as e:
+        import logging
+
+        logging.getLogger("mcp_server.notifiers").debug(f"Global notify error: {e}")
+        return False
 
 
 def notify_jetski(conversation_id: str, message: str) -> bool:
@@ -58,6 +65,7 @@ __all__ = [
     "AgentApiNotifier",
     "WebhookNotifier",
     "DesktopNotifier",
+    "ScriptNotifier",
     "FileNotifier",
     "CompositeNotifier",
     "get_default_notifier",

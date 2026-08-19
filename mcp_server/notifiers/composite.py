@@ -21,6 +21,7 @@ from mcp_server.notifiers.agentapi import AgentApiNotifier
 from mcp_server.notifiers.base import BaseNotifier
 from mcp_server.notifiers.desktop import DesktopNotifier
 from mcp_server.notifiers.file import FileNotifier
+from mcp_server.notifiers.script import ScriptNotifier
 from mcp_server.notifiers.webhook import WebhookNotifier
 
 logger = logging.getLogger("mcp_server.notifiers.composite")
@@ -37,6 +38,7 @@ class CompositeNotifier(BaseNotifier):
                 FileNotifier(),
                 AgentApiNotifier(),
                 WebhookNotifier(),
+                ScriptNotifier(),
                 DesktopNotifier(),
             ]
 
@@ -45,7 +47,13 @@ class CompositeNotifier(BaseNotifier):
         return "composite"
 
     def is_available(self) -> bool:
-        return any(n.is_available() for n in self._notifiers)
+        for n in self._notifiers:
+            try:
+                if n.is_available():
+                    return True
+            except Exception:
+                continue
+        return False
 
     def register_notifier(self, notifier: BaseNotifier) -> None:
         """Registers an additional custom notifier."""
@@ -61,18 +69,19 @@ class CompositeNotifier(BaseNotifier):
     ) -> bool:
         any_success = False
         for notifier in self._notifiers:
-            if notifier.is_available():
-                try:
-                    success = notifier.notify(
-                        conversation_id=conversation_id,
-                        message=message,
-                        title=title,
-                        event_type=event_type,
-                        payload=payload,
-                    )
-                    if success:
-                        any_success = True
-                except Exception as e:
-                    logger.debug(f"Notifier '{notifier.name}' encountered error: {e}")
+            try:
+                if not notifier.is_available():
+                    continue
+                success = notifier.notify(
+                    conversation_id=conversation_id,
+                    message=message,
+                    title=title,
+                    event_type=event_type,
+                    payload=payload,
+                )
+                if success:
+                    any_success = True
+            except Exception as e:
+                logger.debug(f"Notifier '{notifier.name}' encountered error: {e}")
 
         return any_success

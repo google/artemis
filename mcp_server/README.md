@@ -14,10 +14,11 @@ mcp_server/
 │   └── task_runner.py    # Subprocess runner for Artemis Agent
 ├── notifiers/            # Multi-environment notification adapters
 │   ├── base.py           # BaseNotifier abstract class
-│   ├── agentapi.py       # Jetski / Antigravity AgentAPI notifier
+│   ├── agentapi.py       # Jetski / Antigravity AgentAPI notifier (with session sorting & caching)
+│   ├── desktop.py        # Native OS toast notifier (macOS/Linux/Windows, enabled by default)
+│   ├── script.py         # Universal Script / Command Hook notifier (ARTEMIS_NOTIFY_CMD)
 │   ├── webhook.py        # OpenClaw / CI / Discord / Slack webhook notifier
-│   ├── desktop.py        # Native OS toast notifier
-│   ├── file.py           # File audit logger
+│   ├── file.py           # File audit logger (notifications.jsonl)
 │   └── composite.py      # Multi-channel notification dispatcher
 ├── tools/                # Modular standard MCP tools
 │   ├── task_runner.py    # mobile_run_task
@@ -29,6 +30,18 @@ mcp_server/
     ├── env_utils.py      # Python interpreter and process manager
     └── trace_store.py    # Traces directory and status manager
 ```
+
+## 🔔 Multi-Platform Notification & Wakeup Support
+
+When you start an asynchronous mobile test via `mobile_run_task`, Artemis MCP runs the job as a detached background process so the AI agent is not blocked. Upon completion or failure, Artemis dispatches alerts across **all available notification channels** so that both human developers and AI agents are notified immediately across different platforms:
+
+| Platform / Environment | Primary Notification Mechanism | How It Works & Configuration |
+| :--- | :--- | :--- |
+| **Antigravity / Jetski** | **Reactive Wakeup (`AgentApiNotifier`)** | Automatically detects and caches the active IDE session credentials (`ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`), sorting candidate processes by creation time to avoid stale PIDs, and calls `agentapi send-message` to wake up the agent directly in the conversation. |
+| **Cursor / Windsurf / VS Code / Cline / Roo Code** | **Native Desktop Toast (`DesktopNotifier`) + File Audit (`FileNotifier`)** | Enabled **by default** across macOS (`osascript`), Linux (`notify-send`), and Windows (`powershell`). Pops up a system notification banner informing the developer whether the task completed or failed. The AI agent inspects `<trace_dir>/status.json` or uses `mobile_manage_task(action="status")`. Can be silenced via `ARTEMIS_DESKTOP_NOTIFY=false`. |
+| **Claude Code / Desktop** | **Native Desktop Toast + File Audit** | Alerts the user via system desktop notification banner when background execution concludes, while maintaining a complete JSONL audit log in `notifications.jsonl`. |
+| **OpenClaw / Slack / Discord / CI/CD** | **HTTP Webhook (`WebhookNotifier`)** | Sends structured JSON POST payloads to custom endpoints configured via `OPENCLAW_WEBHOOK_URL`, `MCP_NOTIFICATION_WEBHOOK`, or `ARTEMIS_WEBHOOK_URL`. |
+| **Universal Custom IDE / CLI Hooks** | **Custom Script Hook (`ScriptNotifier`)** | Set `ARTEMIS_NOTIFY_CMD="my-script --title '{title}' --message '{message}' --trace-id '{trace_id}'"` in your environment to execute any custom command or script upon event completion. |
 
 ## 🧠 AI Agent Behavioral Rules (`rules.md`)
 
