@@ -140,13 +140,21 @@ def init_command() -> None:
     console.print("  [2] Cursor")
     console.print("  [3] Claude Desktop / Claude Code")
     console.print("  [4] Windsurf")
-    console.print("  [5] All supported IDEs")
-    console.print("  [6] Skip for now")
+    console.print("  [5] VS Code / Cline / Roo Code")
+    console.print("  [6] All supported IDEs")
+    console.print("  [7] Skip for now")
     mcp_choice = Prompt.ask(
-        "Select IDE for MCP auto-install", choices=["1", "2", "3", "4", "5", "6"], default="1"
+        "Select IDE for MCP auto-install", choices=["1", "2", "3", "4", "5", "6", "7"], default="1"
     )
-    if mcp_choice != "6":
-        target_map = {"1": "antigravity", "2": "cursor", "3": "claude", "4": "windsurf", "5": "all"}
+    if mcp_choice != "7":
+        target_map = {
+            "1": "antigravity",
+            "2": "cursor",
+            "3": "claude",
+            "4": "windsurf",
+            "5": "vscode",
+            "6": "all",
+        }
         target = target_map.get(mcp_choice, "antigravity")
         try:
             from artemis.interfaces.cli.commands.mcp import install_mcp_config
@@ -167,11 +175,11 @@ def init_command() -> None:
             f"[bold green]🎉 Setup completed successfully![/bold green]\n\n"
             f"Configured [bold cyan]{provider_name}[/bold cyan] in [dim]{env_path}[/dim]\n\n"
             "Try running your first task:\n"
-            '  [bold cyan]artemis run "Open YouTube and search for Lo-Fi Hip Hop"[/bold cyan]\n\n'
+            '  [bold cyan]uv run artemis run "Open YouTube and search for Lo-Fi Hip Hop"[/bold cyan]\n\n'
             "Or connect/update your AI IDE anytime with:\n"
-            "  [bold cyan]artemis mcp --install all[/bold cyan]\n\n"
+            "  [bold cyan]uv run artemis mcp --install all[/bold cyan]\n\n"
             "Or run health diagnostics anytime with:\n"
-            "  [bold cyan]artemis doctor[/bold cyan]",
+            "  [bold cyan]uv run artemis doctor[/bold cyan]",
             title="☕ Ready to Go!",
             expand=False,
         )

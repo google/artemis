@@ -55,6 +55,7 @@ except Exception:
 from mcp_server.base import mcp
 
 # 2. Import tools to register them
+import mcp_server.tools  # noqa: F401
 
 
 def main(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8001):

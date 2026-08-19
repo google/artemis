@@ -96,7 +96,7 @@ git clone https://github.com/google/artemis.git && cd artemis
 start.bat
 ```
 
-> 💡 **提示**：启动后将自动在默认浏览器中打开 Web 控制台（`http://localhost:8000`），提供设备连接向导、实时投屏、任务演练与状态回放面板。你也可以通过命令行直接运行：`artemis run "打开系统设置，找到电池选项并告诉我当前电量" --profile flash`。
+> 💡 **提示**：启动后将自动在默认浏览器中打开 Web 控制台（`http://localhost:8000`），提供设备连接向导、实时投屏、任务演练与状态回放面板。你也可以通过命令行直接运行：`uv run artemis run "打开系统设置，找到电池选项并告诉我当前电量" --profile flash`。
 
 <a id="mcp-setup"></a>
 <a id="mcp"></a>
@@ -109,21 +109,22 @@ ARTEMIS 内置原生 **Model Context Protocol (MCP)** 服务。只需将以下�
 
 ### 1. 一键自动安装到 IDE（推荐）
 
-运行内置安装命令，即可自动配置或更新你的 AI IDE（会自动解析并填写虚拟环境 Python 和项目的绝对路径）：
+运行 `./start.sh` 或 `start.bat` 启动脚本时会主动询问是否需要配置当前检测到的 AI IDE（支持跳过并在之后随时手动执行以下命令挂载）：
 
 ```bash
 # 一键安装到 Antigravity / Jetski：
-artemis mcp --install antigravity
+uv run artemis mcp --install antigravity
 
 # 或一键安装到所有检测到的 AI IDE（Antigravity、Cursor、Claude Desktop/Code、OpenClaw）：
-artemis mcp --install all
+uv run artemis mcp --install all
 ```
 
-> 💡 **提示**：你也可以在首次运行 `artemis init` 配置向导时，交互式完成 IDE 的 MCP 自动挂载。
+> 💡 **提示**：你也可以在首次运行 `uv run artemis init` 配置向导时，交互式完成 IDE 的 MCP 自动挂载。
+> **进阶提示**：如果希望在任意目录下都不需要加 `uv run` 就能全局直接使用 `artemis` 命令，可在项目根目录下执行一次 `uv tool install -e .`。
 
 ### 2. 手动配置（可选）
 
-如果你习惯手动复制配置，可运行 `artemis mcp --generate-config antigravity`（或 `all`）获取自动计算好路径的 JSON 代码段，也可以参考以下模板将 `command` 填写为项目下 `.venv` 虚拟环境中的 Python 绝对路径，并将 `/path/to/artemis` 替换为项目实际路径：
+如果你习惯手动复制配置，可运行 `uv run artemis mcp --generate-config antigravity`（或 `all`）获取自动计算好路径的 JSON 代码段，也可以参考以下模板将 `command` 填写为项目下 `.venv` 虚拟环境中的 Python 绝对路径，并将 `/path/to/artemis` 替换为项目实际路径：
 
 * **Antigravity** (`~/.gemini/jetski/mcp_config.json`)：
 ```json
@@ -219,9 +220,9 @@ if __name__ == "__main__":
   <sub>💡 <b>控制台功能布局</b>：<b>① 顶栏视图切换</b>（主页与工作区） · <b>② 运行模式与录屏回放</b>（Flash/Pro 状态与视频回放） · <b>③ 实时感知推理流</b>（动作分解、点击坐标与结构化总结） · <b>④ 自然语言下发胶囊</b>（自然语言驱动真机） · <b>⑤ 任务队列看板</b>（状态流转与历史回溯）</sub>
 </p>
 
-* 🖥️ **Web 可视化测试控制台 (`artemis ui`)**：集成设备实时投屏与交互面板，支持通过自然语言下发测试用例，实时观测推理步骤、操作轨迹、截图留存与异常状态回放；
+* 🖥️ **Web 可视化测试控制台 (`uv run artemis ui`)**：集成设备实时投屏与交互面板，支持通过自然语言下发测试用例，实时观测推理步骤、操作轨迹、截图留存与异常状态回放；
 * 🔌 **MCP 协议集成 (AI IDE 协同)**：作为标准 MCP 服务器无缝接入 **Antigravity、Claude Code、Windsurf** 等开发环境，在 IDE 中直接驱动真机完成自动化测试与 Bug 复现验证；
-* 💻 **命令行工具 (`artemis run`)**：支持通过 CLI 直接执行自动化用例、稳定性巡检或 AndroidWorld 基准评测，提供高保真结构化终端输出；
+* 💻 **命令行工具 (`uv run artemis run`)**：支持通过 CLI 直接执行自动化用例、稳定性巡检或 AndroidWorld 基准评测，提供高保真结构化终端输出；
 * 🐍 **Python SDK**：作为标准 Python 库无缝集成至现有自动化测试框架（如 pytest）或 CI/CD 流水线，提供基于 Pydantic 的强类型结构化结果与断言支持。
 
 ## 📊 方案横向对比

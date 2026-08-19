@@ -62,7 +62,7 @@ The included [`rules.md`](./rules.md) file contains the **Mobile Testing Mindset
 python -m mcp_server
 
 # Or via Artemis CLI
-artemis mcp
+uv run artemis mcp
 ```
 
 ### IDE Configuration
@@ -70,10 +70,10 @@ artemis mcp
 #### One-Click Auto Install (Recommended)
 Run the automated installer to detect and configure your IDE (Antigravity, Cursor, Claude Code/Desktop, OpenClaw):
 ```bash
-artemis mcp --install all
+uv run artemis mcp --install all
 # Or install specifically for Antigravity:
-artemis mcp --install antigravity
+uv run artemis mcp --install antigravity
 ```
 
 #### Manual JSON Config Generation
-Run `artemis mcp --generate-config antigravity` (or `all`) to output ready-to-use configuration JSON with resolved `.venv` Python and project paths.
+Run `uv run artemis mcp --generate-config antigravity` (or `all`) to output ready-to-use configuration JSON with resolved `.venv` Python and project paths.

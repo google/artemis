@@ -16,5 +16,6 @@
 
 from mcp_server.base import mcp
 from mcp_server.server import main
+import mcp_server.tools  # noqa: F401
 
 __all__ = ["mcp", "main"]

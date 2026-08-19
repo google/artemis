@@ -21,6 +21,7 @@ import sys
 from typing import Annotated
 
 from mcp_server.base import mcp as agent_mcp
+import mcp_server.tools  # noqa: F401
 from mcp_server.utils import env_utils
 from artemis.mcp.adb_server import mcp as adb_mcp
 from artemis.utils.logger import get_logger
@@ -32,6 +33,17 @@ logger = get_logger(__name__)
 console = Console()
 
 
+def _get_vscode_user_dir() -> Path:
+    """Returns the platform-specific VS Code user configuration directory."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Code" / "User"
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(appdata) / "Code" / "User"
+    else:
+        return Path.home() / ".config" / "Code" / "User"
+
+
 def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict:
     """Generates MCP configuration dictionary for the specified client."""
     config_body = {
@@ -40,6 +52,7 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
         "cwd": project_root,
         "env": {
             "PYTHONUNBUFFERED": "1",
+            "PYTHONPATH": project_root,
         },
     }
 
@@ -57,38 +70,44 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
                 }
             }
         }
-    elif client in ("cursor", "windsurf"):
-        return {"mcpServers": {"artemis": config_body}}
-    elif client in ("claude", "claude_code", "claude_desktop"):
-        return {"mcpServers": {"artemis": config_body}}
     elif client == "openclaw":
         return {"plugins": {"artemis_mcp": {"enabled": True, "type": "mcp", "server": config_body}}}
-    else:  # generic
+    else:  # cursor, windsurf, claude, vscode, cline, roo, generic
         return {"mcpServers": {"artemis": config_body}}
 
 
 def _merge_json_file(file_path: Path, server_name: str, server_config: dict, key_name: str = "mcpServers") -> bool:
     """Merges server configuration into a target JSON file without overwriting existing servers."""
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    data: dict = {}
-    if file_path.exists() and file_path.stat().st_size > 0:
-        try:
-            data = json.loads(file_path.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        data: dict = {}
+        if file_path.exists() and file_path.stat().st_size > 0:
+            try:
+                data = json.loads(file_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except Exception:
+                data = {}
 
-    if key_name not in data or not isinstance(data.get(key_name), dict):
-        data[key_name] = {}
+        if key_name not in data or not isinstance(data.get(key_name), dict):
+            data[key_name] = {}
 
-    data[key_name][server_name] = server_config
-    file_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+        data[key_name][server_name] = server_config
+        file_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        return True
+    except Exception as e:
+        logger.warning(f"Could not update MCP config file {file_path}: {e}")
+        return False
 
 
 def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[str]:
-    """Auto-installs/merges ARTEMIS MCP configuration into IDE config files."""
+    """Auto-installs/merges ARTEMIS MCP configuration into IDE config files across any OS."""
     installed_paths: list[str] = []
-    targets = ["antigravity", "cursor", "claude", "windsurf", "openclaw"] if client == "all" else [client]
+    targets = (
+        ["antigravity", "cursor", "claude", "windsurf", "vscode", "cline", "roo", "openclaw"]
+        if client == "all"
+        else [client]
+    )
 
     for target in targets:
         snippet = _get_config_snippet(target, python_exe, project_root)
@@ -96,9 +115,10 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
             server_cfg = snippet["mcpServers"]["artemis"]
             jetski_path = Path.home() / ".gemini" / "jetski" / "mcp_config.json"
             config_path = Path.home() / ".gemini" / "config" / "mcp_config.json"
-            _merge_json_file(jetski_path, "artemis", server_cfg)
-            _merge_json_file(config_path, "artemis", server_cfg)
-            installed_paths.extend([str(jetski_path), str(config_path)])
+            if _merge_json_file(jetski_path, "artemis", server_cfg):
+                installed_paths.append(str(jetski_path))
+            if _merge_json_file(config_path, "artemis", server_cfg):
+                installed_paths.append(str(config_path))
         elif target in ("claude", "claude_code", "claude_desktop"):
             server_cfg = snippet["mcpServers"]["artemis"]
             if sys.platform == "darwin":
@@ -108,23 +128,43 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
                 claude_path = Path(appdata) / "Claude" / "claude_desktop_config.json"
             else:
                 claude_path = Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
-            _merge_json_file(claude_path, "artemis", server_cfg)
-            installed_paths.append(str(claude_path))
+            if _merge_json_file(claude_path, "artemis", server_cfg):
+                installed_paths.append(str(claude_path))
+
+            # Also install to Claude Code CLI global config (~/.claude.json)
+            claude_code_path = Path.home() / ".claude.json"
+            if _merge_json_file(claude_code_path, "artemis", server_cfg):
+                installed_paths.append(str(claude_code_path))
         elif target == "cursor":
             server_cfg = snippet["mcpServers"]["artemis"]
             cursor_path = Path.home() / ".cursor" / "mcp.json"
-            _merge_json_file(cursor_path, "artemis", server_cfg)
-            installed_paths.append(str(cursor_path))
+            if _merge_json_file(cursor_path, "artemis", server_cfg):
+                installed_paths.append(str(cursor_path))
         elif target == "windsurf":
             server_cfg = snippet["mcpServers"]["artemis"]
             windsurf_path = Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
-            _merge_json_file(windsurf_path, "artemis", server_cfg)
-            installed_paths.append(str(windsurf_path))
+            if _merge_json_file(windsurf_path, "artemis", server_cfg):
+                installed_paths.append(str(windsurf_path))
+        elif target == "vscode":
+            server_cfg = snippet["mcpServers"]["artemis"]
+            vscode_path = _get_vscode_user_dir() / "mcp.json"
+            if _merge_json_file(vscode_path, "artemis", server_cfg):
+                installed_paths.append(str(vscode_path))
+        elif target == "cline":
+            server_cfg = snippet["mcpServers"]["artemis"]
+            cline_path = _get_vscode_user_dir() / "globalStorage" / "saoudrizwan.claude-dev" / "settings" / "cline_mcp_settings.json"
+            if _merge_json_file(cline_path, "artemis", server_cfg):
+                installed_paths.append(str(cline_path))
+        elif target in ("roo", "roo_code"):
+            server_cfg = snippet["mcpServers"]["artemis"]
+            roo_path = _get_vscode_user_dir() / "globalStorage" / "rooveterinaryinc.roo-cline" / "settings" / "cline_mcp_settings.json"
+            if _merge_json_file(roo_path, "artemis", server_cfg):
+                installed_paths.append(str(roo_path))
         elif target == "openclaw":
             plugin_cfg = snippet["plugins"]["artemis_mcp"]
             openclaw_path = Path.home() / ".openclaw" / "openclaw.json"
-            _merge_json_file(openclaw_path, "artemis_mcp", plugin_cfg, key_name="plugins")
-            installed_paths.append(str(openclaw_path))
+            if _merge_json_file(openclaw_path, "artemis_mcp", plugin_cfg, key_name="plugins"):
+                installed_paths.append(str(openclaw_path))
 
     return installed_paths
 
@@ -165,7 +205,7 @@ def mcp_command(
         typer.Option(
             "--install",
             "-i",
-            help="Auto-install and merge ARTEMIS MCP configuration into 'antigravity', 'claude', 'cursor', 'windsurf', 'openclaw', or 'all'.",
+            help="Auto-install and merge ARTEMIS MCP configuration into 'antigravity', 'claude', 'cursor', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', or 'all'.",
         ),
     ] = None,
     generate_config: Annotated[
@@ -173,7 +213,7 @@ def mcp_command(
         typer.Option(
             "--generate-config",
             "-g",
-            help="Output ready-to-use MCP configuration JSON for 'antigravity', 'cursor', 'claude', 'windsurf', 'openclaw', or 'all'.",
+            help="Output ready-to-use MCP configuration JSON for 'antigravity', 'cursor', 'claude', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', or 'all'.",
         ),
     ] = None,
 ) -> None:
@@ -191,11 +231,15 @@ def mcp_command(
             "claude_desktop",
             "cursor",
             "windsurf",
+            "vscode",
+            "cline",
+            "roo",
+            "roo_code",
             "openclaw",
             "all",
         ):
             console.print(
-                f"[bold red]Unsupported install target: '{install_config}'. Use 'antigravity', 'claude', 'cursor', 'windsurf', 'openclaw', or 'all'.[/bold red]"
+                f"[bold red]Unsupported install target: '{install_config}'. Use 'antigravity', 'claude', 'cursor', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', or 'all'.[/bold red]"
             )
             raise typer.Exit(1)
         installed_paths = install_mcp_config(client, python_exe, project_root)
@@ -215,11 +259,20 @@ def mcp_command(
                 "cursor (.cursor/mcp.json)": _get_config_snippet(
                     "cursor", python_exe, project_root
                 ),
-                "claude (claude_desktop_config.json)": _get_config_snippet(
+                "claude (claude_desktop_config.json & ~/.claude.json)": _get_config_snippet(
                     "claude", python_exe, project_root
                 ),
                 "windsurf (~/.codeium/windsurf/mcp_config.json)": _get_config_snippet(
                     "windsurf", python_exe, project_root
+                ),
+                "vscode (mcp.json)": _get_config_snippet(
+                    "vscode", python_exe, project_root
+                ),
+                "cline (cline_mcp_settings.json)": _get_config_snippet(
+                    "cline", python_exe, project_root
+                ),
+                "roo (cline_mcp_settings.json)": _get_config_snippet(
+                    "roo", python_exe, project_root
                 ),
                 "openclaw (openclaw.json)": _get_config_snippet(
                     "openclaw", python_exe, project_root

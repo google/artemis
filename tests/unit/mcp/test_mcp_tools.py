@@ -111,3 +111,17 @@ async def test_mobile_inspect_trace_invalid_action():
     res = await mobile_inspect_trace(action="invalid_action", trace_id="trace-123")
     assert "error" in res
     assert "not supported" in res["message"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_server_auto_registers_tools():
+    """Verify that importing mcp_server.base auto-registers all mobile tools without manual tools import."""
+    from mcp_server.base import mcp
+    tools = await mcp.list_tools()
+    tool_names = {t.name for t in tools}
+    assert {
+        "mobile_run_task",
+        "mobile_manage_task",
+        "mobile_get_device_state",
+        "mobile_inspect_trace",
+    }.issubset(tool_names)

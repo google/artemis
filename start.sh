@@ -153,7 +153,26 @@ if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "
     fi
 fi
 
-# 7. Launch unified Showcase UI & auto-open browser
+# 7. Optionally configure MCP for detected AI IDEs
+echo ""
+echo -e "   ${CYAN}🔌 Would you like to configure ARTEMIS MCP for your AI IDEs?${NC}"
+echo -e "      (Supported: Antigravity, Cursor, Claude Code/Desktop, OpenClaw, Windsurf)"
+if [ -t 0 ]; then
+    read -r -p "      Install MCP configuration now? [Y/n]: " INSTALL_MCP
+    INSTALL_MCP=${INSTALL_MCP:-Y}
+else
+    INSTALL_MCP="n"
+fi
+
+if [[ "${INSTALL_MCP}" =~ ^[Yy]$ ]]; then
+    echo -e "   ${GREEN}✔ Installing MCP server configuration...${NC}"
+    uv run artemis mcp --install all >/dev/null 2>&1 || true
+    echo -e "   ${CYAN}💡 Tip: You can update or re-install anytime with: ${BOLD}uv run artemis mcp --install all${NC}"
+else
+    echo -e "   ${YELLOW}⏭️  Skipped. You can install MCP anytime later with: ${BOLD}uv run artemis mcp --install all${NC}"
+fi
+echo ""
+
+# 8. Launch unified Showcase UI & auto-open browser
 echo -e "   ${GREEN}🚀 Launching Artemis Showcase UI & Admin Console...${NC}"
-echo -e "   ${CYAN}💡 Tip: Connect to Antigravity / Claude Desktop anytime: ${BOLD}artemis mcp --install all${NC}"
 exec uv run artemis ui --open "$@"

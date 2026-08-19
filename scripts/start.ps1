@@ -130,9 +130,31 @@ if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1))
     }
 }
 
-# 7. Launch unified Showcase UI & open browser
+# 7. Optionally configure MCP for detected AI IDEs
+Write-Host ""
+Write-Host "   🔌 Would you like to configure ARTEMIS MCP for your AI IDEs?" -ForegroundColor Cyan
+Write-Host "      (Supported: Antigravity, Cursor, Claude Code/Desktop, OpenClaw, Windsurf)"
+$installMcp = "Y"
+if ([Console]::IsInputRedirected -eq $false) {
+    $response = Read-Host "      Install MCP configuration now? [Y/n]"
+    if ($response -ne "") {
+        $installMcp = $response
+    }
+} else {
+    $installMcp = "N"
+}
+
+if ($installMcp -match "^[Yy]") {
+    Write-Host "   ✔ Installing MCP server configuration..." -ForegroundColor Green
+    uv run artemis mcp --install all 2>$null | Out-Null
+    Write-Host "   💡 Tip: You can update or re-install anytime with: uv run artemis mcp --install all" -ForegroundColor Cyan
+} else {
+    Write-Host "   ⏭️  Skipped. You can install MCP anytime later with: uv run artemis mcp --install all" -ForegroundColor Yellow
+}
+Write-Host ""
+
+# 8. Launch unified Showcase UI & open browser
 Write-Host "   🚀 Launching Artemis Showcase UI & Admin Console..." -ForegroundColor Green
-Write-Host "   💡 Tip: Connect to Antigravity / Claude Desktop anytime: artemis mcp --install all" -ForegroundColor Cyan
 if ($NoOpen) {
     uv run artemis ui --port $Port --no-open
 } else {

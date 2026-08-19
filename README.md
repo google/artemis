@@ -94,7 +94,7 @@ git clone https://github.com/google/artemis.git && cd artemis
 start.bat
 ```
 
-> 💡 **Tip**: Opens `http://localhost:8000` in your default browser with a device connection wizard, live screen mirroring, prompt sandbox, and execution replays. You can also run directly from CLI: `artemis run "Open Settings, find Battery and tell me current level" --profile flash`.
+> 💡 **Tip**: Opens `http://localhost:8000` in your default browser with a device connection wizard, live screen mirroring, prompt sandbox, and execution replays. You can also run directly from CLI: `uv run artemis run "Open Settings, find Battery and tell me current level" --profile flash`.
 
 <a id="mcp-setup"></a>
 <a id="mcp"></a>
@@ -107,21 +107,22 @@ ARTEMIS includes a native **Model Context Protocol (MCP)** server. Connect your 
 
 ### 1. One-Click Auto Install (Recommended)
 
-Run the built-in installer to automatically configure or update your AI IDE (automatically resolves your virtual environment Python and repository path):
+Running `./start.sh` or `start.bat` will prompt you to configure MCP for detected IDEs (or you can install/update anytime later manually using the commands below):
 
 ```bash
 # Auto-install for Antigravity / Jetski:
-artemis mcp --install antigravity
+uv run artemis mcp --install antigravity
 
 # Or install for all detected AI IDEs (Antigravity, Cursor, Claude Desktop/Code, OpenClaw):
-artemis mcp --install all
+uv run artemis mcp --install all
 ```
 
-> 💡 **Tip**: You can also configure MCP interactively during first-time setup via `artemis init`.
+> 💡 **Tip**: You can also configure MCP interactively during first-time setup via `uv run artemis init`.
+> **Pro Tip**: If you want to use the `artemis` command globally without `uv run` in any directory, run `uv tool install -e .` once in the project root.
 
 ### 2. Manual Configuration (Optional)
 
-If you prefer to configure manually, run `artemis mcp --generate-config antigravity` (or `all`) to output the exact JSON snippet, or paste the following into your IDE configuration (replace `/path/to/artemis` with your actual repo path and point `command` to your `.venv` Python executable):
+If you prefer to configure manually, run `uv run artemis mcp --generate-config antigravity` (or `all`) to output the exact JSON snippet, or paste the following into your IDE configuration (replace `/path/to/artemis` with your actual repo path and point `command` to your `.venv` Python executable):
 
 * **Antigravity** (`~/.gemini/jetski/mcp_config.json`):
 ```json
@@ -217,9 +218,9 @@ if __name__ == "__main__":
   <sub>💡 <b>Console Overview</b>: <b>① View Switcher</b> (Home / Workspace) · <b>② Model & Replay</b> (Flash/Pro status & video replay) · <b>③ Live Agent Stream</b> (Action perception, target coordinates & structured results) · <b>④ Prompt Dock</b> (Natural language dispatch) · <b>⑤ Task Queue & Dashboard</b> (Lifecycle & history)</sub>
 </p>
 
-* 🖥️ **Web Visual Test Console (`artemis ui`)**: Real-time screen projection and interactive panel, supporting natural language test dispatch, live reasoning telemetry, action trajectories, and execution replay;
+* 🖥️ **Web Visual Test Console (`uv run artemis ui`)**: Real-time screen projection and interactive panel, supporting natural language test dispatch, live reasoning telemetry, action trajectories, and execution replay;
 * 🔌 **Native MCP Protocol (IDE Collaboration)**: Operates as a standard MCP server seamlessly integrating with **Antigravity, Claude Code, Windsurf**, etc., directly driving real devices inside the IDE to verify bugs and run test cases;
-* 💻 **Developer CLI (`artemis run`)**: Direct terminal execution for automated test cases, exploratory stability inspection, or AndroidWorld benchmarks with high-fidelity structured terminal output;
+* 💻 **Developer CLI (`uv run artemis run`)**: Direct terminal execution for automated test cases, exploratory stability inspection, or AndroidWorld benchmarks with high-fidelity structured terminal output;
 * 🐍 **Python SDK**: Integrates as a standard Python library into existing automated testing frameworks (e.g., pytest) or CI/CD pipelines with strongly typed Pydantic structured outputs and assertion support.
 
 ## 📊 Head-to-Head Comparison

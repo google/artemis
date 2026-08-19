@@ -16,6 +16,13 @@
 
 from mcp.server.fastmcp import FastMCP
 
+try:
+    from mcp.server.fastmcp.server import Settings as FastMCPSettings
+
+    FastMCPSettings.model_rebuild()
+except Exception:
+    pass
+
 # Define the shared FastMCP instance for external IDE and agent clients.
 mcp = FastMCP(
     "artemis",
@@ -27,3 +34,6 @@ mcp = FastMCP(
         "and mobile_inspect_trace to inspect detailed execution steps and visual action overlays."
     ),
 )
+
+# Import tools so they are registered with the mcp instance upon module load
+import mcp_server.tools  # noqa: E402, F401

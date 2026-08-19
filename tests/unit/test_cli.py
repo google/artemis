@@ -90,13 +90,16 @@ def test_cli_mcp_generate_config_antigravity():
 
 
 def test_cli_mcp_generate_config_all():
-    """Verify 'artemis mcp --generate-config all' includes antigravity, cursor, windsurf, and claude."""
+    """Verify 'artemis mcp --generate-config all' includes antigravity, cursor, windsurf, claude, vscode, cline, and roo."""
     result = runner.invoke(app, ["mcp", "--generate-config", "all"])
     assert result.exit_code == 0
     assert "antigravity" in result.output
     assert "cursor" in result.output
     assert "windsurf" in result.output
     assert "claude" in result.output
+    assert "vscode" in result.output
+    assert "cline" in result.output
+    assert "roo" in result.output
 
 
 def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
@@ -111,6 +114,7 @@ def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
     data = json.loads(jetski_file.read_text())
     assert "artemis" in data["mcpServers"]
     assert "mobile_run_task" in data["mcpServers"]["artemis"]["tools"]
+    assert "PYTHONPATH" in data["mcpServers"]["artemis"]["env"]
 
 
 def test_cli_mcp_install_all(tmp_path, monkeypatch):
@@ -122,5 +126,6 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     assert (tmp_path / ".cursor" / "mcp.json").exists()
     assert (tmp_path / ".codeium" / "windsurf" / "mcp_config.json").exists()
     assert (tmp_path / ".openclaw" / "openclaw.json").exists()
+    assert (tmp_path / ".claude.json").exists()
 
 
