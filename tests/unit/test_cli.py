@@ -90,7 +90,7 @@ def test_cli_mcp_generate_config_antigravity():
 
 
 def test_cli_mcp_generate_config_all():
-    """Verify 'artemis mcp --generate-config all' includes antigravity, cursor, windsurf, claude, vscode, cline, and roo."""
+    """Verify 'artemis mcp --generate-config all' includes every supported client."""
     result = runner.invoke(app, ["mcp", "--generate-config", "all"])
     assert result.exit_code == 0
     assert "antigravity" in result.output
@@ -100,6 +100,15 @@ def test_cli_mcp_generate_config_all():
     assert "vscode" in result.output
     assert "cline" in result.output
     assert "roo" in result.output
+    assert "codex" in result.output
+
+
+def test_cli_mcp_generate_config_codex():
+    """Verify Codex generation produces a ready-to-use TOML server block."""
+    result = runner.invoke(app, ["mcp", "--generate-config", "codex"])
+    assert result.exit_code == 0
+    assert "[mcp_servers.artemis]" in result.output
+    assert "[mcp_servers.artemis.env]" in result.output
 
 
 def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
@@ -137,6 +146,7 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     assert (tmp_path / ".codeium" / "windsurf" / "mcp_config.json").exists()
     assert (tmp_path / ".openclaw" / "openclaw.json").exists()
     assert (tmp_path / ".claude.json").exists()
+    assert (tmp_path / ".codex" / "config.toml").exists()
 
     # Verify global rule files installed across IDEs
     assert (tmp_path / ".gemini" / "GEMINI.md").exists()
@@ -154,6 +164,41 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     assert (tmp_path / ".roo" / "rules" / "artemis.md").exists()
     assert (tmp_path / ".openclaw" / "OPENCLAW.md").exists()
     assert (tmp_path / ".openclaw" / "rules" / "artemis.md").exists()
+    assert (tmp_path / ".codex" / "AGENTS.md").exists()
+
+
+def test_cli_mcp_install_codex_preserves_config_and_is_idempotent(tmp_path, monkeypatch):
+    """Verify Codex TOML merging preserves other servers and updates only Artemis."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir(parents=True)
+    config_file = codex_dir / "config.toml"
+    config_file.write_text(
+        'model = "test-model"\n\n'
+        '[mcp_servers.existing]\ncommand = "echo"\n\n'
+        '[mcp_servers.artemis]\ncommand = "old-command"\n',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["mcp", "--install", "codex"])
+    assert result.exit_code == 0
+    result2 = runner.invoke(app, ["mcp", "--install", "codex"])
+    assert result2.exit_code == 0
+
+    import tomllib
+    config_text = config_file.read_text(encoding="utf-8")
+    data = tomllib.loads(config_text)
+    assert data["model"] == "test-model"
+    assert data["mcp_servers"]["existing"]["command"] == "echo"
+    assert data["mcp_servers"]["artemis"]["args"] == ["-m", "mcp_server"]
+    assert data["mcp_servers"]["artemis"]["env"]["PYTHONPATH"] == str(tmp_path)
+    assert config_text.count("# BEGIN ARTEMIS MCP CONFIG") == 1
+
+    agents_file = codex_dir / "AGENTS.md"
+    agents_text = agents_file.read_text(encoding="utf-8")
+    assert "Mobile Testing Mindset" in agents_text
+    assert agents_text.count("<!-- BEGIN ARTEMIS MOBILE TESTING RULES -->") == 1
 
 
 def test_cli_mcp_install_jsonc_and_backup(tmp_path, monkeypatch):

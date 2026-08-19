@@ -17,7 +17,9 @@
 import json
 import os
 from pathlib import Path
+import re
 import sys
+import tomllib
 from typing import Annotated
 
 from mcp_server.base import mcp as agent_mcp
@@ -72,6 +74,8 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
         }
     elif client == "openclaw":
         return {"plugins": {"artemis_mcp": {"enabled": True, "type": "mcp", "server": config_body}}}
+    elif client == "codex":
+        return {"mcp_servers": {"artemis": config_body}}
     else:  # cursor, windsurf, claude, vscode, cline, roo, generic
         return {"mcpServers": {"artemis": config_body}}
 
@@ -83,7 +87,6 @@ def _parse_json_lenient(text: str) -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:
         pass
-    import re
     # Remove // single-line comments
     cleaned = re.sub(r"//.*", "", text)
     # Remove /* ... */ multi-line comments
@@ -122,6 +125,76 @@ def _merge_json_file(file_path: Path, server_name: str, server_config: dict, key
         return True
     except Exception as e:
         logger.warning(f"Could not update MCP config file {file_path}: {e}")
+        return False
+
+
+def _codex_toml_block(server_config: dict) -> str:
+    """Renders a managed Codex MCP server block using TOML-compatible JSON strings."""
+    command = json.dumps(str(server_config["command"]), ensure_ascii=False)
+    args = json.dumps(server_config.get("args", []), ensure_ascii=False)
+    cwd = json.dumps(str(server_config["cwd"]), ensure_ascii=False)
+    env = server_config.get("env", {})
+    lines = [
+        "# BEGIN ARTEMIS MCP CONFIG",
+        "[mcp_servers.artemis]",
+        f"command = {command}",
+        f"args = {args}",
+        f"cwd = {cwd}",
+    ]
+    if env:
+        lines.extend(["", "[mcp_servers.artemis.env]"])
+        for key, value in env.items():
+            lines.append(f"{key} = {json.dumps(str(value), ensure_ascii=False)}")
+    lines.append("# END ARTEMIS MCP CONFIG")
+    return "\n".join(lines) + "\n"
+
+
+def _merge_codex_toml(file_path: Path, server_config: dict) -> bool:
+    """Adds or updates Artemis in Codex config.toml while preserving unrelated settings."""
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
+        managed_block = _codex_toml_block(server_config)
+        begin_marker = "# BEGIN ARTEMIS MCP CONFIG"
+        end_marker = "# END ARTEMIS MCP CONFIG"
+
+        if begin_marker in existing and end_marker in existing:
+            managed_pattern = re.compile(
+                rf"(?ms)^{re.escape(begin_marker)}\n.*?^{re.escape(end_marker)}\n?"
+            )
+            updated = managed_pattern.sub(managed_block, existing, count=1)
+        else:
+            # Remove an older, unmanaged Artemis table before adding the managed block.
+            kept_lines: list[str] = []
+            skipping_artemis = False
+            header_pattern = re.compile(r"^\s*\[{1,2}\s*(.+?)\s*\]{1,2}\s*(?:#.*)?$")
+            for line in existing.splitlines(keepends=True):
+                header_match = header_pattern.match(line.rstrip("\r\n"))
+                if header_match:
+                    normalized = re.sub(r"[\s\"']", "", header_match.group(1)).lower()
+                    skipping_artemis = normalized == "mcp_servers.artemis" or normalized.startswith(
+                        "mcp_servers.artemis."
+                    )
+                if not skipping_artemis:
+                    kept_lines.append(line)
+            preserved = "".join(kept_lines).rstrip()
+            updated = f"{preserved}\n\n{managed_block}" if preserved else managed_block
+
+        # Never replace a user's config with invalid TOML.
+        tomllib.loads(updated)
+        if updated != existing:
+            file_path.write_text(updated, encoding="utf-8")
+        return True
+    except Exception as e:
+        if file_path.exists():
+            try:
+                backup_path = file_path.with_suffix(file_path.suffix + ".bak")
+                backup_path.write_text(file_path.read_text(encoding="utf-8"), encoding="utf-8")
+                logger.warning(f"Could not update {file_path}; backup created at {backup_path}: {e}")
+            except Exception:
+                pass
+        else:
+            logger.warning(f"Could not create Codex MCP config file {file_path}: {e}")
         return False
 
 
@@ -219,7 +292,7 @@ def install_rules(client: str, project_root: str) -> list[str]:
         return []
 
     targets = (
-        ["antigravity", "cursor", "claude", "windsurf", "vscode", "cline", "roo", "openclaw"]
+        ["antigravity", "cursor", "claude", "windsurf", "vscode", "cline", "roo", "openclaw", "codex"]
         if client == "all"
         else [client]
     )
@@ -281,6 +354,16 @@ def install_rules(client: str, project_root: str) -> list[str]:
                 installed_paths.append(str(openclaw_md))
             if _write_rule_file(global_rule, raw_rules):
                 installed_paths.append(str(global_rule))
+        elif target == "codex":
+            codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+            override_file = codex_home / "AGENTS.override.md"
+            agents_file = (
+                override_file
+                if override_file.exists() and override_file.read_text(encoding="utf-8").strip()
+                else codex_home / "AGENTS.md"
+            )
+            if _inject_rules_block(agents_file, raw_rules):
+                installed_paths.append(str(agents_file))
 
     return installed_paths
 
@@ -289,7 +372,7 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
     """Auto-installs/merges ARTEMIS MCP configuration and testing rules into IDE config files across any OS."""
     installed_paths: list[str] = []
     targets = (
-        ["antigravity", "cursor", "claude", "windsurf", "vscode", "cline", "roo", "openclaw"]
+        ["antigravity", "cursor", "claude", "windsurf", "vscode", "cline", "roo", "openclaw", "codex"]
         if client == "all"
         else [client]
     )
@@ -350,6 +433,12 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
             openclaw_path = Path.home() / ".openclaw" / "openclaw.json"
             if _merge_json_file(openclaw_path, "artemis_mcp", plugin_cfg, key_name="plugins"):
                 installed_paths.append(str(openclaw_path))
+        elif target == "codex":
+            server_cfg = snippet["mcp_servers"]["artemis"]
+            codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+            codex_path = codex_home / "config.toml"
+            if _merge_codex_toml(codex_path, server_cfg):
+                installed_paths.append(str(codex_path))
 
     rules_paths = install_rules(client, project_root)
     installed_paths.extend(rules_paths)
@@ -397,7 +486,7 @@ def mcp_command(
         typer.Option(
             "--install",
             "-i",
-            help="Auto-install and merge ARTEMIS MCP configuration and testing rules into 'antigravity', 'claude', 'cursor', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', or 'all'.",
+            help="Auto-install and merge ARTEMIS MCP configuration and testing rules into 'antigravity', 'claude', 'cursor', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', 'codex', or 'all'.",
         ),
     ] = None,
     generate_config: Annotated[
@@ -405,7 +494,7 @@ def mcp_command(
         typer.Option(
             "--generate-config",
             "-g",
-            help="Output ready-to-use MCP configuration JSON for 'antigravity', 'cursor', 'claude', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', or 'all'.",
+            help="Output ready-to-use MCP configuration for 'antigravity', 'cursor', 'claude', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', 'codex', or 'all'.",
         ),
     ] = None,
 ) -> None:
@@ -428,10 +517,11 @@ def mcp_command(
             "roo",
             "roo_code",
             "openclaw",
+            "codex",
             "all",
         ):
             console.print(
-                f"[bold red]Unsupported install target: '{install_config}'. Use 'antigravity', 'claude', 'cursor', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', or 'all'.[/bold red]"
+                f"[bold red]Unsupported install target: '{install_config}'. Use 'antigravity', 'claude', 'cursor', 'windsurf', 'vscode', 'cline', 'roo', 'openclaw', 'codex', or 'all'.[/bold red]"
             )
             raise typer.Exit(1)
         installed_paths = install_mcp_config(client, python_exe, project_root)
@@ -469,13 +559,22 @@ def mcp_command(
                 "openclaw (openclaw.json)": _get_config_snippet(
                     "openclaw", python_exe, project_root
                 ),
+                "codex (~/.codex/config.toml)": _get_config_snippet(
+                    "codex", python_exe, project_root
+                ),
             }
             json_str = json.dumps(all_configs, indent=2)
+            syntax_language = "json"
+        elif client == "codex":
+            server_cfg = _get_config_snippet("codex", python_exe, project_root)["mcp_servers"]["artemis"]
+            json_str = _codex_toml_block(server_cfg)
+            syntax_language = "toml"
         else:
             snippet = _get_config_snippet(client, python_exe, project_root)
             json_str = json.dumps(snippet, indent=2)
+            syntax_language = "json"
 
-        syntax = Syntax(json_str, "json", theme="monokai", line_numbers=False)
+        syntax = Syntax(json_str, syntax_language, theme="monokai", line_numbers=False)
         console.print(f"[bold cyan]MCP Configuration for {client.upper()}:[/bold cyan]")
         console.print(syntax)
         raise typer.Exit(0)

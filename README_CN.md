@@ -84,26 +84,37 @@
 
 确保电脑已连接 Android 实体机（已开启 **USB 调试**）或 Android 模拟器。一键启动脚本将会自动完成以下配置：
 - 🛠️ **安装系统环境依赖**：自动检测并安装 ADB、scrcpy、FFmpeg 与 Python（`uv`）运行时及项目依赖。
-- 🔌 **全局挂载 MCP 服务与测试准则 (Rules)**：主动引导并自动将全局 MCP 服务与 **Artemis 移动端测试思维准则 (`rules.md`)** 挂载至你使用的 AI IDE（支持 **Antigravity**、**Cursor**、**Claude Code**、**Windsurf**、**VS Code**、**Cline/Roo**、**OpenClaw**）。
+- 🔌 **全局挂载 MCP 服务与测试准则 (Rules)**：主动引导并自动将全局 MCP 服务与 **Artemis 移动端测试思维准则 (`rules.md`)** 挂载至你使用的 AI IDE（支持 **Antigravity**、**Cursor**、**Claude Code**、**Codex**、**Windsurf**、**VS Code**、**Cline/Roo**、**OpenClaw**）。
+
+### 🍎 macOS 与 🐧 Linux
 
 ```bash
 # 1. 克隆代码仓库并进入目录
 git clone https://github.com/google/artemis.git && cd artemis
 
 # 2. 一键启动
-# 🍎 macOS & 🐧 Linux
 ./start.sh
-
-# 🪟 Windows
-start.bat
 ```
+
+### 🪟 Windows PowerShell
+
+```powershell
+# 1. 克隆代码仓库并进入目录
+git clone https://github.com/google/artemis.git
+cd artemis
+
+# 2. 一键启动
+.\start.bat
+```
+
+> PowerShell 默认不会从当前目录查找可执行脚本，因此必须使用 `.\start.bat`，且命令末尾不要添加 `\`。如果使用传统命令提示符（CMD），则运行 `start.bat`。
 
 > 💡 **提示**：启动后将自动在默认浏览器中打开 Web 控制台（`http://localhost:8000`），提供设备连接向导、实时投屏、任务演练与状态回放面板。你也可以通过命令行直接运行：`uv run artemis run "打开系统设置，找到电池选项并告诉我当前电量" --profile flash`。
 
 <a id="mcp-setup"></a>
 <a id="mcp"></a>
 <details>
-<summary><b>🔌 接入 Antigravity / Claude Code / Windsurf (MCP)（点击展开）</b></summary>
+<summary><b>🔌 接入 Codex / Antigravity / Claude Code / Windsurf (MCP)（点击展开）</b></summary>
 
 <br>
 
@@ -111,13 +122,13 @@ ARTEMIS 内置原生 **Model Context Protocol (MCP)** 服务。只需将以下�
 
 ### 1. 一键自动安装到 IDE（推荐）
 
-运行 `./start.sh` 或 `start.bat` 启动脚本时会主动询问是否自动挂载全局 MCP 与测试行为准则（支持跳过并在之后随时手动执行以下命令挂载）：
+运行 `./start.sh`（macOS/Linux）或 `.\start.bat`（Windows PowerShell）启动脚本时，会主动询问是否自动挂载全局 MCP 与测试行为准则（支持跳过并在之后随时手动执行以下命令挂载）：
 
 ```bash
 # 一键安装全局 MCP 服务与 Rules 到 Antigravity / Jetski：
 uv run artemis mcp --install antigravity
 
-# 或一键安装到所有检测到的 AI IDE（Antigravity、Cursor、Claude Desktop/Code、OpenClaw）：
+# 或一键安装到所有支持的 AI IDE（包括 Codex）：
 uv run artemis mcp --install all
 ```
 
@@ -126,7 +137,19 @@ uv run artemis mcp --install all
 
 ### 2. 手动配置（可选）
 
-如果你习惯手动复制配置，可运行 `uv run artemis mcp --generate-config antigravity`（或 `all`）获取自动计算好路径的 JSON 代码段，也可以参考以下模板将 `command` 填写为项目下 `.venv` 虚拟环境中的 Python 绝对路径，并将 `/path/to/artemis` 替换为项目实际路径：
+如果你习惯手动复制配置，可运行 `uv run artemis mcp --generate-config <client>`（例如 `codex` 或 `antigravity`）获取对应的 TOML 或 JSON 配置。请将 `command` 填写为项目下 `.venv` 虚拟环境中的 Python 绝对路径，并将 `/path/to/artemis` 替换为项目实际路径：
+
+* **Codex** (`~/.codex/config.toml`)：
+```toml
+[mcp_servers.artemis]
+command = "/path/to/artemis/.venv/bin/python"
+args = ["-m", "mcp_server"]
+cwd = "/path/to/artemis"
+
+[mcp_servers.artemis.env]
+PYTHONUNBUFFERED = "1"
+PYTHONPATH = "/path/to/artemis"
+```
 
 * **Antigravity** (`~/.gemini/jetski/mcp_config.json`)：
 ```json
@@ -171,12 +194,13 @@ uv run artemis mcp --install all
 * **Antigravity**：将 `rules.md` 内容添加至工作区规则（Workspace Rules）或全局规则设置中。
 * **Claude Code**：将 `rules.md` 内容复制或引入至项目根目录的 `CLAUDE.md` 文件中。
 * **Cursor**：将内容复制到 `.cursorrules` 文件或在 `.cursor/rules/artemis.mdc` 中创建新规则。
+* **Codex**：将内容添加至 `~/.codex/AGENTS.md`（或当前生效的 `AGENTS.override.md`）。
 * **Windsurf / OpenClaw**：将内容添加到工作区规则或全局 System Prompt 中。
 
 > 💡 更多规范设计细节与 MCP 架构说明，请参阅 [MCP Server 文档](./mcp_server/README.md)。
 
 ### 4. 在 IDE 中体验真机协同
-在 Antigravity / Claude Code 对话框中直接输入：
+在 Codex / Antigravity / Claude Code 对话框中直接输入：
 > 💬 *"请帮我把刚刚修改的代码编译成 APK 并安装到手机上，打开登录页面输入测试账号，验证登录后是否有异常弹窗，并把最终页面截图回传。"*
 
 </details>

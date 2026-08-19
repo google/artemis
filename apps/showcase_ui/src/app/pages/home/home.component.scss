@@ -54,6 +54,51 @@ $text-secondary: #475569;
 $text-muted: #64748b;
 $text-light: #94a3b8;
 
+// Shared OS switcher. It is rendered in both the dependency installer and
+// the empty-AVD guide, so the styling cannot be scoped to either card.
+.os-selector-pills {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), inset 0 1px 1px rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+
+  .os-pill {
+    padding: 3px 9px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: $text-secondary;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.35;
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+
+    &:hover {
+      color: $text-main;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    &.active {
+      color: #ffffff;
+      background: $primary;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+    }
+
+    &:focus-visible {
+      outline: 2px solid rgba($primary, 0.35);
+      outline-offset: 1px;
+    }
+  }
+}
+
 // =============================================================================
 // FROSTED GLASS (GLASSMORPHISM) MIXINS
 // =============================================================================

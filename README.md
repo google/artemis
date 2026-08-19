@@ -82,26 +82,37 @@ Experience seamless collaboration between **Antigravity** and **ARTEMIS** via na
 
 Ensure an Android device (with **USB Debugging** enabled) or emulator is connected. The one-click startup script will automatically:
 - 🛠️ **Install System Toolchains**: Detect and auto-install ADB, scrcpy, FFmpeg, and Python (`uv`) dependencies.
-- 🔌 **Mount Global MCP Server & AI Agent Rules**: Prompt to automatically install global MCP configurations and the **Artemis Mobile Testing Mindset (`rules.md`)** into your AI IDEs (**Antigravity**, **Cursor**, **Claude Code**, **Windsurf**, **VS Code**, **Cline/Roo**, **OpenClaw**).
+- 🔌 **Mount Global MCP Server & AI Agent Rules**: Prompt to automatically install global MCP configurations and the **Artemis Mobile Testing Mindset (`rules.md`)** into your AI IDEs (**Antigravity**, **Cursor**, **Claude Code**, **Codex**, **Windsurf**, **VS Code**, **Cline/Roo**, **OpenClaw**).
+
+### 🍎 macOS and 🐧 Linux
 
 ```bash
 # 1. Clone repo & navigate to directory
 git clone https://github.com/google/artemis.git && cd artemis
 
 # 2. One-click launch
-# 🍎 macOS & 🐧 Linux
 ./start.sh
-
-# 🪟 Windows
-start.bat
 ```
+
+### 🪟 Windows PowerShell
+
+```powershell
+# 1. Clone repo & navigate to directory
+git clone https://github.com/google/artemis.git
+cd artemis
+
+# 2. One-click launch
+.\start.bat
+```
+
+> PowerShell does not search the current directory for executable scripts by default, so use `.\start.bat` without a trailing `\`. In Command Prompt (CMD), use `start.bat` instead.
 
 > 💡 **Tip**: Opens `http://localhost:8000` in your default browser with a device connection wizard, live screen mirroring, prompt sandbox, and execution replays. You can also run directly from CLI: `uv run artemis run "Open Settings, find Battery and tell me current level" --profile flash`.
 
 <a id="mcp-setup"></a>
 <a id="mcp"></a>
 <details>
-<summary><b>🔌 MCP Setup for Antigravity / Claude Code / Windsurf (Click to expand)</b></summary>
+<summary><b>🔌 MCP Setup for Codex / Antigravity / Claude Code / Windsurf (Click to expand)</b></summary>
 
 <br>
 
@@ -109,13 +120,13 @@ ARTEMIS includes a native **Model Context Protocol (MCP)** server. Connect your 
 
 ### 1. One-Click Auto Install (Recommended)
 
-Running `./start.sh` or `start.bat` will prompt you to configure global MCP and testing rules for detected IDEs (or you can install/update anytime later manually using the commands below):
+Running `./start.sh` (macOS/Linux) or `.\start.bat` (Windows PowerShell) will prompt you to configure global MCP and testing rules for detected IDEs (or you can install/update anytime later manually using the commands below):
 
 ```bash
 # Auto-install MCP server & global rules for Antigravity / Jetski:
 uv run artemis mcp --install antigravity
 
-# Or install for all detected AI IDEs (Antigravity, Cursor, Claude Desktop/Code, OpenClaw):
+# Or install for all supported AI IDEs (including Codex):
 uv run artemis mcp --install all
 ```
 
@@ -124,7 +135,19 @@ uv run artemis mcp --install all
 
 ### 2. Manual Configuration (Optional)
 
-If you prefer to configure manually, run `uv run artemis mcp --generate-config antigravity` (or `all`) to output the exact JSON snippet, or paste the following into your IDE configuration (replace `/path/to/artemis` with your actual repo path and point `command` to your `.venv` Python executable):
+If you prefer to configure manually, run `uv run artemis mcp --generate-config <client>` (for example, `codex` or `antigravity`) to output the appropriate TOML or JSON snippet. Replace `/path/to/artemis` with your actual repo path and point `command` to your `.venv` Python executable:
+
+* **Codex** (`~/.codex/config.toml`):
+```toml
+[mcp_servers.artemis]
+command = "/path/to/artemis/.venv/bin/python"
+args = ["-m", "mcp_server"]
+cwd = "/path/to/artemis"
+
+[mcp_servers.artemis.env]
+PYTHONUNBUFFERED = "1"
+PYTHONPATH = "/path/to/artemis"
+```
 
 * **Antigravity** (`~/.gemini/jetski/mcp_config.json`):
 ```json
@@ -169,12 +192,13 @@ You can mount or copy [`mcp_server/rules.md`](./mcp_server/rules.md) into your A
 * **Antigravity**: Add the contents of `rules.md` to your Workspace Rules, Global Rules settings, or agent instructions.
 * **Claude Code**: Copy or include the contents of `rules.md` in your project's `CLAUDE.md` file.
 * **Cursor**: Copy the contents into `.cursorrules` or create a rule file at `.cursor/rules/artemis.mdc`.
+* **Codex**: Add the contents to `~/.codex/AGENTS.md` (or the active `AGENTS.override.md`).
 * **Windsurf / OpenClaw**: Add the rules to your workspace rules or global system prompts.
 
 > 💡 For more details on the testing mindset and MCP architecture, see the [MCP Server README](./mcp_server/README.md).
 
 ### 4. Prompt Your Phone in the IDE Chat
-In Antigravity or Claude Code, simply prompt:
+In Codex, Antigravity, or Claude Code, simply prompt:
 > 💬 *"Build the latest changes into an APK, install it on the connected device, open the login screen with a test account, verify if there are any unexpected popups after login, and return screenshots of the final page."*
 
 </details>

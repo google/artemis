@@ -26,7 +26,7 @@ $RootDir = Split-Path -Parent $ScriptDir
 Set-Location $RootDir
 
 Write-Host "======================================================" -ForegroundColor Cyan
-Write-Host "      ✨ Artemis Autonomous Mobile Agent UI          " -ForegroundColor Cyan
+Write-Host "       Artemis Autonomous Mobile Agent UI           " -ForegroundColor Cyan
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -59,7 +59,7 @@ Update-EnvironmentPath
 
 # 2. Check or install uv
 if (-not (Test-CommandExists "uv")) {
-    Write-Host "⚡ uv not found. Installing Astral uv..." -ForegroundColor Yellow
+    Write-Host "[INFO] uv not found. Installing Astral uv..." -ForegroundColor Yellow
     powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
     Update-EnvironmentPath
 }
@@ -72,7 +72,7 @@ if (-not (Test-CommandExists "scrcpy")) { $missingCore += "scrcpy" }
 
 if ($missingCore.Count -gt 0) {
     if (Test-CommandExists "winget") {
-        Write-Host "⚡ Auto-installing missing components ($($missingCore -join ', '))..." -ForegroundColor DarkYellow
+        Write-Host "[INFO] Auto-installing missing components ($($missingCore -join ', '))..." -ForegroundColor DarkYellow
         if ($missingCore -contains "adb") {
             winget install --id Google.PlatformTools -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
         }
@@ -90,14 +90,14 @@ if ($missingCore.Count -gt 0) {
 if (-not (Test-Path ".env")) {
     if (Test-Path ".env.example") {
         Copy-Item ".env.example" ".env"
-        Write-Host "   ✔ Initialized .env configuration file." -ForegroundColor Green
+        Write-Host "   [OK] Initialized .env configuration file." -ForegroundColor Green
     } else {
         New-Item -ItemType File -Path ".env" | Out-Null
     }
 }
 
 # 5. Synchronize dependencies
-Write-Host "   📦 Synchronizing Python runtime and project dependencies..." -ForegroundColor Cyan
+Write-Host "   [INFO] Synchronizing Python runtime and project dependencies..." -ForegroundColor Cyan
 uv sync --quiet
 
 # 6. Check and build Showcase UI if not already compiled
@@ -107,33 +107,33 @@ $ShowcaseIndexAlt2 = "$RootDir\apps\showcase_ui\dist\index.html"
 if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1)) -and (-not (Test-Path $ShowcaseIndexAlt2))) {
     if (-not (Test-CommandExists "npm")) {
         if (Test-CommandExists "winget") {
-            Write-Host "   ⚡ Node.js/npm not found. Installing Node.js LTS via WinGet..." -ForegroundColor Yellow
+            Write-Host "   [INFO] Node.js/npm not found. Installing Node.js LTS via WinGet..." -ForegroundColor Yellow
             winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
             Update-EnvironmentPath
         }
     }
 
     if (Test-CommandExists "npm") {
-        Write-Host "   🎨 Showcase UI build not found. Compiling Angular Showcase UI..." -ForegroundColor Yellow
+        Write-Host "   [INFO] Showcase UI build not found. Compiling Angular Showcase UI..." -ForegroundColor Yellow
         Push-Location "$RootDir\apps\showcase_ui"
         try {
             npm install --silent
             npm run build
-            Write-Host "   ✔ Showcase UI compiled successfully." -ForegroundColor Green
+            Write-Host "   [OK] Showcase UI compiled successfully." -ForegroundColor Green
         } catch {
-            Write-Host "   ⚠ Failed to build Showcase UI: $_" -ForegroundColor DarkYellow
+            Write-Host "   [WARN] Failed to build Showcase UI: $_" -ForegroundColor DarkYellow
         } finally {
             Pop-Location
         }
     } else {
-        Write-Host "   ⚠ Node.js/npm not found. Please install Node.js (>= 18) to compile Showcase UI." -ForegroundColor DarkYellow
+        Write-Host "   [WARN] Node.js/npm not found. Please install Node.js (>= 18) to compile Showcase UI." -ForegroundColor DarkYellow
     }
 }
 
 # 7. Optionally configure MCP for detected AI IDEs
 Write-Host ""
-Write-Host "   🔌 Would you like to configure ARTEMIS MCP & testing rules for your AI IDEs?" -ForegroundColor Cyan
-Write-Host "      (Supported: Antigravity, Cursor, Claude Code/Desktop, OpenClaw, Windsurf)"
+Write-Host "   [INFO] Would you like to configure ARTEMIS MCP & testing rules for your AI IDEs?" -ForegroundColor Cyan
+Write-Host "      (Supported: Antigravity, Cursor, Claude Code/Desktop, Codex, OpenClaw, Windsurf)"
 $installMcp = "Y"
 if ([Console]::IsInputRedirected -eq $false) {
     $response = Read-Host "      Install MCP configuration & rules now? [Y/n]"
@@ -145,16 +145,21 @@ if ([Console]::IsInputRedirected -eq $false) {
 }
 
 if ($installMcp -match "^[Yy]") {
-    Write-Host "   ✔ Installing MCP server configuration & testing rules..." -ForegroundColor Green
-    uv run artemis mcp --install all 2>$null | Out-Null
-    Write-Host "   💡 Tip: You can update or re-install anytime with: uv run artemis mcp --install all" -ForegroundColor Cyan
+    Write-Host "   Installing MCP server configuration & testing rules..." -ForegroundColor Cyan
+    uv run artemis mcp --install all
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "   [OK] MCP configuration and rules installed successfully." -ForegroundColor Green
+        Write-Host "   [TIP] You can update or re-install anytime with: uv run artemis mcp --install all" -ForegroundColor Cyan
+    } else {
+        Write-Host "   [WARN] MCP installation failed. Review the error above and retry with: uv run artemis mcp --install all" -ForegroundColor Yellow
+    }
 } else {
-    Write-Host "   ⏭️  Skipped. You can install MCP anytime later with: uv run artemis mcp --install all" -ForegroundColor Yellow
+    Write-Host "   [SKIP] You can install MCP anytime later with: uv run artemis mcp --install all" -ForegroundColor Yellow
 }
 Write-Host ""
 
 # 8. Launch unified Showcase UI & open browser
-Write-Host "   🚀 Launching Artemis Showcase UI & Admin Console..." -ForegroundColor Green
+Write-Host "   [INFO] Launching Artemis Showcase UI & Admin Console..." -ForegroundColor Green
 if ($NoOpen) {
     uv run artemis ui --port $Port --no-open
 } else {
