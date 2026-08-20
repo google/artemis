@@ -43,3 +43,33 @@ def test_unrelated_log_is_not_presented_as_llm_failure():
 
     assert normalized["type"] == "log"
     assert normalized["status"] == "success"
+
+
+def test_retrying_llm_payload_keeps_user_visible_retry_details():
+    repository = StepRepository()
+    trace = {
+        "trace_id": "retry-1",
+        "type": "llm_call",
+        "name": "llm_retry",
+        "status": "retrying",
+        "payload": json.dumps(
+            {
+                "error": "503 UNAVAILABLE: high demand",
+                "delay": 1.18,
+                "provider": "google",
+                "source": "provider_sdk",
+                "recoverable": True,
+                "internal_noise": "do not expose",
+            }
+        ),
+    }
+
+    normalized = repository._normalize_display_trace(trace)
+
+    assert normalized["payload"] == {
+        "error": "503 UNAVAILABLE: high demand",
+        "delay": 1.18,
+        "provider": "google",
+        "source": "provider_sdk",
+        "recoverable": True,
+    }

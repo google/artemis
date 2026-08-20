@@ -1,8 +1,11 @@
+import logging
+
 from artemis.services import llm
 
 
 class _RecordingEngine:
     current_step_id = "step-7"
+    current_session_id = "session-1"
 
     def __init__(self):
         self.trace_kwargs = None
@@ -10,6 +13,7 @@ class _RecordingEngine:
 
     def record_trace(self, **kwargs):
         self.trace_kwargs = kwargs
+        return "trace-1"
 
     def _publish(self, event_type, payload):
         self.published = (event_type, payload)
@@ -35,3 +39,42 @@ def test_pause_error_is_persisted_and_published(monkeypatch, tmp_path):
     assert payload["error"] == "503 high demand"
     assert payload["step_id"] == "step-7"
     assert isinstance(payload["timestamp"], float)
+
+
+def test_provider_sdk_retry_is_persisted_and_published(monkeypatch):
+    engine = _RecordingEngine()
+    monkeypatch.setattr(llm, "_CURRENT_DATA_ENGINE", engine)
+    record = logging.LogRecord(
+        name="google_genai._api_client",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg=(
+            "Retrying google.genai request in 1.18 seconds as it raised "
+            "ServerError: 503 UNAVAILABLE: high demand"
+        ),
+        args=(),
+        exc_info=None,
+    )
+
+    llm._ProviderRetryTelemetryHandler().emit(record)
+
+    assert engine.trace_kwargs == {
+        "type": "llm_call",
+        "name": "llm_retry",
+        "payload": {
+            "error": "ServerError: 503 UNAVAILABLE: high demand",
+            "delay": 1.18,
+            "provider": "google",
+            "source": "provider_sdk",
+            "recoverable": True,
+        },
+        "step_id": "step-7",
+        "parent_trace_id": None,
+        "status": "retrying",
+    }
+    event_type, payload = engine.published
+    assert event_type == "llm_retrying"
+    assert payload["trace_id"] == "trace-1"
+    assert payload["delay"] == 1.18
+    assert payload["error"].startswith("ServerError: 503")

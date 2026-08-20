@@ -162,8 +162,9 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
     } else if (log.type === 'trace_recorded') {
       const isAction = log.data.type === 'action';
       const isTool = log.data.type === 'tool' || isAction;
-      const isFailedLLM = log.data.type === 'llm_call' && log.data.status === 'failed';
-      if (!isTool && !isFailedLLM) return;
+      const isVisibleLLMEvent = log.data.type === 'llm_call'
+        && (log.data.status === 'failed' || log.data.status === 'retrying');
+      if (!isTool && !isVisibleLLMEvent) return;
 
       let stepId = log.data.step_id;
       let existingIndex = -1;

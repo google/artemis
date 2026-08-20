@@ -518,9 +518,12 @@ export class AgentService {
 
           if (eventType === 'llm_retrying') {
             this.isRetrying.set(true);
-            const attempt = parsedData.attempt || 1;
-            const max = parsedData.max_retries || 3;
-            this.retryMessage.set(`Reconnecting to AI model (Attempt ${attempt}/${max})...`);
+            const attempt = Number(parsedData.attempt || 0);
+            const max = Number(parsedData.max_retries || 0);
+            const delay = Number(parsedData.delay || 0);
+            const attemptText = attempt && max ? ` (Attempt ${attempt}/${max})` : '';
+            const delayText = delay > 0 ? `; retrying in ${delay.toFixed(2).replace(/\.00$/, '')}s` : '';
+            this.retryMessage.set(`AI service is temporarily busy${attemptText}${delayText}...`);
             return;
           }
 

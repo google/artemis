@@ -26,7 +26,7 @@ from artemis.utils.ocr_xml_fusion import (
     _crop_image_remove_status_bar,
     _map_coordinates_back,
 )
-from artemis.utils.ocr_api import perform_ocr
+from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 from artemis.utils.visualization import format_minimal_list_with_elements
 
 
@@ -77,19 +77,25 @@ async def mobile_get_device_state(view_type: str) -> str:
             return f"file://{screenshot_path}"
 
         elif view_type == "hierarchy":
-            try:
-                screen_height = device_data.height
-                status_bar_height = _detect_status_bar_height(xml_hierarchy, screen_height)
-                if status_bar_height > 0:
-                    cropped_b64, _, _ = _crop_image_remove_status_bar(
-                        latest_screenshot_b64, status_bar_height
+            ocr_results = []
+            if is_ocr_configured():
+                try:
+                    screen_height = device_data.height
+                    status_bar_height = _detect_status_bar_height(
+                        xml_hierarchy, screen_height
                     )
-                    raw_ocr_results = await perform_ocr(cropped_b64)
-                    ocr_results = _map_coordinates_back(raw_ocr_results, status_bar_height)
-                else:
-                    ocr_results = await perform_ocr(latest_screenshot_b64)
-            except Exception:
-                ocr_results = []
+                    if status_bar_height > 0:
+                        cropped_b64, _, _ = _crop_image_remove_status_bar(
+                            latest_screenshot_b64, status_bar_height
+                        )
+                        raw_ocr_results = await perform_ocr(cropped_b64)
+                        ocr_results = _map_coordinates_back(
+                            raw_ocr_results, status_bar_height
+                        )
+                    else:
+                        ocr_results = await perform_ocr(latest_screenshot_b64)
+                except Exception:
+                    ocr_results = []
 
             fused_xml = fuse_ocr_with_xml(xml_hierarchy, ocr_results)
             hierarchy_text, elements, labels = format_minimal_list_with_elements(

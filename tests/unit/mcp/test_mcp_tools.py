@@ -17,7 +17,10 @@
 import inspect
 import shutil
 import tempfile
+from types import SimpleNamespace
 import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from mcp_server.tools import (
@@ -104,6 +107,40 @@ def test_mobile_manage_task_inject_instruction(temp_trace_env):
         action="inject_instruction", trace_id=trace_id, instruction="Scroll down slowly"
     )
     assert "Successfully injected" in ok_res["message"]
+
+
+@pytest.mark.asyncio
+async def test_mobile_get_device_state_hierarchy_without_ocr():
+    """XML hierarchy remains available when OCR is not configured."""
+    controller = MagicMock()
+    controller.ctx.device.device_width = 1080
+    controller.ctx.device.device_height = 2400
+    controller.get_screen_data = AsyncMock(
+        return_value=SimpleNamespace(
+            base64="ZHVtbXk=",
+            elements=[
+                {
+                    "class": "android.widget.Button",
+                    "text": "Start",
+                    "bounds": "[100,500][400,600]",
+                }
+            ],
+            width=1080,
+            height=2400,
+        )
+    )
+
+    with (
+        patch("mcp_server.tools.device_state._get_controller", return_value=controller),
+        patch("mcp_server.tools.device_state.is_ocr_configured", return_value=False),
+        patch(
+            "mcp_server.tools.device_state.perform_ocr", new_callable=AsyncMock
+        ) as perform_ocr_mock,
+    ):
+        result = await mobile_get_device_state(view_type="hierarchy")
+
+    assert "Start" in result
+    perform_ocr_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -230,6 +230,14 @@ export class AgentStreamComponent implements AfterViewInit {
     return checkPlanningLoader(this.filteredLogs(), isRunning, isCurrentRunningSession);
   });
 
+  public isViewingPausedTask = computed(() => {
+    if (!this.agentService.isPaused()) return false;
+
+    const currentSessionId = this.agentService.currentSessionId();
+    const pausedSessionId = this.agentService.runningSessionId();
+    return !currentSessionId || currentSessionId === pausedSessionId;
+  });
+
   public sessionDuration = computed(() => {
     const currentSession = this.agentService.sessions().find(s => s.session_id === this.agentService.currentSessionId());
     return computeSessionDuration(currentSession?.start_time || 0, this.filteredLogs());
@@ -819,7 +827,7 @@ export class AgentStreamComponent implements AfterViewInit {
     if (!block) return false;
     const hasNative = Boolean(this.getNativeThinking(block));
     const hasRaw = Boolean(this.getRawThinking(block));
-    const hasVisibleTools = Boolean(block.data?.generic_tools) && block.data.generic_tools.some((t: any) => this.shouldShowTool(t, block.data) || (t.type === 'llm_call' && t.status === 'failed') || this.isReportStatusAction(t));
+    const hasVisibleTools = Boolean(block.data?.generic_tools) && block.data.generic_tools.some((t: any) => this.shouldShowTool(t, block.data) || (t.type === 'llm_call' && (t.status === 'failed' || t.status === 'retrying')) || this.isReportStatusAction(t));
     const hasAndroidActions = Boolean(block.data?.action_taken) && (this.isAndroidAction(block.data.action_taken) || this.isReportStatusAction(block.data.action_taken));
     return hasNative || hasRaw || hasVisibleTools || hasAndroidActions;
   }
@@ -844,7 +852,7 @@ export class AgentStreamComponent implements AfterViewInit {
     return !!tool && this.retryablePauseTrace() === tool;
   }
 
-  public retryPausedTask(event: Event): void {
+  public resumePausedTask(event: Event): void {
     event.stopPropagation();
     this.agentService.resumeTask();
   }
@@ -854,6 +862,52 @@ export class AgentStreamComponent implements AfterViewInit {
     const rawError = tool.payload?.error || tool.error;
     if (!rawError) return 'Unknown error';
     return this.cleanErrorMessage(rawError);
+  }
+
+  public isLLMRetry(tool: any): boolean {
+    return tool?.type === 'llm_call' && tool?.status === 'retrying';
+  }
+
+  public getLLMRetryEntries(tool: any): any[] {
+    const retries = tool?.payload?.retries;
+    return Array.isArray(retries) && retries.length > 0 ? retries : [tool?.payload || tool];
+  }
+
+  public getLLMRetryCount(tool: any): number {
+    const count = Number(tool?.payload?.retry_count);
+    return Number.isFinite(count) && count > 0 ? count : this.getLLMRetryEntries(tool).length;
+  }
+
+  public getLLMRetryTotalDelay(tool: any): string | null {
+    const configuredTotal = Number(tool?.payload?.total_delay);
+    const total = Number.isFinite(configuredTotal)
+      ? configuredTotal
+      : this.getLLMRetryEntries(tool).reduce(
+          (sum: number, retry: any) => sum + (Number(retry?.delay) || 0),
+          0
+        );
+    if (total <= 0) return null;
+    return `${total.toFixed(2).replace(/\.00$/, '')}s`;
+  }
+
+  public getLLMRetryEntryError(entry: any): string {
+    return this.cleanErrorMessage(entry?.error || 'Unknown error');
+  }
+
+  public getLLMRetryEntryDelay(entry: any): string | null {
+    const delay = Number(entry?.delay);
+    if (!Number.isFinite(delay) || delay <= 0) return null;
+    return `${delay.toFixed(2).replace(/\.00$/, '')}s`;
+  }
+
+  public getLLMRetryProvider(tool: any): string | null {
+    const providers = Array.isArray(tool?.payload?.providers)
+      ? tool.payload.providers
+      : [tool?.payload?.provider];
+    const labels = providers
+      .filter((provider: any) => typeof provider === 'string' && provider.trim())
+      .map((provider: string) => provider.trim().replace(/^./, (value: string) => value.toUpperCase()));
+    return labels.length > 0 ? Array.from(new Set(labels)).join(', ') : null;
   }
 
   public cleanErrorMessage(rawError: any): string {

@@ -177,11 +177,22 @@ class StepRepository:
             return None
 
         if trace_type == "llm_call":
-            return (
-                {"error": self._clean_value(payload_obj.get("error"))}
-                if "error" in payload_obj
-                else None
+            allowed_keys = (
+                "error",
+                "delay",
+                "attempt",
+                "max_retries",
+                "provider",
+                "source",
+                "recoverable",
+                "pause",
             )
+            cleaned = {
+                key: self._clean_value(payload_obj.get(key))
+                for key in allowed_keys
+                if key in payload_obj
+            }
+            return cleaned or None
 
         args = payload_obj.get("args", payload_obj)
         cleaned_args = (
@@ -291,7 +302,7 @@ class StepRepository:
                         " t1.payload, t2.name as agent_name FROM traces t1 LEFT"
                         " JOIN traces t2 ON t1.parent_trace_id = t2.trace_id WHERE"
                         " t1.step_id = ? AND (t1.type = 'tool' OR t1.type = 'action' OR (t1.type ="
-                        " 'llm_call' AND t1.status = 'failed') OR (t1.type = 'log' AND"
+                        " 'llm_call' AND t1.status IN ('failed', 'retrying')) OR (t1.type = 'log' AND"
                         " t1.payload LIKE '%LLM Error:%Pausing execution%' AND NOT EXISTS"
                         " (SELECT 1 FROM traces t3 WHERE t3.session_id = t1.session_id AND"
                         " t3.type = 'llm_call' AND t3.status = 'failed' AND"
@@ -363,7 +374,7 @@ class StepRepository:
                 " t2.name as agent_name FROM traces t1 LEFT JOIN traces t2 ON"
                 " t1.parent_trace_id = t2.trace_id WHERE t1.session_id = ? AND"
                 " (t1.step_id IS NULL OR t1.step_id = '') AND (t1.type = 'tool' OR"
-                " (t1.type = 'llm_call' AND t1.status = 'failed') OR (t1.type = 'log'"
+                " (t1.type = 'llm_call' AND t1.status IN ('failed', 'retrying')) OR (t1.type = 'log'"
                 " AND t1.payload LIKE '%LLM Error:%Pausing execution%' AND NOT EXISTS"
                 " (SELECT 1 FROM traces t3 WHERE t3.session_id = t1.session_id AND"
                 " t3.type = 'llm_call' AND t3.status = 'failed' AND"

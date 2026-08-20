@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import codecs
 from datetime import datetime
 import os
 import shutil
@@ -78,16 +79,65 @@ class TaskQueueService:
         ]
 
     @staticmethod
-    def _subprocess_creation_kwargs() -> dict[str, int]:
-        """Keep task workers out of the UI server's Windows console group.
+    def _subprocess_creation_kwargs() -> dict[str, Any]:
+        """Isolate task workers from the UI server's Windows console.
 
-        Without a new process group, a console control event intended for the
-        uvicorn server is also delivered to a task that is still importing
-        Artemis, causing STATUS_CONTROL_C_EXIT (0xC000013A).
+        A new process group alone is insufficient on Windows: the worker still
+        shares the parent's console, so a CTRL_C_EVENT generated anywhere in
+        that console can reach the UI server. CREATE_NO_WINDOW removes that
+        shared console boundary. Output is captured and forwarded explicitly
+        so detached workers remain visible in the server terminal.
         """
         if sys.platform == "win32":
-            return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            return {
+                "creationflags": (
+                    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+                ),
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.STDOUT,
+            }
         return {}
+
+    @staticmethod
+    async def _forward_worker_output(stream: asyncio.StreamReader | None) -> None:
+        """Forward a detached Windows worker's combined output without corrupting UTF-8."""
+        if stream is None:
+            return
+
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        while True:
+            chunk = await stream.read(4096)
+            if not chunk:
+                break
+            text = decoder.decode(chunk)
+            if text:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            sys.stdout.write(tail)
+            sys.stdout.flush()
+
+    @staticmethod
+    async def _finish_output_forwarder(output_task: asyncio.Task[None] | None) -> None:
+        """Drain final worker output without allowing inherited handles to stall the queue."""
+        if output_task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(output_task), timeout=2.0)
+        except asyncio.CancelledError:
+            if output_task.cancelled():
+                return
+            raise
+        except TimeoutError:
+            output_task.cancel()
+            try:
+                await output_task
+            except asyncio.CancelledError:
+                pass
+        except Exception as exc:
+            print(f"[QueueWorker] Failed to forward detached worker output: {exc}")
 
     @staticmethod
     async def _terminate_worker_process(proc: asyncio.subprocess.Process | None) -> None:
@@ -125,6 +175,7 @@ class TaskQueueService:
             sess_id = None
             goal = None
             profile = "flash"
+            output_task: asyncio.Task[None] | None = None
             try:
                 if state.is_running:
                     await asyncio.sleep(0.2)
@@ -212,6 +263,8 @@ class TaskQueueService:
                 )
                 state.current_process = proc
                 task_item["pid"] = proc.pid
+                if sys.platform == "win32" and isinstance(proc.stdout, asyncio.StreamReader):
+                    output_task = asyncio.create_task(cls._forward_worker_output(proc.stdout))
 
                 if sess_id and (
                     str(sess_id) in getattr(state, "cancelled_session_ids", set())
@@ -255,6 +308,7 @@ class TaskQueueService:
                 print(f"[QueueWorker] Unexpected error executing task: {e}")
                 await asyncio.sleep(0.5)
             finally:
+                await cls._finish_output_forwarder(output_task)
                 # 5. Clean up completed task from queue and reset execution state
                 if sess_id:
                     cls._remove_task(sess_id)

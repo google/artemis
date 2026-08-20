@@ -14,6 +14,9 @@
 
 import asyncio
 import importlib
+import json
+import os
+import subprocess
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
@@ -203,9 +206,11 @@ async def test_queue_worker_cmd_construction():
         assert "--app-path" in cmd
         assert "/path/to/app.apk" in cmd
         if sys.platform == "win32":
-            import subprocess
-
-            assert executed_kwargs[0]["creationflags"] == subprocess.CREATE_NEW_PROCESS_GROUP
+            assert executed_kwargs[0]["creationflags"] == (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            )
+            assert executed_kwargs[0]["stdout"] == asyncio.subprocess.PIPE
+            assert executed_kwargs[0]["stderr"] == asyncio.subprocess.STDOUT
         else:
             assert "creationflags" not in executed_kwargs[0]
 
@@ -216,6 +221,40 @@ async def test_queue_worker_cmd_construction():
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+
+
+@pytest.mark.asyncio
+async def test_forward_worker_output_preserves_split_utf8(capsys):
+    stream = asyncio.StreamReader()
+    encoded = "worker 输出正常\n".encode()
+    stream.feed_data(encoded[:9])
+    stream.feed_data(encoded[9:])
+    stream.feed_eof()
+
+    await TaskQueueService._forward_worker_output(stream)
+
+    assert capsys.readouterr().out == "worker 输出正常\n"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console isolation only")
+def test_windows_worker_has_no_inherited_console():
+    probe = r"""
+import ctypes
+import json
+
+buffer = (ctypes.c_uint32 * 32)()
+count = ctypes.windll.kernel32.GetConsoleProcessList(buffer, len(buffer))
+print(json.dumps(list(buffer[:min(count, len(buffer))])))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        check=True,
+        text=True,
+        **TaskQueueService._subprocess_creation_kwargs(),
+    )
+
+    attached_processes = json.loads(result.stdout)
+    assert os.getpid() not in attached_processes
 
 
 @pytest.mark.asyncio

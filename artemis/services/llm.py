@@ -25,6 +25,8 @@ import functools
 import logging
 from pathlib import Path
 import random
+import re
+import sys
 import time
 from typing import Any, Literal, TypeVar, overload
 from uuid import uuid4
@@ -41,7 +43,6 @@ from artemis.config import (
     settings,
 )
 from artemis.context import ArtemisContext
-from artemis.data_engine.engine import _CURRENT_DATA_ENGINE
 from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandler
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
 from artemis.utils.logger import get_logger
@@ -52,6 +53,131 @@ llm_logger = logging.getLogger(__name__)
 user_messages_logger = get_logger(__name__)
 
 T = TypeVar("T")
+
+# Retained as an override seam for unit tests. At runtime the active engine must
+# be resolved dynamically because DataEngine.start_session() updates the module
+# global after this module has already been imported.
+_CURRENT_DATA_ENGINE = None
+
+
+def _get_current_data_engine():
+    if _CURRENT_DATA_ENGINE is not None:
+        return _CURRENT_DATA_ENGINE
+    engine_module = sys.modules.get("artemis.data_engine.engine")
+    return getattr(engine_module, "_CURRENT_DATA_ENGINE", None) if engine_module else None
+
+
+def _record_llm_retry(
+    error: str,
+    delay: float,
+    *,
+    attempt: int | None = None,
+    max_retries: int | None = None,
+    provider: str | None = None,
+    source: str = "artemis",
+) -> None:
+    """Persist and publish one recoverable LLM retry for UI transparency."""
+    engine = _get_current_data_engine()
+    if not engine or not getattr(engine, "current_session_id", None):
+        return
+
+    error_text = str(error)
+    if len(error_text) > 1000:
+        error_text = error_text[:1000] + "... [Truncated by LLM Retry Telemetry]"
+
+    payload = {
+        "error": error_text,
+        "delay": float(delay),
+        "attempt": attempt,
+        "max_retries": max_retries,
+        "provider": provider,
+        "source": source,
+        "recoverable": True,
+    }
+    payload = {key: value for key, value in payload.items() if value is not None}
+    step_id = getattr(engine, "current_step_id", None)
+    parent_trace_id = CURRENT_TRACE_ID.get()
+    timestamp = time.time()
+
+    try:
+        trace_id = engine.record_trace(
+            type="llm_call",
+            name="llm_retry",
+            payload=payload,
+            step_id=step_id,
+            parent_trace_id=parent_trace_id,
+            status="retrying",
+        )
+    except Exception as trace_error:
+        llm_logger.warning("Failed to persist LLM retry trace: %s", trace_error)
+        trace_id = None
+
+    try:
+        engine._publish(
+            "llm_retrying",
+            {
+                **payload,
+                "step_id": str(step_id) if step_id else None,
+                "trace_id": str(trace_id) if trace_id else None,
+                "timestamp": timestamp,
+            },
+        )
+    except Exception as publish_error:
+        # Retry visibility is best-effort and must never break the LLM retry itself.
+        llm_logger.warning("Failed to publish LLM retry event: %s", publish_error)
+
+
+class _ProviderRetryTelemetryHandler(logging.Handler):
+    """Turn provider SDK retry log records into structured Artemis telemetry."""
+
+    _DELAY_PATTERN = re.compile(r"\bin\s+(?P<delay>\d+(?:\.\d+)?)\s+seconds?\b", re.IGNORECASE)
+    _ERROR_PATTERN = re.compile(r"\bas it raised\s+(?P<error>.+)$", re.IGNORECASE)
+    _RETRYABLE_MARKERS = (
+        "503",
+        "429",
+        "unavailable",
+        "resource_exhausted",
+        "high demand",
+        "quota",
+        "throttled",
+        "overloaded",
+    )
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = record.getMessage()
+            lowered = message.lower()
+            if "retrying" not in lowered or not any(
+                marker in lowered for marker in self._RETRYABLE_MARKERS
+            ):
+                return
+
+            delay_match = self._DELAY_PATTERN.search(message)
+            error_match = self._ERROR_PATTERN.search(message)
+            delay = float(delay_match.group("delay")) if delay_match else 0.0
+            error = error_match.group("error").strip() if error_match else message
+            _record_llm_retry(
+                error,
+                delay,
+                provider="google",
+                source="provider_sdk",
+            )
+        except Exception:
+            # Telemetry must never interfere with the provider's own retry.
+            self.handleError(record)
+
+
+def _install_provider_retry_telemetry() -> None:
+    provider_logger = logging.getLogger("google_genai._api_client")
+    if any(
+        isinstance(handler, _ProviderRetryTelemetryHandler)
+        for handler in provider_logger.handlers
+    ):
+        return
+    provider_logger.addHandler(_ProviderRetryTelemetryHandler(level=logging.INFO))
+
+
+_install_provider_retry_telemetry()
 
 
 def _handle_llm_pause_and_resume(last_error: Exception) -> Path:
@@ -67,13 +193,14 @@ def _handle_llm_pause_and_resume(last_error: Exception) -> Path:
     except Exception:
         pass
 
-    if _CURRENT_DATA_ENGINE:
-        step_id = getattr(_CURRENT_DATA_ENGINE, "current_step_id", None)
+    current_engine = _get_current_data_engine()
+    if current_engine:
+        step_id = getattr(current_engine, "current_step_id", None)
         timestamp = time.time()
         try:
             # Persist exhausted LLM retries as a failed call so the same error
             # card is available both in the live stream and after a refresh.
-            _CURRENT_DATA_ENGINE.record_trace(
+            current_engine.record_trace(
                 type="llm_call",
                 name="llm_pause",
                 payload={"error": err_msg, "pause": True},
@@ -83,7 +210,7 @@ def _handle_llm_pause_and_resume(last_error: Exception) -> Path:
         except Exception as trace_error:
             llm_logger.warning("Failed to persist paused LLM error trace: %s", trace_error)
 
-        _CURRENT_DATA_ENGINE._publish(
+        current_engine._publish(
             "task_paused",
             {
                 "error": err_msg,
@@ -129,16 +256,13 @@ def robust_retry_async(func: Callable) -> Callable:
                     if retry_delay > 0:
                         llm_logger.warning(f"LLM call failed, retrying in {retry_delay:.2f}s...")
 
-                        if _CURRENT_DATA_ENGINE:
-                            _CURRENT_DATA_ENGINE._publish(
-                                "llm_retrying",
-                                {
-                                    "attempt": attempt + 1,
-                                    "max_retries": max_retries,
-                                    "delay": retry_delay,
-                                    "error": str(e),
-                                },
-                            )
+                        _record_llm_retry(
+                            str(e),
+                            retry_delay,
+                            attempt=attempt + 1,
+                            max_retries=max_retries,
+                            source="artemis_wrapper",
+                        )
                         await asyncio.sleep(retry_delay)
 
             pause_file = _handle_llm_pause_and_resume(last_error)
@@ -147,8 +271,9 @@ def robust_retry_async(func: Callable) -> Callable:
 
             llm_logger.info("Resume signal received, retrying LLM call...")
 
-            if _CURRENT_DATA_ENGINE:
-                _CURRENT_DATA_ENGINE._publish("task_resumed", {})
+            current_engine = _get_current_data_engine()
+            if current_engine:
+                current_engine._publish("task_resumed", {})
 
     return wrapper
 
@@ -194,16 +319,13 @@ def robust_retry_astream(func: Callable) -> Callable:
                             f"LLM stream handshake throttled, retrying in {retry_delay:.2f}s..."
                         )
 
-                        if _CURRENT_DATA_ENGINE:
-                            _CURRENT_DATA_ENGINE._publish(
-                                "llm_retrying",
-                                {
-                                    "attempt": attempt + 1,
-                                    "max_retries": max_retries,
-                                    "delay": retry_delay,
-                                    "error": str(e),
-                                },
-                            )
+                        _record_llm_retry(
+                            str(e),
+                            retry_delay,
+                            attempt=attempt + 1,
+                            max_retries=max_retries,
+                            source="artemis_wrapper",
+                        )
                         await asyncio.sleep(retry_delay)
 
             pause_file = _handle_llm_pause_and_resume(last_error)
@@ -212,8 +334,9 @@ def robust_retry_astream(func: Callable) -> Callable:
 
             llm_logger.info("Resume signal received, retrying LLM stream...")
 
-            if _CURRENT_DATA_ENGINE:
-                _CURRENT_DATA_ENGINE._publish("task_resumed", {})
+            current_engine = _get_current_data_engine()
+            if current_engine:
+                current_engine._publish("task_resumed", {})
 
     return wrapper
 

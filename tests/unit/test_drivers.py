@@ -14,12 +14,22 @@
 
 """Unit tests for Unified Base Device Driver and implementations."""
 
-import pytest
+import base64
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from artemis.drivers.base import KeyCode, ScreenData, SwipeDirection
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.drivers.android.adb_driver import AndroidAdbDriver
+
+
+_ONE_PIXEL_PNG = base64.b64encode(
+    base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+).decode("ascii")
 
 
 @pytest.mark.asyncio
@@ -89,3 +99,70 @@ async def test_android_driver_with_mock_adb():
     # Test press key
     await driver.press_key(KeyCode.BACK)
     mock_adb_device.shell.assert_called_with("input keyevent 4")
+
+
+@pytest.mark.asyncio
+async def test_android_driver_preserves_elements_from_combined_screen_data():
+    """The combined uiautomator2 response is the authoritative live snapshot."""
+    mock_adb_client = MagicMock()
+    mock_ui_client = MagicMock()
+    expected_elements = [
+        {
+            "text": "",
+            "class": "android.widget.FrameLayout",
+            "bounds": "[0,0][1080,2400]",
+            "clickable": "false",
+            "focusable": "false",
+        },
+        {
+            "text": "Start",
+            "class": "android.widget.Button",
+            "bounds": "[10,20][100,80]",
+        }
+    ]
+    mock_ui_client.get_screen_data.return_value = SimpleNamespace(
+        base64=_ONE_PIXEL_PNG,
+        hierarchy_xml="<hierarchy />",
+        elements=expected_elements,
+        width=1080,
+        height=2400,
+    )
+
+    driver = AndroidAdbDriver(
+        device_id="emulator-5554",
+        adb_client=mock_adb_client,
+        ui_adb_client=mock_ui_client,
+    )
+
+    screen_data = await driver.get_screen_data(skip_settling=True)
+
+    assert screen_data.ui_elements == [expected_elements[1]]
+    assert screen_data.ui_hierarchy_xml == "<hierarchy />"
+    mock_ui_client.get_hierarchy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_android_driver_parses_xml_hierarchy_fallback():
+    """XML-only clients remain supported without discarding their hierarchy."""
+    mock_adb_client = MagicMock()
+    mock_ui_client = MagicMock()
+    mock_ui_client.get_screen_data.return_value = SimpleNamespace(
+        base64=_ONE_PIXEL_PNG,
+        width=1080,
+        height=2400,
+    )
+    mock_ui_client.get_hierarchy.return_value = (
+        '<hierarchy><node text="Settings" class="android.widget.TextView" '
+        'bounds="[0,0][100,100]" /></hierarchy>'
+    )
+
+    driver = AndroidAdbDriver(
+        device_id="emulator-5554",
+        adb_client=mock_adb_client,
+        ui_adb_client=mock_ui_client,
+    )
+
+    screen_data = await driver.get_screen_data(skip_settling=True)
+
+    assert screen_data.ui_hierarchy_xml is not None
+    assert any(element.get("text") == "Settings" for element in screen_data.ui_elements)

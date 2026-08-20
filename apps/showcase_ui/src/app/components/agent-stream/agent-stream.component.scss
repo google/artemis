@@ -1053,24 +1053,96 @@ $uniform-gap: 8px;
       }
     }
 
-    .retrying-banner {
+    .paused-task-banner {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 10px 16px;
-      background-color: #fef9c3;
-      border: 1px solid #fde047;
-      border-radius: 8px;
-      color: #854d0e;
-      font-size: 13px;
-      font-weight: 500;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 14px;
       margin-bottom: 12px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      border-radius: 10px;
+      color: #9a3412;
+      box-shadow: 0 1px 3px rgba(154, 52, 18, 0.08);
 
-      .spinning-icon {
-        font-size: 18px;
-        color: #d97706;
-        animation: spin 1.5s linear infinite;
+      .paused-task-message {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+
+        .paused-task-icon {
+          flex: 0 0 auto;
+          font-size: 21px;
+          color: #ea580c;
+        }
+
+        div {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        strong {
+          font-size: 12px;
+          line-height: 1.2;
+        }
+
+        span:not(.paused-task-icon) {
+          font-size: 11px;
+          line-height: 1.35;
+          color: #c2410c;
+        }
+      }
+
+      .btn-resume-task {
+        flex: 0 0 auto;
+        min-height: 32px;
+        padding: 6px 12px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        border: 1px solid #2563eb;
+        border-radius: 8px;
+        background: #2563eb;
+        color: #ffffff;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 2px 5px rgba(37, 99, 235, 0.2);
+        transition: background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+
+        .material-symbols-outlined {
+          font-size: 17px;
+        }
+
+        &:hover {
+          background: #1d4ed8;
+          box-shadow: 0 3px 8px rgba(37, 99, 235, 0.28);
+        }
+
+        &:active {
+          transform: scale(0.97);
+        }
+
+        &:focus-visible {
+          outline: 2px solid rgba(37, 99, 235, 0.35);
+          outline-offset: 2px;
+        }
+      }
+
+      @media (max-width: 560px) {
+        align-items: stretch;
+        flex-direction: column;
+
+        .btn-resume-task {
+          width: 100%;
+        }
       }
     }
 
@@ -2183,6 +2255,19 @@ $uniform-gap: 8px;
                   }
                 }
 
+                &.is-retrying {
+                  background: #fffbeb;
+                  border-color: #fcd34d;
+
+                  &:hover {
+                    border-color: #f59e0b;
+                  }
+
+                  .action-card-body .detail-value {
+                    color: #78350f;
+                  }
+                }
+
                &.task-report-card {
                   background: #f0fdf4;
                   border: 1px solid #bbf7d0;
@@ -2287,6 +2372,10 @@ $uniform-gap: 8px;
                    &.is-failed {
                      color: #ef4444;
                    }
+
+                   &.is-retrying {
+                     color: #d97706;
+                   }
                  }
 
                  .action-title {
@@ -2352,12 +2441,34 @@ $uniform-gap: 8px;
                        color: #f97316;
                      }
                    }
+
+                   &.is-retrying {
+                     background: #fef3c7;
+                     color: #92400e;
+                     border: 1px solid #fde68a;
+
+                     .status-icon {
+                       color: #d97706;
+
+                       &.is-active {
+                         animation: spin 1.5s linear infinite;
+                       }
+                     }
+                   }
+                 }
+
+                 &.llm-retry-header {
+                   border-bottom-color: #fde68a;
+
+                   .action-title {
+                     color: #78350f;
+                   }
                  }
 
                  &.llm-failure-header {
                    flex-wrap: wrap;
 
-                   .btn-retry-llm {
+                   .btn-resume-llm {
                      flex: 0 0 auto;
                      min-height: 26px;
                      padding: 3px 9px;
@@ -2416,6 +2527,83 @@ $uniform-gap: 8px;
                  display: flex;
                  flex-direction: column;
                  gap: 6px;
+
+                 .retry-summary-grid {
+                   display: grid;
+                   grid-template-columns: repeat(3, minmax(0, 1fr));
+                   gap: 6px;
+                 }
+
+                 .retry-summary-item {
+                   min-width: 0;
+                   padding: 7px 8px;
+                   border: 1px solid rgba(245, 158, 11, 0.18);
+                   border-radius: 7px;
+                   background: rgba(255, 255, 255, 0.68);
+                   display: flex;
+                   flex-direction: column;
+                   gap: 2px;
+
+                   .retry-summary-label {
+                     color: #a16207;
+                     font-size: 9.5px;
+                     font-weight: 600;
+                     letter-spacing: 0.02em;
+                     text-transform: uppercase;
+                   }
+
+                   strong {
+                     color: #78350f;
+                     font-size: 11.5px;
+                     font-weight: 700;
+                     overflow: hidden;
+                     text-overflow: ellipsis;
+                     white-space: nowrap;
+                   }
+                 }
+
+                 .retry-attempt-list {
+                   border-top: 1px solid rgba(245, 158, 11, 0.22);
+                   display: flex;
+                   flex-direction: column;
+                   gap: 6px;
+                   margin-top: 2px;
+                   padding-top: 8px;
+                   animation: fadeInDetails 0.2s ease-out;
+
+                   .retry-attempt-item {
+                     padding: 8px 9px;
+                     border: 1px solid rgba(245, 158, 11, 0.2);
+                     border-radius: 7px;
+                     background: rgba(255, 255, 255, 0.76);
+                   }
+
+                   .retry-attempt-heading {
+                     display: flex;
+                     align-items: center;
+                     justify-content: space-between;
+                     gap: 8px;
+                     margin-bottom: 4px;
+                     color: #92400e;
+                     font-size: 10px;
+                     font-weight: 700;
+                   }
+
+                   .retry-wait-pill {
+                     padding: 1px 5px;
+                     border-radius: 999px;
+                     background: #fef3c7;
+                     color: #b45309;
+                   }
+
+                   .retry-attempt-error {
+                     color: #78350f;
+                     font-size: 10.5px;
+                     line-height: 1.45;
+                     overflow-wrap: anywhere;
+                     user-select: text;
+                   }
+                 }
 
                  .action-detail-row {
                    display: flex;

@@ -285,16 +285,31 @@
 
   <!-- Event Logs Section -->
   <main class="stream-logs-content" (scroll)="onStreamScroll($event)">
+    <!-- Keep recovery available even when a persisted failure trace is absent. -->
+    <div class="paused-task-banner" *ngIf="isViewingPausedTask()" role="status">
+      <div class="paused-task-message">
+        <span class="material-symbols-outlined paused-task-icon">pause_circle</span>
+        <div>
+          <strong>Task paused</strong>
+          <span>The AI request failed. Resume the task to try again.</span>
+        </div>
+      </div>
+      <button
+        type="button"
+        class="btn-resume-task"
+        (click)="resumePausedTask($event)"
+        title="Resume the paused task"
+        aria-label="Resume the paused task"
+      >
+        <span class="material-symbols-outlined">play_arrow</span>
+        Resume
+      </button>
+    </div>
+
     <div *ngIf="consolidatedBlocks().length === 0 && !showPlanningLoader()" class="empty-state">
       <div class="empty-icon"><span class="material-symbols-outlined">sensors</span></div>
       <h3>No Stream Activity Selected</h3>
       <p>Please select a session from the Task List on the right to view its real-time log payloads.</p>
-    </div>
-
-    <!-- Retrying Banner -->
-    <div class="retrying-banner" *ngIf="agentService.isRetrying()">
-      <span class="material-symbols-outlined spinning-icon">sync</span>
-      <span>{{ agentService.retryMessage() || 'Reconnecting to AI model...' }}</span>
     </div>
 
     <!-- The phase-based session logs list -->
@@ -513,6 +528,48 @@
 
                     <!-- Generic Tools & LLM Calls (when item is a tool) -->
                     <ng-container *ngIf="item.type === 'tool'">
+                      <!-- Recoverable provider/LLM retries remain visible after the task continues. -->
+                      <div class="step-android-action-card tool-action-card is-retrying"
+                           [class.is-expanded]="isActionExpanded('retry-' + block.id + '-' + itemIdx)"
+                           *ngIf="isLLMRetry(item.data)">
+                        <div class="action-card-header llm-retry-header"
+                             (click)="toggleActionExpanded('retry-' + block.id + '-' + itemIdx, $event)">
+                          <span class="material-symbols-outlined action-icon is-retrying">cloud_sync</span>
+                          <span class="action-title">AI service retry</span>
+                          <span class="action-status-badge is-retrying">
+                            {{ getLLMRetryCount(item.data) }}× retried
+                          </span>
+                          <span class="action-expand-icon material-symbols-outlined">
+                            {{ isActionExpanded('retry-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
+                          </span>
+                        </div>
+                        <div class="action-card-body">
+                          <div class="retry-summary-grid">
+                            <div class="retry-summary-item">
+                              <span class="retry-summary-label">Attempts</span>
+                              <strong>{{ getLLMRetryCount(item.data) }}</strong>
+                            </div>
+                            <div class="retry-summary-item" *ngIf="getLLMRetryTotalDelay(item.data) as totalDelay">
+                              <span class="retry-summary-label">Extra wait</span>
+                              <strong>{{ totalDelay }}</strong>
+                            </div>
+                            <div class="retry-summary-item" *ngIf="getLLMRetryProvider(item.data) as retryProvider">
+                              <span class="retry-summary-label">Provider</span>
+                              <strong>{{ retryProvider }}</strong>
+                            </div>
+                          </div>
+                          <div class="retry-attempt-list" *ngIf="isActionExpanded('retry-' + block.id + '-' + itemIdx)">
+                            <div class="retry-attempt-item" *ngFor="let retry of getLLMRetryEntries(item.data); let retryIndex = index">
+                              <div class="retry-attempt-heading">
+                                <span>Retry {{ retryIndex + 1 }}</span>
+                                <span class="retry-wait-pill" *ngIf="getLLMRetryEntryDelay(retry) as retryDelay">+{{ retryDelay }}</span>
+                              </div>
+                              <div class="retry-attempt-error">{{ getLLMRetryEntryError(retry) }}</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
                       <!-- Failed LLM Calls (Permanently maintain Action Card format in red) -->
                       <div class="step-android-action-card tool-action-card is-failed" *ngIf="item.data.type === 'llm_call' && item.data.status === 'failed'">
                         <div class="action-card-header llm-failure-header">
@@ -530,14 +587,14 @@
                           </ng-template>
                           <button
                             type="button"
-                            class="btn-retry-llm"
+                            class="btn-resume-llm"
                             *ngIf="isTerminalLLMFailure(item.data)"
-                            (click)="retryPausedTask($event)"
-                            title="Retry the paused AI request"
-                            aria-label="Retry the paused AI request"
+                            (click)="resumePausedTask($event)"
+                            title="Resume the paused task"
+                            aria-label="Resume the paused task"
                           >
-                            <span class="material-symbols-outlined">refresh</span>
-                            Retry
+                            <span class="material-symbols-outlined">play_arrow</span>
+                            Resume
                           </button>
                         </div>
                         <div class="action-card-body">

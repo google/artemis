@@ -21,10 +21,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from adbutils import AdbClient, AdbDevice
-from artemis.clients.ui_automator_client import UIAutomatorClient
+from artemis.clients.ui_automator_client import (
+    UIAutomatorClient,
+    _parse_hierarchy_xml_to_elements,
+)
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
 from artemis.toolchain import find_ffmpeg, find_scrcpy
+from artemis.utils.ui_filter import filter_ui_hierarchy
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -119,6 +123,8 @@ class AndroidAdbDriver(BaseDeviceDriver):
         # 1. Capture raw screenshot
         screenshot_bytes: bytes = b""
         screenshot_base64: str = ""
+        ui_hierarchy_xml: str | None = None
+        ui_elements: list[dict[str, Any]] = []
 
         # Check if ui_adb_client has direct screen data support
         if self._ui_adb_client and hasattr(self._ui_adb_client, "get_screen_data"):
@@ -135,6 +141,16 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     self._width = raw_ui_data.width
                 if hasattr(raw_ui_data, "height") and isinstance(raw_ui_data.height, int):
                     self._height = raw_ui_data.height
+                if hasattr(raw_ui_data, "hierarchy_xml") and isinstance(
+                    raw_ui_data.hierarchy_xml, str
+                ):
+                    ui_hierarchy_xml = raw_ui_data.hierarchy_xml
+                if hasattr(raw_ui_data, "elements"):
+                    raw_elements = raw_ui_data.elements
+                    if isinstance(raw_elements, dict):
+                        ui_elements = [raw_elements]
+                    elif isinstance(raw_elements, list):
+                        ui_elements = raw_elements
             except Exception as e:
                 logger.debug(f"Direct ui_adb_client.get_screen_data error: {e}")
 
@@ -156,13 +172,16 @@ class AndroidAdbDriver(BaseDeviceDriver):
             screenshot_bytes = base64.b64decode(screenshot_base64)
 
         # 2. Capture UI Hierarchy via UIAutomator
-        ui_hierarchy_xml: str | None = None
-        ui_elements: list[dict[str, Any]] = []
-        if self._ui_adb_client:
+        if self._ui_adb_client and not ui_elements:
             try:
                 if hasattr(self._ui_adb_client, "get_hierarchy"):
                     res = self._ui_adb_client.get_hierarchy()
-                    ui_elements = await res if asyncio.iscoroutine(res) else res
+                    hierarchy = await res if asyncio.iscoroutine(res) else res
+                    if isinstance(hierarchy, str):
+                        ui_hierarchy_xml = hierarchy
+                        ui_elements = _parse_hierarchy_xml_to_elements(hierarchy)
+                    else:
+                        ui_elements = hierarchy
                 elif hasattr(self._ui_adb_client, "get_ui_elements"):
                     res = self._ui_adb_client.get_ui_elements()
                     ui_elements = await res if asyncio.iscoroutine(res) else res
@@ -178,6 +197,11 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
         w = self._width if isinstance(self._width, int) else 1080
         h = self._height if isinstance(self._height, int) else 2400
+        clean_ui_elements = filter_ui_hierarchy(
+            clean_ui_elements,
+            screen_width=w,
+            screen_height=h,
+        )
         clean_b64 = (
             screenshot_base64
             if isinstance(screenshot_base64, str) and screenshot_base64

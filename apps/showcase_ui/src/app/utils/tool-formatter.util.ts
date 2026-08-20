@@ -185,6 +185,42 @@ export function getToolAgentName(tool: any): string | null {
 export function getUniqueGenericTools(tools: any[] | undefined): any[] {
   if (!tools) return [];
 
+  const retryTools = tools.filter(tool =>
+    tool?.type === 'llm_call'
+    && tool?.status === 'retrying'
+    && (tool?.name === 'llm_retry' || tool?.name === 'llm_retry_group')
+  );
+  const firstRetry = retryTools[0];
+  const latestRetry = retryTools[retryTools.length - 1];
+  const retryAggregate = firstRetry ? {
+    ...firstRetry,
+    trace_id: `llm-retry-group-${firstRetry.trace_id || firstRetry.timestamp || 'unknown'}`,
+    name: 'llm_retry_group',
+    payload: {
+      ...(latestRetry?.payload || {}),
+      retry_count: retryTools.length,
+      total_delay: retryTools.reduce(
+        (total, retry) => total + (Number(retry?.payload?.delay) || 0),
+        0
+      ),
+      providers: Array.from(new Set(
+        retryTools
+          .map(retry => retry?.payload?.provider)
+          .filter((provider): provider is string => typeof provider === 'string' && !!provider)
+      )),
+      retries: retryTools.map(retry => ({
+        trace_id: retry.trace_id,
+        timestamp: retry.timestamp,
+        error: retry?.payload?.error || retry.error,
+        delay: Number(retry?.payload?.delay) || 0,
+        provider: retry?.payload?.provider,
+        source: retry?.payload?.source,
+        attempt: retry?.payload?.attempt,
+        max_retries: retry?.payload?.max_retries
+      }))
+    }
+  } : null;
+
   const toolMap = new Map<string, any>();
   for (const t of tools) {
     if (t && t.trace_id) {
@@ -196,10 +232,19 @@ export function getUniqueGenericTools(tools: any[] | undefined): any[] {
 
   const result: any[] = [];
   const seenTraces = new Set<string>();
+  let retryAggregateAdded = false;
 
   for (const tool of tools) {
     if (!tool || !tool.name) continue;
     if (tool.type === 'agent') continue;
+
+    if (tool.type === 'llm_call' && tool.status === 'retrying') {
+      if (!retryAggregateAdded && retryAggregate) {
+        result.push(retryAggregate);
+        retryAggregateAdded = true;
+      }
+      continue;
+    }
 
     if (tool.type === 'llm_call' && tool.status === 'failed') {
       result.push(tool);
