@@ -34,7 +34,7 @@ async def test_object_detector_concurrency_and_throttling(tmp_path):
     # Configure the object detector LLM config explicitly to avoid MagicMocks for timeout and model
     od_cfg = MagicMock()
     od_cfg.model = "gemini-robotics-er-early-access"
-    od_cfg.fix_model = "gemini-2.5-flash"
+    od_cfg.fix_model = "gemini-3.5-flash"
     od_cfg.timeout = 10.0
     mock_ctx.llm_config.utils.object_detector = od_cfg
 

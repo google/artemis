@@ -125,7 +125,7 @@ def init_command() -> None:
             "",
             "# Execution Defaults",
             "ARTEMIS_DEFAULT_PROFILE=pro",
-            "ARTEMIS_DEFAULT_MODEL=gemini-2.5-flash",
+            "ARTEMIS_DEFAULT_MODEL=gemini-3.7-flash",
             "ARTEMIS_TRACES_DIR=./traces",
             "",
         ]

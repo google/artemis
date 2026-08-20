@@ -106,7 +106,7 @@ class FlashRunner:
         except Exception as e:
             logger.warning(f"Failed to get operator LLM from config, using default: {e}")
 
-            llm = RobustChatModelWrapper(get_google_llm(model_name="gemini-2.5-flash"), self.ctx)
+            llm = RobustChatModelWrapper(get_google_llm(model_name="gemini-3.7-flash"), self.ctx)
 
         tools_declaration = self._get_tools()
 

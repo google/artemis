@@ -95,13 +95,13 @@ def test_agent_registry():
 def test_agent_config():
     """Verify AgentConfig parameters can be customized."""
     config = AgentConfig(
-        model_name="gemini-2.5-pro",
+        model_name="gemini-3.7-pro",
         temperature=0.7,
         max_tokens=2048,
         enabled_tools=["click", "swipe"],
     )
     agent = DummyTestAgent(config=config)
-    assert agent.config.model_name == "gemini-2.5-pro"
+    assert agent.config.model_name == "gemini-3.7-pro"
     assert agent.config.temperature == 0.7
     assert agent.config.enabled_tools == ["click", "swipe"]
 
