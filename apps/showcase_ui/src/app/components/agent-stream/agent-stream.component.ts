@@ -491,7 +491,7 @@ export class AgentStreamComponent implements AfterViewInit {
         return s as any;
       }
     }
-    return 'completed';
+    return (session.status as any) || 'cancelled';
   }
 
   public selectTask(sessionId: string, event?: Event): void {

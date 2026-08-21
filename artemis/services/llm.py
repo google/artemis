@@ -765,7 +765,7 @@ def _resolve_endpoint(
         return val if isinstance(val, expected_type) else None
 
     provider_val = getattr(cfg, "provider", "google")
-    model_val = getattr(cfg, "model", "gemini-2.5-flash")
+    model_val = getattr(cfg, "model", "gemini-3.7-flash")
 
     return ModelEndpoint(
         provider=ModelProvider.from_string(provider_val),
