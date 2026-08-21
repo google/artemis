@@ -1,14 +1,9 @@
 <p align="center">
-  <img src="./docs/assets/artemis-banner.png?v=5" alt="ARTEMIS Banner" width="100%" />
+  <img src="./docs/assets/artemis-banner.png?v=6" alt="ARTEMIS Banner" width="100%" />
 </p>
 
 <p align="center">
-  <strong>ARTEMIS: Next-Gen AI Mobile Test Automation & Autonomous Assistant Platform</strong><br>
-  <sub><b>A</b>utonomous <b>R</b>eal-time <b>T</b>esting, <b>E</b>xploration &amp; <b>M</b>obile <b>I</b>nteraction <b>S</b>ystem</sub>
-</p>
-
-<p align="center">
-  <em>⚡ Test Real Devices from Antigravity & Claude Code • Cross-App Automation • Zero-Maintenance Testing • Bug Repro & Logcat Diagnostics</em>
+  <strong>Let AI assistants and test suites use real phones like a human.</strong>
 </p>
 
 <p align="center">

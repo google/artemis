@@ -1,14 +1,9 @@
 <p align="center">
-  <img src="./docs/assets/artemis-banner-cn.png?v=5" alt="ARTEMIS Banner" width="100%" />
+  <img src="./docs/assets/artemis-banner-cn.png?v=6" alt="ARTEMIS Banner" width="100%" />
 </p>
 
 <p align="center">
-  <strong>ARTEMIS: 下一代 AI 驱动的移动端自动化测试与个人助理平台</strong><br>
-  <sub><b>A</b>utonomous <b>R</b>eal-time <b>T</b>esting, <b>E</b>xploration &amp; <b>M</b>obile <b>I</b>nteraction <b>S</b>ystem</sub>
-</p>
-
-<p align="center">
-  <em>⚡ 让 Antigravity / Claude Code 测试真机 • 跨 App 复杂自动化 • 零脚本维护自动化测试 • 智能 Bug 复现与 Logcat 诊断</em>
+  <strong>让 AI 助手与测试套件像人一样直接操作真机。</strong>
 </p>
 
 <p align="center">
