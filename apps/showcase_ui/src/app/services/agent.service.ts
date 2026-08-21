@@ -184,7 +184,12 @@ export class AgentService {
               const isCurrentlyRunning =
                 this.agentStatus() === 'running' ||
                 this.sessions().some((s) => s.status === 'running');
-              if (!isCurrentlyRunning) {
+              const activeSessionId = this.runningSessionId()
+                || this.sessions().find((s) => s.status === 'running' || s.status === 'paused')?.session_id;
+              // The status poll can observe the new runner before /api/run
+              // returns. In that case it is still the task we just submitted,
+              // not an older task that should remain selected.
+              if (!isCurrentlyRunning || activeSessionId === newSessionId) {
                 this.selectSession(newSessionId, false);
               }
             }
@@ -401,44 +406,15 @@ export class AgentService {
     }
 
     console.log(`Connecting to session: ${sessionId}`);
-    this.http.get<StepItemData[]>(`/api/sessions/${sessionId}/steps`).subscribe({
-      next: (steps) => {
-        if (this.currentSessionId() !== sessionId) return;
-        const historicalLogs: any[] = [];
-        steps.forEach((step) => {
-          const stepTimeIso = new Date((step.timestamp || Date.now() / 1000) * 1000).toISOString();
-          historicalLogs.push({
-            type: 'step_updated',
-            session_id: sessionId,
-            timestamp: stepTimeIso,
-            data: step
-          });
-        });
-        // The history request and EventSource start together. On slower Windows
-        // hosts, live events can arrive first; replacing the signal here would
-        // erase them until a browser refresh reloads the persisted steps.
-        this.sessionLogs.update((liveLogs) => {
-          if (liveLogs.length === 0) return historicalLogs;
-
-          const liveStepIds = new Set(
-            liveLogs
-              .filter((log) => log.type === 'step_recorded' || log.type === 'step_updated')
-              .map((log) => String(log.data?.step_id || log.data?.step_number || ''))
-              .filter(Boolean)
-          );
-          const missingHistorical = historicalLogs.filter((log) => {
-            const stepKey = String(log.data?.step_id || log.data?.step_number || '');
-            return !stepKey || !liveStepIds.has(stepKey);
-          });
-          return [...missingHistorical, ...liveLogs];
-        });
-      },
-      error: (err) => {
-        console.error('Failed to pre-load historical steps:', err);
-      }
-    });
-
     this.eventSource = new EventSource(`/api/stream/${sessionId}`);
+
+    // The server emits info only after this client has been registered as an
+    // SSE subscriber. Fetching the persisted snapshot after that acknowledgement
+    // closes the snapshot-to-stream gap: earlier events are in history and later
+    // events are already queued for this connection.
+    this.eventSource.addEventListener('info', () => {
+      this.backfillSessionSteps(sessionId);
+    });
 
     // Listen to standard SSE keep-alive
     this.eventSource.addEventListener('keep-alive', () => {
@@ -524,6 +500,7 @@ export class AgentService {
             const attemptText = attempt && max ? ` (Attempt ${attempt}/${max})` : '';
             const delayText = delay > 0 ? `; retrying in ${delay.toFixed(2).replace(/\.00$/, '')}s` : '';
             this.retryMessage.set(`AI service is temporarily busy${attemptText}${delayText}...`);
+            this.appendLiveLLMRetryTrace(parsedData, sessionId);
             return;
           }
 
@@ -536,7 +513,8 @@ export class AgentService {
               pauseError,
               sessionId,
               parsedData.timestamp,
-              parsedData.step_id
+              parsedData.step_id,
+              parsedData
             );
             return;
           }
@@ -628,14 +606,28 @@ export class AgentService {
                 ? new Date(parsedData.timestamp * 1000).toISOString()
                 : new Date().toISOString();
 
-              return [
-                ...updatedLogs,
-                {
-                  type: eventType,
-                  timestamp: evtTime,
-                  data: parsedData
+              const nextLog = {
+                type: eventType,
+                timestamp: evtTime,
+                data: parsedData
+              };
+
+              // A retry is published both as trace_recorded and as the
+              // purpose-built llm_retrying event. Replace the optimistic live
+              // copy when the persisted trace arrives instead of duplicating it.
+              if (eventType === 'trace_recorded' && parsedData?.trace_id) {
+                const existingTraceIndex = updatedLogs.findIndex((log) =>
+                  log.type === 'trace_recorded'
+                  && log.data?.trace_id === parsedData.trace_id
+                );
+                if (existingTraceIndex > -1) {
+                  const deduplicatedLogs = [...updatedLogs];
+                  deduplicatedLogs[existingTraceIndex] = nextLog;
+                  return deduplicatedLogs;
                 }
-              ];
+              }
+
+              return [...updatedLogs, nextLog];
             });
           }
 
@@ -669,6 +661,93 @@ export class AgentService {
   }
 
   /**
+   * Load a fresh persisted snapshot without replacing events already received
+   * from SSE. Snapshot logs are replaceable, while live logs remain append-only;
+   * the stream aggregator merges matching steps and trace IDs within each step.
+   */
+  private backfillSessionSteps(sessionId: string): void {
+    this.http.get<StepItemData[]>(`/api/sessions/${sessionId}/steps`).subscribe({
+      next: (steps) => {
+        if (this.currentSessionId() !== sessionId) return;
+        const historicalLogs = steps.map((step) => ({
+          type: 'step_updated',
+          session_id: sessionId,
+          timestamp: new Date((step.timestamp || Date.now() / 1000) * 1000).toISOString(),
+          data: step,
+          history_snapshot: true
+        }));
+
+        this.sessionLogs.update((logs) => [
+          ...historicalLogs,
+          ...logs.filter((log) => !log.history_snapshot)
+        ]);
+      },
+      error: (err) => {
+        console.error('Failed to backfill session steps:', err);
+      }
+    });
+  }
+
+  /**
+   * Convert the dedicated live retry event into the same trace shape used by
+   * history APIs. This keeps live streaming and post-refresh rendering on one
+   * data contract instead of maintaining a separate retry UI path.
+   */
+  private appendLiveLLMRetryTrace(data: any, sessionId: string): void {
+    const timestampSeconds = typeof data?.timestamp === 'number'
+      ? (data.timestamp > 1e11 ? data.timestamp / 1000 : data.timestamp)
+      : Date.now() / 1000;
+    const traceId = data?.trace_id
+      || `llm-retry-live-${data?.request_id || 'unknown'}-${timestampSeconds}`;
+    const payload = {
+      error: data?.error,
+      delay: data?.delay,
+      attempt: data?.attempt,
+      max_retries: data?.max_retries,
+      provider: data?.provider,
+      source: data?.source,
+      recoverable: data?.recoverable,
+      request_id: data?.request_id,
+      scheduled_at: data?.scheduled_at ?? timestampSeconds
+    };
+    const retryTrace = {
+      trace_id: traceId,
+      session_id: sessionId,
+      step_id: data?.step_id || null,
+      type: 'llm_call',
+      name: 'llm_retry',
+      timestamp: timestampSeconds,
+      status: 'retrying',
+      payload
+    };
+
+    this.sessionLogs.update((logs) => {
+      const existingIndex = logs.findIndex((log) =>
+        log.type === 'trace_recorded'
+        && (
+          log.data?.trace_id === traceId
+          || (
+            data?.request_id
+            && log.data?.payload?.request_id === data.request_id
+            && Number(log.data?.payload?.scheduled_at) === Number(payload.scheduled_at)
+          )
+        )
+      );
+      const retryLog = {
+        type: 'trace_recorded',
+        session_id: sessionId,
+        timestamp: new Date(timestampSeconds * 1000).toISOString(),
+        data: retryTrace
+      };
+      if (existingIndex < 0) return [...logs, retryLog];
+
+      const updatedLogs = [...logs];
+      updatedLogs[existingIndex] = retryLog;
+      return updatedLogs;
+    });
+  }
+
+  /**
    * Preserve pause failures in the normal failed-LLM card stream. New runners
    * emit a persisted failed trace first; this fallback also supports older
    * runners whose task_paused event only carried an error string.
@@ -677,7 +756,8 @@ export class AgentService {
     error: unknown,
     sessionId: string,
     timestamp?: number | string,
-    stepId?: string | null
+    stepId?: string | null,
+    details?: any
   ): void {
     const errorText = typeof error === 'string' ? error : JSON.stringify(error);
     const pauseKey = `${sessionId}:${errorText}`;
@@ -717,7 +797,14 @@ export class AgentService {
             name: 'llm_pause',
             status: 'failed',
             timestamp: timestampMs / 1000,
-            payload: { error: errorText, pause: true }
+            payload: {
+              error: errorText,
+              pause: true,
+              request_id: details?.request_id,
+              provider: details?.provider,
+              waited_seconds: details?.waited_seconds,
+              retries: Array.isArray(details?.retries) ? details.retries : []
+            }
           }
         }
       ];

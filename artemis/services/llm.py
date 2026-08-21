@@ -20,6 +20,7 @@ thought stream recording, and role-based dynamic dispatching.
 
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
+from contextvars import ContextVar, Token
 from dataclasses import replace
 import functools
 import logging
@@ -59,6 +60,33 @@ T = TypeVar("T")
 # global after this module has already been imported.
 _CURRENT_DATA_ENGINE = None
 
+# Provider retry logs do not carry an Artemis trace id.  Keep the active model
+# request in async-local state so observable SDK retries and the terminal error
+# are emitted as one lifecycle, even when several model calls run concurrently.
+_ACTIVE_LLM_REQUEST: ContextVar[dict[str, Any] | None] = ContextVar(
+    "active_llm_request", default=None
+)
+
+
+def _provider_name_from_call(args: tuple[Any, ...]) -> str | None:
+    wrapper = args[0] if args else None
+    endpoint = getattr(wrapper, "endpoint", None)
+    provider = getattr(endpoint, "provider", None)
+    if provider is None:
+        return None
+    return str(getattr(provider, "value", provider))
+
+
+def _begin_llm_request(args: tuple[Any, ...]) -> Token:
+    return _ACTIVE_LLM_REQUEST.set(
+        {
+            "request_id": str(uuid4()),
+            "provider": _provider_name_from_call(args),
+            "started_at": time.time(),
+            "retries": [],
+        }
+    )
+
 
 def _get_current_data_engine():
     if _CURRENT_DATA_ENGINE is not None:
@@ -77,6 +105,11 @@ def _record_llm_retry(
     source: str = "artemis",
 ) -> None:
     """Persist and publish one recoverable LLM retry for UI transparency."""
+    request = _ACTIVE_LLM_REQUEST.get()
+    timestamp = time.time()
+    request_id = request.get("request_id") if request else None
+    provider = provider or (request.get("provider") if request else None)
+
     engine = _get_current_data_engine()
     if not engine or not getattr(engine, "current_session_id", None):
         return
@@ -93,12 +126,12 @@ def _record_llm_retry(
         "provider": provider,
         "source": source,
         "recoverable": True,
+        "request_id": request_id,
+        "scheduled_at": timestamp,
     }
     payload = {key: value for key, value in payload.items() if value is not None}
     step_id = getattr(engine, "current_step_id", None)
     parent_trace_id = CURRENT_TRACE_ID.get()
-    timestamp = time.time()
-
     try:
         trace_id = engine.record_trace(
             type="llm_call",
@@ -111,6 +144,15 @@ def _record_llm_retry(
     except Exception as trace_error:
         llm_logger.warning("Failed to persist LLM retry trace: %s", trace_error)
         trace_id = None
+
+    if request is not None:
+        request["retries"].append(
+            {
+                **payload,
+                "trace_id": str(trace_id) if trace_id else None,
+                "timestamp": timestamp,
+            }
+        )
 
     try:
         engine._publish(
@@ -145,6 +187,10 @@ class _ProviderRetryTelemetryHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            request = _ACTIVE_LLM_REQUEST.get()
+            if not request or request.get("provider") != ModelProvider.GOOGLE.value:
+                return
+
             message = record.getMessage()
             lowered = message.lower()
             if "retrying" not in lowered or not any(
@@ -159,7 +205,7 @@ class _ProviderRetryTelemetryHandler(logging.Handler):
             _record_llm_retry(
                 error,
                 delay,
-                provider="google",
+                provider=request["provider"],
                 source="provider_sdk",
             )
         except Exception:
@@ -197,13 +243,29 @@ def _handle_llm_pause_and_resume(last_error: Exception) -> Path:
     if current_engine:
         step_id = getattr(current_engine, "current_step_id", None)
         timestamp = time.time()
+        request = _ACTIVE_LLM_REQUEST.get()
+        failure_payload: dict[str, Any] = {"error": err_msg, "pause": True}
+        if request:
+            failure_payload.update(
+                {
+                    "request_id": request["request_id"],
+                    "provider": request.get("provider"),
+                    "waited_seconds": max(0.0, timestamp - request["started_at"]),
+                    # Only SDK-observed retries are included. Other providers
+                    # may retry internally, but their attempt data is opaque.
+                    "retries": list(request["retries"]),
+                }
+            )
+            failure_payload = {
+                key: value for key, value in failure_payload.items() if value is not None
+            }
         try:
             # Persist exhausted LLM retries as a failed call so the same error
             # card is available both in the live stream and after a refresh.
             current_engine.record_trace(
                 type="llm_call",
                 name="llm_pause",
-                payload={"error": err_msg, "pause": True},
+                payload=failure_payload,
                 step_id=step_id,
                 status="failed",
             )
@@ -213,7 +275,7 @@ def _handle_llm_pause_and_resume(last_error: Exception) -> Path:
         current_engine._publish(
             "task_paused",
             {
-                "error": err_msg,
+                **failure_payload,
                 "step_id": str(step_id) if step_id else None,
                 "timestamp": timestamp,
             },
@@ -228,12 +290,15 @@ def robust_retry_async(func: Callable) -> Callable:
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         while True:
+            request_token = _begin_llm_request(args)
             max_retries = 3
             retry_delay = 0.0
             last_error = None
             for attempt in range(max_retries):
                 try:
-                    return await func(*args, **kwargs)
+                    result = await func(*args, **kwargs)
+                    _ACTIVE_LLM_REQUEST.reset(request_token)
+                    return result
                 except Exception as e:
                     last_error = e
                     err_str = str(e).lower()
@@ -256,16 +321,15 @@ def robust_retry_async(func: Callable) -> Callable:
                     if retry_delay > 0:
                         llm_logger.warning(f"LLM call failed, retrying in {retry_delay:.2f}s...")
 
-                        _record_llm_retry(
-                            str(e),
-                            retry_delay,
-                            attempt=attempt + 1,
-                            max_retries=max_retries,
-                            source="artemis_wrapper",
-                        )
                         await asyncio.sleep(retry_delay)
+                except BaseException:
+                    _ACTIVE_LLM_REQUEST.reset(request_token)
+                    raise
 
-            pause_file = _handle_llm_pause_and_resume(last_error)
+            try:
+                pause_file = _handle_llm_pause_and_resume(last_error)
+            finally:
+                _ACTIVE_LLM_REQUEST.reset(request_token)
             while pause_file.exists():
                 await asyncio.sleep(1)
 
@@ -284,6 +348,7 @@ def robust_retry_astream(func: Callable) -> Callable:
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         while True:
+            request_token = _begin_llm_request(args)
             max_retries = 3
             retry_delay = 0.0
             last_error = None
@@ -294,6 +359,7 @@ def robust_retry_astream(func: Callable) -> Callable:
                     yield first
                     async for chunk in gen:
                         yield chunk
+                    _ACTIVE_LLM_REQUEST.reset(request_token)
                     return
                 except Exception as e:
                     last_error = e
@@ -319,16 +385,15 @@ def robust_retry_astream(func: Callable) -> Callable:
                             f"LLM stream handshake throttled, retrying in {retry_delay:.2f}s..."
                         )
 
-                        _record_llm_retry(
-                            str(e),
-                            retry_delay,
-                            attempt=attempt + 1,
-                            max_retries=max_retries,
-                            source="artemis_wrapper",
-                        )
                         await asyncio.sleep(retry_delay)
+                except BaseException:
+                    _ACTIVE_LLM_REQUEST.reset(request_token)
+                    raise
 
-            pause_file = _handle_llm_pause_and_resume(last_error)
+            try:
+                pause_file = _handle_llm_pause_and_resume(last_error)
+            finally:
+                _ACTIVE_LLM_REQUEST.reset(request_token)
             while pause_file.exists():
                 await asyncio.sleep(1)
 

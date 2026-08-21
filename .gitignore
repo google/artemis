@@ -54,6 +54,7 @@ tests/**/outputs/
 dmypy.json
 
 # IDEs & Editors
+.vs/
 .vscode/
 .idea/
 .cursor/

@@ -186,6 +186,10 @@ class StepRepository:
                 "source",
                 "recoverable",
                 "pause",
+                "request_id",
+                "scheduled_at",
+                "waited_seconds",
+                "retries",
             )
             cleaned = {
                 key: self._clean_value(payload_obj.get(key))

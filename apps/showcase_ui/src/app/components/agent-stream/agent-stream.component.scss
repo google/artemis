@@ -1955,6 +1955,55 @@ $uniform-gap: 8px;
             margin-top: 0;
             margin-bottom: 0;
 
+            .llm-retry-notes {
+              display: flex;
+              flex-direction: column;
+              gap: $uniform-gap;
+              padding: 0;
+
+              .llm-retry-note {
+                min-height: 20px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                color: #71717a;
+                font-family: 'Google Sans', 'Google Sans Text', 'Inter', Arial, sans-serif;
+                font-size: 12px;
+                line-height: 1.5;
+                letter-spacing: 0.2px;
+
+                .stream-status-dot {
+                  width: 8px;
+                  height: 8px;
+                  border-radius: 50%;
+                  background: #d4d4d8;
+                  flex: 0 0 auto;
+
+                  &.streaming {
+                    background: #3b82f6;
+                    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.45);
+                    animation: pulse-stream-dot 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+                  }
+                }
+
+                .llm-retry-note-text {
+                  color: #71717a;
+                  display: flex;
+                  flex-direction: column;
+                  min-width: 0;
+
+                  .llm-retry-status-line,
+                  .llm-retry-guidance {
+                    display: block;
+                  }
+
+                  .llm-retry-guidance {
+                    color: #a1a1aa;
+                  }
+                }
+              }
+            }
+
             .step-generic-tool {
               border: 1px solid transparent;
 
@@ -2245,6 +2294,10 @@ $uniform-gap: 8px;
                   background: #f8fafc;
                   border-color: #fca5a5;
 
+                  &.has-details {
+                    cursor: pointer;
+                  }
+
                   &:hover {
                     border-color: #f87171;
                   }
@@ -2252,19 +2305,6 @@ $uniform-gap: 8px;
                   &.is-expanded {
                     background: #ffffff;
                     border-color: #f87171;
-                  }
-                }
-
-                &.is-retrying {
-                  background: #fffbeb;
-                  border-color: #fcd34d;
-
-                  &:hover {
-                    border-color: #f59e0b;
-                  }
-
-                  .action-card-body .detail-value {
-                    color: #78350f;
                   }
                 }
 
@@ -2373,9 +2413,6 @@ $uniform-gap: 8px;
                      color: #ef4444;
                    }
 
-                   &.is-retrying {
-                     color: #d97706;
-                   }
                  }
 
                  .action-title {
@@ -2442,27 +2479,6 @@ $uniform-gap: 8px;
                      }
                    }
 
-                   &.is-retrying {
-                     background: #fef3c7;
-                     color: #92400e;
-                     border: 1px solid #fde68a;
-
-                     .status-icon {
-                       color: #d97706;
-
-                       &.is-active {
-                         animation: spin 1.5s linear infinite;
-                       }
-                     }
-                   }
-                 }
-
-                 &.llm-retry-header {
-                   border-bottom-color: #fde68a;
-
-                   .action-title {
-                     color: #78350f;
-                   }
                  }
 
                  &.llm-failure-header {
@@ -2528,83 +2544,6 @@ $uniform-gap: 8px;
                  flex-direction: column;
                  gap: 6px;
 
-                 .retry-summary-grid {
-                   display: grid;
-                   grid-template-columns: repeat(3, minmax(0, 1fr));
-                   gap: 6px;
-                 }
-
-                 .retry-summary-item {
-                   min-width: 0;
-                   padding: 7px 8px;
-                   border: 1px solid rgba(245, 158, 11, 0.18);
-                   border-radius: 7px;
-                   background: rgba(255, 255, 255, 0.68);
-                   display: flex;
-                   flex-direction: column;
-                   gap: 2px;
-
-                   .retry-summary-label {
-                     color: #a16207;
-                     font-size: 9.5px;
-                     font-weight: 600;
-                     letter-spacing: 0.02em;
-                     text-transform: uppercase;
-                   }
-
-                   strong {
-                     color: #78350f;
-                     font-size: 11.5px;
-                     font-weight: 700;
-                     overflow: hidden;
-                     text-overflow: ellipsis;
-                     white-space: nowrap;
-                   }
-                 }
-
-                 .retry-attempt-list {
-                   border-top: 1px solid rgba(245, 158, 11, 0.22);
-                   display: flex;
-                   flex-direction: column;
-                   gap: 6px;
-                   margin-top: 2px;
-                   padding-top: 8px;
-                   animation: fadeInDetails 0.2s ease-out;
-
-                   .retry-attempt-item {
-                     padding: 8px 9px;
-                     border: 1px solid rgba(245, 158, 11, 0.2);
-                     border-radius: 7px;
-                     background: rgba(255, 255, 255, 0.76);
-                   }
-
-                   .retry-attempt-heading {
-                     display: flex;
-                     align-items: center;
-                     justify-content: space-between;
-                     gap: 8px;
-                     margin-bottom: 4px;
-                     color: #92400e;
-                     font-size: 10px;
-                     font-weight: 700;
-                   }
-
-                   .retry-wait-pill {
-                     padding: 1px 5px;
-                     border-radius: 999px;
-                     background: #fef3c7;
-                     color: #b45309;
-                   }
-
-                   .retry-attempt-error {
-                     color: #78350f;
-                     font-size: 10.5px;
-                     line-height: 1.45;
-                     overflow-wrap: anywhere;
-                     user-select: text;
-                   }
-                 }
-
                  .action-detail-row {
                    display: flex;
                    align-items: baseline;
@@ -2651,6 +2590,38 @@ $uniform-gap: 8px;
                          padding: 0;
                          border: none;
                        }
+                     }
+                   }
+                 }
+
+                 .failure-retry-details {
+                   margin-top: 4px;
+                   padding-top: 9px;
+                   border-top: 1px solid #fecaca;
+                   display: flex;
+                   flex-direction: column;
+                   gap: 7px;
+                   animation: fadeInDetails 0.2s ease-out;
+
+                   .failure-retry-title {
+                     color: #991b1b;
+                     font-size: 10px;
+                     font-weight: 700;
+                     text-transform: uppercase;
+                     letter-spacing: 0.03em;
+                   }
+
+                   .failure-retry-row {
+                     display: flex;
+                     justify-content: space-between;
+                     gap: 12px;
+                     color: #7f1d1d;
+                     font-size: 10.5px;
+                     line-height: 1.4;
+
+                     span:last-child {
+                       color: #64748b;
+                       text-align: right;
                      }
                    }
                  }

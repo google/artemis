@@ -27,12 +27,57 @@ from artemis.tools.command_tool import (
     _format_long_output_response,
     _is_output_long,
 )
-from artemis.agents.explorer.constants import EXPLORE_DESCRIPTIONS
-from artemis.config import resolve_explorer_version
 from artemis.utils.logger import get_logger
 from artemis.utils.task_tree import get_active_subgoal_hashes
 
 logger = get_logger(__name__)
+
+
+_LEGACY_TOOL_CALLING_RULE = """- **Tool Calling Iron Rule**: Do NOT submit a Turn-Ending Action at the same time (in the same tool-call list) as a Pre-Decision Exploratory Tool. You must first gather information (e.g., finding coordinates or diagnosing a state), manage ADB background tasks, or update memory notes. You can use pre-decision exploratory tools to complete this task. You will be prompted again with the tool's result, at which point you can output your final physical/turn-ending action."""
+
+_TOOL_CALLING_RULE = """- **Tool Calling Contract**: Tools that return information needed for the decision (`ask_explorer`, `ask_diagnoser`, `video_analyzer`, `run_adb_command`, `manage_task`, `analyze_task_output`, `read_note`, `list_notes`, and `save_note`) are result-dependent Pre-Decision Tools. Do not submit them in the same tool-call list as a Turn-Ending Action; inspect their result first. The write-through tools `update_note` and `append_note` may accompany at most one Turn-Ending Action when their content is based entirely on evidence already available before that action. Never write an action's expected outcome as if it had already been observed."""
+
+_LEGACY_TOOL_PROTOCOL = """1. **Pre-Decision Exploratory Tools**:
+   - *What they are*: Helper/Subagent tools (such as `ask_explorer`, `ask_diagnoser`, `video_analyzer`), ADB command tools (`run_adb_command`, `manage_task`), and memory note tools (`read_note`, `list_notes`, `save_note`, `update_note`, `append_note`).
+   - *How they work*: These tools gather details or update/read memory. When you invoke these tools, the framework will immediately execute them and return the results, allowing you to continue thinking and make your final decision.
+2. **Turn-Ending Actions**:"""
+
+_TOOL_PROTOCOL = """1. **Result-Dependent Pre-Decision Tools**:
+   - *What they are*: Helper/Subagent tools (`ask_explorer`, `ask_diagnoser`, `video_analyzer`), ADB/task tools (`run_adb_command`, `manage_task`, `analyze_task_output`), and memory tools whose result must be inspected (`read_note`, `list_notes`, `save_note`).
+   - *How they work*: Invoke these without a Turn-Ending Action, inspect the returned result, and then decide.
+2. **Write-Through Memory Tools**:
+   - `update_note` and `append_note` may run alongside at most one Turn-Ending Action only when recording facts already observed in the current context. If the note content depends on the action's result, wait for the next observation before writing it.
+3. **Turn-Ending Actions**:"""
+
+_LEGACY_CHECKER_REJECTION_TRIGGER = """   - **Validation/Checker Rejection**: The verification agent (Checker) rejected your subgoal completion (i.e., you are in troubleshooter mode and this is a retry)."""
+
+_AMBIGUOUS_CHECKER_REJECTION_TRIGGER = """   - **Ambiguous Validation/Checker Rejection**: Use `ask_diagnoser` only when the rejection cause is unclear, the evidence conflicts, or no safe local correction is evident. A Checker rejection alone is not a mandatory diagnosis trigger."""
+
+_LEGACY_TROUBLESHOOTER_CHALLENGE = """   - *Challenge Checker*: If you visually confirm the subgoal's target state is *already achieved*, you **MUST** invoke the `reply_to_checker` tool to state your observation."""
+
+_TROUBLESHOOTER_CHALLENGE = """   - *Challenge Checker*: If current evidence clearly proves the subgoal is already achieved, invoke `reply_to_checker` directly. This branch takes precedence over diagnosis; do not call `ask_diagnoser` first.
+   - *Clear Local Correction*: If the rejection cause is explicit and a safe correction is evident from the current screen, perform that correction directly. This branch also takes precedence over generic diagnosis triggers. Use `ask_diagnoser` only for ambiguity, conflicting evidence, or repeated failure."""
+
+
+def apply_operator_prompt_contract(prompt_template: str) -> str:
+    """Align prompt-level tool and recovery rules with Operator runtime semantics."""
+    prompt_template = prompt_template.replace(
+        _LEGACY_TOOL_CALLING_RULE,
+        _TOOL_CALLING_RULE,
+    )
+    prompt_template = prompt_template.replace(
+        _LEGACY_TOOL_PROTOCOL,
+        _TOOL_PROTOCOL,
+    )
+    prompt_template = prompt_template.replace(
+        _LEGACY_CHECKER_REJECTION_TRIGGER,
+        _AMBIGUOUS_CHECKER_REJECTION_TRIGGER,
+    )
+    prompt_template = prompt_template.replace(
+        _LEGACY_TROUBLESHOOTER_CHALLENGE,
+        _TROUBLESHOOTER_CHALLENGE,
+    )
+    return prompt_template
 
 
 class PromptBuilder:
@@ -83,17 +128,7 @@ class TemplatePromptComponent(PromptComponent):
                 "Failed to format prompt, template not found in operator prompts config."
             )
 
-        op_version = resolve_explorer_version(ctx, agent_or_profile_name="operator")
-        rule_prompt_info = EXPLORE_DESCRIPTIONS.get(op_version, EXPLORE_DESCRIPTIONS["pro"])
-        rule_prompt = rule_prompt_info["rule_prompt"]
-        if "{max_iterations}" in rule_prompt:
-            max_iterations = 8 if op_version == "ultra" else 3
-            rule_prompt = rule_prompt.format(max_iterations=max_iterations)
-
-        prompt_template = prompt_template.replace(
-            "# OPERATIONAL PRINCIPLES\n",
-            f"# OPERATIONAL PRINCIPLES\n- **Visual Explorer Rule**: {rule_prompt}\n",
-        )
+        prompt_template = apply_operator_prompt_contract(prompt_template)
 
         plan_and_history = kwargs.get("plan_and_history", "No plan or history yet.")
 

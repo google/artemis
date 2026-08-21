@@ -185,41 +185,57 @@ export function getToolAgentName(tool: any): string | null {
 export function getUniqueGenericTools(tools: any[] | undefined): any[] {
   if (!tools) return [];
 
+  // Only Google GenAI SDK retries are observable. Artemis wrapper retries and
+  // opaque provider retries must never be presented as provider internals.
   const retryTools = tools.filter(tool =>
     tool?.type === 'llm_call'
     && tool?.status === 'retrying'
     && (tool?.name === 'llm_retry' || tool?.name === 'llm_retry_group')
+    && tool?.payload?.source === 'provider_sdk'
+    && ['google', 'gemini'].includes(String(tool?.payload?.provider || '').toLowerCase())
   );
-  const firstRetry = retryTools[0];
-  const latestRetry = retryTools[retryTools.length - 1];
-  const retryAggregate = firstRetry ? {
-    ...firstRetry,
-    trace_id: `llm-retry-group-${firstRetry.trace_id || firstRetry.timestamp || 'unknown'}`,
-    name: 'llm_retry_group',
-    payload: {
-      ...(latestRetry?.payload || {}),
-      retry_count: retryTools.length,
-      total_delay: retryTools.reduce(
-        (total, retry) => total + (Number(retry?.payload?.delay) || 0),
-        0
-      ),
-      providers: Array.from(new Set(
-        retryTools
-          .map(retry => retry?.payload?.provider)
-          .filter((provider): provider is string => typeof provider === 'string' && !!provider)
-      )),
-      retries: retryTools.map(retry => ({
-        trace_id: retry.trace_id,
-        timestamp: retry.timestamp,
-        error: retry?.payload?.error || retry.error,
-        delay: Number(retry?.payload?.delay) || 0,
-        provider: retry?.payload?.provider,
-        source: retry?.payload?.source,
-        attempt: retry?.payload?.attempt,
-        max_retries: retry?.payload?.max_retries
-      }))
-    }
-  } : null;
+  const retryKey = (tool: any) => String(
+    tool?.payload?.request_id || `legacy-${tool?.step_id || 'unassigned'}`
+  );
+  const retryGroups = new Map<string, any[]>();
+  for (const retry of retryTools) {
+    const key = retryKey(retry);
+    retryGroups.set(key, [...(retryGroups.get(key) || []), retry]);
+  }
+  const terminalRequestIds = new Set(
+    tools
+      .filter(tool => tool?.type === 'llm_call' && tool?.status === 'failed')
+      .map(tool => tool?.payload?.request_id)
+      .filter((requestId): requestId is string => typeof requestId === 'string' && !!requestId)
+  );
+
+  const buildRetryAggregate = (group: any[]) => {
+    const firstRetry = group[0];
+    const latestRetry = group[group.length - 1];
+    return {
+      ...firstRetry,
+      trace_id: `llm-retry-group-${firstRetry?.payload?.request_id || firstRetry?.trace_id || firstRetry?.timestamp || 'unknown'}`,
+      name: 'llm_retry_group',
+      payload: {
+        ...(latestRetry?.payload || {}),
+        retry_count: group.length,
+        total_delay: group.reduce(
+          (total, retry) => total + (Number(retry?.payload?.delay) || 0),
+          0
+        ),
+        retries: group.map(retry => ({
+          trace_id: retry.trace_id,
+          timestamp: retry.timestamp,
+          error: retry?.payload?.error || retry.error,
+          delay: Number(retry?.payload?.delay) || 0,
+          provider: retry?.payload?.provider,
+          source: retry?.payload?.source,
+          request_id: retry?.payload?.request_id,
+          scheduled_at: retry?.payload?.scheduled_at
+        }))
+      }
+    };
+  };
 
   const toolMap = new Map<string, any>();
   for (const t of tools) {
@@ -232,22 +248,33 @@ export function getUniqueGenericTools(tools: any[] | undefined): any[] {
 
   const result: any[] = [];
   const seenTraces = new Set<string>();
-  let retryAggregateAdded = false;
+  const addedRetryGroups = new Set<string>();
 
   for (const tool of tools) {
     if (!tool || !tool.name) continue;
     if (tool.type === 'agent') continue;
 
     if (tool.type === 'llm_call' && tool.status === 'retrying') {
-      if (!retryAggregateAdded && retryAggregate) {
-        result.push(retryAggregate);
-        retryAggregateAdded = true;
+      const groupKey = retryKey(tool);
+      const group = retryGroups.get(groupKey);
+      const requestId = tool?.payload?.request_id;
+      if (
+        group
+        && !addedRetryGroups.has(groupKey)
+        && !(requestId && terminalRequestIds.has(requestId))
+      ) {
+        result.push(buildRetryAggregate(group));
+        addedRetryGroups.add(groupKey);
       }
       continue;
     }
 
     if (tool.type === 'llm_call' && tool.status === 'failed') {
-      result.push(tool);
+      // Callback-level attempt errors are implementation details. The wrapper
+      // emits one terminal llm_pause trace after retries are exhausted.
+      if (tool.name === 'llm_pause' || tool?.payload?.pause === true) {
+        result.push(tool);
+      }
       continue;
     }
 

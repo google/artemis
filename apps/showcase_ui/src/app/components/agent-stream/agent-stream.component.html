@@ -528,50 +528,36 @@
 
                     <!-- Generic Tools & LLM Calls (when item is a tool) -->
                     <ng-container *ngIf="item.type === 'tool'">
-                      <!-- Recoverable provider/LLM retries remain visible after the task continues. -->
-                      <div class="step-android-action-card tool-action-card is-retrying"
-                           [class.is-expanded]="isActionExpanded('retry-' + block.id + '-' + itemIdx)"
-                           *ngIf="isLLMRetry(item.data)">
-                        <div class="action-card-header llm-retry-header"
-                             (click)="toggleActionExpanded('retry-' + block.id + '-' + itemIdx, $event)">
-                          <span class="material-symbols-outlined action-icon is-retrying">cloud_sync</span>
-                          <span class="action-title">AI service retry</span>
-                          <span class="action-status-badge is-retrying">
-                            {{ getLLMRetryCount(item.data) }}× retried
-                          </span>
-                          <span class="action-expand-icon material-symbols-outlined">
-                            {{ isActionExpanded('retry-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
-                          </span>
-                        </div>
-                        <div class="action-card-body">
-                          <div class="retry-summary-grid">
-                            <div class="retry-summary-item">
-                              <span class="retry-summary-label">Attempts</span>
-                              <strong>{{ getLLMRetryCount(item.data) }}</strong>
-                            </div>
-                            <div class="retry-summary-item" *ngIf="getLLMRetryTotalDelay(item.data) as totalDelay">
-                              <span class="retry-summary-label">Extra wait</span>
-                              <strong>{{ totalDelay }}</strong>
-                            </div>
-                            <div class="retry-summary-item" *ngIf="getLLMRetryProvider(item.data) as retryProvider">
-                              <span class="retry-summary-label">Provider</span>
-                              <strong>{{ retryProvider }}</strong>
-                            </div>
-                          </div>
-                          <div class="retry-attempt-list" *ngIf="isActionExpanded('retry-' + block.id + '-' + itemIdx)">
-                            <div class="retry-attempt-item" *ngFor="let retry of getLLMRetryEntries(item.data); let retryIndex = index">
-                              <div class="retry-attempt-heading">
-                                <span>Retry {{ retryIndex + 1 }}</span>
-                                <span class="retry-wait-pill" *ngIf="getLLMRetryEntryDelay(retry) as retryDelay">+{{ retryDelay }}</span>
-                              </div>
-                              <div class="retry-attempt-error">{{ getLLMRetryEntryError(retry) }}</div>
-                            </div>
+                      <!-- Only SDK-observed Gemini retries are shown as quiet stream notes. -->
+                      <div class="llm-retry-notes" *ngIf="isLLMRetry(item.data)">
+                        <div class="llm-retry-note" *ngFor="let retry of getLLMRetryEntries(item.data); let retryIndex = index">
+                          <span class="stream-status-dot"
+                                [class.streaming]="retryIndex === getLLMRetryEntries(item.data).length - 1 && isLLMRetryEntryWaiting(retry)"></span>
+                          <div class="llm-retry-note-text">
+                            <ng-container *ngIf="isLLMRetryEntryWaiting(retry)">
+                              <span class="llm-retry-status-line">
+                                LLM temporarily unavailable
+                                <ng-container *ngIf="getLLMRetryEntryDelay(retry) as retryDelay">
+                                  · Retrying in {{ retryDelay }}…
+                                </ng-container>
+                              </span>
+                              <span class="llm-retry-guidance">
+                                Frequent retries may indicate a low API rate limit. Consider increasing the limit or reducing request concurrency.
+                              </span>
+                            </ng-container>
+                            <span class="llm-retry-status-line" *ngIf="!isLLMRetryEntryWaiting(retry)">
+                              Retrying LLM request · Waited {{ getLLMRetryEntryWaited(retry) }}
+                            </span>
                           </div>
                         </div>
                       </div>
 
                       <!-- Failed LLM Calls (Permanently maintain Action Card format in red) -->
-                      <div class="step-android-action-card tool-action-card is-failed" *ngIf="item.data.type === 'llm_call' && item.data.status === 'failed'">
+                      <div class="step-android-action-card tool-action-card is-failed"
+                           [class.has-details]="hasLLMFailureRetryEntries(item.data)"
+                           [class.is-expanded]="isActionExpanded('llm-failure-' + block.id + '-' + itemIdx)"
+                           (click)="hasLLMFailureRetryEntries(item.data) && toggleActionExpanded('llm-failure-' + block.id + '-' + itemIdx, $event)"
+                           *ngIf="isDisplayableLLMFailure(item.data)">
                         <div class="action-card-header llm-failure-header">
                           <span class="material-symbols-outlined action-icon is-failed">error</span>
                           <span class="action-title">LLM Request Failed</span>
@@ -596,11 +582,28 @@
                             <span class="material-symbols-outlined">play_arrow</span>
                             Resume
                           </button>
+                          <span class="action-expand-icon material-symbols-outlined" *ngIf="hasLLMFailureRetryEntries(item.data)">
+                            {{ isActionExpanded('llm-failure-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
+                          </span>
                         </div>
                         <div class="action-card-body">
                           <div class="action-detail-row">
                             <span class="detail-label">Reason:</span>
                             <span class="detail-value">{{ getLLMErrorText(item.data) }}</span>
+                          </div>
+                          <div class="action-detail-row" *ngIf="getLLMFailureWaited(item.data) as waited">
+                            <span class="detail-label">Waited:</span>
+                            <span class="detail-value">{{ waited }}</span>
+                          </div>
+                          <div class="failure-retry-details" *ngIf="isActionExpanded('llm-failure-' + block.id + '-' + itemIdx)">
+                            <div class="failure-retry-title">Retry details</div>
+                            <div class="failure-retry-row" *ngFor="let retry of getLLMFailureRetryEntries(item.data); let retryIndex = index">
+                              <span>Retry {{ retryIndex + 1 }}</span>
+                              <span>
+                                Planned {{ getLLMRetryEntryDelay(retry) || '0s' }}
+                                · Waited {{ getLLMRetryEntryWaited(retry) }}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </div>

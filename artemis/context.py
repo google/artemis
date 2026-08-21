@@ -163,6 +163,7 @@ class ArtemisContext(BaseModel):
     checker_task: asyncio.Task[Any] | None = None
     planner_task: asyncio.Task[Any] | None = None
     background_tasks: list[asyncio.Task[Any]] = Field(default_factory=list)
+    background_task_grace_period_seconds: float = 2.0
     package_cache: dict[str, str | None] = Field(default_factory=dict)
     background_jobs: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
@@ -178,9 +179,34 @@ class ArtemisContext(BaseModel):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.background_tasks:
-            logger.info(f"Waiting for {len(self.background_tasks)} background tasks to complete...")
-            results = await asyncio.gather(*self.background_tasks, return_exceptions=True)
-            for task, result in zip(self.background_tasks, results):
+            tasks = list(self.background_tasks)
+            pending_tasks = [task for task in tasks if not task.done()]
+            grace_period = (
+                max(0.0, self.background_task_grace_period_seconds)
+                if exc_type is None
+                else 0.0
+            )
+
+            if pending_tasks and grace_period > 0:
+                logger.info(
+                    f"Draining {len(pending_tasks)} background tasks for up to "
+                    f"{grace_period:.1f}s..."
+                )
+                _, pending_tasks = await asyncio.wait(
+                    pending_tasks,
+                    timeout=grace_period,
+                )
+
+            if pending_tasks:
+                logger.info(
+                    f"Cancelling {len(pending_tasks)} unfinished background tasks; "
+                    "primary automation is already complete."
+                )
+                for task in pending_tasks:
+                    task.cancel()
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for task, result in zip(tasks, results):
                 if isinstance(result, Exception):
                     logger.error(
                         f"Background task {task.get_name()} failed: {result}",

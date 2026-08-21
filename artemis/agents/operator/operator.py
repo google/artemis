@@ -93,6 +93,7 @@ from artemis.agents.operator.prompts import (
     ToolLimitWarningPromptComponent,
     InjectedInstructionPromptComponent,
 )
+from artemis.agents.operator.prompt_builder import load_operator_prompts
 
 
 class OperatorNode:
@@ -107,13 +108,11 @@ class OperatorNode:
         self.tools = tools or []
         self.prompt_components = prompt_components or []
         self.last_n_detailed = last_n_detailed
-        self.prompts = {}
-        prompts_path = Path(__file__).parent / "operator.json"
-        if prompts_path.exists():
-            try:
-                self.prompts = json.loads(prompts_path.read_text(encoding="utf-8"))
-            except Exception as e:
-                logger.error(f"Failed to load operator prompts: {e}")
+        try:
+            self.prompts = load_operator_prompts()
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to load operator prompts: {e}")
+            self.prompts = {}
 
     def _check_infinite_loop(self, state: State):
         subagent_calls = state.subagent_calls or []
@@ -594,8 +593,9 @@ class OperatorNode:
                                         " screen action you attempted to"
                                         " execute was rejected because you are"
                                         " not allowed to simultaneously"
-                                        " read/write memory and execute"
-                                        " physical actions in the same turn."
+                                        " use result-dependent pre-decision"
+                                        " tools and execute physical actions in"
+                                        " the same turn."
                                         " Currently, no screen actions have"
                                         " been executed. Please review your"
                                         " updated context and re-output your"
@@ -614,9 +614,9 @@ class OperatorNode:
                                         " successfully processed. However, your"
                                         " response to the checker was rejected"
                                         " because you are not allowed to"
-                                        " simultaneously read/write memory and"
-                                        " reply to the checker in the same"
-                                        " turn. Currently, no response has been"
+                                        " simultaneously use result-dependent"
+                                        " pre-decision tools and reply to the"
+                                        " checker. Currently, no response has been"
                                         " sent to the checker. Please review"
                                         " your updated context and re-output"
                                         " your reply."

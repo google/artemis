@@ -158,6 +158,7 @@ export class AgentStreamComponent implements AfterViewInit {
   // Set to track expanded and collapsed state of action cards
   public expandedActionCards = signal<Set<string>>(new Set<string>());
   public collapsedActionCards = signal<Set<string>>(new Set<string>());
+  public retryClock = signal<number>(Date.now());
 
   // Performance caches for parameter and event extractions
   private actionParamsCache = new WeakMap<any, ActionParam[]>();
@@ -280,6 +281,9 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   constructor() {
+    const retryClockInterval = setInterval(() => this.retryClock.set(Date.now()), 1000);
+    this.destroyRef.onDestroy(() => clearInterval(retryClockInterval));
+
     // Auto scroll stream box during active text streaming
     effect(() => {
       const logs = this.filteredLogs();
@@ -827,7 +831,12 @@ export class AgentStreamComponent implements AfterViewInit {
     if (!block) return false;
     const hasNative = Boolean(this.getNativeThinking(block));
     const hasRaw = Boolean(this.getRawThinking(block));
-    const hasVisibleTools = Boolean(block.data?.generic_tools) && block.data.generic_tools.some((t: any) => this.shouldShowTool(t, block.data) || (t.type === 'llm_call' && (t.status === 'failed' || t.status === 'retrying')) || this.isReportStatusAction(t));
+    const hasVisibleTools = Boolean(block.data?.generic_tools) && block.data.generic_tools.some((t: any) =>
+      this.shouldShowTool(t, block.data)
+      || this.isDisplayableLLMFailure(t)
+      || this.isLLMRetry(t)
+      || this.isReportStatusAction(t)
+    );
     const hasAndroidActions = Boolean(block.data?.action_taken) && (this.isAndroidAction(block.data.action_taken) || this.isReportStatusAction(block.data.action_taken));
     return hasNative || hasRaw || hasVisibleTools || hasAndroidActions;
   }
@@ -852,6 +861,12 @@ export class AgentStreamComponent implements AfterViewInit {
     return !!tool && this.retryablePauseTrace() === tool;
   }
 
+  public isDisplayableLLMFailure(tool: any): boolean {
+    return tool?.type === 'llm_call'
+      && tool?.status === 'failed'
+      && (tool?.name === 'llm_pause' || tool?.payload?.pause === true);
+  }
+
   public resumePausedTask(event: Event): void {
     event.stopPropagation();
     this.agentService.resumeTask();
@@ -865,7 +880,10 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   public isLLMRetry(tool: any): boolean {
-    return tool?.type === 'llm_call' && tool?.status === 'retrying';
+    return tool?.type === 'llm_call'
+      && tool?.status === 'retrying'
+      && tool?.payload?.source === 'provider_sdk'
+      && ['google', 'gemini'].includes(String(tool?.payload?.provider || '').toLowerCase());
   }
 
   public getLLMRetryEntries(tool: any): any[] {
@@ -873,25 +891,17 @@ export class AgentStreamComponent implements AfterViewInit {
     return Array.isArray(retries) && retries.length > 0 ? retries : [tool?.payload || tool];
   }
 
-  public getLLMRetryCount(tool: any): number {
-    const count = Number(tool?.payload?.retry_count);
-    return Number.isFinite(count) && count > 0 ? count : this.getLLMRetryEntries(tool).length;
+  public getLLMFailureRetryEntries(tool: any): any[] {
+    const retries = tool?.payload?.retries;
+    if (!Array.isArray(retries)) return [];
+    return retries.filter((retry: any) =>
+      retry?.source === 'provider_sdk'
+      && ['google', 'gemini'].includes(String(retry?.provider || '').toLowerCase())
+    );
   }
 
-  public getLLMRetryTotalDelay(tool: any): string | null {
-    const configuredTotal = Number(tool?.payload?.total_delay);
-    const total = Number.isFinite(configuredTotal)
-      ? configuredTotal
-      : this.getLLMRetryEntries(tool).reduce(
-          (sum: number, retry: any) => sum + (Number(retry?.delay) || 0),
-          0
-        );
-    if (total <= 0) return null;
-    return `${total.toFixed(2).replace(/\.00$/, '')}s`;
-  }
-
-  public getLLMRetryEntryError(entry: any): string {
-    return this.cleanErrorMessage(entry?.error || 'Unknown error');
+  public hasLLMFailureRetryEntries(tool: any): boolean {
+    return this.getLLMFailureRetryEntries(tool).length > 0;
   }
 
   public getLLMRetryEntryDelay(entry: any): string | null {
@@ -900,14 +910,37 @@ export class AgentStreamComponent implements AfterViewInit {
     return `${delay.toFixed(2).replace(/\.00$/, '')}s`;
   }
 
-  public getLLMRetryProvider(tool: any): string | null {
-    const providers = Array.isArray(tool?.payload?.providers)
-      ? tool.payload.providers
-      : [tool?.payload?.provider];
-    const labels = providers
-      .filter((provider: any) => typeof provider === 'string' && provider.trim())
-      .map((provider: string) => provider.trim().replace(/^./, (value: string) => value.toUpperCase()));
-    return labels.length > 0 ? Array.from(new Set(labels)).join(', ') : null;
+  public getLLMRetryEntryWaited(entry: any): string {
+    const delay = Number(entry?.delay);
+    if (!Number.isFinite(delay) || delay <= 0) return '0s';
+
+    const rawStartedAt = Number(entry?.scheduled_at ?? entry?.timestamp);
+    if (!Number.isFinite(rawStartedAt) || rawStartedAt <= 0) {
+      return this.formatLLMDuration(delay);
+    }
+    const startedAtMs = rawStartedAt < 1e11 ? rawStartedAt * 1000 : rawStartedAt;
+    const elapsed = Math.min(delay, Math.max(0, (this.retryClock() - startedAtMs) / 1000));
+    return this.formatLLMDuration(elapsed);
+  }
+
+  public isLLMRetryEntryWaiting(entry: any): boolean {
+    const delay = Number(entry?.delay);
+    const rawStartedAt = Number(entry?.scheduled_at ?? entry?.timestamp);
+    if (!Number.isFinite(delay) || delay <= 0 || !Number.isFinite(rawStartedAt)) return false;
+    const startedAtMs = rawStartedAt < 1e11 ? rawStartedAt * 1000 : rawStartedAt;
+    return this.retryClock() < startedAtMs + delay * 1000;
+  }
+
+  public getLLMFailureWaited(tool: any): string | null {
+    const waited = Number(tool?.payload?.waited_seconds);
+    if (!Number.isFinite(waited) || waited < 0) return null;
+    return this.formatLLMDuration(waited);
+  }
+
+  public formatLLMDuration(seconds: number): string {
+    if (seconds < 0.05) return '0s';
+    if (seconds < 10) return `${seconds.toFixed(1).replace(/\.0$/, '')}s`;
+    return `${Math.round(seconds)}s`;
   }
 
   public cleanErrorMessage(rawError: any): string {
