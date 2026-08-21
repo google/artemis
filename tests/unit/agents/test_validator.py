@@ -911,3 +911,42 @@ async def test_validator_pre_execution_xml_failure_not_overridden_when_pixel_byp
     mock_analyze.assert_called_once()
     args, kwargs = mock_analyze.call_args
     assert "Pre-execution validation failed" in args[2]
+
+
+@pytest.mark.asyncio
+async def test_validator_failure_screenshot_mcp_error_handled_safely(
+    mock_mcp, mock_context, temp_screenshot
+):
+    """Test that when take_screenshot fails on MCP server and returns an error text,
+    the ValidatorNode does not crash with base64 decoding error.
+    """
+    def mock_call_tool(name, args):
+        if name == "take_screenshot":
+            return Mock(content=[Mock(text="Error: ADB connection lost")])
+        if name == "tap":
+            return Mock(content=[Mock(text="Error: Target not found")])
+        return Mock(content=[Mock(text="Success")])
+
+    mock_mcp.call_tool.side_effect = mock_call_tool
+
+    decisions = json.dumps([{"action": "tap", "coordinates": [105, 205]}])
+    state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
+    node = ValidatorNode(mock_context)
+
+    with (
+        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
+        patch("artemis.utils.image_diff.check_ui_change", return_value=False),
+    ):
+        mock_analyze.return_value = {
+            "status": "cannot_fix",
+            "analysis": "Action failed and cannot fix.",
+        }
+
+        result = await node(state)
+
+    assert "last_execution_result" in result
+    report = result["last_execution_result"]
+    assert report["status"] == "failed"
+    assert len(report["execution"]) == 1
+    assert report["execution"][0]["action"] == "tap"
+

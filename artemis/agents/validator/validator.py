@@ -405,26 +405,16 @@ class ValidatorNode:
                     try:
                         if session is not None:
                             result = await session.call_tool("take_screenshot", {})
-                            success_img, post_screenshot_b64 = self._parse_mcp_result(result)
+                            success_img, content = self._parse_mcp_result(result)
+                            if success_img and content:
+                                post_screenshot_b64 = content
+                            else:
+                                logger.warning(f"Take screenshot via MCP returned non-success: {content}")
                         elif getattr(self, "_local_controller", None):
                             post_screenshot_b64 = await self._local_controller.take_screenshot()
-                            success_img = True
-                        else:
-                            success_img, post_screenshot_b64 = False, None
-
-                        if success_img and post_screenshot_b64:
-                            if self.ctx.data_engine:
-                                post_image_name = self.ctx.data_engine.get_or_create_image(
-                                    base64.b64decode(post_screenshot_b64)
-                                )
-                                screenshot_path = str(
-                                    self.ctx.data_engine.get_image_path(post_image_name)
-                                )
-                                state.latest_screenshot = screenshot_path
                     except Exception as e:
                         logger.error(f"Failed to capture live screenshot for failure analysis: {e}")
                         post_screenshot_b64 = None
-                        post_image_name = None
                 else:
                     # 2. Local execution attempts
                     max_local_retries = 1 if action_name == "launch_app" else 2
@@ -454,20 +444,16 @@ class ValidatorNode:
                         try:
                             if session is not None:
                                 result = await session.call_tool("take_screenshot", {})
-                                success_img, post_screenshot_b64 = self._parse_mcp_result(result)
+                                success_img, content = self._parse_mcp_result(result)
+                                if success_img and content:
+                                    post_screenshot_b64 = content
+                                else:
+                                    logger.warning(f"Take failure screenshot via MCP returned non-success: {content}")
                             elif getattr(self, "_local_controller", None):
                                 post_screenshot_b64 = await self._local_controller.take_screenshot()
-                                success_img = True
-                            else:
-                                success_img, post_screenshot_b64 = False, None
-
-                            if success_img and post_screenshot_b64:
-                                if self.ctx.data_engine:
-                                    post_image_name = self.ctx.data_engine.get_or_create_image(
-                                        base64.b64decode(post_screenshot_b64)
-                                    )
                         except Exception as e:
                             logger.error(f"Failed to capture failure screenshot: {e}")
+                            post_screenshot_b64 = None
 
                 # Enrich and record execution
                 if len(attempts_log) > 1 or not success:
@@ -475,11 +461,11 @@ class ValidatorNode:
                 execution.append(action_item)
 
                 if post_screenshot_b64:
+                    decoded_bytes = base64.b64decode(post_screenshot_b64)
                     last_screenshot_b64 = post_screenshot_b64
+                    logger.info(f"Successfully decoded post_screenshot_b64 ({len(decoded_bytes)} bytes)")
                     if self.ctx.data_engine:
-                        post_image_name = self.ctx.data_engine.get_or_create_image(
-                            base64.b64decode(post_screenshot_b64)
-                        )
+                        post_image_name = self.ctx.data_engine.get_or_create_image(decoded_bytes)
                         last_screenshot_name = post_image_name
 
                         screenshot_path = str(self.ctx.data_engine.get_image_path(post_image_name))
