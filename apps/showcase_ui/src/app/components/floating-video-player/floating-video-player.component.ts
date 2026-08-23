@@ -51,6 +51,13 @@ export class FloatingVideoPlayerComponent {
   public videoLoadError = signal<boolean>(false);
   public liveStreamUrl = signal<string>('/api/stream/device-live');
   public liveStreamError = signal<boolean>(false);
+  public activeSegmentIndex = signal<number>(0);
+  public currentVideoUrl = computed(() => {
+    const segments = this.agentService.activeVideoSegments();
+    return segments[this.activeSegmentIndex()]?.url || this.agentService.activeVideoUrl();
+  });
+  private pendingLocalTime: number | null = null;
+  private pendingAutoplay = false;
 
   // Available speed options
   public speedOptions = [0.5, 1.0, 1.5, 2.0, 4.0];
@@ -74,9 +81,11 @@ export class FloatingVideoPlayerComponent {
     effect(
       () => {
         const url = this.agentService.activeVideoUrl();
+        const segments = this.agentService.activeVideoSegments();
         this.videoLoadError.set(false);
+        this.activeSegmentIndex.set(0);
         this.currentTime.set(0);
-        this.duration.set(0);
+        this.duration.set(segments.reduce((sum, segment) => sum + segment.duration, 0));
         this.isPlaying.set(false);
       },
       { allowSignalWrites: true }
@@ -177,18 +186,32 @@ export class FloatingVideoPlayerComponent {
   public onLoadedMetadata(): void {
     const v = this.videoRef?.nativeElement;
     if (v) {
-      this.duration.set(v.duration || 0);
+      const segments = this.agentService.activeVideoSegments();
+      if (!segments.length) {
+        this.duration.set(v.duration || 0);
+      }
       this.videoLoadError.set(false);
       v.playbackRate = this.playbackRate();
-      v.loop = this.isLooping();
+      v.loop = this.isLooping() && !segments.length;
+      v.muted = this.isMuted();
+      if (this.pendingLocalTime !== null) {
+        v.currentTime = Math.max(0, Math.min(v.duration || this.pendingLocalTime, this.pendingLocalTime));
+        this.pendingLocalTime = null;
+      }
+      if (this.pendingAutoplay) {
+        this.pendingAutoplay = false;
+        v.play().catch(() => {});
+      }
     }
   }
 
   public onTimeUpdate(): void {
     const v = this.videoRef?.nativeElement;
     if (v) {
-      this.currentTime.set(v.currentTime);
-      if (v.duration && v.duration !== this.duration()) {
+      const segments = this.agentService.activeVideoSegments();
+      const segment = segments[this.activeSegmentIndex()];
+      this.currentTime.set((segment?.start || 0) + v.currentTime);
+      if (!segments.length && v.duration && v.duration !== this.duration()) {
         this.duration.set(v.duration);
       }
     }
@@ -203,6 +226,17 @@ export class FloatingVideoPlayerComponent {
   }
 
   public onEnded(): void {
+    const segments = this.agentService.activeVideoSegments();
+    if (segments.length && this.activeSegmentIndex() < segments.length - 1) {
+      this.pendingLocalTime = 0;
+      this.pendingAutoplay = true;
+      this.activeSegmentIndex.update(index => index + 1);
+      return;
+    }
+    if (segments.length && this.isLooping()) {
+      this.seek(0, true);
+      return;
+    }
     this.isPlaying.set(false);
   }
 
@@ -225,16 +259,31 @@ export class FloatingVideoPlayerComponent {
   }
 
   public restart(): void {
-    const v = this.videoRef?.nativeElement;
-    if (!v) return;
-    v.currentTime = 0;
-    v.play().catch(() => {});
+    this.seek(0, true);
   }
 
-  public seek(seconds: number): void {
+  public seek(seconds: number, autoplay = false): void {
     const v = this.videoRef?.nativeElement;
     if (!v) return;
-    v.currentTime = Math.max(0, Math.min(this.duration(), seconds));
+    const target = Math.max(0, Math.min(this.duration(), seconds));
+    const segments = this.agentService.activeVideoSegments();
+    if (!segments.length) {
+      v.currentTime = target;
+      if (autoplay) v.play().catch(() => {});
+      return;
+    }
+    let index = segments.findIndex(segment => target < segment.start + segment.duration);
+    if (index < 0) index = segments.length - 1;
+    const localTime = Math.max(0, target - segments[index].start);
+    if (index === this.activeSegmentIndex()) {
+      v.currentTime = localTime;
+      if (autoplay) v.play().catch(() => {});
+    } else {
+      this.pendingLocalTime = localTime;
+      this.pendingAutoplay = autoplay || !v.paused;
+      this.activeSegmentIndex.set(index);
+    }
+    this.currentTime.set(target);
   }
 
   public onScrub(event: Event): void {
@@ -256,7 +305,7 @@ export class FloatingVideoPlayerComponent {
     this.isLooping.set(next);
     const v = this.videoRef?.nativeElement;
     if (v) {
-      v.loop = next;
+      v.loop = next && !this.agentService.activeVideoSegments().length;
     }
   }
 

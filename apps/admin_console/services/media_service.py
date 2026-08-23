@@ -127,6 +127,36 @@ class MediaService:
 
         return v_url
 
+    @classmethod
+    def resolve_video_segments(cls, video_url: str | None) -> list[dict[str, Any]]:
+        """Resolve a recording sidecar manifest into browser-safe segment URLs."""
+        if not video_url or not video_url.startswith("/videos/"):
+            return []
+        relative = urllib.parse.unquote(video_url.removeprefix("/videos/"))
+        video_path = (WORKSPACE_ROOT / relative).resolve()
+        manifest_path = video_path.parent / "recording.json"
+        if not manifest_path.is_file():
+            return []
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            segments = []
+            for item in payload.get("segments", []):
+                segment_path = (manifest_path.parent / str(item["file"])).resolve()
+                if segment_path.parent != manifest_path.parent.resolve() or not segment_path.is_file():
+                    continue
+                segments.append(
+                    {
+                        "url": cls.path_to_video_url(segment_path),
+                        "start": float(item.get("start", 0)),
+                        "duration": float(item.get("duration", 0)),
+                        "width": int(item.get("width", 0)),
+                        "height": int(item.get("height", 0)),
+                    }
+                )
+            return segments
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return []
+
     @staticmethod
     def unwrap_payload(obj: Any) -> Any:
         """Unwraps trace payloads, storing base64 images as disk files and

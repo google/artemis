@@ -373,16 +373,15 @@
     .video-container {
       position: relative;
       width: 100%;
-      height: 100%;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       background: #ffffff;
-      min-height: 220px;
 
       video {
         width: 100%;
+        height: auto;
         max-height: 520px;
         display: block;
         object-fit: contain;

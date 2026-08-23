@@ -92,10 +92,12 @@ async def get_session_video(session_id: str):
     row = session_repo.get_session_by_id(session_id)
     row_dict = dict(row) if row else {"session_id": session_id}
     v_url = media_service.resolve_video_url(row_dict, video_rec_map, video_idx)
+    video_segments = media_service.resolve_video_segments(v_url)
     return {
         "session_id": session_id,
         "has_video": bool(v_url),
         "video_url": v_url,
+        "video_segments": video_segments,
     }
 
 

@@ -28,6 +28,7 @@ from artemis.clients.ui_automator_client import (
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
 from artemis.toolchain import find_ffmpeg, find_scrcpy
+from artemis.utils.video import build_scrcpy_record_command
 from artemis.utils.ui_filter import filter_ui_hierarchy
 from artemis.utils.logger import get_logger
 
@@ -114,6 +115,8 @@ class AndroidAdbDriver(BaseDeviceDriver):
         """Clean up ongoing recordings and tunnels."""
         if self._recording_process:
             await self.stop_video_recording()
+        if self._ui_adb_client and hasattr(self._ui_adb_client, "disconnect"):
+            await asyncio.to_thread(self._ui_adb_client.disconnect)
 
     async def get_screen_data(self, skip_settling: bool = False) -> ScreenData:
         """Captures screenshot and XML hierarchy concurrently."""
@@ -442,18 +445,12 @@ class AndroidAdbDriver(BaseDeviceDriver):
         logger.info(f"Starting scrcpy video recording to {self._recording_mkv_path}...")
         try:
             scrcpy_bin = find_scrcpy()
-            cmd = [
+            cmd = build_scrcpy_record_command(
                 scrcpy_bin,
-                "--serial",
                 self.device_id,
-                "--no-window",
-                "--record",
-                str(self._recording_mkv_path),
-                "--record-format",
-                "mkv",
-                "--video-bit-rate",
-                "2M",
-            ]
+                self._recording_mkv_path,
+                lock_capture_orientation=False,
+            )
             self._scrcpy_process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,

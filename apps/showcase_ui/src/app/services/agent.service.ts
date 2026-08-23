@@ -22,6 +22,14 @@ import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse } from '../core/
 import { StepItemData } from '../core/models/stream.model';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData };
 
+export interface VideoSegment {
+  url: string;
+  start: number;
+  duration: number;
+  width: number;
+  height: number;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -104,6 +112,7 @@ export class AgentService {
   public isVideoWindowOpen = signal<boolean>(false);
   public isVideoMinimized = signal<boolean>(false);
   public activeVideoUrl = signal<string | null>(null);
+  public activeVideoSegments = signal<VideoSegment[]>([]);
   public activeVideoTitle = signal<string>('');
   public isVideoLoading = signal<boolean>(false);
 
@@ -1000,29 +1009,33 @@ export class AgentService {
     this.isVideoWindowOpen.set(true);
     this.isVideoMinimized.set(false);
 
-    if (targetUrl) {
-      this.activeVideoUrl.set(targetUrl);
-    } else if (targetSessionId) {
+    this.activeVideoUrl.set(targetUrl);
+    this.activeVideoSegments.set([]);
+    if (targetSessionId) {
       this.isVideoLoading.set(true);
-      this.http.get<{ session_id: string; has_video: boolean; video_url: string | null }>(`/api/sessions/${targetSessionId}/video`).subscribe({
+      this.http.get<{ session_id: string; has_video: boolean; video_url: string | null; video_segments?: VideoSegment[] }>(`/api/sessions/${targetSessionId}/video`).subscribe({
         next: (res) => {
           this.isVideoLoading.set(false);
           if (res && res.has_video && res.video_url) {
             this.activeVideoUrl.set(res.video_url);
+            this.activeVideoSegments.set(res.video_segments || []);
             this.rawSessions.update((list) =>
               list.map((s) => s.session_id === targetSessionId ? { ...s, video_url: res.video_url || undefined } : s)
             );
           } else {
             this.activeVideoUrl.set(null);
+            this.activeVideoSegments.set([]);
           }
         },
         error: () => {
           this.isVideoLoading.set(false);
           this.activeVideoUrl.set(null);
+          this.activeVideoSegments.set([]);
         }
       });
     } else {
       this.activeVideoUrl.set(null);
+      this.activeVideoSegments.set([]);
     }
   }
 

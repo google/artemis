@@ -134,7 +134,7 @@
         <div class="video-container" *ngIf="!videoLoadError()">
           <video 
             #videoRef
-            [src]="videoUrl" 
+            [src]="currentVideoUrl()"
             playsinline
             (loadedmetadata)="onLoadedMetadata()"
             (timeupdate)="onTimeUpdate()"

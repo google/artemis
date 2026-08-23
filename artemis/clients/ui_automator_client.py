@@ -21,8 +21,10 @@ Handles Maestro blocker detection and removal before connecting.
 
 import base64
 from io import BytesIO
+import os
 import re as _re
 import subprocess
+import threading
 import time
 from typing import TYPE_CHECKING
 import xml.etree.ElementTree as ET
@@ -40,6 +42,129 @@ logger = get_logger(__name__)
 
 
 MAESTRO_PACKAGE = "dev.mobile.maestro"
+AWAKE_STRATEGY_STAY_ON = "stay_on"
+AWAKE_STRATEGY_WAKE_LOCK = "wake_lock"
+AWAKE_STRATEGY_HEARTBEAT = "heartbeat"
+AWAKE_HEARTBEAT_INTERVAL_SECONDS = 5.0
+
+
+def _run_awake_adb_command(
+    device_id: str, args: list[str], description: str
+) -> subprocess.CompletedProcess[str] | None:
+    """Run one non-fatal ADB command used by the awake strategy."""
+    try:
+        result = subprocess.run(
+            ["adb", "-s", device_id, *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            logger.warning(
+                f"Could not {description} on {device_id}: {detail or 'ADB command failed'}"
+            )
+        return result
+    except Exception as e:
+        logger.warning(f"Could not {description} on {device_id}: {e}")
+        return None
+
+
+def _keep_device_awake(device_id: str) -> str | None:
+    """Best-effort preparation of an Android device for UI automation.
+
+    ``svc power stayon true`` asks Android to keep the display on while the
+    device has any external power source.  It avoids changing the user's
+    normal battery-powered screen timeout.  The wake and dismiss commands
+    also recover a device that went to sleep before Artemis connected;
+    ``wm dismiss-keyguard`` cannot bypass a secure PIN/password keyguard.
+
+    The primary strategy is verified through PowerManager. If it is not
+    actually active, Artemis tries a shell-owned bright-screen wake lock. If
+    that command is unavailable, the caller starts a periodic KEYCODE_WAKEUP
+    heartbeat. Neither fallback changes the user's screen-timeout setting.
+
+    This must never make device connection fail. Some vendor Android builds
+    restrict one or more shell commands, so failures are logged only.
+    """
+    enabled = os.environ.get("ARTEMIS_KEEP_DEVICE_AWAKE", "true").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return None
+
+    commands = (
+        ("enable stay-awake while powered", ["shell", "svc", "power", "stayon", "true"]),
+        ("wake display", ["shell", "input", "keyevent", "KEYCODE_WAKEUP"]),
+        ("dismiss non-secure keyguard", ["shell", "wm", "dismiss-keyguard"]),
+    )
+    for description, args in commands:
+        _run_awake_adb_command(device_id, args, description)
+
+    power_state = _run_awake_adb_command(
+        device_id, ["shell", "dumpsys", "power"], "verify stay-awake state"
+    )
+    if (
+        power_state is not None
+        and power_state.returncode == 0
+        and _re.search(r"\bmStayOn=true\b", power_state.stdout)
+    ):
+        logger.info(f"Stay-awake primary strategy verified on {device_id}")
+        return AWAKE_STRATEGY_STAY_ON
+
+    logger.warning(
+        f"Stay-awake primary strategy is not active on {device_id}; "
+        "trying a screen-bright wake lock"
+    )
+    _run_awake_adb_command(
+        device_id,
+        [
+            "shell",
+            "cmd",
+            "power",
+            "set-wakelock",
+            "acquire",
+            "-d",
+            "0",
+            "SCREEN_BRIGHT_WAKE_LOCK",
+        ],
+        "acquire a screen-bright wake lock",
+    )
+    wake_locks = _run_awake_adb_command(
+        device_id,
+        ["shell", "cmd", "power", "set-wakelock", "list"],
+        "verify the screen-bright wake lock",
+    )
+    if (
+        wake_locks is not None
+        and wake_locks.returncode == 0
+        and _re.search(r"SCREEN_BRIGHT_WAKE_LOCK:.*\bheld=true\b", wake_locks.stdout)
+    ):
+        logger.info(f"Screen-bright wake lock verified on {device_id}")
+        return AWAKE_STRATEGY_WAKE_LOCK
+
+    logger.warning(
+        f"Screen-bright wake lock is unavailable on {device_id}; "
+        f"using a {AWAKE_HEARTBEAT_INTERVAL_SECONDS:g}-second wakeup heartbeat"
+    )
+    return AWAKE_STRATEGY_HEARTBEAT
+
+
+def _release_screen_wake_lock(device_id: str) -> None:
+    """Release the shell-owned screen wake lock acquired for this session."""
+    _run_awake_adb_command(
+        device_id,
+        [
+            "shell",
+            "cmd",
+            "power",
+            "set-wakelock",
+            "release",
+            "-d",
+            "0",
+            "SCREEN_BRIGHT_WAKE_LOCK",
+        ],
+        "release the screen-bright wake lock",
+    )
 
 
 class _CyFunctionDetectorMeta(type):
@@ -257,6 +382,41 @@ class UIAutomatorClient:
         """
         self._device_id = device_id
         self._device: Device | None = None
+        self._awake_strategy: str | None = None
+        self._heartbeat_stop_event: threading.Event | None = None
+        self._heartbeat_thread: threading.Thread | None = None
+
+    def _start_awake_heartbeat(self) -> None:
+        """Start a daemon heartbeat that safely refreshes Android user activity."""
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return
+
+        stop_event = threading.Event()
+        self._heartbeat_stop_event = stop_event
+
+        def heartbeat() -> None:
+            while not stop_event.wait(AWAKE_HEARTBEAT_INTERVAL_SECONDS):
+                _run_awake_adb_command(
+                    self._device_id,
+                    ["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+                    "send the stay-awake heartbeat",
+                )
+
+        self._heartbeat_thread = threading.Thread(
+            target=heartbeat,
+            name=f"artemis-awake-{self._device_id}",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_awake_heartbeat(self) -> None:
+        """Stop the session heartbeat without delaying shutdown."""
+        if self._heartbeat_stop_event is not None:
+            self._heartbeat_stop_event.set()
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=2.0)
+        self._heartbeat_stop_event = None
+        self._heartbeat_thread = None
 
     def _ensure_connected(self) -> "Device":
         """Ensure connection to the device, handling Maestro blocker.
@@ -275,6 +435,12 @@ class UIAutomatorClient:
 
         # Ensure Maestro is not blocking us
         _ensure_maestro_not_installed(self._device_id)
+
+        # Configure this automation session before UIAutomator2 reads the screen.
+        if self._awake_strategy is None:
+            self._awake_strategy = _keep_device_awake(self._device_id)
+            if self._awake_strategy == AWAKE_STRATEGY_HEARTBEAT:
+                self._start_awake_heartbeat()
 
         # Connect to device
         logger.info(f"Connecting UIAutomator2 to device: {self._device_id}")
@@ -400,6 +566,10 @@ class UIAutomatorClient:
 
     def disconnect(self) -> None:
         """Disconnect from the device."""
+        self._stop_awake_heartbeat()
+        if self._awake_strategy == AWAKE_STRATEGY_WAKE_LOCK:
+            _release_screen_wake_lock(self._device_id)
+        self._awake_strategy = None
         self._device = None
         logger.info("UIAutomator2 client disconnected")
 

@@ -45,10 +45,12 @@ from artemis.utils.video import (
     DEFAULT_MAX_DURATION_SECONDS,
     RecordingSession,
     VideoRecordingResult,
+    build_scrcpy_record_command,
     cleanup_video_segments,
     concatenate_videos,
     get_active_session,
     has_active_session,
+    normalize_recording_to_mp4,
     remove_active_session,
     set_active_session,
     trim_video,
@@ -561,6 +563,8 @@ class AndroidDeviceController(MobileDeviceController):
                 start_time=time.time(),
                 data_engine_start_time=self.data_engine_start_time,
                 local_video_path=local_video_path,
+                capture_width=self.device_width,
+                capture_height=self.device_height,
             )
 
             # Persist to local database if Data Engine is active
@@ -578,18 +582,9 @@ class AndroidDeviceController(MobileDeviceController):
                     logger.error(f"Failed to persist video recording start to DB: {db_err}")
 
             # Start scrcpy in background
-            cmd = [
-                "scrcpy",
-                "--serial",
-                self.device_id,
-                "--no-window",
-                "--record",
-                str(local_video_path),
-                "--record-format",
-                "mkv",
-                "--video-bit-rate",
-                "2M",
-            ]
+            cmd = build_scrcpy_record_command(
+                "scrcpy", self.device_id, local_video_path, lock_capture_orientation=False
+            )
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -760,18 +755,9 @@ class AndroidDeviceController(MobileDeviceController):
                     output_dir = mkv_path.parent
                     new_video_path = output_dir / f"recording_{session.android_segment_index}.mkv"
 
-                    cmd = [
-                        "scrcpy",
-                        "--serial",
-                        self.device_id,
-                        "--no-window",
-                        "--record",
-                        str(new_video_path),
-                        "--record-format",
-                        "mkv",
-                        "--video-bit-rate",
-                        "2M",
-                    ]
+                    cmd = build_scrcpy_record_command(
+                        "scrcpy", self.device_id, new_video_path, lock_capture_orientation=False
+                    )
 
                     process = await asyncio.create_subprocess_exec(
                         *cmd,
@@ -892,21 +878,11 @@ class AndroidDeviceController(MobileDeviceController):
             )
 
     async def _convert_mkv_to_mp4(self, mkv_path: Path, mp4_path: Path) -> bool:
-        """Convert MKV to MP4 using ffmpeg."""
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(mkv_path),
-                "-c",
-                "copy",
-                str(mp4_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await process.wait()
-            return mp4_path.exists()
-        except Exception as e:
-            logger.error(f"Failed to convert MKV to MP4: {e}")
-            return False
+        """Normalize MKV into a fixed-size, browser-safe MP4."""
+        session = get_active_session(self.device_id)
+        return await normalize_recording_to_mp4(
+            mkv_path,
+            mp4_path,
+            session.capture_width if session else self.device_width,
+            session.capture_height if session else self.device_height,
+        )
