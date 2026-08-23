@@ -79,6 +79,31 @@ class TaskQueueService:
         ]
 
     @staticmethod
+    def _resolve_terminal_status(
+        current_status: str | None,
+        returncode: int,
+        was_stopped_manually: bool,
+    ) -> tuple[str, bool]:
+        """Resolve final status while preserving an authoritative task result.
+
+        The worker exit code is only a fallback for sessions that have not
+        reached a terminal state. ``success`` is the DataEngine alias for the
+        UI-facing ``completed`` status and is normalized here.
+
+        Returns:
+            A tuple of ``(resolved_status, should_persist)``.
+        """
+        if was_stopped_manually:
+            return "cancelled", True
+
+        normalized = current_status.lower().strip() if isinstance(current_status, str) else None
+        if normalized == "success":
+            return "completed", True
+        if normalized in {"completed", "failed", "cancelled"}:
+            return normalized, False
+        return ("completed" if returncode == 0 else "failed"), True
+
+    @staticmethod
     def _subprocess_creation_kwargs() -> dict[str, Any]:
         """Isolate task workers from the UI server's Windows console.
 
@@ -281,15 +306,27 @@ class TaskQueueService:
 
                 # 4. Perform fallback database status update and notification
                 if sess_id:
-                    if state.was_stopped_manually:
-                        new_status = "cancelled"
-                    elif returncode == 0:
-                        new_status = "completed"
+                    current_status = session_repo.get_session_status(sess_id)
+                    new_status, should_persist = cls._resolve_terminal_status(
+                        current_status,
+                        returncode,
+                        state.was_stopped_manually,
+                    )
+                    if should_persist:
+                        session_repo.update_session_status(sess_id, new_status, time.time())
+                        print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
                     else:
-                        new_status = "failed"
-                    session_repo.update_session_status(sess_id, new_status, time.time())
+                        print(
+                            f"[QueueWorker] Preserved authoritative session {sess_id} "
+                            f"status '{new_status}'"
+                        )
+                    recording_error = "Task worker exited before recording finalization completed"
+                    if session_repo.mark_recording_failed_if_pending(sess_id, recording_error):
+                        cls._broadcast_event(
+                            "recording_failed",
+                            {"session_id": sess_id, "error": recording_error},
+                        )
                     state.active_connections.pop(sess_id, None)
-                    print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
                     cls._broadcast_event(
                         "session_ended",
                         {

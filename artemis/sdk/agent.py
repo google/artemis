@@ -642,7 +642,7 @@ class Agent:
                 raise
             finally:
                 try:
-                    await self._finalize_tracing(task=task, context=context)
+                    await self._finalize_tracing_safely(task=task, context=context)
                 finally:
                     if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
                         await asyncio.to_thread(device_lock.release)
@@ -832,6 +832,17 @@ class Agent:
         if task.request.profile:
             device_data["profile"] = task.request.profile
         context.data_engine.start_session(goal=task.request.goal, device_info=device_data)
+
+    async def _finalize_tracing_safely(self, task: Task, context: ArtemisContext):
+        """Finalize optional trace artifacts without changing task semantics."""
+        try:
+            await self._finalize_tracing(task=task, context=context)
+        except Exception as exc:
+            logger.error(
+                f"[{task.get_name()}] Trace artifact finalization failed after task status "
+                f"was resolved as '{task.status}': {exc}",
+                exc_info=True,
+            )
 
     async def _finalize_tracing(self, task: Task, context: ArtemisContext):
         if context.data_engine:

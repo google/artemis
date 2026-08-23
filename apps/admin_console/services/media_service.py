@@ -35,9 +35,9 @@ class MediaService:
         resolved = p.resolve()
         try:
             rel = resolved.relative_to(WORKSPACE_ROOT)
-            return f"/videos/{rel}"
+            return f"/videos/{urllib.parse.quote(rel.as_posix(), safe='/')}"
         except ValueError:
-            return f"/videos/{str(resolved).lstrip('/')}"
+            return f"/videos/{urllib.parse.quote(resolved.as_posix().lstrip('/'), safe='/:')}"
 
     @classmethod
     def build_video_index(cls) -> dict[str, str]:

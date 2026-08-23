@@ -476,6 +476,16 @@ class UnifiedMobileController:
             asyncio.create_task(self._remux_segment_record(session.android_segment_records[-1]))
         )
 
+    def _record_recording_failure(self, session: RecordingSession, message: str) -> None:
+        if self.ctx and self.ctx.data_engine:
+            self.ctx.data_engine.record_video_failure(
+                video_id=session.video_id,
+                device_id=session.device_id,
+                local_video_path=session.local_video_path,
+                start_time=session.start_time,
+                error=message,
+            )
+
     async def _start_next_recording_segment(
         self, session: RecordingSession, display_state: tuple[int, int, int] | None
     ) -> bool:
@@ -612,6 +622,7 @@ class UnifiedMobileController:
                 stderr = await process.stderr.read()
                 err_msg = stderr.decode()
                 logger.error(f"scrcpy failed to start on {device_id}: {err_msg}")
+                self._record_recording_failure(session, f"scrcpy failed to start: {err_msg}")
                 remove_active_session(device_id)
                 return VideoRecordingResult(
                     success=False,
@@ -675,10 +686,12 @@ class UnifiedMobileController:
 
             output_path = session.local_video_path
             if not output_path or not output_path.exists():
+                message = "Recording file not found on disk"
+                self._record_recording_failure(session, message)
                 remove_active_session(device_id)
                 return VideoRecordingResult(
                     success=False,
-                    message="Recording file not found on disk",
+                    message=message,
                 )
 
             self._finalize_current_segment(session, time.time())
@@ -690,17 +703,31 @@ class UnifiedMobileController:
                             self._remux_segment_record(record)
                         )
                     )
+            conversion_results = []
             if session.android_conversion_tasks:
-                await asyncio.gather(*session.android_conversion_tasks, return_exceptions=True)
+                conversion_results = await asyncio.gather(
+                    *session.android_conversion_tasks, return_exceptions=True
+                )
             mp4_paths = [
                 Path(record["output_path"])
                 for record in session.android_segment_records
                 if Path(record["output_path"]).exists()
             ]
-            await write_recording_manifest(output_path.parent, mp4_paths)
+            manifest_path = await write_recording_manifest(output_path.parent, mp4_paths)
+
+            conversion_failed = (
+                len(mp4_paths) != len(session.android_segment_records)
+                or any(result is not True for result in conversion_results)
+                or manifest_path is None
+            )
+            if conversion_failed:
+                message = "Recording finalization failed; no complete browser-safe video was produced"
+                self._record_recording_failure(session, message)
+                remove_active_session(device_id)
+                return VideoRecordingResult(success=False, message=message)
 
             remove_active_session(device_id)
-            final_video_path = mp4_paths[0] if mp4_paths else output_path
+            final_video_path = mp4_paths[0]
 
             # Persist update to local database if Data Engine is active
             if self.ctx and self.ctx.data_engine:
@@ -712,21 +739,15 @@ class UnifiedMobileController:
                     end_time=time.time(),
                 )
 
-            if mp4_paths:
-                return VideoRecordingResult(
-                    success=True,
-                    message=f"Recording stopped, saved {len(mp4_paths)} orientation-safe segments",
-                    video_path=mp4_paths[0],
-                )
-            else:
-                return VideoRecordingResult(
-                    success=True,
-                    message=f"Recording stopped, saved as MKV to {output_path}",
-                    video_path=output_path,
-                )
+            return VideoRecordingResult(
+                success=True,
+                message=f"Recording stopped, saved {len(mp4_paths)} orientation-safe segments",
+                video_path=mp4_paths[0],
+            )
 
         except Exception as e:
             logger.error(f"Failed to stop scrcpy recording: {e}")
+            self._record_recording_failure(session, str(e))
             remove_active_session(device_id)
             return VideoRecordingResult(
                 success=False,

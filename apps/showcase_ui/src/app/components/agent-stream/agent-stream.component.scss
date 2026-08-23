@@ -907,6 +907,13 @@ $uniform-gap: 8px;
         }
       }
 
+      &.processing {
+        .video-icon {
+          color: #2563eb;
+          animation: spin 1s linear infinite;
+        }
+      }
+
       &:hover:not(.active) {
         background: rgba(255, 255, 255, 0.88);
         border-color: rgba(203, 213, 225, 0.95);

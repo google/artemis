@@ -213,9 +213,24 @@ class StorageManager:
                     start_time REAL,
                     end_time REAL,
                     local_video_path TEXT,
+                    status TEXT NOT NULL DEFAULT 'recording',
+                    error TEXT,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 )
             """)
+            video_recording_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(video_recordings)").fetchall()
+            }
+            if "status" not in video_recording_columns:
+                conn.execute(
+                    "ALTER TABLE video_recordings ADD COLUMN status TEXT "
+                    "NOT NULL DEFAULT 'recording'"
+                )
+                conn.execute(
+                    "UPDATE video_recordings SET status = 'ready' WHERE end_time IS NOT NULL"
+                )
+            if "error" not in video_recording_columns:
+                conn.execute("ALTER TABLE video_recordings ADD COLUMN error TEXT")
             try:
                 conn.execute("ALTER TABLE background_tasks ADD COLUMN logs TEXT")
             except sqlite3.OperationalError:
@@ -273,8 +288,11 @@ class StorageManager:
         with self._get_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO video_recordings (video_id, session_id, device_id, start_time, end_time, local_video_path)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO video_recordings (
+                    video_id, session_id, device_id, start_time, end_time,
+                    local_video_path, status, error
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(record.video_id),
@@ -283,6 +301,8 @@ class StorageManager:
                     record.start_time,
                     record.end_time,
                     record.local_video_path,
+                    record.status,
+                    record.error,
                 ),
             )
             conn.commit()
@@ -293,12 +313,14 @@ class StorageManager:
             conn.execute(
                 """
                 UPDATE video_recordings
-                SET end_time = ?, local_video_path = ?
+                SET end_time = ?, local_video_path = ?, status = ?, error = ?
                 WHERE video_id = ?
                 """,
                 (
                     record.end_time,
                     record.local_video_path,
+                    record.status,
+                    record.error,
                     str(record.video_id),
                 ),
             )
@@ -345,6 +367,10 @@ class StorageManager:
                     start_time=row["start_time"],
                     end_time=row["end_time"],
                     local_video_path=row["local_video_path"],
+                    status=row["status"] if "status" in row.keys() else (
+                        "ready" if row["end_time"] is not None else "recording"
+                    ),
+                    error=row["error"] if "error" in row.keys() else None,
                 )
         return None
 

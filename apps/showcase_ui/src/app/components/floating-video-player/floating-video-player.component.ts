@@ -202,6 +202,13 @@ export class FloatingVideoPlayerComponent {
         this.pendingAutoplay = false;
         v.play().catch(() => {});
       }
+      if (this.agentService.consumeVideoAutoplay()) {
+        this.isMuted.set(true);
+        v.muted = true;
+        v.play().catch(() => {
+          this.isPlaying.set(false);
+        });
+      }
     }
   }
 

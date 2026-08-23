@@ -33,16 +33,16 @@
   <header class="window-header" (mousedown)="startDrag($event)">
     <div class="header-left">
       <span class="material-symbols-outlined header-icon">
-        {{ agentService.isCurrentSessionRunning() ? 'sensors' : 'smart_display' }}
+        {{ agentService.recordingPlaybackStatus() === 'live' ? 'sensors' : (agentService.recordingPlaybackStatus() === 'processing' ? 'progress_activity' : 'smart_display') }}
       </span>
       <span class="header-title" [title]="agentService.activeVideoTitle()">
-        {{ agentService.isCurrentSessionRunning() ? 'Live Device Screen' : (agentService.activeVideoTitle() || 'Screen Recording') }}
+        {{ agentService.recordingPlaybackStatus() === 'live' ? 'Live Device Screen' : (agentService.recordingPlaybackStatus() === 'processing' ? 'Preparing Recording' : (agentService.activeVideoTitle() || 'Screen Recording')) }}
       </span>
     </div>
 
     <div class="header-actions" (mousedown)="$event.stopPropagation()">
       <!-- Playback Speed Pills (Shown only when playback video is active) -->
-      <div class="speed-pill-group" *ngIf="!agentService.isCurrentSessionRunning() && !agentService.isVideoMinimized() && !videoLoadError() && agentService.activeVideoUrl()">
+      <div class="speed-pill-group" *ngIf="agentService.recordingPlaybackStatus() === 'ready' && !agentService.isVideoMinimized() && !videoLoadError() && agentService.activeVideoUrl()">
         <button 
           *ngFor="let speed of speedOptions"
           class="speed-btn"
@@ -90,7 +90,7 @@
   <!-- Video Main Content Area -->
   <div class="video-body" *ngIf="!agentService.isVideoMinimized()">
     <!-- 1. LIVE SCREEN STREAM (AUTOMATICALLY ACTIVE DURING RUNNING TEST) -->
-    <ng-container *ngIf="agentService.isCurrentSessionRunning()">
+    <ng-container *ngIf="agentService.recordingPlaybackStatus() === 'live'">
       <div class="live-stream-container" *ngIf="!liveStreamError()">
         <img 
           class="live-screen-img" 
@@ -122,15 +122,15 @@
     </ng-container>
 
     <!-- 2. RECORDING PLAYBACK (AUTOMATICALLY ACTIVE WHEN TEST FINISHED) -->
-    <ng-container *ngIf="!agentService.isCurrentSessionRunning()">
+    <ng-container *ngIf="agentService.recordingPlaybackStatus() !== 'live'">
       <!-- Loading State -->
-      <div class="video-loading-state" *ngIf="agentService.isVideoLoading()">
+      <div class="video-loading-state" *ngIf="agentService.recordingPlaybackStatus() === 'processing' || agentService.isVideoLoading()">
         <span class="material-symbols-outlined spinning-icon">progress_activity</span>
-        <span>Loading screen recording...</span>
+        <span>{{ agentService.recordingPlaybackMessage() || 'Preparing screen recording...' }}</span>
       </div>
 
       <!-- Active Video Playback View -->
-      <ng-container *ngIf="!agentService.isVideoLoading() && agentService.activeVideoUrl() as videoUrl">
+      <ng-container *ngIf="agentService.recordingPlaybackStatus() === 'ready' && !agentService.isVideoLoading() && agentService.activeVideoUrl() as videoUrl">
         <div class="video-container" *ngIf="!videoLoadError()">
           <video 
             #videoRef
@@ -207,14 +207,19 @@
       </ng-container>
 
       <!-- Clean, High-Contrast Minimal Empty / Fallback State -->
-      <div class="empty-video-fallback" *ngIf="!agentService.isVideoLoading() && (!agentService.activeVideoUrl() || videoLoadError())">
+      <div class="empty-video-fallback" *ngIf="!agentService.isVideoLoading() && (agentService.recordingPlaybackStatus() === 'failed' || agentService.recordingPlaybackStatus() === 'unavailable' || videoLoadError())">
         <div class="fallback-icon-wrap">
           <span class="material-symbols-outlined fallback-icon">videocam_off</span>
         </div>
-        <h4 class="fallback-title">No Video Recording Available</h4>
+        <h4 class="fallback-title">
+          {{ agentService.recordingPlaybackStatus() === 'failed' || videoLoadError() ? 'Recording Playback Failed' : 'No Video Recording Available' }}
+        </h4>
         <p class="fallback-desc">
-          No screen recording was found for this task.
+          {{ videoLoadError() ? 'The finalized recording could not be played.' : (agentService.recordingPlaybackMessage() || 'No screen recording was found for this task.') }}
         </p>
+        <button class="retry-btn" *ngIf="agentService.recordingPlaybackStatus() === 'failed' || videoLoadError()" (click)="videoLoadError.set(false); agentService.retryVideoRecording()">
+          <span class="material-symbols-outlined">refresh</span> Retry
+        </button>
       </div>
     </ng-container>
   </div>

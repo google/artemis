@@ -71,6 +71,26 @@ async def test_get_next_pending_task():
     assert next_task["goal"] == "Goal A"
 
 
+@pytest.mark.parametrize(
+    ("current_status", "returncode", "stopped", "expected"),
+    [
+        ("completed", 1, False, ("completed", False)),
+        ("failed", 0, False, ("failed", False)),
+        ("cancelled", 0, False, ("cancelled", False)),
+        ("success", 1, False, ("completed", True)),
+        ("running", 0, False, ("completed", True)),
+        ("running", 1, False, ("failed", True)),
+        ("completed", 0, True, ("cancelled", True)),
+    ],
+)
+def test_resolve_terminal_status_preserves_authoritative_result(
+    current_status, returncode, stopped, expected
+):
+    assert (
+        TaskQueueService._resolve_terminal_status(current_status, returncode, stopped) == expected
+    )
+
+
 @pytest.mark.asyncio
 async def test_remove_task():
     state.queue_items = [

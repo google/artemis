@@ -243,9 +243,10 @@ async def test_unified_controller_stop_recording(mock_ctx, tmp_path):
 
     with patch(
         "artemis.controllers.unified_controller.remux_recording_to_mp4",
-        AsyncMock(side_effect=lambda src, dst: dst.write_bytes(b"mp4 content") or True),
+        AsyncMock(side_effect=lambda src, dst: (dst.write_bytes(b"mp4 content"), True)[1]),
     ), patch(
-        "artemis.controllers.unified_controller.write_recording_manifest", AsyncMock()
+        "artemis.controllers.unified_controller.write_recording_manifest",
+        AsyncMock(return_value=tmp_path / "recording.json"),
     ):
         res = await controller.stop_video_recording()
 
@@ -363,9 +364,12 @@ async def test_unified_controller_crash_recovery_and_multi_segment(mock_ctx, tmp
     with (
         patch(
             "artemis.controllers.unified_controller.remux_recording_to_mp4",
-            AsyncMock(side_effect=lambda src, dst: dst.write_bytes(b"final mp4") or True),
+            AsyncMock(side_effect=lambda src, dst: (dst.write_bytes(b"final mp4"), True)[1]),
         ),
-        patch("artemis.controllers.unified_controller.write_recording_manifest", AsyncMock()),
+        patch(
+            "artemis.controllers.unified_controller.write_recording_manifest",
+            AsyncMock(return_value=tmp_path / "recording.json"),
+        ),
     ):
         res = await controller.stop_video_recording()
 

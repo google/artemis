@@ -41,10 +41,57 @@ class SessionRepository:
             )
             if cursor.fetchone() is None:
                 return {}
+            columns = {
+                str(row[1]) for row in cursor.execute("PRAGMA table_info(video_recordings)")
+            }
+            ready_clause = "status = 'ready'" if "status" in columns else "end_time IS NOT NULL"
             cursor.execute(
-                "SELECT session_id, local_video_path FROM video_recordings WHERE session_id IS NOT NULL AND local_video_path IS NOT NULL ORDER BY start_time ASC"
+                "SELECT session_id, local_video_path FROM video_recordings "
+                "WHERE session_id IS NOT NULL AND local_video_path IS NOT NULL "
+                f"AND {ready_clause} ORDER BY start_time ASC"
             )
             return {str(r[0]): str(r[1]) for r in cursor.fetchall() if r[0] and r[1]}
+
+    def get_video_recording_for_session(self, session_id: str) -> dict[str, Any] | None:
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='video_recordings'"
+                )
+                if cursor.fetchone() is None:
+                    return None
+                cursor.execute(
+                    "SELECT * FROM video_recordings WHERE session_id = ? "
+                    "ORDER BY start_time DESC LIMIT 1",
+                    (str(session_id),),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                result = dict(row)
+                if "status" not in result:
+                    result["status"] = "ready" if result.get("end_time") is not None else "recording"
+                result.setdefault("error", None)
+                return result
+        except Exception:
+            return None
+
+    def mark_recording_failed_if_pending(self, session_id: str, error: str) -> bool:
+        """Close a recording lifecycle when its worker exits before finalization."""
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE video_recordings SET status = 'failed', error = ?, "
+                    "end_time = COALESCE(end_time, ?) "
+                    "WHERE session_id = ? AND status IN ('recording', 'finalizing')",
+                    (error, time.time(), str(session_id)),
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception:
+            return False
 
     def get_llm_traces_for_profile(self, session_id: str, limit: int = 3) -> list[str]:
         with db_session(self.db_path) as conn:

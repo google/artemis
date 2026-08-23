@@ -186,9 +186,10 @@ def remove_images_from_trace_folder(trace_folder_path: Path):
 
 
 def create_steps_json_from_trace_folder(trace_folder_path: Path):
+    """Compile legacy timestamp-named step files without consuming manifests."""
     steps = []
     for file in trace_folder_path.iterdir():
-        if file.suffix == ".json":
+        if file.suffix == ".json" and file.stem.isdigit():
             with open(file, encoding="utf-8", errors="ignore") as f:
                 json_content = f.read()
                 steps.append({"timestamp": int(file.stem), "data": json_content})
@@ -202,6 +203,7 @@ def create_steps_json_from_trace_folder(trace_folder_path: Path):
 
 
 def remove_steps_json_from_trace_folder(trace_folder_path: Path):
+    """Remove only legacy timestamp-named step files, preserving manifests."""
     for file in trace_folder_path.iterdir():
-        if file.suffix == ".json" and file.name != "steps.json":
+        if file.suffix == ".json" and file.stem.isdigit():
             file.unlink()

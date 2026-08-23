@@ -265,6 +265,9 @@ class DataEngine:
         session_id = self.current_session_id
         end_time = time.time()
         session = self.storage.get_session(session_id)
+        if session and session.end_time is not None and session.status not in ("running", "paused"):
+            logger.debug(f"Session end already published for {session_id}; skipping duplicate")
+            return
         if session:
             session.end_time = end_time
             session.status = status
@@ -328,10 +331,54 @@ class DataEngine:
                 start_time=start_time,
                 end_time=end_time or time.time(),
                 local_video_path=str(local_video_path),
+                status="ready",
             )
             self.storage.update_video_recording(record)
+            self._publish(
+                "recording_ready",
+                {
+                    "session_id": str(self.current_session_id),
+                    "video_id": str(video_id),
+                    "local_video_path": str(local_video_path),
+                    "end_time": record.end_time,
+                },
+            )
         except Exception as e:
             logger.error(f"Failed to record video stop in DataEngine: {e}")
+
+    def record_video_failure(
+        self,
+        video_id: UUID,
+        device_id: str,
+        local_video_path: str | Path | None,
+        start_time: float,
+        error: str,
+    ):
+        """Persist and publish a terminal recording failure."""
+        if not self.storage:
+            return
+        try:
+            record = VideoRecordingRecord(
+                video_id=video_id,
+                session_id=self.current_session_id,
+                device_id=device_id,
+                start_time=start_time,
+                end_time=time.time(),
+                local_video_path=str(local_video_path) if local_video_path else None,
+                status="failed",
+                error=error,
+            )
+            self.storage.update_video_recording(record)
+            self._publish(
+                "recording_failed",
+                {
+                    "session_id": str(self.current_session_id),
+                    "video_id": str(video_id),
+                    "error": error,
+                },
+            )
+        except Exception as e:
+            logger.error(f"Failed to record video failure in DataEngine: {e}")
 
     def update_video_path(self, local_video_path: str | Path):
         """Update the video path across tables when traces or videos are moved."""

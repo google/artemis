@@ -100,3 +100,5 @@ class VideoRecordingRecord(BaseModel):
     start_time: float
     end_time: float | None = None
     local_video_path: str | None = None
+    status: str = "recording"
+    error: str | None = None

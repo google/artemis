@@ -18,9 +18,11 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 try:
     from admin_console.core.config import IMAGES_DIR, WORKSPACE_ROOT
+    from admin_console.database.repositories.session_repository import session_repo
     from admin_console.services.media_service import media_service
 except ImportError:
     from apps.admin_console.core.config import IMAGES_DIR, WORKSPACE_ROOT
+    from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.services.media_service import media_service
 
 router = APIRouter(tags=["media"])
@@ -82,22 +84,58 @@ async def get_video(video_path: str):
 
 @router.get("/api/sessions/{session_id}/video")
 async def get_session_video(session_id: str):
-    try:
-        from admin_console.database.repositories.session_repository import session_repo
-    except ImportError:
-        from apps.admin_console.database.repositories.session_repository import session_repo
-
     video_rec_map = session_repo.get_video_recordings_map()
     video_idx = media_service.build_video_index()
     row = session_repo.get_session_by_id(session_id)
     row_dict = dict(row) if row else {"session_id": session_id}
+    recording = session_repo.get_video_recording_for_session(session_id)
+    recording_status = str((recording or {}).get("status") or "")
+
+    if recording_status in ("recording", "finalizing"):
+        return {
+            "session_id": session_id,
+            "status": "processing",
+            "has_video": False,
+            "video_url": None,
+            "video_segments": [],
+            "retry_after_ms": 750,
+        }
+
+    if recording_status == "failed":
+        return {
+            "session_id": session_id,
+            "status": "failed",
+            "has_video": False,
+            "video_url": None,
+            "video_segments": [],
+            "message": recording.get("error") or "Recording finalization failed",
+        }
+
     v_url = media_service.resolve_video_url(row_dict, video_rec_map, video_idx)
     video_segments = media_service.resolve_video_segments(v_url)
+    if v_url:
+        version = int(float((recording or {}).get("end_time") or row_dict.get("end_time") or 0) * 1000)
+        separator = "&" if "?" in v_url else "?"
+        versioned_url = f"{v_url}{separator}v={version}" if version else v_url
+        for segment in video_segments:
+            segment_separator = "&" if "?" in segment["url"] else "?"
+            segment["url"] = (
+                f"{segment['url']}{segment_separator}v={version}" if version else segment["url"]
+            )
+        return {
+            "session_id": session_id,
+            "status": "ready",
+            "has_video": True,
+            "video_url": versioned_url,
+            "video_segments": video_segments,
+        }
+
     return {
         "session_id": session_id,
-        "has_video": bool(v_url),
-        "video_url": v_url,
-        "video_segments": video_segments,
+        "status": "unavailable",
+        "has_video": False,
+        "video_url": None,
+        "video_segments": [],
     }
 
 

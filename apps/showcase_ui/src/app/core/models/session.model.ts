@@ -36,6 +36,7 @@ export interface Session {
   end_time?: number;
   status?: string;
   video_url?: string;
+  recording_status?: 'recording' | 'finalizing' | 'processing' | 'ready' | 'failed' | 'unavailable';
   model_info?: ModelInfo;
 }
 

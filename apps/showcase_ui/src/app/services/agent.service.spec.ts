@@ -108,3 +108,78 @@ describe('AgentService live LLM retry timeline', () => {
     expect(selectSpy).toHaveBeenCalledWith('new-session', false);
   });
 });
+
+describe('AgentService recording finalization lifecycle', () => {
+  function createVideoService(response: any): AgentService {
+    const service = Object.create(AgentService.prototype) as AgentService;
+    (service as any).http = { get: () => of(response) };
+    (service as any).rawSessions = signal<any[]>([
+      { session_id: 'session-1', status: 'completed', recording_status: 'recording' }
+    ]);
+    (service as any).activeVideoSessionId = 'session-1';
+    (service as any).videoRequestGeneration = 1;
+    (service as any).videoRetryTimer = null;
+    (service as any).videoWaitStartedAt = Date.now();
+    service.activeVideoUrl = signal<string | null>(null);
+    service.activeVideoSegments = signal<any[]>([]);
+    service.isVideoLoading = signal(false);
+    service.recordingPlaybackStatus = signal('idle');
+    service.recordingPlaybackMessage = signal('');
+    service.shouldAutoplayVideo = signal(true);
+    return service;
+  }
+
+  it('keeps unfinished media out of the video element and schedules another readiness check', () => {
+    const service = createVideoService({
+      session_id: 'session-1',
+      status: 'processing',
+      has_video: false,
+      video_url: null,
+      retry_after_ms: 750
+    });
+    const retrySpy = spyOn<any>(service, 'scheduleVideoRetry');
+
+    (service as any).requestSessionVideo('session-1', 1);
+
+    expect(service.recordingPlaybackStatus()).toBe('processing');
+    expect(service.isVideoLoading()).toBeTrue();
+    expect(service.activeVideoUrl()).toBeNull();
+    expect(retrySpy).toHaveBeenCalledWith('session-1', 1, 750);
+  });
+
+  it('publishes finalized media and preserves the automatic replay request', () => {
+    const service = createVideoService({
+      session_id: 'session-1',
+      status: 'ready',
+      has_video: true,
+      video_url: '/videos/recording.mp4?v=1',
+      video_segments: [
+        { url: '/videos/recording.mp4?v=1', start: 0, duration: 5, width: 1080, height: 1920 }
+      ]
+    });
+
+    (service as any).requestSessionVideo('session-1', 1);
+
+    expect(service.recordingPlaybackStatus()).toBe('ready');
+    expect(service.isVideoLoading()).toBeFalse();
+    expect(service.activeVideoUrl()).toBe('/videos/recording.mp4?v=1');
+    expect(service.activeVideoSegments().length).toBe(1);
+    expect(service.shouldAutoplayVideo()).toBeTrue();
+  });
+
+  it('stops polling and exposes a terminal recording failure', () => {
+    const service = createVideoService({
+      session_id: 'session-1',
+      status: 'failed',
+      has_video: false,
+      video_url: null,
+      message: 'ffmpeg failed'
+    });
+
+    (service as any).requestSessionVideo('session-1', 1);
+
+    expect(service.recordingPlaybackStatus()).toBe('failed');
+    expect(service.isVideoLoading()).toBeFalse();
+    expect(service.recordingPlaybackMessage()).toBe('ffmpeg failed');
+  });
+});

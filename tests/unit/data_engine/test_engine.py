@@ -191,16 +191,19 @@ def test_video_recording_persistence(tmp_path):
     assert persisted.start_time == 100.0
     assert persisted.end_time is None
     assert persisted.local_video_path == "/tmp/recording.mp4"
+    assert persisted.status == "recording"
 
     # Test update
     record.end_time = 150.0
     record.local_video_path = "/tmp/recording_final.mp4"
+    record.status = "ready"
     storage.update_video_recording(record)
 
     updated = storage.get_video_recording(video_id)
     assert updated is not None
     assert updated.end_time == 150.0
     assert updated.local_video_path == "/tmp/recording_final.mp4"
+    assert updated.status == "ready"
 
 
 def test_record_step_suppresses_identical_post_screenshot(tmp_path):

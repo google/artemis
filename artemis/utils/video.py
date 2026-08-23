@@ -256,9 +256,12 @@ async def normalize_recording_to_mp4(
 
 
 async def remux_recording_to_mp4(source_path: Path, output_path: Path) -> bool:
-    """Move a fixed-dimension recording segment into MP4 without re-encoding."""
+    """Atomically publish a fixed-dimension recording segment as MP4."""
     if not source_path.exists() or source_path.stat().st_size == 0:
         return False
+    temporary_path = output_path.with_name(f"{output_path.stem}.part{output_path.suffix}")
+    if temporary_path.exists():
+        temporary_path.unlink()
     try:
         process = await asyncio.create_subprocess_exec(
             get_ffmpeg_path(),
@@ -275,13 +278,18 @@ async def remux_recording_to_mp4(source_path: Path, output_path: Path) -> bool:
             "copy",
             "-movflags",
             "+faststart",
-            str(output_path),
+            str(temporary_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         _stdout, stderr = await process.communicate()
-        valid = process.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
+        valid = (
+            process.returncode == 0
+            and temporary_path.exists()
+            and temporary_path.stat().st_size > 0
+        )
         if valid:
+            temporary_path.replace(output_path)
             return True
         logger.error(
             f"Failed to remux recording segment (code {process.returncode}): "
@@ -289,8 +297,8 @@ async def remux_recording_to_mp4(source_path: Path, output_path: Path) -> bool:
         )
     except Exception as e:
         logger.error(f"Failed to remux recording segment: {e}")
-    if output_path.exists():
-        output_path.unlink()
+    if temporary_path.exists():
+        temporary_path.unlink()
     return False
 
 
@@ -363,26 +371,33 @@ async def write_recording_manifest(output_dir: Path, mp4_paths: list[Path]) -> P
             continue
         metadata = await probe_video_segment(path)
         duration = float(metadata.get("duration", 0))
+        width = int(metadata.get("width", 0))
+        height = int(metadata.get("height", 0))
+        if duration <= 0 or width <= 0 or height <= 0:
+            logger.error(f"Recording segment failed validation: {path}")
+            return None
         segments.append(
             {
                 "file": path.name,
                 "start": round(timeline, 3),
                 "duration": round(duration, 3),
-                "width": int(metadata.get("width", 0)),
-                "height": int(metadata.get("height", 0)),
+                "width": width,
+                "height": height,
             }
         )
         timeline += duration
     if not segments:
         return None
     manifest_path = output_dir / "recording.json"
-    manifest_path.write_text(
+    temporary_manifest_path = output_dir / "recording.part.json"
+    temporary_manifest_path.write_text(
         json.dumps(
             {"version": 1, "duration": round(timeline, 3), "segments": segments},
             indent=2,
         ),
         encoding="utf-8",
     )
+    temporary_manifest_path.replace(manifest_path)
     return manifest_path
 
 

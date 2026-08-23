@@ -47,6 +47,7 @@ async def list_sessions():
 
         for row_dict in rows:
             s_id = str(row_dict.get("session_id"))
+            recording = session_repo.get_video_recording_for_session(s_id)
             if row_dict.get("status") == "running":
                 is_active = s_id in state.active_connections or (
                     state.is_running and s_id == str(state.active_session_id)
@@ -56,8 +57,12 @@ async def list_sessions():
                     row_dict["end_time"] = time.time()
                     orphaned_ids.append(s_id)
 
-            row_dict["video_url"] = media_service.resolve_video_url(
-                row_dict, video_rec_map, video_idx
+            recording_status = str((recording or {}).get("status") or "unavailable")
+            row_dict["recording_status"] = recording_status
+            row_dict["video_url"] = (
+                media_service.resolve_video_url(row_dict, video_rec_map, video_idx)
+                if recording_status in ("ready", "unavailable")
+                else None
             )
 
             llm_traces = session_repo.get_llm_traces_for_profile(s_id)
