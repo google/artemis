@@ -18,6 +18,7 @@ export interface ModelInfo {
   name: string;
   id: string;
   provider: string;
+  architecture?: string;
 }
 
 export interface TaskQueueItem {

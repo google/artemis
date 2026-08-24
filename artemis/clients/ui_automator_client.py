@@ -341,6 +341,23 @@ class UIAutomatorClient:
             logger.error(f"UIAutomator2 clear_text failed: {e}")
             return False
 
+    def set_clipboard(self, text: str) -> bool:
+        """Set text to system clipboard via UIAutomator2.
+
+        Args:
+            text: The string to set in the device clipboard.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            device = self._ensure_connected()
+            device.set_clipboard(text)
+            return True
+        except Exception as e:
+            logger.debug(f"UIAutomator2 set_clipboard failed: {e}")
+            return False
+
     def get_hierarchy(self) -> str:
         """Get the UI hierarchy XML from the device.
 

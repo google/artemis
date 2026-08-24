@@ -64,7 +64,7 @@ export class WorkspaceComponent implements OnInit {
   }
 
   /**
-   * Set model profile ('flash' vs 'pro')
+   * Set agent architecture profile ('flash' vs 'pro')
    */
   public setProfile(profile: 'flash' | 'pro', event?: MouseEvent): void {
     if (event) {

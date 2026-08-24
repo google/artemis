@@ -103,8 +103,8 @@
                   rows="1"
                   [disabled]="isSubmitting"
                   [placeholder]="selectedProfile() === 'pro' 
-                    ? 'Pro: Best for complex long-running tasks, deep reasoning & video analysis' 
-                    : 'Flash: Fast execution for direct actions and tasks within 25 steps'"
+                    ? 'Pro: Multi-agent cognitive graph architecture for complex multi-step tasks' 
+                    : 'Flash: Reactive fast loop for standard app workflows within 25 steps'"
                   class="dock-textarea"
                   spellcheck="false"
                 ></textarea>
@@ -141,17 +141,17 @@
             <!-- Bottom Segmented Controls Row -->
             <div class="card-footer-row">
               <div class="footer-left-group">
-                <!-- Segmented Model Toggle (Flash / Pro) -->
-                <div class="model-profile-toggle" role="group" aria-label="Select AI Model">
+                <!-- Segmented Architecture Toggle (Flash / Pro) -->
+                <div class="model-profile-toggle" role="group" aria-label="Select Agent Architecture">
                   <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'flash'"
                     (mousedown)="$event.preventDefault()" (click)="setProfile('flash', $event)"
-                    title="Flash: Fast execution for standard app workflows">
+                    title="Flash: Reactive fast-loop architecture for standard app workflows (3–5s/step)">
                     <span class="material-symbols-outlined pill-icon icon-flash">bolt</span>
                     <span class="pill-label">Flash</span>
                   </button>
                   <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'pro'"
                     (mousedown)="$event.preventDefault()" (click)="setProfile('pro', $event)"
-                    title="Pro: Deep multimodal reasoning for complex multi-step tasks">
+                    title="Pro: Multi-agent cognitive graph architecture with planner & closed-loop verification for complex tasks">
                     <span class="material-symbols-outlined pill-icon icon-pro">psychology</span>
                     <span class="pill-label">Pro</span>
                   </button>

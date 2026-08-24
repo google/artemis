@@ -244,15 +244,15 @@
 
   <!-- Floating Top-Right Badges & Toolbar (Pinned overlay, hidden in empty/initial state) -->
   <div class="stream-floating-toolbar" *ngIf="consolidatedBlocks().length > 0 || showPlanningLoader()">
-    <!-- Active Model Info Chip (Informational Metadata, Not a Button) -->
+    <!-- Active Architecture Info Chip (Informational Metadata, Not a Button) -->
     <div 
       class="model-info-chip" 
       [ngClass]="getModelClass(model.name)"
       *ngIf="agentService.activeModel() as model"
-      [title]="'Active Model: ' + model.id + ' (' + model.provider + ')'"
+      [title]="getArchitectureTooltip(model)"
     >
       <span class="material-symbols-outlined model-icon">{{ getModelIcon(model.name) }}</span>
-      <span class="model-label">Model:</span>
+      <span class="model-label">Architecture:</span>
       <span class="model-name">{{ getModelDisplayName(model.name) }}</span>
     </div>
 

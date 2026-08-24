@@ -322,46 +322,47 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     "input keyevent 123",  # KEYCODE_MOVE_END
                 )
 
-            # 1. Fast path for ASCII text: Use ADB input text directly.
-            # This avoids toggling IME, preserves keyboard focus, and works on all Android devices.
-            if text.isascii():
-                lines = text.split("\n")
-                for i, line in enumerate(lines):
-                    if i > 0:
-                        # Send Enter key between lines
-                        await asyncio.to_thread(self.device.shell, "input keyevent 66")
-                    if line:
-                        escaped = _escape_for_adb_text(line)
-                        await asyncio.to_thread(self.device.shell, f"input text {escaped}")
-                return True
+            # Normalize literal escaped newlines from LLM / tool call serialization
+            norm_text = (
+                text.replace(r"\r\n", "\n")
+                .replace(r"\n", "\n")
+                .replace(r"\r", "\n")
+            )
 
-            # 2. For non-ASCII / Unicode text: Try UIAutomator2 FastInputIME
-            if self._ui_adb_client and hasattr(self._ui_adb_client, "send_text"):
+            # 1. Tier 1: Try clipboard injection + KEYCODE_PASTE (Zero IME interference, preserves multiline, works for all charsets)
+            if self._ui_adb_client:
                 try:
-                    res = self._ui_adb_client.send_text(text)
-                    if asyncio.iscoroutine(res):
-                        await res
-                    return True
-                except Exception as e:
-                    logger.warning(f"UIAutomator2 send_text failed: {e}")
+                    set_clip_ok = False
+                    if hasattr(self._ui_adb_client, "set_clipboard"):
+                        set_clip_ok = self._ui_adb_client.set_clipboard(norm_text)
+                    elif hasattr(self._ui_adb_client, "_device") and self._ui_adb_client._device:
+                        self._ui_adb_client._device.set_clipboard(norm_text)
+                        set_clip_ok = True
 
-            # 3. Check if ADBKeyboard is currently active
+                    if set_clip_ok:
+                        await asyncio.to_thread(self.device.shell, "input keyevent 279")
+                        return True
+                except Exception as e:
+                    logger.debug(f"Clipboard paste fallback to ADB input: {e}")
+
+            # 2. Tier 2: Check if ADBKeyboard is currently active
             try:
                 default_ime = await asyncio.to_thread(
                     self.device.shell, "settings get secure default_input_method"
                 )
                 if "adbkeyboard" in str(default_ime).lower():
-                    b64_text = base64.b64encode(text.encode("utf-8")).decode("utf-8")
+                    b64_text = base64.b64encode(norm_text.encode("utf-8")).decode("utf-8")
                     broadcast_cmd = f"am broadcast -a ADB_INPUT_B64 --es msg '{b64_text}'"
                     await asyncio.to_thread(self.device.shell, broadcast_cmd)
                     return True
             except Exception:
                 pass
 
-            # 4. Fallback: ADB input text
-            lines = text.split("\n")
+            # 3. Tier 3: Universal Native ADB input text fallback
+            lines = norm_text.split("\n")
             for i, line in enumerate(lines):
                 if i > 0:
+                    # Send Enter key between lines
                     await asyncio.to_thread(self.device.shell, "input keyevent 66")
                 if line:
                     escaped = _escape_for_adb_text(line)

@@ -546,6 +546,11 @@ class AdbDeviceProbe(BaseProbe):
         adb_ver = await self._get_adb_version(adb_path)
         devices = await self._parse_adb_devices(adb_path)
 
+        # Inspect ADB authentication key health
+        from artemis.core.diagnostics.adb_keys import inspect_adb_keys
+
+        key_status = inspect_adb_keys()
+
         # Normalize emulator command display
         is_emu_in_path = shutil.which("emulator") is not None
         emu_display_cmd = "emulator" if is_emu_in_path else (emulator_path or "emulator")
@@ -554,6 +559,7 @@ class AdbDeviceProbe(BaseProbe):
             "installed": True,
             "adb_path": adb_path,
             "adb_version": adb_ver,
+            "adb_keys": key_status.to_dict(),
             "emulator_path": emulator_path,
             "is_emulator_in_path": is_emu_in_path,
             "installed_avds": installed_avds,
@@ -564,6 +570,15 @@ class AdbDeviceProbe(BaseProbe):
         # 2. Case: No devices found
         if not devices:
             actions: list[ProbeAction] = []
+
+            if key_status.is_corrupted:
+                actions.append(
+                    ProbeAction(
+                        action_type="command",
+                        label="Auto-Heal ADB Keys",
+                        payload="artemis doctor --fix",
+                    )
+                )
 
             # If user has installed AVDs, generate exact launch commands for each
             if installed_avds:
@@ -593,6 +608,8 @@ class AdbDeviceProbe(BaseProbe):
             )
 
             desc = "ADB is ready, but no active Android device or emulator was detected."
+            if key_status.is_corrupted:
+                desc += f" Warning: Corrupted ADB RSA key detected ({key_status.error_reason})."
             if installed_avds:
                 desc += f" Found {len(installed_avds)} installed emulator(s): {', '.join(installed_avds)}."
 
@@ -615,6 +632,33 @@ class AdbDeviceProbe(BaseProbe):
         if not ready_devices:
             if unauthorized_devices:
                 unauth_serial = unauthorized_devices[0].serial
+                if key_status.is_corrupted:
+                    return ProbeResult(
+                        id=self.probe_id,
+                        category=self.category,
+                        title="Device / Emulator Connected",
+                        status=ProbeStatus.WARN,
+                        is_blocker=self.is_blocker,
+                        summary="ADB Key Corrupted",
+                        description=(
+                            f"Device detected ({unauth_serial}), but ADB authentication keys are corrupted "
+                            f"({key_status.error_reason}). This prevents the device from displaying the USB Debugging prompt."
+                        ),
+                        metadata=metadata,
+                        actions=[
+                            ProbeAction(
+                                action_type="command",
+                                label="Auto-Heal ADB Keys",
+                                payload="artemis doctor --fix",
+                            ),
+                            ProbeAction(
+                                action_type="command",
+                                label="Restart ADB Server",
+                                payload=f"{adb_path} kill-server && {adb_path} start-server",
+                            ),
+                        ],
+                    )
+
                 return ProbeResult(
                     id=self.probe_id,
                     category=self.category,

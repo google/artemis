@@ -1576,13 +1576,14 @@
           <!-- Composer Bottom Action Bar -->
           <div class="composer-action-bar">
             <div class="bar-left">
-              <!-- Frosted Glass Model Toggle Capsule -->
+              <!-- Frosted Glass Architecture Toggle Capsule -->
               <div class="model-toggle-capsule">
                 <button
                   type="button"
                   class="model-toggle-btn btn-flash"
                   [class.active]="selectedProfile() === 'flash'"
                   (click)="setProfile('flash')"
+                  title="Flash: Reactive fast-loop architecture for standard app workflows (3–5s/step)"
                 >
                   <span class="material-symbols-outlined btn-icon">bolt</span>
                   <span class="btn-text">Flash</span>
@@ -1592,6 +1593,7 @@
                   class="model-toggle-btn btn-pro"
                   [class.active]="selectedProfile() === 'pro'"
                   (click)="setProfile('pro')"
+                  title="Pro: Multi-agent graph architecture with planner & closed-loop verification for complex tasks"
                 >
                   <span class="material-symbols-outlined btn-icon">psychology</span>
                   <span class="btn-text">Pro</span>
@@ -1745,7 +1747,8 @@
                     <span class="app-names-label">{{ getAppNamesDisplay(item.apps) }}</span>
                   </div>
 
-                  <span class="mode-badge" [class.mode-pro]="item.profile === 'pro'" [class.mode-flash]="item.profile === 'flash'">
+                  <span class="mode-badge" [class.mode-pro]="item.profile === 'pro'" [class.mode-flash]="item.profile === 'flash'"
+                    [title]="item.profile === 'pro' ? 'Uses ARTEMIS Pro (Multi-Agent Cognitive State Graph)' : 'Uses ARTEMIS Flash (Reactive Fast Loop)'">
                     {{ item.profile === 'pro' ? 'Pro' : 'Flash' }}
                   </span>
                 </div>

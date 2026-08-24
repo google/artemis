@@ -133,11 +133,28 @@ class ReadinessEngine:
             timestamp=time.time(),
         )
 
+    async def heal_adb_keys(self, force: bool = False) -> dict[str, Any]:
+        """Auto-heal corrupted or 0-byte ADB authentication keys."""
+        from artemis.core.diagnostics.adb_keys import heal_adb_keys
+
+        logger.info("[ReadinessEngine] Auto-healing ADB authentication keys...")
+        return await asyncio.to_thread(heal_adb_keys, None, force)
+
     async def restart_adb_server(self) -> dict[str, Any]:
-        """Execute adb kill-server && adb start-server to recover connectivity."""
+        """Execute adb kill-server && adb start-server to recover connectivity, auto-healing corrupted keys if needed."""
+        from artemis.core.diagnostics.adb_keys import heal_adb_keys, inspect_adb_keys
+
         adb_path = shutil.which("adb") or "adb"
 
         def _restart_sync():
+            # If keys are corrupted, heal them first
+            key_status = inspect_adb_keys()
+            if key_status.is_corrupted:
+                logger.warning(
+                    f"[ReadinessEngine] Corrupted ADB keys detected ({key_status.error_reason}). Auto-healing..."
+                )
+                return heal_adb_keys(adb_path=adb_path)
+
             try:
                 subprocess.run(
                     [adb_path, "kill-server"],

@@ -63,6 +63,17 @@ async def restart_adb_server():
     }
 
 
+@router.post("/adb/heal-keys")
+async def heal_adb_keys():
+    """Auto-heal corrupted ADB authentication RSA keys and return updated readiness."""
+    heal_result = await readiness_engine.heal_adb_keys()
+    updated_report = await readiness_engine.run_all()
+    return {
+        "heal_result": heal_result,
+        "report": updated_report,
+    }
+
+
 class ConnectAdbRequest(BaseModel):
     """Payload to connect to an Android device over Wi-Fi."""
 

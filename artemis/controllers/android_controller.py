@@ -156,22 +156,46 @@ class AndroidDeviceController(MobileDeviceController):
 
     async def input_text(self, text: str) -> bool:
         try:
-            # Fast path for ASCII text: Use ADB directly.
-            # This avoids toggling FastInputIME, which hides the keyboard and can cause focus loss.
-            is_ascii = all(ord(c) < 128 for c in text)
-            if is_ascii:
-                return self._input_text_adb_fallback(text)
+            norm_text = (
+                text.replace(r"\r\n", "\n")
+                .replace(r"\n", "\n")
+                .replace(r"\r", "\n")
+            )
 
-            self.ui_adb_client.send_text(text)
-            return True
+            # 1. Tier 1: Try clipboard injection + KEYCODE_PASTE (Zero IME interference, preserves multiline, works for all charsets)
+            if self.ui_adb_client:
+                try:
+                    set_clip_ok = False
+                    if hasattr(self.ui_adb_client, "set_clipboard"):
+                        set_clip_ok = self.ui_adb_client.set_clipboard(norm_text)
+                    elif hasattr(self.ui_adb_client, "_device") and self.ui_adb_client._device:
+                        self.ui_adb_client._device.set_clipboard(norm_text)
+                        set_clip_ok = True
+                    elif hasattr(self.ui_adb_client, "_ensure_connected"):
+                        dev = self.ui_adb_client._ensure_connected()
+                        dev.set_clipboard(norm_text)
+                        set_clip_ok = True
+
+                    if set_clip_ok:
+                        self.device.shell("input keyevent 279")
+                        return True
+                except Exception as e:
+                    logger.debug(f"Clipboard paste fallback: {e}")
+
+            return self._input_text_adb_fallback(norm_text)
         except Exception as e:
-            logger.warning(f"UIAutomator2 send_text failed: {e}, falling back to ADB shell")
-            return self._input_text_adb_fallback(text)
+            logger.error(f"Failed to input text: {e}")
+            return False
 
     def _input_text_adb_fallback(self, text: str) -> bool:
         """Fallback method using ADB shell input text command."""
         try:
-            lines = text.split("\n")
+            norm_text = (
+                text.replace(r"\r\n", "\n")
+                .replace(r"\n", "\n")
+                .replace(r"\r", "\n")
+            )
+            lines = norm_text.split("\n")
             for line_idx, line in enumerate(lines):
                 if line_idx > 0:
                     self.device.shell("input keyevent 66")

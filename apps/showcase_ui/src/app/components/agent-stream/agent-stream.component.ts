@@ -20,7 +20,7 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { AgentService, StartupProgressEvent } from '../../services/agent.service';
-import { Session } from '../../core/models/session.model';
+import { Session, ModelInfo } from '../../core/models/session.model';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { StepBlock, PhaseBlock, StepEvent, ActionParam, CheckerResult } from '../../core/models/stream.model';
 
@@ -1260,6 +1260,19 @@ export class AgentStreamComponent implements AfterViewInit {
     if (lower.includes('pro')) return 'is-pro';
     if (lower.includes('flash')) return 'is-flash';
     return '';
+  }
+
+  public getArchitectureTooltip(model?: ModelInfo | null): string {
+    if (!model) return 'Agent Architecture: ARTEMIS Flash (Reactive Fast Loop)';
+    const name = this.getModelDisplayName(model.name);
+    const isPro = name.toLowerCase().includes('pro');
+    const archDesc = isPro
+      ? 'ARTEMIS Pro (Multi-Agent Cognitive State Graph)'
+      : 'ARTEMIS Flash (Reactive Fast Loop)';
+    if (model.id) {
+      return `Agent Architecture: ${archDesc} · LLM: ${model.id} (${model.provider || 'google'})`;
+    }
+    return `Agent Architecture: ${archDesc}`;
   }
 
   public formatTokenCount(tokens?: number): string {
