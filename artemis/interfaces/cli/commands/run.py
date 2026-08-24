@@ -23,6 +23,7 @@ from typing import Annotated
 from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import initialize_llm_config, settings
+from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
 from artemis.sdk.types.task import AgentProfile
 from artemis.utils.cli_helpers import display_device_status
@@ -73,6 +74,7 @@ async def execute_task(
         explorer_flash_mode: Override Explorer version mode for Flash execution profile.
         explorer_pro_mode: Override Explorer version mode for Pro execution profile.
     """
+    publish_startup_progress("configuration", "Loading the run configuration")
     llm_config = initialize_llm_config()
     agent_profile = AgentProfile(name="default", llm_config=llm_config)
     config = Builders.AgentConfig.with_default_profile(profile=agent_profile)
@@ -117,11 +119,13 @@ async def execute_task(
 
     agent: Agent | None = None
     try:
+        publish_startup_progress("device_check", "Checking the Android device")
         agent = Agent(config=config.build())
         await agent.init(
             retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
             retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
         )
+        publish_startup_progress("device_ready", "Android device connected")
 
         task = agent.new_task(goal)
         if locked_app_package:

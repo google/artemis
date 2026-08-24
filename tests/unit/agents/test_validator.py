@@ -98,6 +98,59 @@ async def test_validator_success(mock_mcp, mock_context, temp_screenshot):
 
 
 @pytest.mark.asyncio
+async def test_failed_mcp_handshake_exits_contexts_and_disables_child_awake_policy():
+    """A handshake failure must not leave AnyIO cancellation scopes behind."""
+    events = []
+
+    class FakeClientContext:
+        async def __aenter__(self):
+            events.append("client_enter")
+            return Mock(), Mock()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            events.append("client_exit")
+
+    class FakeSession:
+        async def __aenter__(self):
+            events.append("session_enter")
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            events.append("session_exit")
+
+        async def initialize(self):
+            raise TimeoutError("handshake timed out")
+
+    ctx = Mock(spec=ArtemisContext)
+    ctx.mcp_client_ctx = None
+    ctx.mcp_session = None
+    fake_client_ctx = FakeClientContext()
+    fake_session = FakeSession()
+    captured_parameters = []
+
+    def fake_stdio_client(parameters):
+        captured_parameters.append(parameters)
+        return fake_client_ctx
+
+    node = ValidatorNode(ctx)
+    with (
+        patch("artemis.agents.validator.validator.stdio_client", fake_stdio_client),
+        patch("artemis.agents.validator.validator.ClientSession", return_value=fake_session),
+        patch("artemis.agents.validator.validator.AdbClient") as adb_client,
+        patch.object(node, "_kill_mcp_server_instantly") as emergency_kill,
+    ):
+        adb_client.return_value.device_list.return_value = []
+        result = await node._get_mcp_session()
+
+    assert result is None
+    assert events == ["client_enter", "session_enter", "session_exit", "client_exit"]
+    assert ctx.mcp_session is None
+    assert ctx.mcp_client_ctx is None
+    assert captured_parameters[0].env["ARTEMIS_KEEP_DEVICE_AWAKE"] == "false"
+    emergency_kill.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_validator_failure_analysis(mock_mcp, mock_context, temp_screenshot):
     """Test that ValidatorNode triggers failure analysis on error and handles
     cannot_fix via tool.

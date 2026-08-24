@@ -470,4 +470,10 @@ async def get_ui_hierarchy(ctx: Context) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    from artemis.runtime import shutdown_awake_service, start_awake_service
+
+    start_awake_service()
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        shutdown_awake_service()

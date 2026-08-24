@@ -15,11 +15,21 @@
 """Artemis cross-platform runtime and process supervisor subsystem."""
 
 from artemis.runtime.device_lock import DeviceBusyError, DeviceExecutionLock
+from artemis.runtime.awake_service import (
+    ensure_device_awake,
+    screen_awake_service,
+    shutdown_awake_service,
+    start_awake_service,
+)
 from artemis.runtime.supervisor import ProcessSupervisor, process_supervisor
 
 __all__ = [
     "DeviceBusyError",
     "DeviceExecutionLock",
+    "ensure_device_awake",
     "ProcessSupervisor",
     "process_supervisor",
+    "screen_awake_service",
+    "shutdown_awake_service",
+    "start_awake_service",
 ]

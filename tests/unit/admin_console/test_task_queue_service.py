@@ -22,7 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from apps.admin_console.core.state import state
+from apps.admin_console.routers.tasks import get_status
 from apps.admin_console.services.task_queue_service import TaskQueueService, task_queue_service
+from artemis.runtime.device_lock import DeviceLockOwner
 
 
 @pytest.fixture(autouse=True)
@@ -39,13 +41,17 @@ def clean_state(tmp_path, monkeypatch):
     state.current_goal = None
     state.current_profile = None
     state.active_session_id = None
+    state.active_connections.clear()
     state.was_stopped_manually = False
+    state.cancelled_session_ids.clear()
     if state.worker_task and not state.worker_task.done():
         state.worker_task.cancel()
     state.worker_task = None
     yield
     state.clear_queue()
     state.queue_items.clear()
+    state.active_connections.clear()
+    state.cancelled_session_ids.clear()
     if state.worker_task and not state.worker_task.done():
         state.worker_task.cancel()
     state.worker_task = None
@@ -135,11 +141,20 @@ async def test_stop_tasks_keep_remaining():
             "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree"
         ) as mock_term,
         patch.object(TaskQueueService, "ensure_worker_running"),
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
+        ) as update_status,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo.mark_all_running_cancelled"
+        ) as mark_all,
     ):
         stopped = task_queue_service.stop_tasks(clear_all=False)
         assert stopped is True
         mock_proc.kill.assert_called_once()
         mock_term.assert_called_once_with(12345)
+        update_status.assert_called_once()
+        assert update_status.call_args.args[:2] == ("s1", "cancelled")
+        mark_all.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -201,7 +216,7 @@ async def test_queue_worker_cmd_construction():
     ):
         mock_repo.get_running_session_id.return_value = None
 
-        await task_queue_service.enqueue_tasks(
+        enqueue_result = await task_queue_service.enqueue_tasks(
             ["Test Goal with Outputter"],
             profile="pro",
             expected_output="Final summary",
@@ -225,6 +240,10 @@ async def test_queue_worker_cmd_construction():
         assert "com.google.android.apps.maps" in cmd
         assert "--app-path" in cmd
         assert "/path/to/app.apk" in cmd
+        assert (
+            executed_kwargs[0]["env"]["ARTEMIS_DEVICE_QUEUE_TICKET"]
+            == (enqueue_result["tasks"][0]["queue_ticket"])
+        )
         if sys.platform == "win32":
             assert executed_kwargs[0]["creationflags"] == (
                 subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -294,6 +313,136 @@ async def test_stop_tasks_dead_process_resets_state():
         assert state.current_process is None
         assert state.is_running is False
         assert len(state.queue_items) == 0
+
+
+def test_stop_tasks_terminates_external_global_owner_and_preserves_local_waiter():
+    external_owner = DeviceLockOwner(
+        pid=24680,
+        process_created_at=1234.5,
+        token="external-owner-token",
+        device_id="emulator-5554",
+        description="MCP task: inspect settings",
+        acquired_at="2026-08-24T00:00:00+00:00",
+        session_id="mcp-session",
+        ingress="mcp",
+    )
+    local_waiter = MagicMock(pid=13579, returncode=None)
+    state.current_process = local_waiter
+    state.queue_items = [
+        {
+            "session_id": "frontend-waiter",
+            "goal": "Run after MCP",
+            "status": "running",
+            "queue_ticket": "frontend-ticket",
+        }
+    ]
+    state.active_session_id = "mcp-session"
+    state.active_connections["mcp-session"] = {"pid": 24680}
+
+    with (
+        patch.object(
+            TaskQueueService,
+            "ensure_worker_running",
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.get_active_owner",
+            return_value=external_owner,
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.is_active_owner",
+            return_value=True,
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.cleanup_stale_locks"
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree_verified",
+            return_value=True,
+        ) as terminate_verified,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
+        ) as update_status,
+        patch(
+            "mcp_server.utils.trace_store.update_trace_status"
+        ) as update_trace_status,
+    ):
+        assert task_queue_service.stop_tasks(clear_all=False) is True
+
+    terminate_verified.assert_called_once_with(24680, 1234.5)
+    local_waiter.kill.assert_not_called()
+    assert state.current_process is local_waiter
+    assert state.queue_items[0]["session_id"] == "frontend-waiter"
+    assert state.was_stopped_manually is False
+    assert "frontend-waiter" not in state.cancelled_session_ids
+    assert "mcp-session" not in state.active_connections
+    update_status.assert_called_once()
+    assert update_status.call_args.args[:2] == ("mcp-session", "cancelled")
+    update_trace_status.assert_called_once_with(
+        "mcp-session",
+        "cancelled",
+        error="Task stopped from the Artemis frontend.",
+    )
+
+
+def test_stop_tasks_does_not_kill_stale_reused_pid():
+    stale_owner = DeviceLockOwner(
+        pid=24680,
+        process_created_at=1234.5,
+        token="stale-token",
+        device_id="emulator-5554",
+        description="CLI task",
+        acquired_at="2026-08-24T00:00:00+00:00",
+        session_id="cli-session",
+        ingress="sdk",
+    )
+    with (
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.get_active_owner",
+            return_value=stale_owner,
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.is_active_owner",
+            return_value=False,
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree_verified"
+        ) as terminate_verified,
+    ):
+        assert task_queue_service.stop_tasks(clear_all=False) is False
+
+    terminate_verified.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_status_reports_external_global_owner_without_ipc_connection():
+    external_owner = DeviceLockOwner(
+        pid=24680,
+        process_created_at=1234.5,
+        token="external-owner-token",
+        device_id="emulator-5554",
+        description="CLI task: inspect settings",
+        acquired_at="2026-08-24T00:00:00+00:00",
+        session_id="cli-session",
+        ingress="cli",
+    )
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch(
+            "apps.admin_console.routers.tasks.DeviceExecutionLock.get_active_owner",
+            return_value=external_owner,
+        ),
+        patch("apps.admin_console.routers.tasks.session_repo") as repo,
+        patch("apps.admin_console.routers.tasks.model_service") as models,
+    ):
+        repo.get_latest_session.return_value = None
+        repo.get_session_by_id.return_value = None
+        models.get_active_model_info.return_value = None
+        result = await get_status()
+
+    assert result["status"] == "running"
+    assert result["session_id"] == "cli-session"
+    assert result["pid"] == 24680
+    assert result["goal"] == "CLI task: inspect settings"
 
 
 @pytest.mark.asyncio

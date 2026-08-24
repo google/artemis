@@ -21,7 +21,6 @@ import os
 from pathlib import Path
 import psutil
 import re
-import signal
 import sys
 import time
 import traceback
@@ -87,7 +86,7 @@ class ValidatorNode:
         self.ctx = ctx
 
     def _kill_mcp_server_instantly(self):
-        """Instantly terminate MCP ADB server child processes using SIGKILL."""
+        """Instantly terminate MCP ADB server child processes."""
 
         try:
             current_process = psutil.Process()
@@ -97,11 +96,49 @@ class ValidatorNode:
                     cmdline = child.cmdline()
                     if any("adb_server.py" in part for part in cmdline):
                         logger.warning(f"Instantly killing MCP Server child process: {child.pid}")
-                        os.kill(child.pid, signal.SIGKILL)
+                        child.kill()
                 except psutil.NoSuchProcess:
                     pass
         except Exception as e:
             logger.error(f"Failed to instantly kill MCP server child processes: {e}")
+
+    async def _close_failed_mcp_session(
+        self,
+        *,
+        session,
+        session_entered: bool,
+        client_ctx,
+        client_entered: bool,
+    ) -> bool:
+        """Exit partially-entered MCP contexts in reverse order.
+
+        The MCP stdio transport owns an AnyIO task group and cancellation
+        scope. Dropping an entered transport without calling ``__aexit__``
+        leaves that scope attached to the validator task and can cancel an
+        unrelated action later in the same node.
+
+        Returns ``True`` when every entered context closed cleanly.
+        """
+        self.ctx.mcp_session = None
+        self.ctx.mcp_client_ctx = None
+        cleanup_succeeded = True
+
+        for manager, entered, label in (
+            (session, session_entered, "MCP session"),
+            (client_ctx, client_entered, "MCP stdio transport"),
+        ):
+            if not entered or manager is None:
+                continue
+            try:
+                await manager.__aexit__(None, None, None)
+            except asyncio.CancelledError:
+                cleanup_succeeded = False
+                logger.warning(f"{label} cleanup was cancelled.")
+            except Exception as cleanup_error:
+                cleanup_succeeded = False
+                logger.warning(f"Failed to close {label}: {cleanup_error}")
+
+        return cleanup_succeeded
 
     async def _get_mcp_session(self):
         if getattr(self.ctx, "mcp_session", None) is not None:
@@ -111,30 +148,55 @@ class ValidatorNode:
         venv_python = root_dir / ".venv" / "bin" / "python3"
         python_exe = str(venv_python) if venv_python.exists() else sys.executable
 
+        server_env = os.environ.copy()
+        # The parent Artemis process already owns the device-awake policy.
+        # Starting it again in this short-lived child can block the MCP
+        # handshake on cross-process ADB/lease cleanup.
+        server_env["ARTEMIS_KEEP_DEVICE_AWAKE"] = "false"
         server_params = StdioServerParameters(
             command=python_exe,
             args=[str(root_dir / "mcp" / "adb_server.py")],
-            env=os.environ.copy(),
+            env=server_env,
         )
 
         logger.info("Starting persistent MCP server session...")
-        self.ctx.mcp_client_ctx = stdio_client(server_params)
+        client_ctx = stdio_client(server_params)
+        session = None
+        client_entered = False
+        session_entered = False
+        self.ctx.mcp_client_ctx = client_ctx
         try:
-            read, write = await self.ctx.mcp_client_ctx.__aenter__()
-            self.ctx.mcp_session = ClientSession(read, write)
-            await self.ctx.mcp_session.__aenter__()
+            read, write = await client_ctx.__aenter__()
+            client_entered = True
+            session = ClientSession(read, write)
+            self.ctx.mcp_session = session
+            await session.__aenter__()
+            session_entered = True
             # Handshake timeout protection
-            await asyncio.wait_for(self.ctx.mcp_session.initialize(), timeout=15.0)
-            return self.ctx.mcp_session
+            await asyncio.wait_for(session.initialize(), timeout=15.0)
+            return session
+        except asyncio.CancelledError:
+            await self._close_failed_mcp_session(
+                session=session,
+                session_entered=session_entered,
+                client_ctx=client_ctx,
+                client_entered=client_entered,
+            )
+            raise
         except Exception as e:
             err_stack = traceback.format_exc()
             logger.critical(
                 "CRITICAL: Failed to initialize MCP server session:"
                 f" {e}\n{err_stack}. Cleaning up child processes."
             )
-            self._kill_mcp_server_instantly()
-            self.ctx.mcp_session = None
-            self.ctx.mcp_client_ctx = None
+            cleanup_succeeded = await self._close_failed_mcp_session(
+                session=session,
+                session_entered=session_entered,
+                client_ctx=client_ctx,
+                client_entered=client_entered,
+            )
+            if not cleanup_succeeded:
+                self._kill_mcp_server_instantly()
 
             logger.warning(
                 "Falling back to robust local in-process execution bypassing MCP protocol."
@@ -600,7 +662,7 @@ class ValidatorNode:
             return await self._execute_validation_loop(state)
         except asyncio.CancelledError:
             logger.warning(
-                "Validator task cancelled (Stop requested). Instantly killing MCP server processes."
+                "Validator task cancelled. Instantly killing MCP server processes."
             )
             self._kill_mcp_server_instantly()
             raise

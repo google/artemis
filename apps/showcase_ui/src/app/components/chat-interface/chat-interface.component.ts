@@ -17,7 +17,6 @@
 import { Component, inject, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
 import { AgentService } from '../../services/agent.service';
 import { Session } from '../../core/models/session.model';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
@@ -34,7 +33,6 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 })
 export class ChatInterfaceComponent {
   public agentService = inject(AgentService);
-  private http = inject(HttpClient);
 
   public taskInput: string = '';
   public isSubmitting: boolean = false;
@@ -79,23 +77,10 @@ export class ChatInterfaceComponent {
     this.isSubmitting = true;
     this.errorMessage = null;
 
-    this.agentService.clearUserPinnedSession();
-    this.http.post<any>('/api/run', { goal }).subscribe({
+    this.agentService.runTask(goal).subscribe({
       next: (res) => {
         this.taskInput = '';
         this.isSubmitting = false;
-        if (res && res.tasks && res.tasks.length > 0) {
-          const firstTask = res.tasks[0];
-          if (firstTask && firstTask.session_id) {
-            // Only auto-select immediately if no task is currently executing/running
-            const isCurrentlyRunning =
-              this.agentService.agentStatus() === 'running' ||
-              this.agentService.sessions().some((s) => s.status === 'running');
-            if (!isCurrentlyRunning) {
-              this.agentService.selectSession(firstTask.session_id, false);
-            }
-          }
-        }
         // Fetch status to refresh sessions list and select new session
         this.agentService.fetchStatus();
       },

@@ -14,6 +14,8 @@
 
 """Unit tests for Artemis System Diagnostics & Readiness Engine."""
 
+from unittest.mock import AsyncMock
+
 import pytest
 from artemis.core.diagnostics.engine import ReadinessEngine
 from artemis.core.diagnostics.probes.adb_probe import AdbDeviceProbe
@@ -109,6 +111,83 @@ async def test_adb_probe_structure():
     assert isinstance(result, ProbeResult)
     assert result.status in (ProbeStatus.PASS, ProbeStatus.WARN, ProbeStatus.FAIL)
     assert "installed" in result.metadata
+
+
+@pytest.mark.parametrize(
+    ("policy_output", "trust_output", "expected"),
+    [
+        (
+            "KeyguardServiceDelegate\n  showing=true\n  occluded=false\n",
+            'User "Owner" (current): deviceLocked=1',
+            True,
+        ),
+        (
+            "KeyguardServiceDelegate\n  showing=false\n  occluded=false\n",
+            'User "Owner" (current): deviceLocked=0',
+            False,
+        ),
+        (
+            "mShowingLockscreen=true mKeyguardOccluded=false",
+            "",
+            True,
+        ),
+        ("", "", None),
+    ],
+)
+def test_adb_probe_parses_device_lock_state(policy_output, trust_output, expected):
+    """Keyguard and current-user trust signals produce a fail-safe lock state."""
+    assert AdbDeviceProbe._parse_device_lock_state(policy_output, trust_output) is expected
+
+
+@pytest.mark.asyncio
+async def test_submission_probe_skips_full_device_enrichment(monkeypatch):
+    probe = AdbDeviceProbe(target_serial="device-2")
+    get_states = AsyncMock(
+        return_value=[("device-1", "device"), ("device-2", "device")]
+    )
+    get_lock_state = AsyncMock(return_value=False)
+    full_probe = AsyncMock()
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve",
+        lambda name: "adb",
+    )
+    monkeypatch.setattr(probe, "_get_device_states", get_states)
+    monkeypatch.setattr(probe, "_get_device_lock_state", get_lock_state)
+    monkeypatch.setattr(probe, "_parse_adb_devices", full_probe)
+
+    result = await probe.probe_submission_readiness()
+
+    assert result.summary == "Connected"
+    assert result.metadata["submission_probe"] is True
+    get_states.assert_awaited_once_with("adb")
+    get_lock_state.assert_awaited_once_with(
+        "adb", "device-2", timeout_seconds=1.0
+    )
+    full_probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submission_probe_fails_closed_when_lock_state_is_unknown(monkeypatch):
+    probe = AdbDeviceProbe()
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve",
+        lambda name: "adb",
+    )
+    monkeypatch.setattr(
+        probe,
+        "_get_device_states",
+        AsyncMock(return_value=[("device-1", "device")]),
+    )
+    monkeypatch.setattr(
+        probe,
+        "_get_device_lock_state",
+        AsyncMock(return_value=None),
+    )
+
+    result = await probe.probe_submission_readiness()
+
+    assert result.summary == "Lock State Unknown"
+    assert result.status == ProbeStatus.WARN
 
 
 @pytest.mark.asyncio

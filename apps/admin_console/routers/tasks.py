@@ -17,6 +17,8 @@ from contextlib import suppress
 import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from artemis.core.diagnostics import readiness_engine
+from artemis.runtime import DeviceExecutionLock
 
 try:
     from admin_console.core.state import state
@@ -77,6 +79,19 @@ async def run_task(request: RunRequest):
             detail="Either 'goal' or 'goals' list must be provided.",
         )
 
+    # Re-check immediately before enqueueing so a device locked between UI
+    # polling intervals cannot start through a stale Ready state. Use the
+    # bounded submission probe: the full diagnostics path also scans packages,
+    # emulator installations, Android version, and screen size.
+    device_probe = await readiness_engine.run_device_submission_probe()
+    if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
+        detail = (
+            "Android device is locked. Unlock it and enter the home screen before running a task."
+            if device_probe.summary == "Device Locked"
+            else "Android device lock state could not be verified. Keep it unlocked on the home screen and try again."
+        )
+        raise HTTPException(status_code=409, detail=detail)
+
     return await task_queue_service.enqueue_tasks(
         incoming_goals,
         profile=request.profile or "flash",
@@ -112,7 +127,8 @@ async def get_status():
     latest_session_id = latest_session.get("session_id") if latest_session else None
     bg_tasks = session_repo.get_background_tasks(latest_session_id) if latest_session_id else []
 
-    is_running = state.is_running
+    global_owner = DeviceExecutionLock.get_active_owner()
+    is_running = state.is_running or global_owner is not None
     running_task = next(
         (t for t in state.queue_items if isinstance(t, dict) and t.get("status") == "running"), None
     )
@@ -123,14 +139,23 @@ async def get_status():
         )
 
     running_sid = (
-        state.active_session_id
+        (global_owner.session_id if global_owner else None)
+        or state.active_session_id
         or (running_task.get("session_id") if running_task else None)
         or (session_repo.get_running_session_id() if is_running else None)
     )
-    running_goal = state.current_goal or (running_task.get("goal") if running_task else None)
+    owner_connection = (
+        state.active_connections.get(str(running_sid), {}) if running_sid else {}
+    )
+    running_goal = (
+        owner_connection.get("goal")
+        or (global_owner.description if global_owner else None)
+        or state.current_goal
+        or (running_task.get("goal") if running_task else None)
+    )
 
-    active_profile = state.current_profile or (
-        running_task.get("profile") if running_task else None
+    active_profile = owner_connection.get("profile") or state.current_profile or (
+        running_task.get("profile") if running_task and not global_owner else None
     )
     if not active_profile and (running_sid or latest_session_id):
         check_sid = running_sid or latest_session_id
@@ -151,7 +176,13 @@ async def get_status():
             "status": "paused" if is_paused else "running",
             "paused_error": state.paused_error if is_paused else None,
             "goal": running_goal,
-            "pid": state.current_process.pid if state.current_process else None,
+            "pid": (
+                global_owner.pid
+                if global_owner
+                else state.current_process.pid
+                if state.current_process
+                else None
+            ),
             "session_id": running_sid,
             "background_tasks": bg_tasks,
             "queue": queue_data,
@@ -220,6 +251,12 @@ async def stream_events(session_id: str, client: str | None = None):
 
         state.add_subscriber(callback)
         yield f'event: info\ndata: {{"message": "Subscribed to session {session_id}"}}\n\n'
+        if session_id not in ("all", "active"):
+            for progress_event in state.get_startup_progress(session_id):
+                yield (
+                    "event: startup_progress\n"
+                    f"data: {json.dumps(progress_event, default=str)}\n\n"
+                )
 
         shutdown_waiter = asyncio.create_task(state.shutdown_event.wait())
         queue_waiter = None

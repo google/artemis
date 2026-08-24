@@ -91,6 +91,10 @@ class ReadinessEngine:
             return None
         return await probe.probe()
 
+    async def run_device_submission_probe(self) -> ProbeResult:
+        """Run the bounded device gate used by task submission."""
+        return await self._adb_probe.probe_submission_readiness()
+
     async def run_all(self, categories: list[ProbeCategory] | None = None) -> SystemReadinessReport:
         """Concurrently run all registered diagnostic probes and compile report."""
         toolchain.clear_cache()

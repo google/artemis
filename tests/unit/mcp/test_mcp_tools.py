@@ -72,6 +72,37 @@ def test_mobile_run_task_invalid_model():
         mobile_run_task(task_desc="test", conversation_id="conv-1", model="invalid_model")
 
 
+def test_mobile_run_task_reserves_and_passes_global_queue_ticket(temp_trace_env):
+    process = MagicMock(pid=43210)
+    with (
+        patch(
+            "mcp_server.tools.task_runner.DeviceExecutionLock.reserve",
+            return_value="queue-ticket-1",
+        ) as reserve,
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.transfer_reservation") as transfer,
+        patch("mcp_server.tools.task_runner.subprocess.Popen", return_value=process) as popen,
+    ):
+        result = mobile_run_task(
+            task_desc="Open Settings",
+            conversation_id="conv-1",
+            model="Flash",
+        )
+
+    reserve.assert_called_once()
+    transfer.assert_called_once_with(
+        "queue-ticket-1",
+        43210,
+        description="MCP task: Open Settings",
+        session_id=result["trace_id"],
+        ingress="mcp",
+    )
+    assert result["trace_id"]
+    assert popen.call_args.kwargs["env"]["ARTEMIS_DEVICE_QUEUE_TICKET"] == "queue-ticket-1"
+    assert popen.call_args.kwargs["env"]["ARTEMIS_TASK_INGRESS"] == "mcp"
+    status = trace_store.read_status(result["trace_id"])
+    assert status["queue_ticket"] == "queue-ticket-1"
+
+
 def test_mobile_manage_task_unknown_trace(temp_trace_env):
     res = mobile_manage_task(action="status", trace_id="non-existent-trace")
     assert res["status"] == "unknown"
@@ -154,6 +185,7 @@ async def test_mobile_inspect_trace_invalid_action():
 async def test_mcp_server_auto_registers_tools():
     """Verify that importing mcp_server.base auto-registers all mobile tools without manual tools import."""
     from mcp_server.base import mcp
+
     tools = await mcp.list_tools()
     tool_names = {t.name for t in tools}
     assert {

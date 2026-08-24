@@ -3089,9 +3089,11 @@ $text-light: #94a3b8;
         }
       }
 
-      /* State C: Unauthorized Panel */
-      .unauthorized-panel {
-        .unauthorized-card {
+      /* State C: Locked / Unauthorized Device Panels */
+      .unauthorized-panel,
+      .device-locked-panel {
+        .unauthorized-card,
+        .device-locked-card {
           display: flex;
           align-items: center;
           gap: 12px;
@@ -3106,25 +3108,29 @@ $text-light: #94a3b8;
             flex-shrink: 0;
           }
 
-          .unauth-details {
+          .unauth-details,
+          .locked-details {
             flex: 1;
             min-width: 0;
 
-            .unauth-title {
+            .unauth-title,
+            .locked-title {
               font-size: 13px;
               font-weight: 600;
               color: $amber-dark;
               margin-bottom: 2px;
             }
 
-            .unauth-desc {
+            .unauth-desc,
+            .locked-desc {
               font-size: 11.5px;
               color: #78350f;
               line-height: 1.4;
             }
           }
 
-          .btn-retry-auth {
+          .btn-retry-auth,
+          .btn-check-unlock {
             display: inline-flex;
             align-items: center;
             gap: 4px;
@@ -3144,7 +3150,7 @@ $text-light: #94a3b8;
             flex-shrink: 0;
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 
-            &:hover {
+            &:hover:not(:disabled) {
               background: rgba(253, 230, 138, 0.95);
               border-color: $amber;
               transform: translateY(-0.5px);
@@ -3153,6 +3159,11 @@ $text-light: #94a3b8;
 
             &:active {
               transform: scale(0.97);
+            }
+
+            &:disabled {
+              cursor: not-allowed;
+              opacity: 0.65;
             }
           }
         }

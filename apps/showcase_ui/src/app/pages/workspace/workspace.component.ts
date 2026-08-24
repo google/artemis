@@ -17,7 +17,6 @@
 import { Component, HostListener, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
 import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
@@ -38,7 +37,6 @@ import { AgentService } from '../../services/agent.service';
 })
 export class WorkspaceComponent implements OnInit {
   public agentService = inject(AgentService);
-  private http = inject(HttpClient);
 
   // Default right panel width to 1/3 of the screen (or 450px as fallback)
   public rightPanelWidth = typeof window !== 'undefined' ? Math.round(window.innerWidth / 3) : 450;
@@ -197,25 +195,13 @@ export class WorkspaceComponent implements OnInit {
     }
     this.isInputFocused.set(false);
 
-    this.agentService.clearUserPinnedSession();
-    this.http.post<any>('/api/run', { goal, profile: this.selectedProfile() }).subscribe({
+    this.agentService.runTask(goal, this.selectedProfile()).subscribe({
       next: (res) => {
         this.taskInput = '';
         if (this.dockInputRef?.nativeElement) {
           this.dockInputRef.nativeElement.style.height = 'auto';
         }
         this.isSubmitting = false;
-        if (res && res.tasks && res.tasks.length > 0) {
-          const firstTask = res.tasks[0];
-          if (firstTask && firstTask.session_id) {
-            const isCurrentlyRunning =
-              this.agentService.agentStatus() === 'running' ||
-              this.agentService.sessions().some((s) => s.status === 'running');
-            if (!isCurrentlyRunning) {
-              this.agentService.selectSession(firstTask.session_id, false);
-            }
-          }
-        }
         this.agentService.fetchStatus();
       },
       error: (err) => {

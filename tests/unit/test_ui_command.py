@@ -8,7 +8,32 @@
 
 import os
 
-from artemis.interfaces.cli.commands.ui import _showcase_build_required
+from artemis.interfaces.cli.commands import ui
+from artemis.interfaces.cli.commands.ui import (
+    _resolve_npm_executable,
+    _showcase_build_required,
+)
+
+
+def test_resolve_npm_executable_prefers_windows_command_shim(monkeypatch):
+    paths = {
+        "npm.cmd": r"C:\Program Files\nodejs\npm.cmd",
+        "npm.exe": None,
+        "npm": r"C:\Program Files\nodejs\npm.cmd",
+    }
+    monkeypatch.setattr(ui.shutil, "which", paths.get)
+
+    assert _resolve_npm_executable("win32") == paths["npm.cmd"]
+
+
+def test_resolve_npm_executable_uses_npm_on_posix(monkeypatch):
+    monkeypatch.setattr(
+        ui.shutil,
+        "which",
+        lambda command: "/usr/local/bin/npm" if command == "npm" else None,
+    )
+
+    assert _resolve_npm_executable("linux") == "/usr/local/bin/npm"
 
 
 def test_showcase_build_required_when_source_is_newer(tmp_path):

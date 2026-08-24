@@ -52,7 +52,8 @@ async def list_sessions():
                 is_active = s_id in state.active_connections or (
                     state.is_running and s_id == str(state.active_session_id)
                 )
-                if not is_active:
+                worker_is_alive = session_repo.process_is_alive(row_dict.get("pid"))
+                if not is_active and not worker_is_alive:
                     row_dict["status"] = "failed"
                     row_dict["end_time"] = time.time()
                     orphaned_ids.append(s_id)

@@ -242,6 +242,15 @@ class DataEngine:
             pid=os.getpid(),
         )
         self.storage.create_session(session)
+        try:
+            from artemis.runtime import DeviceExecutionLock
+
+            DeviceExecutionLock.annotate_active_owner(
+                session_id=str(session_id),
+                ingress=os.getenv("ARTEMIS_TASK_INGRESS") or "sdk",
+            )
+        except Exception as exc:
+            logger.debug(f"Could not annotate active device owner: {exc}")
         self.current_step_number = 0
         logger.info(f"Session started: {session_id}")
         self._publish("session_started", session.model_dump())

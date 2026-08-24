@@ -1,6 +1,37 @@
+import asyncio
 import logging
 
+import pytest
+
 from artemis.services import llm
+
+
+@pytest.mark.asyncio
+async def test_timeout_wrapper_cancels_llm_call_when_caller_is_cancelled():
+    started = asyncio.Event()
+    child_cancelled = asyncio.Event()
+
+    async def pending_llm_call():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            child_cancelled.set()
+            raise
+
+    invocation = asyncio.create_task(
+        llm.invoke_llm_with_timeout_message(
+            pending_llm_call(),
+            timeout_seconds=60,
+        )
+    )
+    await started.wait()
+    invocation.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await invocation
+
+    assert child_cancelled.is_set()
 
 
 class _RecordingEngine:

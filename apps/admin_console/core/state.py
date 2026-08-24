@@ -39,6 +39,7 @@ class ServerState:
         self.active_session_id: str | None = None
         self.was_stopped_manually: bool = False
         self.cancelled_session_ids: set[str] = set()
+        self.startup_progress: dict[str, list[dict[str, Any]]] = {}
 
         # Unified single source of truth for task queue
         self.queue_items: list[dict[str, Any]] = []
@@ -170,6 +171,29 @@ class ServerState:
     def remove_subscriber(self, callback: Callable[[str, Any], None]):
         if callback in self.ipc_subscribers:
             self.ipc_subscribers.remove(callback)
+
+    def record_startup_progress(self, data: dict[str, Any]) -> None:
+        """Retain the short pre-trace timeline so late SSE clients can catch up."""
+        session_id = data.get("session_id")
+        stage = data.get("stage")
+        if not session_id or not stage:
+            return
+
+        key = str(session_id)
+        events = self.startup_progress.setdefault(key, [])
+        replacement_index = next(
+            (index for index, item in enumerate(events) if item.get("stage") == stage),
+            None,
+        )
+        snapshot = dict(data)
+        if replacement_index is None:
+            events.append(snapshot)
+        else:
+            events[replacement_index] = snapshot
+        self.startup_progress[key] = events[-16:]
+
+    def get_startup_progress(self, session_id: str) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.startup_progress.get(str(session_id), [])]
 
     def clear_queue(self):
         """Clears all pending items from the task queue."""

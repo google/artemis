@@ -31,6 +31,7 @@ export interface DeviceInfo {
   product: string | null;
   android_version: string | null;
   screen_resolution: string | null;
+  is_locked: boolean | null;
   is_emulator: boolean;
   installed_packages?: string[];
 }

@@ -257,6 +257,7 @@ def mobile_manage_task(
             }
 
         try:
+            DeviceExecutionLock.cancel_reservation(status_data.get("queue_ticket"))
             if sys.platform == "win32":
                 if not process_supervisor.terminate_tree(pid):
                     import psutil

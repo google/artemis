@@ -14,6 +14,7 @@
 
 import asyncio
 import os
+import re
 
 try:
     from datetime import UTC, datetime
@@ -26,6 +27,7 @@ from platform import system
 import shutil
 from shutil import which
 import sys
+import threading
 from types import NoneType
 from typing import TypeVar, overload
 import uuid
@@ -82,6 +84,7 @@ from artemis.utils.media import (
     remove_images_from_trace_folder,
     remove_steps_json_from_trace_folder,
 )
+from artemis.utils.startup_progress import publish_startup_progress
 
 logger = get_logger(__name__)
 
@@ -184,6 +187,7 @@ class Agent:
 
     async def _prewarm_llm_connections(self, api_key: str | None = None):
         """Pre-warms the HTTP2/gRPC connection pools for both Native GenAI and LangChain clients in the background."""
+        publish_startup_progress("model_warmup", "Warming the model connection")
         logger.info("Starting background pre-warming of Gemini API connection pools...")
         try:
             key = api_key
@@ -192,6 +196,9 @@ class Agent:
 
             if not key:
                 logger.warning("Skipping LLM pre-warming: No API key available.")
+                publish_startup_progress(
+                    "model_ready", "Model connection will initialize on first use"
+                )
                 return
 
             # 1. Pre-warm Native SDK client
@@ -207,8 +214,12 @@ class Agent:
                 return_exceptions=True,
             )
             logger.success("Gemini API connection pools successfully pre-warmed.")
+            publish_startup_progress("model_ready", "Model connection is ready")
         except Exception as e:
             logger.warning(f"Failed to pre-warm LLM connections: {e}")
+            publish_startup_progress(
+                "model_ready", "Model connection will initialize on first use"
+            )
 
     async def install_apk(self, apk_path: str | Path) -> None:
         """Install an APK on the connected device.
@@ -447,12 +458,6 @@ class Agent:
             agent_config=self._config,
         )
 
-        self._prepare_tracing(task=task, context=context)
-        await self._prepare_app_installation(task=task)
-        await self._prepare_device_environment(context=context)
-        await self._prepare_app_lock(task=task, context=context)
-        self._prepare_output_files(task=task)
-
         output_config = None
         if request.output_description or request.output_format:
             output_config = OutputConfig(
@@ -476,7 +481,46 @@ class Agent:
             )
             try:
                 if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
-                    await asyncio.to_thread(device_lock.acquire)
+                    queue_cancel_event = threading.Event()
+                    acquire_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            device_lock.acquire,
+                            cancel_event=queue_cancel_event,
+                        )
+                    )
+                    try:
+                        await asyncio.shield(acquire_task)
+                    except asyncio.CancelledError:
+                        queue_cancel_event.set()
+                        try:
+                            await asyncio.shield(acquire_task)
+                        except Exception:
+                            pass
+                        raise
+                # All device mutation and UI initialization happens only after
+                # this task reaches the head of the one global FIFO queue.
+                # Session creation must be inside the same boundary as well:
+                # DataEngine uses a shared database, so a queued task must not
+                # publish a new active session while the current task is still
+                # finishing.
+                if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
+                    if self._ui_adb_client is not None:
+                        publish_startup_progress(
+                            "uiautomator", "Connecting to UI Automator"
+                        )
+                        await asyncio.to_thread(self._ui_adb_client.connect)
+                        publish_startup_progress(
+                            "uiautomator_ready", "UI Automator is ready"
+                        )
+                    await self._ensure_device_unlocked()
+                publish_startup_progress(
+                    "environment", "Preparing the device environment"
+                )
+                self._prepare_tracing(task=task, context=context)
+                self._prepare_output_files(task=task)
+                await self._prepare_app_installation(task=task)
+                await self._prepare_device_environment(context=context)
+                await self._prepare_app_lock(task=task, context=context)
                 async with context:
                     recording_started = False
                     if self._config.video_recording_tools_enabled:
@@ -503,6 +547,9 @@ class Agent:
                         except Exception as e:
                             logger.error(f"[{task_name}] Failed to start screen recording: {e}")
 
+                    publish_startup_progress(
+                        "environment_ready", "Device environment is ready"
+                    )
                     try:
                         if request.profile and request.profile.lower() == "flash":
                             logger.info(f"[{task_name}] Invoking FlashRunner reactive loop...")
@@ -645,7 +692,11 @@ class Agent:
                     await self._finalize_tracing_safely(task=task, context=context)
                 finally:
                     if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
-                        await asyncio.to_thread(device_lock.release)
+                        try:
+                            if self._ui_adb_client is not None:
+                                await asyncio.to_thread(self._ui_adb_client.disconnect)
+                        finally:
+                            await asyncio.to_thread(device_lock.release)
 
         async with self._task_lock:
             if self._current_task and not self._current_task.done():
@@ -707,8 +758,34 @@ class Agent:
         if not self._initialized and not force:
             return
 
+        if self._ui_adb_client is not None:
+            await asyncio.to_thread(self._ui_adb_client.disconnect)
         self._initialized = False
         logger.info("✅ Artemis agent stopped.")
+
+    async def _ensure_device_unlocked(self) -> None:
+        """Reject secure keyguard instead of allowing an agent to guess credentials."""
+        if self._adb_client is None:
+            raise AgentError("ADB client is not initialized.")
+
+        device = self._adb_client.device(serial=self._device_context.device_id)
+        try:
+            trust_state = str(await asyncio.to_thread(device.shell, "dumpsys trust"))
+        except Exception as exc:
+            logger.warning(f"Could not inspect Android keyguard state: {exc}")
+            return
+
+        # The first deviceLocked value belongs to the current Android user;
+        # later entries may describe a separately locked work profile.
+        match = re.search(r"\bdeviceLocked=(?:true|1|false|0)\b", trust_state, re.IGNORECASE)
+        if match is None:
+            return
+        value = match.group(0).split("=", 1)[1].lower()
+        if value in {"true", "1"}:
+            raise AgentError(
+                "Android secure keyguard is locked. Unlock the device manually before "
+                "running Artemis; automation will not guess a PIN, password, or pattern."
+            )
 
     async def _prepare_app_installation(self, task: Task) -> str | None:
         """Install app if app_path is specified in the task request.
@@ -1008,19 +1085,17 @@ class Agent:
                 device_height=height,
             )
 
-        # Get real device dimensions from the device
-        if self._ui_adb_client:
+        # Query dimensions without starting UIAutomator or acquiring an awake
+        # strategy. Those belong inside the global execution queue lease.
+        if self._adb_client:
             try:
-                # Use UIAutomator to get actual screen dimensions
-                screen_data = self._ui_adb_client.get_screen_data()
-                device_width = screen_data.width
-                device_height = screen_data.height
+                device_width, device_height = self._adb_client.device(device_id).window_size()
                 logger.info(f"Retrieved Android screen dimensions: {device_width}x{device_height}")
             except Exception as e:
-                logger.warning(f"Failed to get Android screen dimensions: {e}, using defaults")
+                logger.warning(f"Failed to get Android window size: {e}, using defaults")
                 device_width, device_height = 1080, 2340
         else:
-            logger.warning("UIAutomator client not available, using default dimensions")
+            logger.warning("ADB client not available, using default dimensions")
             device_width, device_height = 1080, 2340
 
         from artemis.platform import platform as pal_platform

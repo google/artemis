@@ -17,6 +17,7 @@
 import asyncio
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -120,6 +121,242 @@ class AdbDeviceProbe(BaseProbe):
             logger.debug(f"Failed to read adb version: {e}")
         return "Installed"
 
+    @staticmethod
+    def _parse_device_lock_state(policy_output: str, trust_output: str) -> bool | None:
+        """Parse Android Keyguard state from dumpsys output.
+
+        ``KeyguardServiceDelegate.showing`` also catches swipe-only lock screens,
+        while Trust's current-user ``deviceLocked`` covers secure locks and
+        screen-off transitions. Any positive signal wins so an occluded lock
+        screen cannot accidentally be treated as ready.
+        """
+        policy_showing: bool | None = None
+        policy_lines = policy_output.splitlines()
+        for index, raw_line in enumerate(policy_lines):
+            if raw_line.strip() != "KeyguardServiceDelegate":
+                continue
+            for delegate_line in policy_lines[index + 1 : index + 16]:
+                match = re.fullmatch(
+                    r"showing\s*=\s*(true|false|1|0)",
+                    delegate_line.strip(),
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    policy_showing = match.group(1).lower() in {"true", "1"}
+                    break
+            break
+
+        # Older Android releases expose differently named policy fields.
+        legacy_matches = re.findall(
+            r"\b(?:mShowingLockscreen|mKeyguardShowing|keyguardShowing|"
+            r"isKeyguardLocked|showingAndNotOccluded)\s*=\s*(true|false|1|0)",
+            policy_output,
+            flags=re.IGNORECASE,
+        )
+        legacy_states = [value.lower() in {"true", "1"} for value in legacy_matches]
+
+        trust_match = re.search(
+            r"^.*\(current\).*?\bdeviceLocked\s*=\s*(true|false|1|0)\b",
+            trust_output,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        if trust_match is None:
+            trust_match = re.search(
+                r"\bdeviceLocked\s*=\s*(true|false|1|0)\b",
+                trust_output,
+                flags=re.IGNORECASE,
+            )
+        trust_locked = (
+            trust_match.group(1).lower() in {"true", "1"} if trust_match else None
+        )
+
+        states = [state for state in [policy_showing, trust_locked, *legacy_states] if state is not None]
+        if any(states):
+            return True
+        if states:
+            return False
+        return None
+
+    async def _get_device_lock_state(
+        self,
+        adb_path: str,
+        serial: str,
+        timeout_seconds: float = 2.0,
+    ) -> bool | None:
+        """Query Keyguard state without changing or waking the target device."""
+
+        async def run_dumpsys(*service_args: str) -> str:
+            proc = await asyncio.create_subprocess_exec(
+                adb_path,
+                "-s",
+                serial,
+                "shell",
+                "dumpsys",
+                *service_args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout_seconds
+                )
+            except TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                return ""
+            if proc.returncode != 0:
+                return ""
+            return stdout.decode(errors="replace")
+
+        try:
+            policy_output, trust_output = await asyncio.gather(
+                run_dumpsys("window", "policy"),
+                run_dumpsys("trust"),
+            )
+            return self._parse_device_lock_state(policy_output, trust_output)
+        except Exception as exc:
+            logger.debug(f"Failed to query lock state for {serial}: {exc}")
+            return None
+
+    async def _get_device_states(
+        self,
+        adb_path: str,
+        timeout_seconds: float = 1.0,
+    ) -> list[tuple[str, str]] | None:
+        """Return only ADB serial/state pairs for the submission fast path.
+
+        ``None`` means the command could not be completed within the bounded
+        submission window. An empty list means ADB responded with no devices.
+        """
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                adb_path,
+                "devices",
+                "-l",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds
+            )
+            if proc.returncode != 0:
+                return None
+
+            states: list[tuple[str, str]] = []
+            lines = stdout.decode(errors="replace").splitlines()
+            for raw_line in lines[1:]:
+                parts = raw_line.strip().split()
+                if len(parts) >= 2:
+                    states.append((parts[0], parts[1]))
+            return states
+        except TimeoutError:
+            if proc is not None:
+                proc.kill()
+                await proc.communicate()
+            return None
+        except Exception as exc:
+            logger.debug(f"Failed submission-time ADB device check: {exc}")
+            return None
+
+    async def probe_submission_readiness(self) -> ProbeResult:
+        """Run the minimal fail-safe device check required before enqueueing.
+
+        The full diagnostics probe enriches device metadata, scans packages,
+        and discovers emulators. None of that is needed to reject a locked
+        device at submission time, so this path only checks ADB connectivity
+        and Keyguard state with strict time bounds.
+        """
+        adb_path = toolchain.resolve("adb")
+        if not adb_path:
+            return ProbeResult(
+                id=self.probe_id,
+                category=self.category,
+                title="Device / Emulator Connected",
+                status=ProbeStatus.FAIL,
+                is_blocker=self.is_blocker,
+                summary="ADB Not Found",
+                description="Android Debug Bridge (adb) is not installed or not in PATH.",
+                metadata={"installed": False, "submission_probe": True},
+            )
+
+        device_states = await self._get_device_states(adb_path)
+        if device_states is None:
+            return ProbeResult(
+                id=self.probe_id,
+                category=self.category,
+                title="Device / Emulator Connected",
+                status=ProbeStatus.WARN,
+                is_blocker=self.is_blocker,
+                summary="Lock State Unknown",
+                description=(
+                    "ADB did not respond quickly enough to verify the Android lock-screen state."
+                ),
+                metadata={"installed": True, "submission_probe": True},
+            )
+
+        ready_serials = [serial for serial, state in device_states if state == "device"]
+        if not ready_serials:
+            states = {state for _, state in device_states}
+            summary = "Device Unauthorized" if "unauthorized" in states else "No Device Found"
+            return ProbeResult(
+                id=self.probe_id,
+                category=self.category,
+                title="Device / Emulator Connected",
+                status=ProbeStatus.WARN,
+                is_blocker=self.is_blocker,
+                summary=summary,
+                description="No authorized Android device is currently ready.",
+                metadata={
+                    "installed": True,
+                    "submission_probe": True,
+                    "devices": [
+                        {"serial": serial, "state": state}
+                        for serial, state in device_states
+                    ],
+                },
+            )
+
+        serial = (
+            self._target_serial
+            if self._target_serial in ready_serials
+            else ready_serials[0]
+        )
+        is_locked = await self._get_device_lock_state(
+            adb_path,
+            serial,
+            timeout_seconds=1.0,
+        )
+        summary = (
+            "Device Locked"
+            if is_locked is True
+            else "Connected"
+            if is_locked is False
+            else "Lock State Unknown"
+        )
+        status = ProbeStatus.PASS if is_locked is False else ProbeStatus.WARN
+        description = (
+            f"ADB connected to {serial}. Ready for task submission."
+            if is_locked is False
+            else f"Android device {serial} is locked. Unlock it before running a task."
+            if is_locked is True
+            else f"Android lock-screen state could not be verified for {serial}."
+        )
+        return ProbeResult(
+            id=self.probe_id,
+            category=self.category,
+            title="Device / Emulator Connected",
+            status=status,
+            is_blocker=self.is_blocker,
+            summary=summary,
+            description=description,
+            metadata={
+                "installed": True,
+                "submission_probe": True,
+                "active_device": {"serial": serial, "is_locked": is_locked},
+            },
+        )
+
     async def _parse_adb_devices(self, adb_path: str) -> list[DeviceInfo]:
         """Execute `adb devices -l` and extract structured device metadata."""
         devices: list[DeviceInfo] = []
@@ -197,8 +434,12 @@ class AdbDeviceProbe(BaseProbe):
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                     )
+                    lock_state_task = asyncio.create_task(
+                        self._get_device_lock_state(adb_path, dev.serial)
+                    )
                     out_prop, _ = await p_prop.communicate()
                     out_size, _ = await p_size.communicate()
+                    dev.is_locked = await lock_state_task
 
                     if out_prop:
                         dev.android_version = out_prop.decode(errors="replace").strip()
@@ -429,6 +670,37 @@ class AdbDeviceProbe(BaseProbe):
             display_name = f"{display_name} ({active_dev.screen_resolution})"
 
         metadata["active_device"] = active_dev.model_dump()
+
+        if active_dev.is_locked is not False:
+            is_locked = active_dev.is_locked is True
+            summary = "Device Locked" if is_locked else "Lock State Unknown"
+            description = (
+                f"ADB connected to {display_name}, but the Android lock screen is active. "
+                "Unlock the device and enter the home screen before running a task."
+                if is_locked
+                else f"ADB connected to {display_name}, but Android lock-screen state could not "
+                "be verified. Keep the device unlocked on the home screen and check again."
+            )
+            return ProbeResult(
+                id=self.probe_id,
+                category=self.category,
+                title="Device / Emulator Connected",
+                status=ProbeStatus.WARN,
+                is_blocker=self.is_blocker,
+                summary=summary,
+                description=description,
+                metadata=metadata,
+                actions=[
+                    ProbeAction(
+                        action_type="hint",
+                        label="Unlock Device" if is_locked else "Verify Device Screen",
+                        payload=(
+                            "Unlock the Android device and leave it on the home screen. "
+                            "Readiness is checked automatically every few seconds."
+                        ),
+                    )
+                ],
+            )
 
         return ProbeResult(
             id=self.probe_id,

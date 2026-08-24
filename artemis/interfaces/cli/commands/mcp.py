@@ -26,6 +26,7 @@ from mcp_server.base import mcp as agent_mcp
 import mcp_server.tools  # noqa: F401
 from mcp_server.utils import env_utils
 from artemis.mcp.adb_server import mcp as adb_mcp
+from artemis.runtime import shutdown_awake_service, start_awake_service
 from artemis.utils.logger import get_logger
 from rich.console import Console
 from rich.syntax import Syntax
@@ -723,27 +724,33 @@ def mcp_command(
         console.print(syntax)
         raise typer.Exit(0)
 
-    st = server_type.lower()
-    if st in ("agent", "mobile", "artemis", "default"):
-        logger.info(f"Starting Artemis Mobile Agent MCP Server over {transport}...")
-        if transport.lower() == "sse":
-            agent_mcp.run(transport="sse", host=host, port=port)
-        else:
-            agent_mcp.run(transport="stdio")
-    elif st == "adb":
-        logger.info(f"Starting Artemis ADB MCP Server over {transport}...")
-        if transport.lower() == "sse":
-            adb_mcp.run(transport="sse", host=host, port=port)
-        else:
-            adb_mcp.run(transport="stdio")
-    elif st == "xml":
-        from artemis.mcp.xml_search_server import mcp as xml_mcp
+    start_awake_service()
+    try:
+        st = server_type.lower()
+        if st in ("agent", "mobile", "artemis", "default"):
+            logger.info(f"Starting Artemis Mobile Agent MCP Server over {transport}...")
+            if transport.lower() == "sse":
+                agent_mcp.run(transport="sse", host=host, port=port)
+            else:
+                agent_mcp.run(transport="stdio")
+        elif st == "adb":
+            logger.info(f"Starting Artemis ADB MCP Server over {transport}...")
+            if transport.lower() == "sse":
+                adb_mcp.run(transport="sse", host=host, port=port)
+            else:
+                adb_mcp.run(transport="stdio")
+        elif st == "xml":
+            from artemis.mcp.xml_search_server import mcp as xml_mcp
 
-        logger.info(f"Starting Artemis XML Fuzzy Search MCP Server over {transport}...")
-        if transport.lower() == "sse":
-            xml_mcp.run(transport="sse", host=host, port=port)
+            logger.info(f"Starting Artemis XML Fuzzy Search MCP Server over {transport}...")
+            if transport.lower() == "sse":
+                xml_mcp.run(transport="sse", host=host, port=port)
+            else:
+                xml_mcp.run(transport="stdio")
         else:
-            xml_mcp.run(transport="stdio")
-    else:
-        logger.error(f"Unsupported MCP server type: {server_type}. Use 'agent', 'adb', or 'xml'.")
-        raise typer.Exit(1)
+            logger.error(
+                f"Unsupported MCP server type: {server_type}. Use 'agent', 'adb', or 'xml'."
+            )
+            raise typer.Exit(1)
+    finally:
+        shutdown_awake_service()

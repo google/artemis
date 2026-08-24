@@ -38,6 +38,13 @@ export type RecordingPlaybackStatus =
   | 'failed'
   | 'unavailable';
 
+export interface StartupProgressEvent {
+  session_id?: string;
+  stage: string;
+  message: string;
+  timestamp: number;
+}
+
 interface SessionVideoResponse {
   session_id: string;
   status?: 'processing' | 'ready' | 'failed' | 'unavailable';
@@ -90,7 +97,7 @@ export class AgentService {
         const isCurrentRunning = (status === 'running' || status === 'paused') && runId === p.session_id;
         sessionMap.set(p.session_id, {
           ...p,
-          status: isCurrentRunning ? status : 'pending'
+          status: isCurrentRunning ? status : (p.status || 'pending')
         });
       }
     });
@@ -120,6 +127,17 @@ export class AgentService {
   public retryMessage = signal<string | null>(null);
   public activeModel = signal<{ name: string; id: string; provider: string } | null>(null);
   public userPinnedSessionId = signal<string | null>(null); // Pinned session if user explicitly selected a non-running task
+  public startupProgressBySession = signal<Record<string, StartupProgressEvent[]>>({});
+  private pendingStartupProgress = signal<StartupProgressEvent[]>([]);
+
+  public currentStartupProgress = computed(() => {
+    const sessionId = this.currentSessionId();
+    if (sessionId) {
+      const sessionEvents = this.startupProgressBySession()[sessionId];
+      if (sessionEvents?.length) return sessionEvents;
+    }
+    return this.pendingStartupProgress();
+  });
 
   // Notes and Tab States
   public currentNotes = signal<Record<string, string>>({});
@@ -210,6 +228,12 @@ export class AgentService {
     enableOutputter?: boolean
   ): Observable<any> {
     return new Observable((obs) => {
+      const submittedEvent: StartupProgressEvent = {
+        stage: 'submitting',
+        message: 'Submitting the task',
+        timestamp: Date.now() / 1000
+      };
+      this.pendingStartupProgress.set([submittedEvent]);
       const payload: any = { goal, profile };
       if (expectedOutput && expectedOutput.trim()) {
         payload.expected_output = expectedOutput.trim();
@@ -223,6 +247,11 @@ export class AgentService {
           if (res && res.tasks && res.tasks.length > 0) {
             const newSessionId = res.tasks[0].session_id;
             if (newSessionId) {
+              this.appendStartupProgress(
+                { ...submittedEvent, session_id: newSessionId },
+                newSessionId
+              );
+              this.pendingStartupProgress.set([]);
               const isCurrentlyRunning =
                 this.agentStatus() === 'running' ||
                 this.sessions().some((s) => s.status === 'running');
@@ -236,10 +265,12 @@ export class AgentService {
               }
             }
           }
+          this.pendingStartupProgress.set([]);
           obs.next(res);
           obs.complete();
         },
         error: (err) => {
+          this.pendingStartupProgress.set([]);
           obs.error(err);
         }
       });
@@ -250,6 +281,16 @@ export class AgentService {
    * Stop the currently running task (and optionally clear queue)
    */
   public stopTask(stopAll: boolean = false): void {
+    const stoppingSessionId = this.runningSessionId()
+      || this.sessions().find((session) => session.status === 'running' || session.status === 'paused')?.session_id
+      || null;
+
+    // Keep the task's terminal state stable while the stop request and the
+    // persisted session update cross the network. Clearing the global runner
+    // state first used to make the session merger infer "completed" from the
+    // still-stale DB row, causing a brief completed -> cancelled flicker.
+    this.setSessionStatus(stoppingSessionId, 'cancelled');
+
     // Apply optimistic updates: only set idle if stopAll is true or pending queue is empty
     if (stopAll || this.pendingQueue().length === 0) {
       this.agentStatus.set('idle');
@@ -290,10 +331,19 @@ export class AgentService {
    * Resume paused task
    */
   public resumeTask(): void {
-    this.http.post('/api/resume', {}).subscribe({
-      next: () => {
+    this.http.post<{ status?: string }>('/api/resume', {}).subscribe({
+      next: (response) => {
+        if (response?.status !== 'resumed') {
+          // A stale recovery control must not optimistically change the task
+          // back to running when the backend says there is nothing to resume.
+          this.fetchStatus();
+          return;
+        }
+        const resumedSessionId = this.runningSessionId();
         this.isPaused.set(false);
         this.pausedError.set(null);
+        this.agentStatus.set('running');
+        this.setSessionStatus(resumedSessionId, 'running');
         this.fetchStatus();
       },
       error: (err) => {
@@ -473,6 +523,7 @@ export class AgentService {
       'task_paused',
       'task_resumed',
       'llm_retrying',
+      'startup_progress',
       'session_started',
       'session_ended',
       'recording_ready',
@@ -523,6 +574,7 @@ export class AgentService {
                 this.selectSession(parsedData.session_id, false);
               }
             } else if (eventType === 'session_ended') {
+              this.applySessionEndedStatus(evtSessionId, parsedData);
               this.fetchStatus();
               this.fetchSessions();
               this.updateModelForCurrentView();
@@ -548,6 +600,7 @@ export class AgentService {
           }
 
           if (eventType === 'session_ended') {
+            this.applySessionEndedStatus(sessionId, parsedData);
             this.agentStatus.set('idle');
             this.runningSessionId.set(null);
             this.runningGoal.set(null);
@@ -566,6 +619,11 @@ export class AgentService {
             return;
           }
 
+          if (eventType === 'startup_progress') {
+            this.appendStartupProgress(parsedData, sessionId);
+            return;
+          }
+
           if (eventType === 'llm_retrying') {
             this.isRetrying.set(true);
             const attempt = Number(parsedData.attempt || 0);
@@ -581,6 +639,9 @@ export class AgentService {
           if (eventType === 'task_paused') {
             this.isPaused.set(true);
             this.isRetrying.set(false);
+            this.agentStatus.set('paused');
+            this.runningSessionId.set(sessionId);
+            this.setSessionStatus(sessionId, 'paused');
             const pauseError = parsedData.error || 'AI call failed';
             this.pausedError.set(pauseError);
             this.appendPausedErrorCard(
@@ -597,6 +658,10 @@ export class AgentService {
             this.isPaused.set(false);
             this.isRetrying.set(false);
             this.pausedError.set(null);
+            if (this.runningSessionId() === sessionId) {
+              this.agentStatus.set('running');
+              this.setSessionStatus(sessionId, 'running');
+            }
             this.activePauseCardKey = null;
             return;
           }
@@ -888,6 +953,34 @@ export class AgentService {
 
   private pollCounter: number = 0;
 
+  private setSessionStatus(sessionId: string | null, status: Session['status']): void {
+    if (!sessionId) return;
+
+    this.rawSessions.update((sessions) => sessions.map((session) =>
+      session.session_id === sessionId ? { ...session, status } : session
+    ));
+    this.pendingQueue.update((sessions) => sessions.map((session) =>
+      session.session_id === sessionId ? { ...session, status } : session
+    ));
+  }
+
+  private applySessionEndedStatus(sessionId: unknown, data: any): void {
+    if (!sessionId) return;
+
+    const reportedStatus = String(data?.status || '').toLowerCase();
+    const status: Session['status'] | null = data?.was_stopped_manually || reportedStatus === 'cancelled'
+      ? 'cancelled'
+      : reportedStatus === 'failed'
+        ? 'failed'
+        : reportedStatus === 'completed' || reportedStatus === 'success'
+          ? 'completed'
+          : null;
+
+    if (status) {
+      this.setSessionStatus(String(sessionId), status);
+    }
+  }
+
   /**
    * Start periodic status polling from the backend
    */
@@ -1112,6 +1205,32 @@ export class AgentService {
     this.recordingPlaybackStatus.set('processing');
     this.recordingPlaybackMessage.set('Loading screen recording...');
     this.requestSessionVideo(targetSessionId, this.videoRequestGeneration);
+  }
+
+  private appendStartupProgress(data: any, sessionId: string): void {
+    if (!data?.stage || !data?.message) return;
+
+    const timestamp = typeof data.timestamp === 'number'
+      ? (data.timestamp > 1e11 ? data.timestamp / 1000 : data.timestamp)
+      : Date.now() / 1000;
+    const event: StartupProgressEvent = {
+      session_id: String(data.session_id || sessionId),
+      stage: String(data.stage),
+      message: String(data.message),
+      timestamp
+    };
+
+    this.startupProgressBySession.update((allEvents) => {
+      const current = [...(allEvents[sessionId] || [])];
+      const existingIndex = current.findIndex((item) => item.stage === event.stage);
+      if (existingIndex >= 0) {
+        current[existingIndex] = event;
+      } else {
+        current.push(event);
+      }
+      current.sort((a, b) => a.timestamp - b.timestamp);
+      return { ...allEvents, [sessionId]: current };
+    });
   }
 
   private beginRecordingFinalization(sessionId: string): void {

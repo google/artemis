@@ -937,7 +937,7 @@
             }
 
             <!-- STATE B-3: NO DEVICE DETECTED / READY TO CONNECT GUIDE -->
-            @if (!isDeviceReady() && !isEmulatorLaunching() && adbProbe()?.summary !== 'Device Booting' && adbProbe()?.summary !== 'Device Unauthorized' && adbProbe()?.status !== 'fail' && emulatorLaunchState()?.status !== 'failed') {
+            @if (!isDeviceReady() && !isEmulatorLaunching() && adbProbe()?.summary !== 'Device Booting' && adbProbe()?.summary !== 'Device Unauthorized' && adbProbe()?.summary !== 'Device Locked' && adbProbe()?.summary !== 'Lock State Unknown' && adbProbe()?.status !== 'fail' && emulatorLaunchState()?.status !== 'failed') {
               <div class="foolproof-guide-container">
                 <!-- Method Selection Nav Cards -->
                 <div class="connection-methods-nav">
@@ -1357,6 +1357,27 @@
               </div>
             }
 
+            <!-- STATE C: CONNECTED DEVICE IS LOCKED / LOCK STATE UNVERIFIED -->
+            @if (adbProbe()?.status === 'warn' && (adbProbe()?.summary === 'Device Locked' || adbProbe()?.summary === 'Lock State Unknown')) {
+              <div class="device-locked-panel">
+                <div class="device-locked-card">
+                  <span class="material-symbols-outlined alert-icon">lock</span>
+                  <div class="locked-details">
+                    <div class="locked-title">
+                      {{ adbProbe()?.summary === 'Device Locked' ? 'Device Is Locked' : 'Unable to Verify Lock State' }}
+                    </div>
+                    <div class="locked-desc">
+                      {{ adbProbe()?.description }}
+                    </div>
+                  </div>
+                  <button type="button" class="btn-check-unlock" [disabled]="isRefreshingDiagnostics()" (click)="refreshReadiness()">
+                    <span class="material-symbols-outlined" [class.spinning]="isRefreshingDiagnostics()">refresh</span>
+                    <span>{{ isRefreshingDiagnostics() ? 'Checking...' : 'Check Again' }}</span>
+                  </button>
+                </div>
+              </div>
+            }
+
             <!-- STATE C: UNAUTHORIZED DEVICE -->
             @if (adbProbe()?.status === 'warn' && adbProbe()?.summary === 'Device Unauthorized') {
               <div class="unauthorized-panel">
@@ -1478,8 +1499,12 @@
         <!-- Prerequisites Drop Alert if any blocker probe is not passing -->
         @if (!isReady()) {
           <div class="launcher-warning-bar" (click)="setTab('diagnostics')">
-            <span class="material-symbols-outlined warn-icon">warning</span>
-            <span>Prerequisites incomplete: runtime, credentials, or Android device is not ready. Click here to open Setup Guide.</span>
+            <span class="material-symbols-outlined warn-icon">{{ adbProbe()?.summary === 'Device Locked' ? 'lock' : 'warning' }}</span>
+            <span>
+              {{ adbProbe()?.summary === 'Device Locked'
+                ? 'Android device is locked. Unlock it and enter the home screen before running a task.'
+                : 'Prerequisites incomplete: runtime, credentials, or Android device is not ready. Click here to open Setup Guide.' }}
+            </span>
             <span class="material-symbols-outlined arrow">arrow_forward</span>
           </div>
         }
@@ -1584,7 +1609,8 @@
                 type="button"
                 class="btn-run-composer"
                 [class.btn-run-pro]="selectedProfile() === 'pro'"
-                [disabled]="!taskGoal().trim() || isSubmitting()"
+                [disabled]="!taskGoal().trim() || isSubmitting() || !isReady()"
+                [title]="!isReady() ? (adbProbe()?.summary === 'Device Locked' ? 'Unlock the Android device before running' : 'Complete System Setup before running') : 'Run task'"
                 (click)="runTask()"
               >
                 @if (isSubmitting()) {

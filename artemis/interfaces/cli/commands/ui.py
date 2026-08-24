@@ -15,6 +15,8 @@
 """UI Launch and Web Console CLI Command (artemis ui)."""
 
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -25,6 +27,13 @@ import webbrowser
 from rich.console import Console
 from rich.panel import Panel
 import typer
+
+
+def _resolve_npm_executable(platform_name: str | None = None) -> str | None:
+    """Return a directly executable npm path for the current platform."""
+    platform_name = platform_name or sys.platform
+    candidates = ("npm.cmd", "npm.exe", "npm") if platform_name == "win32" else ("npm",)
+    return next((path for candidate in candidates if (path := shutil.which(candidate))), None)
 
 
 def _showcase_build_required(showcase_dir: Path) -> bool:
@@ -123,16 +132,16 @@ def ui_command(
 
     showcase_dir = ROOT_DIR / "apps" / "showcase_ui"
     if _showcase_build_required(showcase_dir):
-        import shutil
-        import subprocess
-
-        if shutil.which("npm"):
+        npm_executable = _resolve_npm_executable()
+        if npm_executable:
             console.print(
                 "   [yellow]🎨 Showcase UI sources changed. Compiling Angular Showcase UI...[/yellow]"
             )
             try:
-                subprocess.run(["npm", "install", "--silent"], cwd=showcase_dir, check=True)
-                subprocess.run(["npm", "run", "build"], cwd=showcase_dir, check=True)
+                subprocess.run(
+                    [npm_executable, "install", "--silent"], cwd=showcase_dir, check=True
+                )
+                subprocess.run([npm_executable, "run", "build"], cwd=showcase_dir, check=True)
                 console.print("   [green]✓ Showcase UI built successfully.[/green]\n")
             except Exception as e:
                 console.print(f"   [red]⚠ Failed to auto-build Showcase UI: {e}[/red]\n")

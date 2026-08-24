@@ -183,6 +183,9 @@ class IPCService:
                                 state.current_goal = None
                                 state.current_profile = None
 
+                        if event_type == "startup_progress" and isinstance(data, dict):
+                            state.record_startup_progress(data)
+
                         for cb in list(state.ipc_subscribers):
                             try:
                                 cb(event_type, data)

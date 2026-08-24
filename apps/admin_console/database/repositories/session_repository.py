@@ -27,6 +27,17 @@ class SessionRepository:
     def __init__(self, db_path=None):
         self.db_path = db_path
 
+    @staticmethod
+    def process_is_alive(pid: Any) -> bool:
+        """Return whether a session's worker PID is still alive."""
+        try:
+            import psutil
+
+            process = psutil.Process(int(pid))
+            return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+        except Exception:
+            return False
+
     def get_all_sessions(self) -> list[dict[str, Any]]:
         with db_session(self.db_path) as conn:
             cursor = conn.cursor()
@@ -135,24 +146,41 @@ class SessionRepository:
         with db_session(self.db_path) as conn:
             cursor = conn.cursor()
             now = time.time()
+            count = 0
             for s_id in orphaned_ids:
+                row = cursor.execute(
+                    "SELECT pid FROM sessions WHERE session_id = ? AND status = ?",
+                    (s_id, "running"),
+                ).fetchone()
+                if row is None or self.process_is_alive(row["pid"]):
+                    continue
                 cursor.execute(
                     "UPDATE sessions SET status = ?, end_time = ? "
                     "WHERE session_id = ? AND status = ?",
                     ("failed", now, s_id, "running"),
                 )
+                count += cursor.rowcount
             conn.commit()
-            return len(orphaned_ids)
+            return count
 
     def cleanup_orphans_on_startup(self) -> int:
         try:
             with db_session(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE sessions SET status = ?, end_time = ? WHERE status = ?",
-                    ("failed", time.time(), "running"),
-                )
-                count = cursor.rowcount
+                rows = cursor.execute(
+                    "SELECT session_id, pid FROM sessions WHERE status = ?", ("running",)
+                ).fetchall()
+                count = 0
+                now = time.time()
+                for row in rows:
+                    if self.process_is_alive(row["pid"]):
+                        continue
+                    cursor.execute(
+                        "UPDATE sessions SET status = ?, end_time = ? "
+                        "WHERE session_id = ? AND status = ?",
+                        ("failed", now, row["session_id"], "running"),
+                    )
+                    count += cursor.rowcount
                 conn.commit()
                 return count
         except Exception:

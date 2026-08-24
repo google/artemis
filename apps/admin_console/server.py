@@ -47,7 +47,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
 
-from artemis.runtime import DeviceExecutionLock
+from artemis.runtime import (
+    DeviceExecutionLock,
+    shutdown_awake_service,
+    start_awake_service,
+)
 
 try:
     from admin_console.core.config import (
@@ -104,6 +108,7 @@ async def on_startup():
     """Startup lifecycle hooks."""
     state.is_shutting_down = False
     state.shutdown_event.clear()
+    await asyncio.to_thread(start_awake_service)
     cleaned_device_locks = DeviceExecutionLock.cleanup_stale_locks()
     if cleaned_device_locks:
         print(f"[ServerStartup] Removed {cleaned_device_locks} stale device lock(s).")
@@ -143,6 +148,9 @@ async def on_shutdown():
 
     if state.current_process is not None and state.current_process.returncode is None:
         await task_queue_service._terminate_worker_process(state.current_process)
+    for item in state.queue_items:
+        if isinstance(item, dict):
+            DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
     DeviceExecutionLock.cleanup_stale_locks()
     state.current_process = None
     state.queue_items.clear()
@@ -151,6 +159,7 @@ async def on_shutdown():
 
     await ipc_service.stop_server()
     state.ipc_subscribers.clear()
+    await asyncio.to_thread(shutdown_awake_service)
 
 
 # Mount modular routers

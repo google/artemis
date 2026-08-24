@@ -1,4 +1,15 @@
-import { getUniqueGenericTools } from './tool-formatter.util';
+import { cleanErrorMessage, getUniqueGenericTools } from './tool-formatter.util';
+
+describe('cleanErrorMessage', () => {
+  it('removes repeated LLM wrapper labels while preserving the provider reason', () => {
+    expect(cleanErrorMessage('LLM Error: LLM Request Error: 503 model overloaded'))
+      .toBe('503 model overloaded');
+  });
+
+  it('does not present an empty LLM wrapper label as an error reason', () => {
+    expect(cleanErrorMessage('LLM Error:')).toBe('Unknown error');
+  });
+});
 
 describe('getUniqueGenericTools retry aggregation', () => {
   it('groups recoverable LLM retries while preserving every attempt', () => {

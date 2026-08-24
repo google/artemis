@@ -576,13 +576,14 @@ async def invoke_llm_with_timeout_message[T](
     """Send an LLM call and display a countdown / timeout message if delayed."""
     llm_task = asyncio.create_task(llm_call)
     waiter_task = asyncio.create_task(asyncio.sleep(timeout_seconds))
+    try:
+        done, _ = await asyncio.wait(
+            {llm_task, waiter_task}, return_when=asyncio.FIRST_COMPLETED
+        )
 
-    done, _ = await asyncio.wait({llm_task, waiter_task}, return_when=asyncio.FIRST_COMPLETED)
+        if llm_task in done:
+            return llm_task.result()
 
-    if llm_task in done:
-        waiter_task.cancel()
-        return llm_task.result()
-    else:
         user_messages_logger.info("Waiting for LLM call response...")
         start_time = asyncio.get_event_loop().time()
 
@@ -602,6 +603,15 @@ async def invoke_llm_with_timeout_message[T](
                 if elapsed > max(0, hard_timeout - timeout_seconds):
                     user_messages_logger.error(f"LLM call timed out after {hard_timeout} seconds.")
                     raise TimeoutError(f"LLM call timed out after {hard_timeout} seconds.")
+    except BaseException:
+        if not llm_task.done():
+            llm_task.cancel()
+        await asyncio.gather(llm_task, return_exceptions=True)
+        raise
+    finally:
+        if not waiter_task.done():
+            waiter_task.cancel()
+        await asyncio.gather(waiter_task, return_exceptions=True)
 
 
 # Backward compatible factory functions delegating to ModelFactory

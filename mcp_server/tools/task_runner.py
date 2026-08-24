@@ -21,6 +21,7 @@ import uuid
 
 from mcp_server.base import mcp
 from mcp_server.utils import env_utils, trace_store
+from artemis.runtime import DeviceExecutionLock
 
 
 @mcp.tool()
@@ -139,6 +140,11 @@ def mobile_run_task(
     # 3. Resolve project root, python executable, and background runner module
     project_root = env_utils.get_project_root()
     python_exe = env_utils.resolve_python_executable(project_root)
+    queue_ticket = DeviceExecutionLock.reserve(
+        description=f"MCP task: {task_desc[:120]}",
+        session_id=trace_id,
+        ingress="mcp",
+    )
 
     # 4. Spawn the background task runner as an independent subprocess
     try:
@@ -164,6 +170,8 @@ def mobile_run_task(
 
         env = os.environ.copy()
         env["ARTEMIS_SESSION_ID"] = trace_id
+        env["ARTEMIS_TASK_INGRESS"] = "mcp"
+        env[DeviceExecutionLock.QUEUE_TICKET_ENV] = queue_ticket
 
         proc_kwargs = env_utils.get_detached_process_kwargs()
         proc = subprocess.Popen(
@@ -172,11 +180,19 @@ def mobile_run_task(
             cwd=project_root,
             **proc_kwargs,
         )
+        DeviceExecutionLock.transfer_reservation(
+            queue_ticket,
+            proc.pid,
+            description=f"MCP task: {task_desc[:120]}",
+            session_id=trace_id,
+            ingress="mcp",
+        )
 
         # 5. Record the PID of the spawned subprocess
         status_data = trace_store.read_status(trace_id)
         if status_data:
             status_data["pid"] = proc.pid
+            status_data["queue_ticket"] = queue_ticket
             trace_store.write_status(trace_id, status_data)
 
         trace_dir = trace_store.get_trace_dir(trace_id)
@@ -195,6 +211,7 @@ def mobile_run_task(
         return response_dict
 
     except Exception as e:
+        DeviceExecutionLock.cancel_reservation(queue_ticket)
         trace_store.update_trace_status(
             trace_id, "failed", error=f"Failed to spawn background runner: {e}"
         )

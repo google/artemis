@@ -1022,7 +1022,11 @@ export function cleanErrorMessage(rawError: any): string {
     .replace(/^Pixel-level validation failed:\s*/i, '')
     .replace(/^Execution error:\s*/i, '')
     .replace(/^ServerError:\s*/i, '')
+    // LLM wrappers may add this prefix more than once. It is context, not the
+    // actual provider reason, and an empty prefix must not be shown as though
+    // it were a useful error message.
+    .replace(/^(?:LLM\s+(?:Request\s+)?Error\s*:\s*)+/i, '')
     .trim();
 
-  return fallback || errorStr;
+  return fallback || 'Unknown error';
 }

@@ -56,14 +56,19 @@ from mcp_server.base import mcp
 
 # 2. Import tools to register them
 import mcp_server.tools  # noqa: F401
+from artemis.runtime import shutdown_awake_service, start_awake_service
 
 
 def main(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8001):
     """Main entrypoint to run the Artemis Mobile Agent MCP server."""
-    if transport.lower() == "sse":
-        mcp.run(transport="sse", host=host, port=port)
-    else:
-        mcp.run(transport="stdio")
+    start_awake_service()
+    try:
+        if transport.lower() == "sse":
+            mcp.run(transport="sse", host=host, port=port)
+        else:
+            mcp.run(transport="stdio")
+    finally:
+        shutdown_awake_service()
 
 
 if __name__ == "__main__":

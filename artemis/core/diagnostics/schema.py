@@ -64,6 +64,10 @@ class DeviceInfo(BaseModel):
     screen_resolution: str | None = Field(
         default=None, description="Screen width x height (e.g. 1080x2400)"
     )
+    is_locked: bool | None = Field(
+        default=None,
+        description="Whether Android Keyguard currently blocks access; None when undetermined",
+    )
     is_emulator: bool = Field(default=False, description="Whether the device is an emulator")
     installed_packages: list[str] = Field(
         default_factory=list, description="List of recognized installed package names"

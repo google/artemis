@@ -290,40 +290,43 @@
 
   <!-- Event Logs Section -->
   <main class="stream-logs-content" (scroll)="onStreamScroll($event)">
-    <!-- Keep recovery available even when a persisted failure trace is absent. -->
-    <div class="paused-task-banner" *ngIf="isViewingPausedTask()" role="status">
-      <div class="paused-task-message">
-        <span class="material-symbols-outlined paused-task-icon">pause_circle</span>
-        <div>
-          <strong>Task paused</strong>
-          <span>The AI request failed. Resume the task to try again.</span>
-        </div>
-      </div>
-      <button
-        type="button"
-        class="btn-resume-task"
-        (click)="resumePausedTask($event)"
-        title="Resume the paused task"
-        aria-label="Resume the paused task"
-      >
-        <span class="material-symbols-outlined">play_arrow</span>
-        Resume
-      </button>
-    </div>
-
-    <div *ngIf="consolidatedBlocks().length === 0 && !showPlanningLoader()" class="empty-state">
+    <div *ngIf="consolidatedBlocks().length === 0 && !showPlanningLoader() && startupWorkItems().length === 0" class="empty-state">
       <div class="empty-icon"><span class="material-symbols-outlined">sensors</span></div>
       <h3>No Stream Activity Selected</h3>
       <p>Please select a session from the Task List on the right to view its real-time log payloads.</p>
     </div>
 
     <!-- The phase-based session logs list -->
-    <div class="logs-list-container" *ngIf="phases().length > 0 || showPlanningLoader()">
+    <div class="logs-list-container" *ngIf="phases().length > 0 || showPlanningLoader() || startupWorkItems().length > 0">
+      <div class="phase-container startup-phase" *ngIf="startupWorkItems().length > 0" aria-live="polite">
+        <div class="phase-header first-phase">
+          <span class="phase-worked-time">Worked for {{ startupPreparationDuration() }}s</span>
+        </div>
+        <div class="phase-body" aria-label="Task startup progress">
+          <div class="block-item type-stream">
+            <div class="step-body">
+              <div class="step-actions-container">
+                <div class="llm-retry-notes">
+                  <div class="llm-retry-note" *ngFor="let item of startupWorkItems()">
+                    <span class="stream-status-dot" [class.streaming]="item.isActive"></span>
+                    <div class="llm-retry-note-text">
+                      <span class="llm-retry-status-line">
+                        {{ item.message }} · {{ item.isActive ? 'Waiting ' : 'Waited ' }}{{ item.elapsed }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="phase-container" *ngFor="let phase of phases(); let first = first; trackBy: trackPhase">
         <div 
           class="phase-header" 
           *ngIf="hasVisibleBlocks(phase)"
-          [class.first-phase]="first"
+          [class.first-phase]="first && startupWorkItems().length === 0"
         >
           <span class="phase-worked-time">Worked for {{ phase.durationSeconds }}s</span>
           <span class="phase-token-usage" *ngIf="phase.tokens" [title]="getTokenTooltip(phase)">
@@ -558,11 +561,11 @@
                       </div>
 
                       <!-- Failed LLM Calls (Permanently maintain Action Card format in red) -->
-                      <div class="step-android-action-card tool-action-card is-failed"
-                           [class.has-details]="hasLLMFailureRetryEntries(item.data)"
-                           [class.is-expanded]="isActionExpanded('llm-failure-' + block.id + '-' + itemIdx)"
-                           (click)="hasLLMFailureRetryEntries(item.data) && toggleActionExpanded('llm-failure-' + block.id + '-' + itemIdx, $event)"
-                           *ngIf="isDisplayableLLMFailure(item.data)">
+                      <div class="llm-failure-stack" *ngIf="isDisplayableLLMFailure(item.data)">
+                        <div class="step-android-action-card tool-action-card is-failed"
+                             [class.has-details]="hasLLMFailureRetryEntries(item.data)"
+                             [class.is-expanded]="isActionExpanded('llm-failure-' + block.id + '-' + itemIdx)"
+                             (click)="hasLLMFailureRetryEntries(item.data) && toggleActionExpanded('llm-failure-' + block.id + '-' + itemIdx, $event)">
                         <div class="action-card-header llm-failure-header">
                           <span class="material-symbols-outlined action-icon is-failed">error</span>
                           <span class="action-title">LLM Request Failed</span>
@@ -576,24 +579,17 @@
                               Failed
                             </span>
                           </ng-template>
-                          <button
-                            type="button"
-                            class="btn-resume-llm"
-                            *ngIf="isTerminalLLMFailure(item.data)"
-                            (click)="resumePausedTask($event)"
-                            title="Resume the paused task"
-                            aria-label="Resume the paused task"
-                          >
-                            <span class="material-symbols-outlined">play_arrow</span>
-                            Resume
-                          </button>
                           <span class="action-expand-icon material-symbols-outlined" *ngIf="hasLLMFailureRetryEntries(item.data)">
                             {{ isActionExpanded('llm-failure-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
                           </span>
                         </div>
                         <div class="action-card-body">
                           <div class="action-detail-row">
-                            <span class="detail-label">Reason:</span>
+                            <span class="detail-label">What happened:</span>
+                            <span class="detail-value">The AI request could not be completed after automatic retries.</span>
+                          </div>
+                          <div class="action-detail-row">
+                            <span class="detail-label">Failure reason:</span>
                             <span class="detail-value">{{ getLLMErrorText(item.data) }}</span>
                           </div>
                           <div class="action-detail-row" *ngIf="getLLMFailureWaited(item.data) as waited">
@@ -610,6 +606,22 @@
                               </span>
                             </div>
                           </div>
+                        </div>
+                        </div>
+
+                        <div class="llm-resume-row" *ngIf="isTerminalLLMFailure(item.data)">
+                          <button
+                            type="button"
+                            class="btn-continue-task"
+                            (click)="resumePausedTask($event)"
+                            title="Continue the paused task"
+                            aria-label="Continue the paused task"
+                          >
+                            <span class="material-symbols-outlined continue-icon">play_arrow</span>
+                            <span>Continue task</span>
+                            <span class="material-symbols-outlined continue-arrow">arrow_forward</span>
+                          </button>
+                          <span class="llm-resume-hint">Task paused · no steps are running</span>
                         </div>
                       </div>
 
@@ -842,7 +854,7 @@
       </div>
 
       <!-- Planning Loader -->
-      <div class="planning-loader-container" *ngIf="showPlanningLoader()">
+      <div class="planning-loader-container" *ngIf="showPlanningLoader() && (startupWorkItems().length === 0 || startupPreparationIsComplete() || consolidatedBlocks().length > 0)">
         <div class="planning-loader">
           <span class="material-symbols-outlined spin-animation">progress_activity</span>
           <span class="loader-text">{{ currentPlanningText() }}</span>

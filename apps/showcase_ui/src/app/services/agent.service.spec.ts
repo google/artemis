@@ -7,8 +7,37 @@ describe('AgentService live LLM retry timeline', () => {
   function createServiceWithoutPolling(): AgentService {
     const service = Object.create(AgentService.prototype) as AgentService;
     service.sessionLogs = signal<any[]>([]);
+    service.startupProgressBySession = signal({});
+    (service as any).pendingStartupProgress = signal<any[]>([]);
     return service;
   }
+
+  it('orders startup milestones and replaces duplicate stages', () => {
+    const service = createServiceWithoutPolling();
+
+    (service as any).appendStartupProgress({
+      session_id: 'session-1',
+      stage: 'device',
+      message: 'Checking device',
+      timestamp: 102
+    }, 'session-1');
+    (service as any).appendStartupProgress({
+      session_id: 'session-1',
+      stage: 'queued',
+      message: 'Task queued',
+      timestamp: 100
+    }, 'session-1');
+    (service as any).appendStartupProgress({
+      session_id: 'session-1',
+      stage: 'device',
+      message: 'Device connected',
+      timestamp: 103
+    }, 'session-1');
+
+    const events = service.startupProgressBySession()['session-1'];
+    expect(events.map((event) => event.stage)).toEqual(['queued', 'device']);
+    expect(events[1].message).toBe('Device connected');
+  });
 
   it('normalizes a live retry event into the historical trace contract', () => {
     const service = createServiceWithoutPolling();
@@ -106,6 +135,42 @@ describe('AgentService live LLM retry timeline', () => {
     service.runTask('test goal').subscribe();
 
     expect(selectSpy).toHaveBeenCalledWith('new-session', false);
+  });
+
+  it('keeps the paused state when the backend says there is nothing to resume', () => {
+    const service = createServiceWithoutPolling();
+    (service as any).http = { post: () => of({ status: 'not_paused' }) };
+    (service as any).rawSessions = signal<any[]>([{ session_id: 'session-1', status: 'paused' }]);
+    (service as any).pendingQueue = signal<any[]>([]);
+    service.agentStatus = signal('paused');
+    service.runningSessionId = signal<string | null>('session-1');
+    service.isPaused = signal(true);
+    service.pausedError = signal<string | null>('503 unavailable');
+    const statusSpy = spyOn(service, 'fetchStatus');
+
+    service.resumeTask();
+
+    expect(service.agentStatus()).toBe('paused');
+    expect(service.isPaused()).toBeTrue();
+    expect(statusSpy).toHaveBeenCalled();
+  });
+
+  it('moves the active session to running only after resume succeeds', () => {
+    const service = createServiceWithoutPolling();
+    (service as any).http = { post: () => of({ status: 'resumed' }) };
+    (service as any).rawSessions = signal<any[]>([{ session_id: 'session-1', status: 'paused' }]);
+    (service as any).pendingQueue = signal<any[]>([]);
+    service.agentStatus = signal('paused');
+    service.runningSessionId = signal<string | null>('session-1');
+    service.isPaused = signal(true);
+    service.pausedError = signal<string | null>('503 unavailable');
+    spyOn(service, 'fetchStatus');
+
+    service.resumeTask();
+
+    expect(service.agentStatus()).toBe('running');
+    expect(service.isPaused()).toBeFalse();
+    expect((service as any).rawSessions()[0].status).toBe('running');
   });
 });
 

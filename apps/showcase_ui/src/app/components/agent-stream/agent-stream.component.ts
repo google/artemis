@@ -19,7 +19,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
-import { AgentService } from '../../services/agent.service';
+import { AgentService, StartupProgressEvent } from '../../services/agent.service';
 import { Session } from '../../core/models/session.model';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { StepBlock, PhaseBlock, StepEvent, ActionParam, CheckerResult } from '../../core/models/stream.model';
@@ -42,6 +42,83 @@ export const PLANNING_LOADER_PHRASES: string[] = [
   'Brewing the next command...',
   'Strategizing tactical moves...'
 ];
+
+export interface StartupWorkItem extends StartupProgressEvent {
+  isActive: boolean;
+  elapsed: string;
+}
+
+interface StartupWorkStage {
+  started: string;
+  completed: string;
+  completedMessage: string;
+}
+
+const STARTUP_WORK_STAGES: StartupWorkStage[] = [
+  {
+    started: 'device_check',
+    completed: 'device_ready',
+    completedMessage: 'Android device connected'
+  },
+  {
+    started: 'uiautomator',
+    completed: 'uiautomator_ready',
+    completedMessage: 'UI Automator is ready'
+  },
+  {
+    started: 'environment',
+    completed: 'environment_ready',
+    completedMessage: 'Device environment is ready'
+  }
+];
+
+function formatStartupElapsed(seconds: number): string {
+  const safeSeconds = Math.max(0, seconds);
+  return safeSeconds < 10
+    ? `${safeSeconds.toFixed(1)}s`
+    : `${Math.round(safeSeconds)}s`;
+}
+
+/**
+ * Collapse noisy process-level startup events into the three device preparation
+ * operations that are useful to someone watching a run.
+ */
+export function buildStartupWorkItems(
+  events: StartupProgressEvent[],
+  nowSeconds: number,
+  executionHasOutput: boolean,
+  agentIsActive: boolean
+): StartupWorkItem[] {
+  const byStage = new Map(events.map((event) => [event.stage, event]));
+  const firstResponse = byStage.get('first_response');
+
+  return STARTUP_WORK_STAGES.flatMap((stage, stageIndex) => {
+    const started = byStage.get(stage.started);
+    const explicitlyCompleted = byStage.get(stage.completed);
+    if (!started && !explicitlyCompleted) return [];
+
+    const nextStageStarted = STARTUP_WORK_STAGES
+      .slice(stageIndex + 1)
+      .map((nextStage) => byStage.get(nextStage.started) || byStage.get(nextStage.completed))
+      .find((event): event is StartupProgressEvent => Boolean(event));
+    const inferredCompletion = stage.started === 'environment'
+      ? firstResponse
+      : nextStageStarted;
+    const completed = explicitlyCompleted || inferredCompletion;
+    const isActive = !completed && !executionHasOutput && agentIsActive;
+    const startTimestamp = started?.timestamp || explicitlyCompleted?.timestamp || nowSeconds;
+    const endTimestamp = completed?.timestamp
+      || (isActive ? nowSeconds : events[events.length - 1]?.timestamp || startTimestamp);
+
+    return [{
+      ...(explicitlyCompleted || started!),
+      message: explicitlyCompleted?.message
+        || (completed ? stage.completedMessage : started!.message),
+      isActive,
+      elapsed: formatStartupElapsed(endTimestamp - startTimestamp)
+    }];
+  });
+}
 
 import {
   parseNote,
@@ -232,7 +309,10 @@ export class AgentStreamComponent implements AfterViewInit {
   });
 
   public isViewingPausedTask = computed(() => {
-    if (!this.agentService.isPaused()) return false;
+    // A live task_paused event and the polled runner status must agree before
+    // recovery controls are shown. This prevents a stale failure trace from
+    // offering Resume while the active task is still reported as running.
+    if (!this.agentService.isPaused() || this.agentService.agentStatus() !== 'paused') return false;
 
     const currentSessionId = this.agentService.currentSessionId();
     const pausedSessionId = this.agentService.runningSessionId();
@@ -253,8 +333,44 @@ export class AgentStreamComponent implements AfterViewInit {
     return groupBlocksToPhases(this.consolidatedBlocks(), currentSession?.start_time || 0);
   });
 
+  public startupWorkItems = computed(() => {
+    this.retryClock();
+    const events = this.agentService.currentStartupProgress();
+    const agentIsActive = ['running', 'paused'].includes(this.agentService.agentStatus());
+    return buildStartupWorkItems(
+      events,
+      Date.now() / 1000,
+      this.consolidatedBlocks().length > 0,
+      agentIsActive
+    );
+  });
+
+  public startupPreparationIsRunning = computed(() => {
+    return this.startupWorkItems().some((item) => item.isActive);
+  });
+
+  public startupPreparationIsComplete = computed(() => {
+    const items = this.startupWorkItems();
+    return items.length > 0 && !items.some((item) => item.isActive);
+  });
+
+  public startupPreparationDuration = computed(() => {
+    const items = this.startupWorkItems();
+    if (items.length === 0) return 0;
+
+    const events = this.agentService.currentStartupProgress();
+    const startedAt = events[0]?.timestamp || items[0].timestamp;
+    const completedAt = events.find((event) => event.stage === 'environment_ready')?.timestamp
+      || events.find((event) => event.stage === 'first_response')?.timestamp;
+    const endedAt = this.startupPreparationIsRunning()
+      ? Date.now() / 1000
+      : completedAt || Math.max(...items.map((item) => item.timestamp));
+
+    return Math.max(1, Math.round(endedAt - startedAt));
+  });
+
   private retryablePauseTrace = computed<any | null>(() => {
-    if (!this.agentService.isPaused()) return null;
+    if (!this.isViewingPausedTask()) return null;
 
     const blocks = this.consolidatedBlocks();
     for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex--) {
@@ -263,11 +379,9 @@ export class AgentStreamComponent implements AfterViewInit {
 
       for (let toolIndex = tools.length - 1; toolIndex >= 0; toolIndex--) {
         const tool = tools[toolIndex];
-        if (
-          tool?.type === 'llm_call'
-          && tool?.status === 'failed'
-          && tool?.payload?.pause === true
-        ) {
+        // Older persisted traces used the llm_pause name without adding the
+        // newer payload.pause marker. Treat both contracts consistently.
+        if (this.isDisplayableLLMFailure(tool)) {
           return tool;
         }
       }
@@ -873,10 +987,12 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   public getLLMErrorText(tool: any): string {
-    if (!tool) return 'Unknown error';
+    const noDetails = 'The AI provider did not return error details after the request failed.';
+    if (!tool) return noDetails;
     const rawError = tool.payload?.error || tool.error;
-    if (!rawError) return 'Unknown error';
-    return this.cleanErrorMessage(rawError);
+    if (!rawError) return noDetails;
+    const cleaned = this.cleanErrorMessage(rawError);
+    return cleaned === 'Unknown error' ? noDetails : cleaned;
   }
 
   public isLLMRetry(tool: any): boolean {
