@@ -265,37 +265,13 @@ Evaluated on [AndroidWorld](https://github.com/google-research/android_world) �
 
 ## 🚀 How ARTEMIS is Architected
 
-* ⚡ **Optimistic Asynchronous Pipeline**: The front-facing loop responds in milliseconds, while memory pruning and assertion verification run concurrently in the background without blocking execution;
-* 🛡️ **Safety Net Pre-Execution Gate**: Dual-layer pre-check validates target availability milliseconds before action dispatch, instantly intercepting unexpected popups to eliminate blind clicks;
-* ⏱️ **Time-Sensitive Speculative Chaining**: Overcomes LLM inference latency for transient UI elements (e.g. video fullscreen) by predicting target coordinates and executing rapid chained taps.
-
-<details>
-<summary><b>🔍 Click to expand: Architecture Deep Dive & Pipeline Diagram</b></summary>
-
-<br>
-
-### 1. ⚡ Optimistic Asynchronous Pipeline
-* **Status Quo & Pain Points**: Conventional mobile agents rely on a **fully synchronous blocking model** — every single action must wait sequentially for the LLM to prune historical context, check milestone assertions, and audit long-term plans. This inflates per-step latency to 20–40 seconds, creating a sluggish user experience.
-* **Artemis's Architectural Solution**: Inspired by **Optimistic Concurrency Control (OCC) and Snapshot Isolation** in database systems, Artemis completely decouples the main execution loop from heavy auxiliary computation:
-  * **High-Throughput Main Loop**: The front-facing execution path is strictly narrowed to a high-speed "Perception → Decision → Safety Gate → Execution" pipeline;
-  * **Background Concurrent Tasks**: Context token pruning, milestone checkers (`Checker`), and planner validations (`Planner`) run dynamically in parallel without halting device interaction;
-  * **Snapshot Isolation & Rollback**: The agent optimistically charges forward. If background verification detects a deviation, Artemis instantly **rolls back via state snapshots (Rollback)** and injects self-healing feedback.
+* 🛡️ **Pre-Touch Pixel Gate & Speculative Chaining**: Eliminates "silent misclicks" from inference latency race conditions. Milliseconds before dispatch, a local UI guard intercepts unexpected dialogs (0 tokens, 0 cloud wait), a Micro-ROI gate verifies target stability, and speculative chained taps hit transient UI (e.g. auto-fading video controls) before they expire;
+* 🎯 **Three-Layer Progressive Grounding Engine**: Fuses local OCR with accessibility hierarchies (~150ms, 0 tokens) to drive 85%+ of standard actions via drift-free numeric indices, gracefully falling back to spatial vision models for custom Canvas/Compose/Flutter UI and sandboxed CV probing for subtle pixel states;
+* 🧠 **Elastic Dual Engine with In-Flight Context Compactor**: Seamlessly toggles between high-throughput reactive CI loops (Flash Mode, 3–5s/step) and multi-step cognitive state graphs (Pro Mode), using background visual deltas and DOM pruning to slash token consumption by >70% for 10+ hours of continuous, unattended soak testing.
 
 <p align="center">
-  <img src="./docs/assets/artemis-architecture-pipeline.png" alt="Artemis Optimistic Async Pipeline Architecture" width="100%" />
+  <img src="./docs/assets/artemis_architecture_diagram.png" alt="ARTEMIS System Architecture Diagram" width="100%" />
 </p>
-
-### 2. 🛡️ Pre-Execution Safety Net & Time-Sensitive Speculative Chaining
-* **Status Quo & The Transient UI Dilemma**:
-  * Mobile applications feature numerous **time-sensitive transient UI controls** (e.g. video fullscreen: tapping the screen wakes up the floating overlay, followed immediately by tapping the fullscreen icon).
-  * Traditional agents tap the screen to reveal controls, take a new screenshot, and wait 3–15 seconds for LLM reasoning. By the time the click is dispatched, **the player controls have already auto-faded away** — causing the click to strike the underlying video, triggering an endless loop of accidental pausing and waking.
-* **Artemis's Architectural Solution**:
-  * **Speculative Chained Actions**: Upon recognizing time-sensitive dependencies, the agent dispatches compound chained actions (Wakeup → Millisecond Chained Tap) to hit the target within its transient visibility window;
-  * **Two Pillars Ensuring Reliable Chaining**:
-    1. **Historical UI Prior Prediction**: Predicts the target control's wake-up coordinates based on prior interaction history and app layout heuristics;
-    2. **Safety Net Pre-Execution Gate**: Milliseconds before the chained action lands, the Safety Net instantly verifies that the target control was successfully revealed at the expected coordinates. If the wakeup failed or an unexpected popup intercepted it, execution is **immediately blocked to prevent blind clicks**.
-
-</details>
 
 ## ⚡ Execution Profiles: Flash vs. Pro
 
