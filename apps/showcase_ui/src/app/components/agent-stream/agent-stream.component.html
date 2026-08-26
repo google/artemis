@@ -263,28 +263,41 @@
       [class.recording]="agentService.isCurrentSessionRunning()"
       [class.processing]="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing'"
       [class.has-video]="!agentService.isCurrentSessionRunning() && !!agentService.currentSessionVideoUrl()"
+      [class.has-steps]="!agentService.isCurrentSessionRunning() && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()"
+      [class.failed]="!agentService.isCurrentSessionRunning() && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() === 'failed'"
       (click)="agentService.toggleVideoPlayer()"
-      [title]="agentService.isCurrentSessionRunning() ? 'Task is currently running (Recording screen)' : (agentService.currentSessionRecordingStatus() === 'processing' ? 'Preparing screen recording' : (agentService.currentSessionVideoUrl() ? 'Play Screen Recording' : 'Check Device Screen Recording'))"
+      [title]="getScreenRecordingButtonTitle()"
     >
       <span class="material-symbols-outlined video-icon" *ngIf="agentService.isCurrentSessionRunning()">
         videocam
       </span>
-      <span class="material-symbols-outlined video-icon" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing'">
+      <span class="material-symbols-outlined video-icon spin-animation" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing'">
         progress_activity
       </span>
       <span class="material-symbols-outlined video-icon play-icon" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && agentService.currentSessionVideoUrl()">
         smart_display
       </span>
-      <span class="material-symbols-outlined video-icon" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl()">
+      <span class="material-symbols-outlined video-icon steps-icon" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()">
+        slideshow
+      </span>
+      <span class="material-symbols-outlined video-icon error-icon" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() === 'failed'">
+        videocam_off
+      </span>
+      <span class="material-symbols-outlined video-icon" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() !== 'failed'">
         videocam
       </span>
 
       <span class="btn-text" *ngIf="agentService.isCurrentSessionRunning()">Recording...</span>
       <span class="btn-text" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing'">Preparing...</span>
       <span class="btn-text" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && agentService.currentSessionVideoUrl()">Play Recording</span>
-      <span class="btn-text" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl()">Screen Recording</span>
+      <span class="btn-text" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()">Step Replay</span>
+      <span class="btn-text" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() === 'failed'">Recording Failed</span>
+      <span class="btn-text" *ngIf="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() !== 'failed'">Screen Recording</span>
 
       <span class="video-pulse-dot red" *ngIf="agentService.isCurrentSessionRunning()"></span>
+      <span class="steps-count-badge" *ngIf="!agentService.isCurrentSessionRunning() && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()">
+        {{ agentService.currentSessionStepFrames().length }}
+      </span>
     </button>
   </div>
 

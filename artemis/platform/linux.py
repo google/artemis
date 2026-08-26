@@ -19,6 +19,7 @@ from pathlib import Path
 import shutil
 import signal
 import tempfile
+import time
 
 from artemis.platform.base import IPlatform, IPlatformPaths, IPlatformProcess, OSType
 
@@ -113,12 +114,47 @@ class LinuxPlatformProcess(IPlatformProcess):
                     pass
 
             parent.send_signal(signal.SIGTERM)
-            gone, alive = psutil.wait_procs(children + [parent], timeout=timeout_seconds)
-            for p in alive:
-                try:
-                    p.kill()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+
+            # Avoid calling wait_procs on direct children of the current process.
+            # In POSIX, psutil.Process.wait() on a child of os.getpid() invokes
+            # os.waitpid(), which reaps the zombie and prevents asyncio / uvloop
+            # event loops from detecting that the child exited, causing proc.wait()
+            # to hang indefinitely.
+            current_pid = os.getpid()
+            external_procs = [
+                p
+                for p in children + [parent]
+                if p.pid != current_pid and getattr(p, "ppid", lambda: None)() != current_pid
+            ]
+            direct_children = [
+                p
+                for p in children + [parent]
+                if getattr(p, "ppid", lambda: None)() == current_pid
+            ]
+
+            if external_procs:
+                gone, alive = psutil.wait_procs(external_procs, timeout=timeout_seconds)
+                for p in alive:
+                    try:
+                        p.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+
+            deadline = time.time() + timeout_seconds
+            for p in direct_children:
+                while time.time() < deadline:
+                    try:
+                        if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
+                            break
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        break
+                    time.sleep(0.05)
+                else:
+                    try:
+                        p.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+
             return True
         except Exception:
             try:

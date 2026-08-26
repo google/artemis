@@ -22,11 +22,13 @@ import {
   ElementRef,
   ViewChild,
   HostListener,
-  effect
+  effect,
+  OnDestroy
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AgentService } from '../../services/agent.service';
+import { StepReplayFrame } from '../../core/models/stream.model';
 
 @Component({
   selector: 'app-floating-video-player',
@@ -35,7 +37,7 @@ import { AgentService } from '../../services/agent.service';
   templateUrl: './floating-video-player.component.html',
   styleUrl: './floating-video-player.component.scss'
 })
-export class FloatingVideoPlayerComponent {
+export class FloatingVideoPlayerComponent implements OnDestroy {
   public agentService = inject(AgentService);
 
   @ViewChild('videoRef') videoRef?: ElementRef<HTMLVideoElement>;
@@ -59,6 +61,24 @@ export class FloatingVideoPlayerComponent {
   private pendingLocalTime: number | null = null;
   private pendingAutoplay = false;
   private pendingAbsoluteSeek: number | null = null;
+
+  // Step Replay state signals
+  public activeStepIndex = signal<number>(0);
+  public isStepPlaying = signal<boolean>(false);
+  private stepTimer: any = null;
+
+  public stepFrames = computed(() => this.agentService.currentSessionStepFrames());
+  public totalStepFrames = computed(() => this.stepFrames().length);
+  public currentStepFrame = computed<StepReplayFrame | null>(() => {
+    const frames = this.stepFrames();
+    const idx = this.activeStepIndex();
+    return frames[idx] || null;
+  });
+  public stepProgressPercent = computed(() => {
+    const total = this.totalStepFrames();
+    if (total <= 1) return 0;
+    return (this.activeStepIndex() / (total - 1)) * 100;
+  });
 
   // Available speed options
   public speedOptions = [0.5, 1.0, 1.5, 2.0, 4.0];
@@ -88,6 +108,16 @@ export class FloatingVideoPlayerComponent {
         this.currentTime.set(0);
         this.duration.set(segments.reduce((sum, segment) => sum + segment.duration, 0));
         this.isPlaying.set(false);
+      },
+      { allowSignalWrites: true }
+    );
+
+    // Reset step playback state when session changes
+    effect(
+      () => {
+        const _ = this.stepFrames();
+        this.activeStepIndex.set(0);
+        this.pauseStepPlay();
       },
       { allowSignalWrites: true }
     );
@@ -327,6 +357,9 @@ export class FloatingVideoPlayerComponent {
     if (v) {
       v.playbackRate = rate;
     }
+    if (this.isStepPlaying()) {
+      this.scheduleNextStepFrame();
+    }
   }
 
   public toggleLoop(): void {
@@ -359,6 +392,91 @@ export class FloatingVideoPlayerComponent {
     const url = this.agentService.activeVideoUrl();
     if (url) {
       window.open(url, '_blank');
+    }
+  }
+
+  /**
+   * Step Replay Controls
+   */
+  public toggleStepPlay(): void {
+    if (this.isStepPlaying()) {
+      this.pauseStepPlay();
+    } else {
+      this.startStepPlay();
+    }
+  }
+
+  public startStepPlay(): void {
+    if (this.totalStepFrames() <= 0) return;
+    if (this.activeStepIndex() >= this.totalStepFrames() - 1) {
+      this.activeStepIndex.set(0);
+    }
+    this.isStepPlaying.set(true);
+    this.scheduleNextStepFrame();
+  }
+
+  public pauseStepPlay(): void {
+    this.isStepPlaying.set(false);
+    if (this.stepTimer) {
+      clearTimeout(this.stepTimer);
+      this.stepTimer = null;
+    }
+  }
+
+  private scheduleNextStepFrame(): void {
+    if (this.stepTimer) clearTimeout(this.stepTimer);
+    const delay = Math.max(300, 1500 / this.playbackRate());
+    this.stepTimer = setTimeout(() => {
+      if (!this.isStepPlaying()) return;
+      if (this.activeStepIndex() < this.totalStepFrames() - 1) {
+        this.activeStepIndex.update((i) => i + 1);
+        this.scheduleNextStepFrame();
+      } else {
+        if (this.isLooping()) {
+          this.activeStepIndex.set(0);
+          this.scheduleNextStepFrame();
+        } else {
+          this.pauseStepPlay();
+        }
+      }
+    }, delay);
+  }
+
+  public prevStepFrame(): void {
+    this.pauseStepPlay();
+    this.activeStepIndex.update((i) => Math.max(0, i - 1));
+  }
+
+  public nextStepFrame(): void {
+    this.pauseStepPlay();
+    this.activeStepIndex.update((i) => Math.min(this.totalStepFrames() - 1, i + 1));
+  }
+
+  public seekStepFrame(index: number): void {
+    this.activeStepIndex.set(Math.max(0, Math.min(this.totalStepFrames() - 1, index)));
+  }
+
+  public onStepScrub(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    this.seekStepFrame(parseInt(input.value, 10));
+  }
+
+  public restartStep(): void {
+    this.seekStepFrame(0);
+    this.startStepPlay();
+  }
+
+  public openImageInNewTab(): void {
+    const url = this.currentStepFrame()?.imageUrl;
+    if (url) {
+      window.open(url, '_blank');
+    }
+  }
+
+  public ngOnDestroy(): void {
+    if (this.stepTimer) {
+      clearTimeout(this.stepTimer);
+      this.stepTimer = null;
     }
   }
 }

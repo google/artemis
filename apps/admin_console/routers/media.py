@@ -102,14 +102,18 @@ async def get_session_video(session_id: str):
         }
 
     if recording_status == "failed":
-        return {
-            "session_id": session_id,
-            "status": "failed",
-            "has_video": False,
-            "video_url": None,
-            "video_segments": [],
-            "message": recording.get("error") or "Recording finalization failed",
-        }
+        v_url = media_service.resolve_video_url(row_dict, video_rec_map, video_idx)
+        if not v_url:
+            return {
+                "session_id": session_id,
+                "status": "failed",
+                "has_video": False,
+                "video_url": None,
+                "video_segments": [],
+                "message": recording.get("error") or "Recording finalization failed",
+            }
+        # If a video was recovered/found, update DB to ready and proceed to serve it
+        session_repo.mark_recording_ready(session_id, v_url)
 
     v_url = media_service.resolve_video_url(row_dict, video_rec_map, video_idx)
     video_segments = media_service.resolve_video_segments(v_url)

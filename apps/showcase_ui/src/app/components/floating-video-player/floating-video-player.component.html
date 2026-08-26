@@ -33,16 +33,38 @@
   <header class="window-header" (mousedown)="startDrag($event)">
     <div class="header-left">
       <span class="material-symbols-outlined header-icon">
-        {{ agentService.recordingPlaybackStatus() === 'live' ? 'sensors' : (agentService.recordingPlaybackStatus() === 'processing' ? 'progress_activity' : 'smart_display') }}
+        {{ agentService.recordingPlaybackStatus() === 'live' ? 'sensors' : (agentService.playerMode() === 'steps' ? 'slideshow' : (agentService.recordingPlaybackStatus() === 'processing' ? 'progress_activity' : 'smart_display')) }}
       </span>
       <span class="header-title" [title]="agentService.activeVideoTitle()">
-        {{ agentService.recordingPlaybackStatus() === 'live' ? 'Live Device Screen' : (agentService.recordingPlaybackStatus() === 'processing' ? 'Preparing Recording' : (agentService.activeVideoTitle() || 'Screen Recording')) }}
+        {{ agentService.recordingPlaybackStatus() === 'live' ? 'Live Device Screen' : (agentService.playerMode() === 'steps' ? ('Step Replay (' + (totalStepFrames() > 0 ? (activeStepIndex() + 1) + '/' + totalStepFrames() : '0') + ')') : (agentService.recordingPlaybackStatus() === 'processing' ? 'Preparing Recording' : (agentService.activeVideoTitle() || 'Screen Recording'))) }}
       </span>
     </div>
 
     <div class="header-actions" (mousedown)="$event.stopPropagation()">
-      <!-- Playback Speed Pills (Shown only when playback video is active) -->
-      <div class="speed-pill-group" *ngIf="agentService.recordingPlaybackStatus() === 'ready' && !agentService.isVideoMinimized() && !videoLoadError() && agentService.activeVideoUrl()">
+      <!-- Mode Toggle Group: Video vs. Step Replay -->
+      <div class="mode-toggle-group" *ngIf="agentService.recordingPlaybackStatus() === 'ready' && agentService.hasCurrentSessionStepFrames() && !agentService.isVideoMinimized()">
+        <button 
+          class="mode-btn" 
+          [class.active]="agentService.playerMode() === 'video'" 
+          (click)="agentService.setPlayerMode('video')"
+          title="Video Recording"
+        >
+          <span class="material-symbols-outlined mode-icon">videocam</span>
+          <span>Video</span>
+        </button>
+        <button 
+          class="mode-btn" 
+          [class.active]="agentService.playerMode() === 'steps'" 
+          (click)="agentService.setPlayerMode('steps')"
+          title="Step Screenshot Replay"
+        >
+          <span class="material-symbols-outlined mode-icon">slideshow</span>
+          <span>Steps</span>
+        </button>
+      </div>
+
+      <!-- Playback Speed Pills (Shown when video is active OR when step replay is active) -->
+      <div class="speed-pill-group" *ngIf="!agentService.isVideoMinimized() && (agentService.recordingPlaybackStatus() === 'ready' || agentService.playerMode() === 'steps') && (agentService.activeVideoUrl() || totalStepFrames() > 0)">
         <button 
           *ngFor="let speed of speedOptions"
           class="speed-btn"
@@ -121,16 +143,107 @@
       </div>
     </ng-container>
 
-    <!-- 2. RECORDING PLAYBACK (AUTOMATICALLY ACTIVE WHEN TEST FINISHED) -->
+    <!-- 2. RECORDING PLAYBACK / STEP REPLAY (AUTOMATICALLY ACTIVE WHEN TEST FINISHED) -->
     <ng-container *ngIf="agentService.recordingPlaybackStatus() !== 'live'">
-      <!-- Loading State -->
-      <div class="video-loading-state" *ngIf="agentService.recordingPlaybackStatus() === 'processing' || agentService.isVideoLoading()">
+      <!-- Loading State (when in video mode and processing) -->
+      <div class="video-loading-state" *ngIf="agentService.playerMode() === 'video' && (agentService.recordingPlaybackStatus() === 'processing' || agentService.isVideoLoading())">
         <span class="material-symbols-outlined spinning-icon">progress_activity</span>
         <span>{{ agentService.recordingPlaybackMessage() || 'Preparing screen recording...' }}</span>
       </div>
 
-      <!-- Active Video Playback View -->
-      <ng-container *ngIf="agentService.recordingPlaybackStatus() === 'ready' && !agentService.isVideoLoading() && agentService.activeVideoUrl() as videoUrl">
+      <!-- Option A: STEP REPLAY VIEW (ACTIVE IN STEP MODE) -->
+      <ng-container *ngIf="agentService.playerMode() === 'steps' && totalStepFrames() > 0">
+        <div class="step-replay-container">
+          <!-- Fallback info banner if recording had failed -->
+          <div class="step-replay-notice" *ngIf="agentService.recordingPlaybackStatus() === 'failed' || videoLoadError()">
+            <span class="material-symbols-outlined notice-icon">info</span>
+            <span>Screen recording unavailable. Replaying step screenshots.</span>
+          </div>
+
+          <div class="step-image-viewport">
+            <img 
+              class="step-frame-img" 
+              [src]="currentStepFrame()?.imageUrl" 
+              [alt]="currentStepFrame()?.title"
+              (click)="openImageInNewTab()"
+              title="Click to view image in new tab"
+            />
+
+            <!-- Step Overlay Badge -->
+            <div class="step-frame-badge" *ngIf="currentStepFrame() as frame">
+              <span class="badge-step-no">Step {{ frame.stepNumber }}</span>
+              <span class="badge-action-desc">{{ frame.actionText || frame.title }}</span>
+            </div>
+          </div>
+
+          <!-- Step Replay Controls Footer -->
+          <div class="video-controls-footer">
+            <!-- Timeline Scrubber Bar -->
+            <div class="scrubber-bar-container">
+              <input 
+                type="range" 
+                class="scrubber-range" 
+                [min]="0" 
+                [max]="totalStepFrames() - 1" 
+                [step]="1" 
+                [value]="activeStepIndex()" 
+                (input)="onStepScrub($event)" 
+              />
+              <div class="scrubber-progress-fill" [style.width.%]="stepProgressPercent()"></div>
+            </div>
+
+            <!-- Bottom Controls Row -->
+            <div class="controls-row">
+              <div class="controls-left">
+                <!-- Play / Pause Button -->
+                <button class="ctrl-btn play-btn" (click)="toggleStepPlay()" [title]="isStepPlaying() ? 'Pause' : 'Play Slideshow'">
+                  <span class="material-symbols-outlined">{{ isStepPlaying() ? 'pause' : 'play_arrow' }}</span>
+                </button>
+
+                <!-- Previous Frame Button -->
+                <button class="ctrl-btn" (click)="prevStepFrame()" [disabled]="activeStepIndex() <= 0" title="Previous Frame">
+                  <span class="material-symbols-outlined">skip_previous</span>
+                </button>
+
+                <!-- Next Frame Button -->
+                <button class="ctrl-btn" (click)="nextStepFrame()" [disabled]="activeStepIndex() >= totalStepFrames() - 1" title="Next Frame">
+                  <span class="material-symbols-outlined">skip_next</span>
+                </button>
+
+                <!-- Step Replay / Reset -->
+                <button class="ctrl-btn" (click)="restartStep()" title="Replay from start">
+                  <span class="material-symbols-outlined">replay</span>
+                </button>
+
+                <!-- Frame Counter Display -->
+                <span class="time-display">
+                  Frame {{ activeStepIndex() + 1 }} / {{ totalStepFrames() }}
+                </span>
+              </div>
+
+              <div class="controls-right">
+                <!-- Loop Toggle -->
+                <button 
+                  class="ctrl-btn" 
+                  [class.active]="isLooping()" 
+                  (click)="toggleLoop()" 
+                  [title]="isLooping() ? 'Loop enabled' : 'Enable loop'"
+                >
+                  <span class="material-symbols-outlined">repeat</span>
+                </button>
+
+                <!-- Open in new tab -->
+                <button class="ctrl-btn" (click)="openImageInNewTab()" title="Open image in new tab">
+                  <span class="material-symbols-outlined">open_in_new</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </ng-container>
+
+      <!-- Option B: ACTIVE VIDEO PLAYBACK VIEW -->
+      <ng-container *ngIf="agentService.playerMode() === 'video' && agentService.recordingPlaybackStatus() === 'ready' && !agentService.isVideoLoading() && agentService.activeVideoUrl() as videoUrl">
         <div class="video-container" *ngIf="!videoLoadError()">
           <video 
             #videoRef
@@ -146,7 +259,7 @@
           ></video>
         </div>
 
-        <!-- Dedicated Bottom Controls Bar (Outside Video: ZERO Obscurity / Zero Overlap) -->
+        <!-- Dedicated Bottom Controls Bar -->
         <div class="video-controls-footer" *ngIf="!videoLoadError()">
           <!-- Timeline Scrubber Bar -->
           <div class="scrubber-bar-container">
@@ -206,8 +319,8 @@
         </div>
       </ng-container>
 
-      <!-- Clean, High-Contrast Minimal Empty / Fallback State -->
-      <div class="empty-video-fallback" *ngIf="!agentService.isVideoLoading() && (agentService.recordingPlaybackStatus() === 'failed' || agentService.recordingPlaybackStatus() === 'unavailable' || videoLoadError())">
+      <!-- Option C: EMPTY / FALLBACK STATE (Only when no video AND no step frames) -->
+      <div class="empty-video-fallback" *ngIf="!agentService.isVideoLoading() && (agentService.playerMode() === 'video' || totalStepFrames() === 0) && (agentService.recordingPlaybackStatus() === 'failed' || agentService.recordingPlaybackStatus() === 'unavailable' || videoLoadError()) && totalStepFrames() === 0">
         <div class="fallback-icon-wrap">
           <span class="material-symbols-outlined fallback-icon">videocam_off</span>
         </div>

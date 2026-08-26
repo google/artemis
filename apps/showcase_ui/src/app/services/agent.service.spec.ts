@@ -1,4 +1,4 @@
-import { signal } from '@angular/core';
+import { signal, computed } from '@angular/core';
 import { of } from 'rxjs';
 
 import { AgentService } from './agent.service';
@@ -198,6 +198,9 @@ describe('AgentService recording finalization lifecycle', () => {
     service.recordingPlaybackStatus = signal('idle');
     service.recordingPlaybackMessage = signal('');
     service.shouldAutoplayVideo = signal(true);
+    service.playerMode = signal<'video' | 'steps'>('video');
+    (service as any).hasCurrentSessionStepFrames = computed(() => false);
+    (service as any).currentSessionStepFrames = computed(() => []);
     return service;
   }
 

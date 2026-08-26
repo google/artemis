@@ -32,6 +32,7 @@ try:
     )
     from admin_console.core.state import state
     from admin_console.database.repositories.session_repository import session_repo
+    from admin_console.services.media_service import media_service
     from artemis.runtime import DeviceExecutionLock, process_supervisor
 except ImportError:
     from apps.admin_console.core.config import (
@@ -42,6 +43,7 @@ except ImportError:
     )
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
+    from apps.admin_console.services.media_service import media_service
     from artemis.runtime import DeviceExecutionLock, process_supervisor
 
 
@@ -199,6 +201,28 @@ class TaskQueueService:
         except ProcessLookupError:
             pass
 
+    @staticmethod
+    async def _wait_for_worker_process(proc: asyncio.subprocess.Process) -> int:
+        """Wait for worker process to exit, with watchdog fallback if PID was reaped externally."""
+        while True:
+            try:
+                return await asyncio.wait_for(proc.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pid = getattr(proc, "pid", None)
+                if pid:
+                    try:
+                        import psutil
+
+                        p = psutil.Process(pid)
+                        if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
+                            return proc.returncode if proc.returncode is not None else -15
+                    except (psutil.NoSuchProcess, ProcessLookupError):
+                        return proc.returncode if proc.returncode is not None else -15
+                    except Exception:
+                        pass
+                else:
+                    return proc.returncode if proc.returncode is not None else -15
+
     @classmethod
     def ensure_worker_running(cls):
         """Guarantees that the background queue worker task is active and running."""
@@ -341,7 +365,7 @@ class TaskQueueService:
                     await cls._terminate_worker_process(proc)
 
                 # 3. Await subprocess completion
-                returncode = await proc.wait()
+                returncode = await cls._wait_for_worker_process(proc)
                 print(f"[QueueWorker] Task [{sess_id}] exited with returncode {returncode}")
 
                 # 4. Perform fallback database status update and notification
@@ -360,12 +384,36 @@ class TaskQueueService:
                             f"[QueueWorker] Preserved authoritative session {sess_id} "
                             f"status '{new_status}'"
                         )
-                    recording_error = "Task worker exited before recording finalization completed"
-                    if session_repo.mark_recording_failed_if_pending(sess_id, recording_error):
-                        cls._broadcast_event(
-                            "recording_failed",
-                            {"session_id": sess_id, "error": recording_error},
-                        )
+                    rec_info = session_repo.get_video_recording_for_session(sess_id)
+                    rec_status = (rec_info or {}).get("status")
+                    recovered_video_path = None
+                    if rec_status != "ready":
+                        try:
+                            video_rec_map = session_repo.get_video_recordings_map()
+                            video_idx = await asyncio.to_thread(media_service.build_video_index)
+                            recovered_url = await asyncio.to_thread(
+                                media_service.resolve_video_url,
+                                {"session_id": sess_id},
+                                video_rec_map,
+                                video_idx,
+                            )
+                            if recovered_url:
+                                session_repo.mark_recording_ready(sess_id, recovered_url)
+                                cls._broadcast_event(
+                                    "recording_ready",
+                                    {"session_id": sess_id, "video_url": recovered_url},
+                                )
+                                recovered_video_path = recovered_url
+                        except Exception as rec_err:
+                            print(f"[QueueWorker] Error attempting recording recovery: {rec_err}")
+
+                    if not recovered_video_path and rec_status != "ready":
+                        recording_error = "Task worker exited before recording finalization completed"
+                        if session_repo.mark_recording_failed_if_pending(sess_id, recording_error):
+                            cls._broadcast_event(
+                                "recording_failed",
+                                {"session_id": sess_id, "error": recording_error},
+                            )
                     state.active_connections.pop(sess_id, None)
                     cls._broadcast_event(
                         "session_ended",

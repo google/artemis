@@ -297,6 +297,36 @@ async def remux_recording_to_mp4(source_path: Path, output_path: Path) -> bool:
         if valid:
             temporary_path.replace(output_path)
             return True
+
+        logger.warning(
+            f"Direct remux failed for {source_path} (code {process.returncode}), "
+            "attempting transcode fallback with ffmpeg..."
+        )
+        # Fallback to ultrafast re-encoding in case MKV container was truncated or has timestamp irregularities
+        fallback_proc = await asyncio.create_subprocess_exec(
+            get_ffmpeg_path(),
+            "-y",
+            "-fflags",
+            "+genpts+discardcorrupt",
+            "-i",
+            str(source_path),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(temporary_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _fout, _ferr = await fallback_proc.communicate()
+        if fallback_proc.returncode == 0 and temporary_path.exists() and temporary_path.stat().st_size > 0:
+            temporary_path.replace(output_path)
+            return True
+
         logger.error(
             f"Failed to remux recording segment (code {process.returncode}): "
             f"{stderr.decode(errors='replace')[-2000:]}"
@@ -314,10 +344,8 @@ async def probe_video_segment(video_path: Path) -> dict[str, float | int]:
         get_ffprobe_path(),
         "-v",
         "error",
-        "-select_streams",
-        "v:0",
         "-show_entries",
-        "stream=width,height:format=duration",
+        "stream=width,height,duration,codec_type:format=duration",
         "-of",
         "json",
         str(video_path),
@@ -329,11 +357,20 @@ async def probe_video_segment(video_path: Path) -> dict[str, float | int]:
         return {}
     try:
         payload = json.loads(stdout)
-        stream = (payload.get("streams") or [{}])[0]
+        streams = payload.get("streams") or []
+        video_stream = next(
+            (s for s in streams if s.get("width") and s.get("height")),
+            next((s for s in streams if s.get("codec_type") == "video"), streams[0] if streams else {})
+        )
+        duration = float(
+            (payload.get("format") or {}).get("duration")
+            or video_stream.get("duration")
+            or 0
+        )
         return {
-            "duration": float((payload.get("format") or {}).get("duration") or 0),
-            "width": int(stream.get("width") or 0),
-            "height": int(stream.get("height") or 0),
+            "duration": duration,
+            "width": int(video_stream.get("width") or 0),
+            "height": int(video_stream.get("height") or 0),
         }
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
@@ -380,8 +417,8 @@ async def write_recording_manifest(output_dir: Path, mp4_paths: list[Path]) -> P
         width = int(metadata.get("width", 0))
         height = int(metadata.get("height", 0))
         if duration <= 0 or width <= 0 or height <= 0:
-            logger.error(f"Recording segment failed validation: {path}")
-            return None
+            logger.warning(f"Recording segment skipped due to invalid metadata: {path}")
+            continue
         segments.append(
             {
                 "file": path.name,

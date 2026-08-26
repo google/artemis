@@ -697,7 +697,10 @@ class UnifiedMobileController:
         session.is_active = False
         if session.watchdog_task and not session.watchdog_task.done():
             session.watchdog_task.cancel()
-            await session.watchdog_task
+            try:
+                await session.watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         try:
             process = session.process
@@ -708,7 +711,14 @@ class UnifiedMobileController:
                     logger.warning(f"Error terminating scrcpy process: {proc_e}")
 
             output_path = session.local_video_path
-            if not output_path or not output_path.exists():
+            has_existing_recording = (
+                (output_path and output_path.exists())
+                or any(
+                    Path(r.get("output_path", "")).exists() or Path(r.get("path", "")).exists()
+                    for r in session.android_segment_records
+                )
+            )
+            if not has_existing_recording:
                 message = "Recording file not found on disk"
                 self._record_recording_failure(session, message)
                 remove_active_session(device_id)
@@ -726,31 +736,37 @@ class UnifiedMobileController:
                             self._remux_segment_record(record)
                         )
                     )
-            conversion_results = []
             if session.android_conversion_tasks:
-                conversion_results = await asyncio.gather(
+                await asyncio.gather(
                     *session.android_conversion_tasks, return_exceptions=True
                 )
             mp4_paths = [
                 Path(record["output_path"])
                 for record in session.android_segment_records
-                if Path(record["output_path"]).exists()
+                if Path(record["output_path"]).exists() and Path(record["output_path"]).stat().st_size > 0
             ]
-            manifest_path = await write_recording_manifest(output_path.parent, mp4_paths)
 
-            conversion_failed = (
-                len(mp4_paths) != len(session.android_segment_records)
-                or any(result is not True for result in conversion_results)
-                or manifest_path is None
-            )
-            if conversion_failed:
+            # Emergency fallback: if no segment MP4 was produced, attempt to remux local_video_path directly
+            if not mp4_paths and output_path and output_path.exists() and output_path.stat().st_size > 0:
+                fallback_mp4 = (
+                    output_path.parent / "recording.mp4"
+                    if output_path.name != "recording.mp4"
+                    else output_path.with_name("recording_converted.mp4")
+                )
+                if await remux_recording_to_mp4(output_path, fallback_mp4):
+                    mp4_paths.append(fallback_mp4)
+
+            if not mp4_paths:
                 message = "Recording finalization failed; no complete browser-safe video was produced"
                 self._record_recording_failure(session, message)
                 remove_active_session(device_id)
                 return VideoRecordingResult(success=False, message=message)
 
-            remove_active_session(device_id)
             final_video_path = mp4_paths[0]
+            output_dir = final_video_path.parent
+            manifest_path = await write_recording_manifest(output_dir, mp4_paths)
+
+            remove_active_session(device_id)
 
             # Persist update to local database if Data Engine is active
             if self.ctx and self.ctx.data_engine:
@@ -764,12 +780,12 @@ class UnifiedMobileController:
 
             return VideoRecordingResult(
                 success=True,
-                message=f"Recording stopped, saved {len(mp4_paths)} orientation-safe segments",
-                video_path=mp4_paths[0],
+                message=f"Recording stopped, saved {len(mp4_paths)} video segments",
+                video_path=final_video_path,
                 video_id=session.video_id,
                 generation=session.generation,
                 sealed_until=session.sealed_until,
-                source_revision=f"{session.video_id}:{session.generation}:sealed",
+                source_revision=f"{session.video_id}:{session.generation}:ready",
             )
 
         except Exception as e:

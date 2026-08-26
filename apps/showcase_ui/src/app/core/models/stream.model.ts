@@ -98,3 +98,14 @@ export interface CheckerResult {
   reason: string;
 }
 
+export interface StepReplayFrame {
+  index: number;
+  stepNumber: number;
+  title: string;
+  imageUrl: string;
+  actionText?: string;
+  isPost?: boolean;
+  timestamp?: number;
+  phaseId?: string;
+}
+

@@ -553,3 +553,54 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+
+
+@pytest.mark.asyncio
+async def test_wait_for_worker_process_watchdog_handles_reaped_process():
+    """Verify that _wait_for_worker_process never hangs even if the process was already reaped."""
+    mock_proc = MagicMock()
+    mock_proc.pid = 999999
+    mock_proc.returncode = None
+
+    async def hanging_wait():
+        await asyncio.sleep(10)
+        return 0
+
+    mock_proc.wait = AsyncMock(side_effect=hanging_wait)
+
+    with patch("psutil.Process") as mock_psutil_proc:
+        mock_p = MagicMock()
+        mock_p.is_running.return_value = False
+        mock_psutil_proc.return_value = mock_p
+
+        rc = await TaskQueueService._wait_for_worker_process(mock_proc)
+        assert rc == -15
+
+
+def test_darwin_terminate_process_tree_preserves_direct_child_for_asyncio():
+    """Verify darwin terminate_process_tree does not pass direct children to psutil.wait_procs."""
+    import os
+    from artemis.platform.darwin import DarwinPlatformProcess
+
+    process = DarwinPlatformProcess()
+    current_pid = os.getpid()
+
+    with (
+        patch("psutil.Process") as mock_psutil_proc,
+        patch("psutil.wait_procs") as mock_wait_procs,
+    ):
+        parent = MagicMock()
+        parent.pid = 12345
+        parent.ppid.return_value = current_pid
+        parent.children.return_value = []
+        parent.is_running.return_value = False
+
+        mock_psutil_proc.return_value = parent
+        mock_wait_procs.return_value = ([], [])
+
+        success = process.terminate_process_tree(12345, timeout_seconds=0.1)
+        assert success is True
+        parent.send_signal.assert_called_once()
+        for call_args in mock_wait_procs.call_args_list:
+            procs_waited = call_args[0][0]
+            assert parent not in procs_waited

@@ -29,6 +29,7 @@ from artemis.sdk.types.task import AgentProfile
 from artemis.utils.cli_helpers import display_device_status
 from artemis.utils.logger import get_logger
 from artemis.utils.video import check_ffmpeg_available
+import signal
 from rich.console import Console
 from rich.panel import Panel
 import typer
@@ -292,6 +293,15 @@ def run_command(
     display_device_status(console, adb_client=adb_client)
 
     cancelled = False
+    original_sigterm = None
+    try:
+        if hasattr(signal, "SIGTERM"):
+            original_sigterm = signal.signal(
+                signal.SIGTERM, lambda s, f: (_ for _ in ()).throw(KeyboardInterrupt())
+            )
+    except Exception:
+        pass
+
     try:
         asyncio.run(
             execute_task(
@@ -335,5 +345,10 @@ def run_command(
             console.print(f"[bold red]Task execution failed:[/bold red] {e}")
             raise
     finally:
+        try:
+            if original_sigterm is not None and hasattr(signal, "SIGTERM"):
+                signal.signal(signal.SIGTERM, original_sigterm)
+        except Exception:
+            pass
         if cancelled:
             raise SystemExit(130)

@@ -936,6 +936,56 @@ $stream-row-height: 25px;
         box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
       }
 
+      &.has-steps {
+        background: rgba(240, 253, 250, 0.9);
+        border-color: rgba(94, 234, 212, 0.7);
+        box-shadow: 0 2px 6px -1px rgba(13, 148, 136, 0.12), inset 0 1px 1px rgba(255, 255, 255, 0.9);
+
+        .steps-icon {
+          color: #0d9488;
+        }
+
+        .btn-text {
+          color: #0f766e;
+        }
+
+        &:hover:not(.active) {
+          background: rgba(204, 251, 241, 0.95);
+          border-color: rgba(45, 212, 191, 0.85);
+
+          .steps-icon {
+            color: #0f766e;
+          }
+        }
+      }
+
+      &.failed {
+        background: rgba(254, 242, 242, 0.8);
+        border-color: rgba(254, 202, 202, 0.9);
+
+        .error-icon {
+          color: #ef4444;
+        }
+
+        .btn-text {
+          color: #dc2626;
+        }
+      }
+
+      .steps-count-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1px 5px;
+        border-radius: 10px;
+        background: #0d9488;
+        color: #ffffff;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1;
+        margin-left: 2px;
+      }
+
       &.active {
         background: rgba(26, 115, 232, 0.95);
         border-color: rgba(26, 115, 232, 0.95);
@@ -948,6 +998,11 @@ $stream-row-height: 25px;
         .video-pulse-dot {
           background: #ffffff;
           box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
+        }
+
+        .steps-count-badge {
+          background: #ffffff;
+          color: #1a73e8;
         }
       }
     }

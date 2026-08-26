@@ -204,3 +204,9 @@ class ServerState:
 
 # Global shared instance
 state = ServerState()
+
+import sys
+if __name__ == "admin_console.core.state":
+    sys.modules["apps.admin_console.core.state"] = sys.modules[__name__]
+elif __name__ == "apps.admin_console.core.state":
+    sys.modules["admin_console.core.state"] = sys.modules[__name__]

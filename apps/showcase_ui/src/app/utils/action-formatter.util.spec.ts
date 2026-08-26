@@ -1,6 +1,7 @@
 import {
   getStepPreImageUrl,
-  getStepPostImageUrl
+  getStepPostImageUrl,
+  extractStepReplayFrames
 } from './action-formatter.util';
 
 describe('action-formatter.util screenshot chaining', () => {
@@ -108,5 +109,101 @@ describe('action-formatter.util screenshot chaining', () => {
 
     expect(preUrl).toBe('/images/pre123');
     expect(postUrl).toBe('/images/post456');
+  });
+
+  it('should resolve post screenshot for primary action when generic_tools contains action traces', () => {
+    const stepData = {
+      step_id: 'step-02',
+      pre_image_name: 'pre_screen_hash',
+      post_image_name: 'post_screen_hash',
+      action_taken: {
+        action: 'click',
+        coordinates: [500, 928],
+        args: { target: [500, 928] },
+        timestamp: 1000
+      },
+      generic_tools: [
+        {
+          trace_id: 'trace-click-internal',
+          type: 'action',
+          name: 'click',
+          timestamp: 1001,
+          payload: {
+            args: { target: '[500, 928]', times: '1', delay_ms: '100' },
+            result: {
+              outcome: 'Clicked successfully.',
+              post_image_name: 'post_screen_hash',
+              status: 'success'
+            }
+          }
+        }
+      ]
+    };
+
+    const preUrl = getStepPreImageUrl(stepData, stepData.action_taken);
+    const postUrl = getStepPostImageUrl(stepData, stepData.action_taken);
+
+    expect(preUrl).toBe('/images/pre_screen_hash');
+    expect(postUrl).toBe('/images/post_screen_hash');
+  });
+});
+
+describe('extractStepReplayFrames', () => {
+  it('should return an empty array for empty or invalid logs', () => {
+    expect(extractStepReplayFrames([])).toEqual([]);
+    expect(extractStepReplayFrames(null as any)).toEqual([]);
+  });
+
+  it('should extract ordered StepReplayFrames and deduplicate consecutive identical images', () => {
+    const logs = [
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 's-1',
+          step_number: 1,
+          pre_image_name: 'img_screen_1',
+          post_image_name: 'img_screen_2',
+          action_taken: { action: 'tap', coordinates: [500, 1000] },
+          timestamp: 100
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 's-2',
+          step_number: 2,
+          pre_image_name: 'img_screen_2',
+          post_image_name: 'img_screen_3',
+          action_taken: { action: 'input_text', text: 'hello' },
+          timestamp: 200
+        }
+      }
+    ];
+
+    const frames = extractStepReplayFrames(logs);
+    expect(frames.length).toBe(3);
+    expect(frames[0].title).toBe('Step 1 (Before Action)');
+    expect(frames[0].imageUrl).toBe('/images/img_screen_1');
+    expect(frames[1].title).toContain('Step 1');
+    expect(frames[1].imageUrl).toBe('/images/img_screen_2');
+    expect(frames[2].title).toContain('Step 2');
+    expect(frames[2].imageUrl).toBe('/images/img_screen_3');
+  });
+
+  it('should handle terminal step with only pre_image (e.g. cancelled / failed task)', () => {
+    const logs = [
+      {
+        step_number: 1,
+        pre_image_name: 'img_start',
+        post_image_name: null,
+        action_taken: null,
+        timestamp: 100
+      }
+    ];
+
+    const frames = extractStepReplayFrames(logs);
+    expect(frames.length).toBe(1);
+    expect(frames[0].imageUrl).toBe('/images/img_start');
+    expect(frames[0].stepNumber).toBe(1);
   });
 });

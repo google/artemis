@@ -141,6 +141,22 @@ class SessionRepository:
         except Exception:
             return False
 
+    def mark_recording_ready(self, session_id: str, local_video_path: str) -> bool:
+        """Mark a recording as ready with its finalized video path."""
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE video_recordings SET status = 'ready', error = NULL, "
+                    "local_video_path = ?, end_time = COALESCE(end_time, ?) "
+                    "WHERE session_id = ?",
+                    (str(local_video_path), time.time(), str(session_id)),
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception:
+            return False
+
     def get_llm_traces_for_profile(self, session_id: str, limit: int = 3) -> list[str]:
         with db_session(self.db_path) as conn:
             cursor = conn.cursor()

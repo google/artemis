@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ActionParam } from '../core/models/stream.model';
+import { ActionParam, StepReplayFrame } from '../core/models/stream.model';
 import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequenceCoordinates } from './image-overlay.util';
 import { cleanErrorMessage } from './tool-formatter.util';
 
@@ -698,7 +698,7 @@ export function resolveStepImageMap(stepData: any): Map<any, ResolvedImageEntry>
     if (explicitPost) {
       resolvedPost = explicitPost;
       hasExplicitPost = true;
-    } else if (e.isPrimary && !hadPrimaryFailure && !hasSubsequentActions) {
+    } else if (e.isPrimary && !hadPrimaryFailure) {
       resolvedPost = stepData.post_image_name || stepData.post_screenshot || null;
     } else if (e.item === lastActionItem && !hadPrimaryFailure) {
       resolvedPost = stepData.post_image_name || stepData.post_screenshot || null;
@@ -765,3 +765,86 @@ export function getStepPostImageUrl(stepData: any, actionData?: any): string | n
   }
   return postUrl;
 }
+
+/**
+ * Extract an ordered array of visual StepReplayFrames from session logs or step blocks
+ */
+export function extractStepReplayFrames(logsOrSteps: any[]): StepReplayFrame[] {
+  if (!Array.isArray(logsOrSteps) || logsOrSteps.length === 0) {
+    return [];
+  }
+
+  // Extract raw step data objects
+  const rawSteps: any[] = [];
+  for (const item of logsOrSteps) {
+    if (!item) continue;
+    if (item.type === 'step_updated' && item.data) {
+      rawSteps.push(item.data);
+    } else if (item.type === 'step' && item.data) {
+      rawSteps.push(item.data);
+    } else if (item.step_number !== undefined || item.step_id !== undefined) {
+      rawSteps.push(item);
+    }
+  }
+
+  // Deduplicate by step_id or step_number, keeping latest
+  const stepMap = new Map<any, any>();
+  for (const step of rawSteps) {
+    const key = step.step_id || step.step_number;
+    if (key !== undefined) {
+      stepMap.set(key, step);
+    }
+  }
+
+  const steps = Array.from(stepMap.values()).sort((a, b) => {
+    const numA = Number(a.step_number ?? 0);
+    const numB = Number(b.step_number ?? 0);
+    if (numA !== numB) return numA - numB;
+    return Number(a.timestamp ?? 0) - Number(b.timestamp ?? 0);
+  });
+
+  const frames: StepReplayFrame[] = [];
+  let lastImageUrl: string | null = null;
+
+  for (const stepData of steps) {
+    const stepNum = Number(stepData.step_number ?? (frames.length + 1));
+    const act = stepData.action_taken;
+    const title = act ? (getActionTitle(act) || 'Action') : 'Step';
+    const coords = act ? getActionCoords(act) : '';
+    const actionDesc = coords ? `${title} (${coords})` : title;
+
+    const preUrl = getStepPreImageUrl(stepData, act);
+    const postUrl = getStepPostImageUrl(stepData, act);
+
+    // If pre-image exists and is new, add it
+    if (preUrl && preUrl !== lastImageUrl) {
+      frames.push({
+        index: frames.length,
+        stepNumber: stepNum,
+        title: `Step ${stepNum} (Before Action)`,
+        imageUrl: preUrl,
+        actionText: `Preparing: ${actionDesc}`,
+        isPost: false,
+        timestamp: stepData.timestamp
+      });
+      lastImageUrl = preUrl;
+    }
+
+    // If post-image exists and is different from current screen, add it
+    if (postUrl && postUrl !== lastImageUrl) {
+      frames.push({
+        index: frames.length,
+        stepNumber: stepNum,
+        title: `Step ${stepNum}: ${actionDesc}`,
+        imageUrl: postUrl,
+        actionText: actionDesc,
+        isPost: true,
+        timestamp: stepData.timestamp
+      });
+      lastImageUrl = postUrl;
+    }
+  }
+
+  return frames;
+}
+

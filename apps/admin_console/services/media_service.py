@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 from typing import Any
 import urllib.parse
 from fastapi import HTTPException
@@ -29,6 +30,72 @@ except ImportError:
 
 class MediaService:
     """Service handling media indexing, local file security, payload unwrapping and notes/plans."""
+
+    @classmethod
+    def ensure_browser_playable_video(cls, p: Path) -> Path:
+        """Ensure the video file is in a browser-supported container (MP4).
+
+        If given an MKV, check if a converted MP4 already exists or convert it.
+        """
+        try:
+            if not p.exists():
+                return p
+            suffix = p.suffix.lower()
+            if suffix == ".mp4":
+                return p
+            if suffix in (".mkv", ".webm"):
+                mp4_cand = p.with_suffix(".mp4")
+                if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+                    return mp4_cand
+                from artemis.utils.video import get_ffmpeg_path
+                ffmpeg = get_ffmpeg_path()
+                # 1. Attempt fast copy remux
+                subprocess.run(
+                    [
+                        ffmpeg,
+                        "-y",
+                        "-fflags",
+                        "+genpts",
+                        "-i",
+                        str(p),
+                        "-c",
+                        "copy",
+                        "-movflags",
+                        "+faststart",
+                        str(mp4_cand),
+                    ],
+                    capture_output=True,
+                    timeout=15,
+                )
+                if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+                    return mp4_cand
+                # 2. If copy remux failed, fallback to ultrafast re-encode
+                subprocess.run(
+                    [
+                        ffmpeg,
+                        "-y",
+                        "-fflags",
+                        "+genpts+discardcorrupt",
+                        "-i",
+                        str(p),
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        "ultrafast",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-movflags",
+                        "+faststart",
+                        str(mp4_cand),
+                    ],
+                    capture_output=True,
+                    timeout=30,
+                )
+                if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+                    return mp4_cand
+        except Exception:
+            pass
+        return p
 
     @staticmethod
     def path_to_video_url(p: Path) -> str:
@@ -56,12 +123,14 @@ class MediaService:
                         for ext in [".mp4", ".mkv", ".webm"]:
                             vfile = item / f"recording{ext}"
                             if vfile.exists():
+                                vfile = cls.ensure_browser_playable_video(vfile)
                                 url = cls.path_to_video_url(vfile)
                                 idx[item.name] = url
                                 prefix = item.name.split("_PASS_")[0].split("_FAIL_")[0]
                                 idx[prefix] = url
                                 break
                     elif item.suffix in [".mp4", ".mkv", ".webm"]:
+                        item = cls.ensure_browser_playable_video(item)
                         url = cls.path_to_video_url(item)
                         idx[item.stem] = url
                         idx[item.name] = url
@@ -85,12 +154,14 @@ class MediaService:
         v_url = None
         v_fp = row_dict.get("video_filepath")
         if v_fp and os.path.exists(v_fp):
-            v_url = cls.path_to_video_url(Path(v_fp))
+            p = cls.ensure_browser_playable_video(Path(v_fp))
+            v_url = cls.path_to_video_url(p)
 
         orig_rec = video_rec_map.get(s_id)
         if not v_url and orig_rec:
             p = Path(orig_rec)
             if p.exists():
+                p = cls.ensure_browser_playable_video(p)
                 v_url = cls.path_to_video_url(p)
             else:
                 folder_name = p.parent.name
@@ -105,12 +176,14 @@ class MediaService:
                 for ext in [".mp4", ".webm", ".mkv"]:
                     vfile = sess_dir / f"recording{ext}"
                     if vfile.exists():
+                        vfile = cls.ensure_browser_playable_video(vfile)
                         v_url = cls.path_to_video_url(vfile)
                         break
                 if not v_url:
                     try:
                         for item in sess_dir.iterdir():
                             if item.is_file() and item.suffix.lower() in [".mp4", ".webm", ".mkv"]:
+                                item = cls.ensure_browser_playable_video(item)
                                 v_url = cls.path_to_video_url(item)
                                 break
                     except Exception:

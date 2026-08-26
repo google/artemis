@@ -28,21 +28,21 @@
 <p align="center">
   <img src="./docs/assets/demo.gif" alt="Artemis 演示效果" width="100%" />
   <br>
-  <em><b>实机演示</b>：在 Google Maps 中设置驾车路线并计算总耗时，随后打开 YouTube 播放 Coldplay 的歌曲。</em>
+  <em>实机演示：在 Google Maps 中设置驾车路线并计算总耗时，随后打开 YouTube 播放 Coldplay 的歌曲。</em>
 </p>
 
-## ✨ 核心亮点
+## 核心亮点
 
-* 🤖 **跨 App 复杂自动化与 AI 个人助理**：不仅能执行严格的自动化测试用例，更具备接管真机的自主决策与长流程操作能力，一句话处理跨应用复杂业务与任务；
-* 🧪 **零脚本维护自动化测试**：基于“动态优先、坐标兜底”的多模态语义定位，彻底告别传统 XPath / 控件 ID 频繁失效的痛点，无惧 App 改版、分辨率差异与系统升级；
-* 🐞 **IDE 内一键 Bug 复现与 Logcat 诊断**：原生支持 **MCP 协议**，可在 **Antigravity、Claude Code、Windsurf** 中直接用自然语言驱动真机复现缺陷，自动抓取关键帧截图与 **Logcat 崩溃堆栈**，完成研发测试闭环；
-* ⚡ **极速执行吞吐（单步 3–5 秒）**：首创**全链路乐观异步流水线 (Optimistic Async Pipeline)**，解耦重度推理与页面操作，在 Flash 模式下实现丝滑的高频交互与快速回归验证；
-* 🛡️ **干扰弹窗自愈与超长程巡检**：独创 **Safety Net** 执行前校验机制，自动识别并清除系统权限弹窗、通知遮挡等异常；Pro 模式支持连续 **10+ 小时** 无人值守稳定性巡检与探索性测试 (Exploratory / Monkey-plus Testing)；
+* **跨 App 复杂自动化与 AI 个人助理**：不仅能执行严格的自动化测试用例，更具备接管真机的自主决策与长流程操作能力，一句话处理跨应用复杂业务与任务；
+* **零脚本维护自动化测试**：基于“动态优先、坐标兜底”的多模态语义定位，彻底告别传统 XPath / 控件 ID 频繁失效的痛点，无惧 App 改版、分辨率差异与系统升级；
+* **IDE 内一键 Bug 复现与 Logcat 诊断**：原生支持 **MCP 协议**，可在 **Antigravity、Claude Code、Windsurf** 中直接用自然语言驱动真机复现缺陷，自动抓取关键帧截图与 **Logcat 崩溃堆栈**，完成研发测试闭环；
+* **极速执行吞吐（单步 3–5 秒）**：首创**全链路乐观异步流水线 (Optimistic Async Pipeline)**，解耦重度推理与页面操作，在 Flash 模式下实现丝滑的高频交互与快速回归验证；
+* **干扰弹窗自愈与超长程巡检**：独创 **Safety Net** 执行前校验机制，自动识别并清除系统权限弹窗、通知遮挡等异常；Pro 模式支持连续 **10+ 小时** 无人值守稳定性巡检与探索性测试 (Exploratory / Monkey-plus Testing)；
 * **业界顶尖 SOTA**：在 Google Research **AndroidWorld** 基准评测（100+ 复杂长程系统与应用交互任务）中取得 **99%+ 任务完成率**。
 
 <a id="workflow-showcase"></a>
 <a id="全流程演示"></a>
-## 🤝 Antigravity × ARTEMIS：全流程自主测试演示
+## Antigravity × ARTEMIS：全流程自主测试演示
 
 通过原生 MCP 协议，**Antigravity** 与 **ARTEMIS** 深度协同——只需一句自然语言指令，即可自动完成从需求理解、测试规划、真机执行到深度报告输出的完整闭环：
 
@@ -62,7 +62,7 @@
   <tr>
     <td width="50%" align="center">
       <b>3. 自主执行测试 (Autonomous Test Execution)</b><br>
-      <sub>接管真机自动化操作，跳过广告并实时采集性能指标</sub><br><br>
+      <sub>驱动真机操作、界面导航并实时分析性能指标</sub><br><br>
       <img src="./docs/assets/workflow-3-exec.png" width="100%" alt="步骤三：自主执行测试" />
     </td>
     <td width="50%" align="center">
@@ -78,8 +78,8 @@
 ## 快速上手
 
 确保电脑已连接 Android 实体机（已开启 **USB 调试**）或 Android 模拟器。一键启动脚本将会自动完成以下配置：
-- 🛠️ **安装系统环境依赖**：自动检测并安装 ADB、scrcpy、FFmpeg 与 Python（`uv`）运行时及项目依赖。
-- 🔌 **全局挂载 MCP 服务与测试准则 (Rules)**：主动引导并自动将全局 MCP 服务与 **Artemis 移动端测试思维准则 (`rules.md`)** 挂载至你使用的 AI IDE（支持 **Antigravity**、**Cursor**、**Claude Code**、**Codex**、**Windsurf**、**VS Code**、**Cline/Roo**、**OpenClaw**）。
+- **安装系统环境依赖**：自动检测并安装 ADB、scrcpy、FFmpeg 与 Python（`uv`）运行时及项目依赖。
+- **全局挂载 MCP 服务与测试准则 (Rules)**：主动引导并自动将全局 MCP 服务与 **Artemis 移动端测试思维准则 (`rules.md`)** 挂载至你使用的 AI IDE（支持 **Antigravity**、**Cursor**、**Claude Code**、**Codex**、**Windsurf**、**VS Code**、**Cline/Roo**、**OpenClaw**）。
 
 ### macOS 与 Linux
 
@@ -109,7 +109,7 @@ cd artemis
 <a id="mcp-setup"></a>
 <a id="mcp"></a>
 <details>
-<summary><b>🔌 接入 Codex / Antigravity / Claude Code / Windsurf (MCP)（点击展开）</b></summary>
+<summary><b>Codex / Antigravity / Claude Code / Windsurf MCP 配置（点击展开）</b></summary>
 
 <br>
 
@@ -192,17 +192,17 @@ PYTHONPATH = "/path/to/artemis"
 * **Codex**：将内容添加至 `~/.codex/AGENTS.md`（或当前生效的 `AGENTS.override.md`）。
 * **Windsurf / OpenClaw**：将内容添加到工作区规则或全局 System Prompt 中。
 
-> 💡 更多规范设计细节与 MCP 架构说明，请参阅 [MCP Server 文档](./mcp_server/README.md)。
+> 更多规范设计细节与 MCP 架构说明，请参阅 [MCP Server 文档](./mcp_server/README.md)。
 
 ### 4. 在 IDE 中体验真机协同
 在 Codex / Antigravity / Claude Code 对话框中直接输入：
-> 💬 *"请帮我把刚刚修改的代码编译成 APK 并安装到手机上，打开登录页面输入测试账号，验证登录后是否有异常弹窗，并把最终页面截图回传。"*
+> *"请帮我把刚刚修改的代码编译成 APK 并安装到手机上，打开登录页面输入测试账号，验证登录后是否有异常弹窗，并把最终页面截图回传。"*
 
 </details>
 
 <a id="python-sdk"></a>
 <details>
-<summary><b>🐍 Python SDK 极简集成（点击展开）</b></summary>
+<summary><b>Python SDK 集成（点击展开）</b></summary>
 
 <br>
 
@@ -238,12 +238,12 @@ if __name__ == "__main__":
 <p align="center">
   <img src="./docs/assets/artemis-ui-showcase.png" alt="Artemis 可视化控制台" width="100%" />
   <br />
-  <sub><b>控制台功能布局</b>：<b>① 顶栏视图切换</b>（主页与工作区） · <b>② 运行模式与录屏回放</b>（Flash/Pro 状态与视频回放） · <b>③ 实时感知推理流</b>（动作分解、点击坐标与结构化总结） · <b>④ 自然语言下发胶囊</b>（自然语言驱动真机） · <b>⑤ 任务队列看板</b>（状态流转与历史回溯）</sub>
+  <sub><b>控制台功能概览</b>：<b>① 视图切换</b>（主页与工作区） · <b>② 运行模式与回放</b>（Flash/Pro 状态与视频回放） · <b>③ 实时感知推理流</b>（动作感知、目标坐标与结构化总结） · <b>④ 提示词输入坞 (Prompt Dock)</b>（自然语言下发） · <b>⑤ 任务队列看板</b>（生命周期与历史回溯）</sub>
 </p>
 
 * **Web 可视化测试控制台 (`uv run artemis ui`)**：集成设备实时投屏与交互面板，支持通过自然语言下发测试用例，实时观测推理步骤、操作轨迹、截图留存与异常状态回放；
-* **MCP 协议集成 (AI IDE 协同)**：作为标准 MCP 服务器无缝接入 **Antigravity、Claude Code、Windsurf** 等开发环境，在 IDE 中直接驱动真机完成自动化测试与 Bug 复现验证；
-* **命令行工具 (`uv run artemis run`)**：支持通过 CLI 直接执行自动化用例、稳定性巡检或 AndroidWorld 基准评测，提供高保真结构化终端输出；
+* **原生 MCP 协议 (IDE 协同)**：作为标准 MCP 服务器无缝接入 **Antigravity、Claude Code、Windsurf** 等开发环境，在 IDE 中直接驱动真机完成自动化测试与 Bug 复现验证；
+* **开发者命令行 CLI (`uv run artemis run`)**：支持通过终端直接执行自动化测试用例、探索性稳定性巡检或 AndroidWorld 基准评测，提供高保真结构化终端输出；
 * **Python SDK**：作为标准 Python 库无缝集成至现有自动化测试框架（如 pytest）或 CI/CD 流水线，提供基于 Pydantic 的强类型结构化结果与断言支持。
 
 <a id="benchmarks"></a>

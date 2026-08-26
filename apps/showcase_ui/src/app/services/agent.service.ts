@@ -19,8 +19,9 @@ import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse } from '../core/models/session.model';
-import { StepItemData } from '../core/models/stream.model';
-export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData };
+import { StepItemData, StepReplayFrame } from '../core/models/stream.model';
+import { extractStepReplayFrames } from '../utils/action-formatter.util';
+export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame };
 
 const SESSION_CACHE_KEY = 'artemis.sessions.v1';
 
@@ -158,11 +159,31 @@ export class AgentService {
   public recordingPlaybackMessage = signal<string>('');
   public shouldAutoplayVideo = signal<boolean>(false);
   public videoSeekRequest = signal<{ seconds: number; requestId: number } | null>(null);
+  public playerMode = signal<'video' | 'steps'>('video');
   private activeVideoSessionId: string | null = null;
   private videoSeekRequestId = 0;
   private videoRequestGeneration = 0;
   private videoRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private videoWaitStartedAt = 0;
+
+  /**
+   * Computed step replay frames from current session logs
+   */
+  public currentSessionStepFrames = computed<StepReplayFrame[]>(() => {
+    return extractStepReplayFrames(this.sessionLogs());
+  });
+
+  public hasCurrentSessionStepFrames = computed<boolean>(() => {
+    return this.currentSessionStepFrames().length > 0;
+  });
+
+  public setPlayerMode(mode: 'video' | 'steps'): void {
+    this.playerMode.set(mode);
+  }
+
+  public togglePlayerMode(): void {
+    this.playerMode.update((mode) => (mode === 'video' ? 'steps' : 'video'));
+  }
 
   /**
    * Clear user-pinned selection so subsequent runs automatically follow active runner
@@ -1284,6 +1305,13 @@ export class AgentService {
     this.isVideoLoading.set(true);
     this.recordingPlaybackStatus.set('processing');
     this.recordingPlaybackMessage.set('Loading screen recording...');
+    if (targetUrl) {
+      this.playerMode?.set('video');
+    } else if (this.hasCurrentSessionStepFrames?.()) {
+      this.playerMode?.set('steps');
+    } else {
+      this.playerMode?.set('video');
+    }
     this.requestSessionVideo(targetSessionId, this.videoRequestGeneration);
   }
 
@@ -1341,6 +1369,7 @@ export class AgentService {
           this.recordingPlaybackMessage.set('');
           this.activeVideoUrl.set(res.video_url);
           this.activeVideoSegments.set(res.video_segments || []);
+          this.playerMode?.set('video');
           this.rawSessions.update((list) =>
             list.map((s) => s.session_id === sessionId
               ? { ...s, video_url: res.video_url || undefined, recording_status: 'ready' }
@@ -1368,6 +1397,9 @@ export class AgentService {
             ? 'Recording finalization failed.'
             : 'No screen recording is available for this task.')
         );
+        if (this.hasCurrentSessionStepFrames?.()) {
+          this.playerMode?.set('steps');
+        }
       },
       error: () => {
         if (generation !== this.videoRequestGeneration || sessionId !== this.activeVideoSessionId) {
@@ -1380,6 +1412,9 @@ export class AgentService {
         this.isVideoLoading.set(false);
         this.recordingPlaybackStatus.set('failed');
         this.recordingPlaybackMessage.set('Unable to load the screen recording.');
+        if (this.hasCurrentSessionStepFrames?.()) {
+          this.playerMode?.set('steps');
+        }
       }
     });
   }

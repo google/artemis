@@ -936,6 +936,27 @@ export class AgentStreamComponent implements AfterViewInit {
     }
   }
 
+  public getScreenRecordingButtonTitle(): string {
+    if (this.agentService.isCurrentSessionRunning()) {
+      return 'Task is currently running (Recording screen)';
+    }
+    if (this.agentService.currentSessionRecordingStatus() === 'processing') {
+      return 'Preparing screen recording...';
+    }
+    if (this.agentService.currentSessionVideoUrl()) {
+      return 'Play Screen Recording Video';
+    }
+    if (this.agentService.hasCurrentSessionStepFrames()) {
+      return this.agentService.currentSessionRecordingStatus() === 'failed'
+        ? 'Video recording failed — Click to replay step-by-step screenshots'
+        : 'Play step-by-step screenshots replay';
+    }
+    if (this.agentService.currentSessionRecordingStatus() === 'failed') {
+      return 'Screen recording generation failed';
+    }
+    return 'Screen Recording';
+  }
+
   public isDeviceActionTool(tool: any): boolean {
     return isDeviceActionTool(tool);
   }

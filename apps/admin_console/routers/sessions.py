@@ -63,12 +63,17 @@ async def list_sessions():
                     orphaned_ids.append(s_id)
 
             recording_status = str((recording or {}).get("status") or "unavailable")
-            row_dict["recording_status"] = recording_status
-            row_dict["video_url"] = (
+            resolved_v_url = (
                 media_service.resolve_video_url(row_dict, video_rec_map, video_idx)
-                if recording_status in ("ready", "unavailable")
+                if recording_status != "recording"
                 else None
             )
+            if resolved_v_url:
+                recording_status = "ready"
+                row_dict["video_url"] = resolved_v_url
+            else:
+                row_dict["video_url"] = None
+            row_dict["recording_status"] = recording_status
 
             agent_names = agent_names_by_session.get(s_id, [])
             sess_profile = model_service.resolve_session_profile(

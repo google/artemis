@@ -645,23 +645,34 @@ class Agent:
                             return output
                     finally:
                         if recording_started:
-                            try:
-                                logger.info(f"[{task_name}] Stopping automated screen recording...")
+                            async def _safe_stop_recording():
+                                try:
+                                    logger.info(f"[{task_name}] Stopping automated screen recording...")
+                                    controller = get_controller(context)
+                                    return await controller.stop_video_recording()
+                                except Exception as e:
+                                    logger.error(f"[{task_name}] Error stopping screen recording: {e}")
+                                    return None
 
-                                controller = get_controller(context)
-                                stop_result = await controller.stop_video_recording()
-                                if stop_result.success and stop_result.video_path:
-                                    logger.info(
-                                        f"[{task_name}] Screen recording saved"
-                                        f" to: {stop_result.video_path}"
-                                    )
-                                else:
-                                    logger.warning(
-                                        f"[{task_name}] Failed to save screen"
-                                        f" recording: {stop_result.message}"
-                                    )
-                            except Exception as e:
-                                logger.error(f"[{task_name}] Error stopping screen recording: {e}")
+                            stop_task = asyncio.create_task(_safe_stop_recording())
+                            try:
+                                stop_result = await asyncio.shield(stop_task)
+                            except (asyncio.CancelledError, BaseException):
+                                try:
+                                    stop_result = await asyncio.wait_for(stop_task, timeout=15.0)
+                                except Exception:
+                                    stop_result = None
+
+                            if stop_result and stop_result.success and stop_result.video_path:
+                                logger.info(
+                                    f"[{task_name}] Screen recording saved"
+                                    f" to: {stop_result.video_path}"
+                                )
+                            elif stop_result:
+                                logger.warning(
+                                    f"[{task_name}] Failed to save screen"
+                                    f" recording: {stop_result.message}"
+                                )
             except asyncio.CancelledError:
                 err = f"[{task_name}] Task cancelled"
                 logger.warning(err)
