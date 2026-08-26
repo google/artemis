@@ -291,17 +291,17 @@ async def _run_ui_sequence(controller, recording_started: float) -> tuple[list[G
 async def _analyze(analyzer: VideoAnalyzer, end_time: float, repeats: int) -> list[dict[str, Any]]:
     queries = {
         "timeline": (
-            "按时间顺序列出录像中的四个事实并给出可见证据和录像相对时间："
-            "先完成 12+34=46；再完成 7×8=56；随后打开历史记录面板；最后关闭历史记录面板并回到显示 56 的主界面。"
-            "不要根据提示猜测，只报告视频中实际可见的内容。"
+            "List four facts from the recording in chronological order with visible evidence and relative timestamps: "
+            "First complete 12+34=46; then complete 7×8=56; subsequently open the history panel; finally close the history panel and return to the main screen showing 56. "
+            "Do not guess based on prompts, only report what is actually visible in the video."
         ),
         "calculations": (
-            "只核验录像中实际输入的两道计算及其最终可见结果。必须明确写出完整表达式 12+34=46 和 7×8=56，"
-            "并按发生顺序报告；若任一项不可见就明确说缺失。"
+            "Only verify the two calculations actually entered in the recording and their final visible results. Must explicitly write the complete expressions 12+34=46 and 7×8=56, "
+            "and report them in order of occurrence; if any is not visible, clearly state that it is missing."
         ),
         "history": (
-            "只核验历史记录面板的状态变化：它是否在完成两次计算后被打开、是否显示两次计算记录、"
-            "以及是否随后被关闭并返回计算器主界面。请明确使用“打开”和“关闭”描述两个转场。"
+            "Only verify state changes of the history panel: whether it was opened after completing both calculations, whether it displayed both calculation records, "
+            "and whether it was subsequently closed returning to the calculator main screen. Please explicitly use 'open' and 'close' to describe the two transitions."
         ),
     }
     results: list[dict[str, Any]] = []

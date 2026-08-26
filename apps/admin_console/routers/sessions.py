@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import time
 from uuid import UUID
 from fastapi import APIRouter, HTTPException
@@ -49,12 +50,39 @@ async def list_sessions():
         unresolved_profiles = []
         result = []
 
+        try:
+            from artemis.runtime import DeviceExecutionLock
+            active_owners = DeviceExecutionLock.get_active_owners()
+            active_owner_sids = {
+                str(owner.session_id)
+                for owner in active_owners.values()
+                if owner.session_id
+            }
+        except Exception:
+            active_owner_sids = set()
+
         for row_dict in rows:
             s_id = str(row_dict.get("session_id"))
             recording = latest_recordings.get(s_id)
+            d_info_raw = row_dict.get("device_info")
+            device_id = None
+            if d_info_raw:
+                try:
+                    d_info = json.loads(d_info_raw) if isinstance(d_info_raw, str) else d_info_raw
+                    if isinstance(d_info, dict):
+                        device_id = d_info.get("device_id") or d_info.get("device_serial")
+                except Exception:
+                    pass
+            if not device_id and recording:
+                device_id = recording.get("device_id")
+            row_dict["device_id"] = device_id
+            row_dict["device_serial"] = device_id
+
             if row_dict.get("status") == "running":
-                is_active = s_id in state.active_connections or (
-                    state.is_running and s_id == str(state.active_session_id)
+                is_active = (
+                    s_id in active_owner_sids
+                    or s_id in state.active_connections
+                    or (state.is_running and s_id == str(state.active_session_id))
                 )
                 worker_is_alive = session_repo.process_is_alive(row_dict.get("pid"))
                 if not is_active and not worker_is_alive:

@@ -208,21 +208,28 @@ Embed the mobile automation engine into your Python workflows in just a few line
 
 ```python
 import asyncio
-from artemis.interfaces.sdk import ArtemisClient
+from artemis import ArtemisClient, ConcurrencyMode
 
 
 async def main():
-    # Initialize client (choose "flash" for fast UI checks or "pro" for deep reasoning & self-healing)
-    client = ArtemisClient(default_profile="flash")
-
-    # Execute natural language end-to-end test case
-    result = await client.run(
-        "Open System Settings, go to 'Battery', verify battery percentage is displayed, and check for any crash dialogs."
+    # 1. Initialize client with optional device targeting and concurrency strategy:
+    # - concurrency_mode="per_device" (default): 1 task per device, allows multi-device parallel execution
+    # - concurrency_mode="global": 1 task globally across all devices
+    client = ArtemisClient(
+        device_serial="emulator-5554",  # optional: target specific device serial
+        default_profile="flash",        # "flash" (fast reactive) or "pro" (deep reasoning)
+        concurrency_mode="per_device",  # or ConcurrencyMode.GLOBAL
     )
 
-    # Structured assertions & execution tracing
-    assert result.status == "SUCCESS", f"Test failed: {result.failure_reason}"
-    print(f"✅ Test Passed! Turns: {result.turns} | Trace ID: {result.trace_id}")
+    # 2. Execute natural language end-to-end test case (can also override device per-run)
+    result = await client.run(
+        "Open System Settings, go to 'Battery', verify battery percentage is displayed, and check for any crash dialogs.",
+        device_serial="emulator-5554",  # optional: override target device for this specific run
+    )
+
+    # 3. Structured assertions & execution tracing
+    assert result.status == "SUCCESS", f"Test failed: {result.error}"
+    print(f"✅ Test Passed! Device: {result.device_id} | Turns: {result.turns} | Trace ID: {result.trace_id}")
 
 
 if __name__ == "__main__":
@@ -239,7 +246,7 @@ if __name__ == "__main__":
   <sub><b>Console Overview</b>: <b>① View Switcher</b> (Home / Workspace) · <b>② Model & Replay</b> (Flash/Pro status & video replay) · <b>③ Live Agent Stream</b> (Action perception, target coordinates & structured results) · <b>④ Prompt Dock</b> (Natural language dispatch) · <b>⑤ Task Queue & Dashboard</b> (Lifecycle & history)</sub>
 </p>
 
-* **Web Visual Test Console (`uv run artemis ui`)**: Real-time screen projection and interactive panel, supporting natural language test dispatch, live reasoning telemetry, action trajectories, and execution replay;
+* **Web Visual Test Console (`uv run artemis ui`)**: Real-time screen projection and interactive panel, supporting natural language test dispatch, live reasoning telemetry, action trajectories, and execution replay; manage server lifecycle anytime from any terminal using `uv run artemis restart`, `uv run artemis stop`, and `uv run artemis status`;
 * **Native MCP Protocol (IDE Collaboration)**: Operates as a standard MCP server seamlessly integrating with **Antigravity, Claude Code, Windsurf**, etc., directly driving real devices inside the IDE to verify bugs and run test cases;
 * **Developer CLI (`uv run artemis run`)**: Direct terminal execution for automated test cases, exploratory stability inspection, or AndroidWorld benchmarks with high-fidelity structured terminal output;
 * **Python SDK**: Integrates as a standard Python library into existing automated testing frameworks (e.g., pytest) or CI/CD pipelines with strongly typed Pydantic structured outputs and assertion support.

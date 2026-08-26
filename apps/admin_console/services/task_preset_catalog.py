@@ -334,12 +334,12 @@ PRESET_TASK_CATALOG: list[TaskPreset] = [
         required_packages=["com.google.android.apps.photos"],
         priority=82,
     ),
-    # 9. WeChat (微信)
+    # 9. WeChat
     TaskPreset(
         id="wechat_browse",
         title="Check WeChat Messages",
         description="Open WeChat and view top recent chat conversations",
-        goal="Open WeChat (微信) and view the top recent chat messages.",
+        goal="Open WeChat and view the top recent chat messages.",
         profile="flash",
         category="flash",
         tag="WeChat",
@@ -351,7 +351,7 @@ PRESET_TASK_CATALOG: list[TaskPreset] = [
         id="pro_wechat_to_calendar",
         title="WeChat Notice to Calendar",
         description="Extract meeting notice from WeChat chat and add to Calendar",
-        goal="Open WeChat (微信), locate the latest meeting announcement or event message in the top chat, extract the time and topic, then open Calendar and schedule an event.",
+        goal="Open WeChat, locate the latest meeting announcement or event message in the top chat, extract the time and topic, then open Calendar and schedule an event.",
         profile="pro",
         category="cross_app",
         tag="WeChat + Calendar",
@@ -367,12 +367,12 @@ PRESET_TASK_CATALOG: list[TaskPreset] = [
         required_packages=["com.tencent.mm"],
         priority=93,
     ),
-    # 10. Xiaohongshu (小红书)
+    # 10. Xiaohongshu
     TaskPreset(
         id="xhs_coffee_guide",
         title="RED Cafe Guide Search",
         description="Search trending specialty cafe reviews on Xiaohongshu",
-        goal="Open Xiaohongshu (小红书), search for top-rated specialty coffee shops, and view the top post.",
+        goal="Open Xiaohongshu, search for top-rated specialty coffee shops, and view the top post.",
         profile="flash",
         category="flash",
         tag="Xiaohongshu",
@@ -384,12 +384,12 @@ PRESET_TASK_CATALOG: list[TaskPreset] = [
         required_packages=["com.xingin.xhs"],
         priority=87,
     ),
-    # 11. Meituan / Dianping (美团 / 大众点评)
+    # 11. Meituan / Dianping
     TaskPreset(
         id="meituan_ramen_search",
         title="Meituan Food Search",
         description="Search top-rated Ramen nearby on Meituan or Dianping",
-        goal="Open Meituan (美团) or Dianping (大众点评), search for top-rated Ramen nearby, and view top restaurant rating.",
+        goal="Open Meituan or Dianping, search for top-rated Ramen nearby, and view top restaurant rating.",
         profile="flash",
         category="flash",
         tag="Meituan",
@@ -401,12 +401,12 @@ PRESET_TASK_CATALOG: list[TaskPreset] = [
         required_packages=["com.sankuai.meituan", "com.dianping.v1"],
         priority=86,
     ),
-    # 12. Bilibili (哔哩哔哩)
+    # 12. Bilibili
     TaskPreset(
         id="bilibili_stream",
         title="Bilibili Tech Video",
         description="Search and play an AI Agent tutorial video on Bilibili",
-        goal='Open Bilibili (哔哩哔哩), search for "AI Agent 架构实战", and play the top matching video.',
+        goal='Open Bilibili, search for "AI Agent Architecture", and play the top matching video.',
         profile="flash",
         category="flash",
         tag="Bilibili",

@@ -18,7 +18,7 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
-from artemis.runtime import DeviceExecutionLock
+from artemis.runtime import DeviceExecutionLock, device_pool
 
 try:
     from admin_console.core.state import state
@@ -99,7 +99,15 @@ async def run_task(request: RunRequest):
         enable_outputter=request.enable_outputter,
         locked_app_package=request.locked_app_package,
         app_path=request.app_path,
+        device_serial=request.device_serial,
     )
+
+
+@router.get("/api/devices")
+async def list_devices():
+    """List all connected Android devices with their busy / idle status."""
+    devices = await device_pool.list_devices_async()
+    return {"devices": [d.to_dict() for d in devices]}
 
 
 @router.post("/api/stop")
@@ -138,10 +146,24 @@ async def get_status():
             None,
         )
 
+    active_owners = DeviceExecutionLock.get_active_owners()
+    active_tasks = [
+        {
+            "device_id": owner.device_id,
+            "session_id": owner.session_id,
+            "goal": owner.description,
+            "pid": owner.pid,
+            "ingress": owner.ingress,
+            "acquired_at": owner.acquired_at,
+        }
+        for owner in active_owners.values()
+    ]
+
     running_sid = (
         (global_owner.session_id if global_owner else None)
         or state.active_session_id
         or (running_task.get("session_id") if running_task else None)
+        or (active_tasks[0]["session_id"] if active_tasks and active_tasks[0].get("session_id") else None)
         or (session_repo.get_running_session_id() if is_running else None)
     )
     owner_connection = (
@@ -152,6 +174,7 @@ async def get_status():
         or (global_owner.description if global_owner else None)
         or state.current_goal
         or (running_task.get("goal") if running_task else None)
+        or (active_tasks[0]["goal"] if active_tasks else None)
     )
 
     active_profile = owner_connection.get("profile") or state.current_profile or (
@@ -168,7 +191,23 @@ async def get_status():
             )
 
     model_info = model_service.get_active_model_info(active_profile)
-    queue_data = state.queue_tasks
+
+    # Unified Global Queue: merge web tasks and external SDK/CLI device queue tickets
+    global_queued = DeviceExecutionLock.get_queued_tasks()
+    seen_ids = set()
+    queue_data: list[dict[str, Any]] = []
+
+    for item in state.queue_tasks:
+        sid = item.get("session_id")
+        if sid:
+            seen_ids.add(str(sid))
+        queue_data.append(item)
+
+    for g_item in global_queued:
+        sid = str(g_item.get("session_id"))
+        if sid not in seen_ids:
+            seen_ids.add(sid)
+            queue_data.append(g_item)
 
     if is_running:
         is_paused = state.is_paused
@@ -187,6 +226,7 @@ async def get_status():
             "background_tasks": bg_tasks,
             "queue": queue_data,
             "model_info": model_info,
+            "active_tasks": active_tasks,
         }
 
     if latest_session_id and str(latest_session_id) in state.active_connections:
@@ -203,6 +243,8 @@ async def get_status():
             "background_tasks": bg_tasks,
             "queue": queue_data,
             "model_info": conn_model_info,
+            "active_tasks": active_tasks,
+            "ipc_port": state.ipc_port,
         }
 
     return {
@@ -210,7 +252,8 @@ async def get_status():
         "session_id": latest_session_id,
         "background_tasks": bg_tasks,
         "queue": queue_data,
-        "model_info": model_info,
+        "active_tasks": active_tasks,
+        "ipc_port": state.ipc_port,
     }
 
 

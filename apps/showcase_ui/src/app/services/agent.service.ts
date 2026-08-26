@@ -68,6 +68,9 @@ export class AgentService {
   // Signals to expose state to components
   private rawSessions = signal<Session[]>([]);
   private pendingQueue = signal<Session[]>([]);
+  public activeTasks = signal<any[]>([]);
+  // Persistent tracking of active/pending sessions across polling boundaries
+  private activeSessionTracking = new Map<string, Session>();
 
   public sessions = computed(() => {
     const raw = this.rawSessions();
@@ -75,46 +78,110 @@ export class AgentService {
     const status = this.agentStatus();
     const goal = this.runningGoal();
     const runId = this.runningSessionId();
+    const activeList = this.activeTasks();
 
     const sessionMap = new Map<string, Session>();
 
     // 1. First add raw sessions from DB
     raw.forEach((s) => {
-      const isCurrentActive = (status === 'running' || status === 'paused') && runId === s.session_id;
-      const isPending = this.pendingQueue().some(p => p.session_id === s.session_id) && !isCurrentActive;
-      let sStatus = isCurrentActive ? status : (isPending ? 'pending' : s.status);
-      if ((sStatus === 'running' || sStatus === 'paused') && !isCurrentActive) {
-        const activeRun = raw.find(r => r.session_id === runId);
-        sStatus = (activeRun && (s.start_time || 0) > (activeRun.start_time || 0)) ? 'pending' : 'completed';
+      const isCurrentActive = ((status === 'running' || status === 'paused') && runId === s.session_id)
+        || activeList.some(at => at.session_id === s.session_id);
+      const isTerminal = s.status === 'completed' || s.status === 'success' || s.status === 'failed' || s.status === 'cancelled';
+      let sStatus = s.status;
+      if (!isTerminal) {
+        const isPending = this.pendingQueue().some(p => p.session_id === s.session_id) && !isCurrentActive;
+        sStatus = isCurrentActive ? (status === 'paused' ? 'paused' : 'running') : (isPending ? 'pending' : s.status);
+      } else {
+        sStatus = (s.status === 'success') ? 'completed' : s.status;
       }
-      sessionMap.set(s.session_id, {
+      const activeMatch = activeList.find(at => at.session_id === s.session_id);
+      const pendingMatch = this.pendingQueue().find(p => p.session_id === s.session_id);
+      let serial = s.device_serial || s.device_id || activeMatch?.device_id || pendingMatch?.device_serial || null;
+      if (!serial && s.device_info) {
+        try {
+          const info = typeof s.device_info === 'string' ? JSON.parse(s.device_info) : s.device_info;
+          serial = info?.device_id || info?.device_serial || null;
+        } catch {
+          // ignore
+        }
+      }
+      const finalSession: Session = {
         ...s,
         status: sStatus,
+        device_serial: serial,
         model_info: isCurrentActive && this.activeModel() ? this.activeModel()! : s.model_info
-      });
+      };
+      sessionMap.set(s.session_id, finalSession);
+      if (isTerminal) {
+        this.activeSessionTracking.delete(s.session_id);
+      } else if (sStatus === 'running' || sStatus === 'paused' || sStatus === 'pending') {
+        this.activeSessionTracking.set(s.session_id, finalSession);
+      }
     });
 
     // 2. Add pending queue sessions if not yet in raw sessions
     pending.forEach((p) => {
       if (!sessionMap.has(p.session_id)) {
-        const isCurrentRunning = (status === 'running' || status === 'paused') && runId === p.session_id;
-        sessionMap.set(p.session_id, {
+        const isCurrentRunning = ((status === 'running' || status === 'paused') && runId === p.session_id)
+          || activeList.some(at => at.session_id === p.session_id);
+        const activeMatch = activeList.find(at => at.session_id === p.session_id);
+        const finalPending: Session = {
           ...p,
-          status: isCurrentRunning ? status : (p.status || 'pending')
-        });
+          status: isCurrentRunning ? (status === 'paused' ? 'paused' : 'running') : (p.status || 'pending'),
+          device_serial: p.device_serial || p.device_id || activeMatch?.device_id || null
+        };
+        sessionMap.set(p.session_id, finalPending);
+        this.activeSessionTracking.set(p.session_id, finalPending);
       }
     });
 
-    // 3. Ensure currently active running session is present
-    if ((status === 'running' || status === 'paused') && runId && !sessionMap.has(runId)) {
-      sessionMap.set(runId, {
+    // 3. Ensure all currently active running sessions are present (multi-device & external runs)
+    if (activeList.length > 0) {
+      activeList.forEach((at) => {
+        const sid = at.session_id || `active-${at.device_id}`;
+        const existing = sessionMap.get(sid);
+        if (!existing) {
+          const newSession: Session = {
+            session_id: sid,
+            initial_goal: at.goal || goal || '',
+            start_time: at.acquired_at ? (new Date(at.acquired_at).getTime() / 1000) : (Date.now() / 1000),
+            status: 'running',
+            model_info: this.activeModel() || undefined,
+            device_serial: at.device_id || null
+          };
+          sessionMap.set(sid, newSession);
+          this.activeSessionTracking.set(sid, newSession);
+        } else if (existing.status === 'pending') {
+          const updated: Session = {
+            ...existing,
+            status: 'running',
+            device_serial: at.device_id || existing.device_serial
+          };
+          sessionMap.set(sid, updated);
+          this.activeSessionTracking.set(sid, updated);
+        }
+      });
+    } else if ((status === 'running' || status === 'paused') && runId && !sessionMap.has(runId)) {
+      const activeSession: Session = {
         session_id: runId,
         initial_goal: goal || '',
         start_time: Date.now() / 1000,
         status,
         model_info: this.activeModel() || undefined
-      });
+      };
+      sessionMap.set(runId, activeSession);
+      this.activeSessionTracking.set(runId, activeSession);
     }
+
+    // 4. Bridge transient queue-to-running transition gaps
+    this.activeSessionTracking.forEach((ts, sid) => {
+      if (!sessionMap.has(sid)) {
+        sessionMap.set(sid, {
+          ...ts,
+          status: 'running'
+        });
+      }
+    });
 
     return Array.from(sessionMap.values()).sort((a, b) => b.start_time - a.start_time);
   });
@@ -137,8 +204,14 @@ export class AgentService {
   public currentStartupProgress = computed(() => {
     const sessionId = this.currentSessionId();
     if (sessionId) {
-      const sessionEvents = this.startupProgressBySession()[sessionId];
-      if (sessionEvents?.length) return sessionEvents;
+      const normalized = String(sessionId).trim().toLowerCase();
+      const bySession = this.startupProgressBySession();
+      const direct = bySession[sessionId];
+      if (direct?.length) return direct;
+      const matched = Object.entries(bySession).find(
+        ([key]) => key.trim().toLowerCase() === normalized
+      );
+      if (matched?.[1]?.length) return matched[1];
     }
     return this.pendingStartupProgress();
   });
@@ -609,7 +682,10 @@ export class AgentService {
             return;
           }
 
-          if (evtSessionId && String(evtSessionId) !== String(sessionId)) {
+          const isDifferentSession = evtSessionId
+            && String(evtSessionId).trim().toLowerCase() !== String(sessionId).trim().toLowerCase();
+
+          if (isDifferentSession) {
             if (eventType === 'session_started') {
               this.agentStatus.set('running');
               this.runningSessionId.set(parsedData.session_id);
@@ -617,13 +693,30 @@ export class AgentService {
                 this.runningGoal.set(parsedData.initial_goal);
               }
               this.fetchSessions();
-              // Only auto-select if user hasn't explicitly chosen to inspect another task
-              const pinnedId = this.userPinnedSessionId();
-              if (!pinnedId && parsedData?.session_id) {
+              // Only auto-select if user has no current session at all
+              const currentId = this.currentSessionId();
+              if (!currentId && parsedData?.session_id) {
                 this.selectSession(parsedData.session_id, false);
               }
             } else if (eventType === 'session_ended') {
               this.applySessionEndedStatus(evtSessionId, parsedData);
+              this.activeTasks.update(list => list.filter(at => at.session_id !== evtSessionId));
+              const remaining = this.activeTasks();
+              if (remaining.length > 0) {
+                if (this.runningSessionId() === evtSessionId) {
+                  this.runningSessionId.set(remaining[0].session_id);
+                  this.runningGoal.set(remaining[0].goal || null);
+                }
+              } else if (this.pendingQueue().length > 0) {
+                const nextPending = this.pendingQueue()[0];
+                this.agentStatus.set('running');
+                this.runningSessionId.set(nextPending.session_id);
+                this.runningGoal.set(nextPending.initial_goal || null);
+              } else {
+                this.agentStatus.set('idle');
+                this.runningSessionId.set(null);
+                this.runningGoal.set(null);
+              }
               this.fetchStatus();
               this.fetchSessions();
               this.updateModelForCurrentView();
@@ -650,12 +743,26 @@ export class AgentService {
 
           if (eventType === 'session_ended') {
             this.applySessionEndedStatus(sessionId, parsedData);
-            this.agentStatus.set('idle');
-            this.runningSessionId.set(null);
-            this.runningGoal.set(null);
+            this.activeTasks.update(list => list.filter(at => at.session_id !== sessionId));
+            const remaining = this.activeTasks();
+            if (remaining.length > 0) {
+              this.agentStatus.set('running');
+              this.runningSessionId.set(remaining[0].session_id);
+              this.runningGoal.set(remaining[0].goal || null);
+            } else if (this.pendingQueue().length > 0) {
+              const nextPending = this.pendingQueue()[0];
+              this.agentStatus.set('running');
+              this.runningSessionId.set(nextPending.session_id);
+              this.runningGoal.set(nextPending.initial_goal || null);
+            } else {
+              this.agentStatus.set('idle');
+              this.runningSessionId.set(null);
+              this.runningGoal.set(null);
+            }
             this.isRetrying.set(false);
             this.isPaused.set(false);
             this.fetchSessions();
+            this.fetchStatus();
             this.fetchNotes(sessionId);
             this.updateModelForCurrentView();
             if (
@@ -1072,7 +1179,9 @@ export class AgentService {
           : null;
 
     if (status) {
+      this.activeSessionTracking.delete(String(sessionId));
       this.setSessionStatus(String(sessionId), status);
+      this.activeTasks.update((list) => list.filter((at) => at.session_id !== String(sessionId)));
     }
   }
 
@@ -1100,34 +1209,15 @@ export class AgentService {
         if (data && data.status) {
           const oldStatus = this.agentStatus();
           const oldRunningSessionId = this.runningSessionId();
-          
-          this.agentStatus.set(data.status);
           const isActive = data.status === 'running' || data.status === 'paused';
-          if (isActive) {
-            this.runningSessionId.set(data.session_id || null);
-            this.runningGoal.set(data.goal || null);
-            if (data.model_info) {
-              this.activeModel.set(data.model_info);
-            }
-          } else {
-            this.runningSessionId.set(null);
-            this.runningGoal.set(null);
-            
-            // If viewing a selected history session, use its model_info
-            const curId = this.currentSessionId();
-            if (curId) {
-              const selected = this.sessions().find(s => s.session_id === curId);
-              if (selected && selected.model_info) {
-                this.activeModel.set(selected.model_info);
-              } else if (data.model_info) {
-                this.activeModel.set(data.model_info);
-              }
-            } else if (data.model_info) {
-              this.activeModel.set(data.model_info);
-            }
+          this.agentStatus.set(data.status);
+          this.runningSessionId.set(data.session_id || null);
+          this.runningGoal.set(data.goal || null);
+          if (data.model_info) {
+            this.activeModel.set(data.model_info);
           }
-
           this.isPaused.set(data.status === 'paused');
+
           if (data.status === 'paused') {
             this.isRetrying.set(false);
             const pauseError = data.paused_error
@@ -1149,7 +1239,8 @@ export class AgentService {
                 session_id: item.session_id || `pending-task-${index}`,
                 initial_goal: item.goal || '',
                 start_time: item.start_time || item.created_at || (Date.now() / 1000 + index),
-                status: item.status || 'pending'
+                status: item.status || 'pending',
+                device_serial: item.device_serial || item.device_id || null
               };
             }
             return {
@@ -1160,6 +1251,7 @@ export class AgentService {
             };
           });
           this.pendingQueue.set(pending);
+          this.activeTasks.set(data.active_tasks || []);
           
           if (oldStatus !== data.status || oldRunningSessionId !== data.session_id) {
             this.fetchSessions();
@@ -1176,16 +1268,11 @@ export class AgentService {
             this.beginRecordingFinalization(oldRunningSessionId);
           }
 
-          // Auto-select the session if running and user hasn't explicitly chosen to inspect another task
+          // Auto-select the session ONLY if nothing is currently selected
           if (isActive && data.session_id) {
             const currentId = this.currentSessionId();
-            const pinnedId = this.userPinnedSessionId();
             if (!currentId) {
               this.selectSession(data.session_id, false);
-            } else if (currentId !== data.session_id) {
-              if (!pinnedId) {
-                this.selectSession(data.session_id, false);
-              }
             }
           }
         }
@@ -1328,8 +1415,9 @@ export class AgentService {
       timestamp
     };
 
+    const rawKey = String(data.session_id || sessionId).trim();
     this.startupProgressBySession.update((allEvents) => {
-      const current = [...(allEvents[sessionId] || [])];
+      const current = [...(allEvents[rawKey] || allEvents[sessionId] || [])];
       const existingIndex = current.findIndex((item) => item.stage === event.stage);
       if (existingIndex >= 0) {
         current[existingIndex] = event;
@@ -1337,7 +1425,11 @@ export class AgentService {
         current.push(event);
       }
       current.sort((a, b) => a.timestamp - b.timestamp);
-      return { ...allEvents, [sessionId]: current };
+      const updated = { ...allEvents, [rawKey]: current };
+      if (sessionId && sessionId !== rawKey) {
+        updated[sessionId] = current;
+      }
+      return updated;
     });
   }
 

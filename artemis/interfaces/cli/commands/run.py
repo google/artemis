@@ -39,6 +39,8 @@ logger = get_logger(__name__)
 
 async def execute_task(
     goal: str,
+    device_serial: str | None = None,
+    session_id: str | None = None,
     locked_app_package: str | None = None,
     test_name: str | None = None,
     traces_output_path_str: str | None = None,
@@ -76,6 +78,14 @@ async def execute_task(
         explorer_pro_mode: Override Explorer version mode for Pro execution profile.
     """
     publish_startup_progress("configuration", "Loading the run configuration")
+    effective_sid = (
+        session_id
+        or os.getenv("ARTEMIS_SESSION_ID")
+        or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+    )
+    if effective_sid:
+        os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
+
     llm_config = initialize_llm_config()
     agent_profile = AgentProfile(name="default", llm_config=llm_config)
     config = Builders.AgentConfig.with_default_profile(profile=agent_profile)
@@ -115,13 +125,25 @@ async def execute_task(
     if settings.ADB_HOST:
         config.with_adb_server(host=settings.ADB_HOST, port=settings.ADB_PORT)
 
+    target_serial = device_serial or settings.ADB_DEVICE_SERIAL or os.environ.get("ADB_DEVICE_SERIAL")
+    if not target_serial:
+        try:
+            from artemis.runtime import device_pool
+            target_serial = device_pool.select_device()
+        except Exception:
+            target_serial = None
+
+    if target_serial:
+        from artemis.context import DevicePlatform
+        config.for_device(DevicePlatform.ANDROID, target_serial)
+
     if graph_config_callbacks:
         config.with_graph_config_callbacks(graph_config_callbacks)
 
     agent: Agent | None = None
     try:
         publish_startup_progress("device_check", "Checking the Android device")
-        agent = Agent(config=config.build())
+        agent = Agent(config=config.build(), session_id=effective_sid)
         await agent.init(
             retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
             retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
@@ -273,12 +295,42 @@ def run_command(
             help="Explorer version mode when running under Pro profile (Operator/Validator).",
         ),
     ] = None,
+    device_serial: Annotated[
+        str | None,
+        typer.Option(
+            "--device-serial",
+            "-s",
+            help="Target specific Android device by serial number (e.g. emulator-5554).",
+        ),
+    ] = None,
+    session_id: Annotated[
+        str | None,
+        typer.Option(
+            "--session-id",
+            help="Canonical session UUID for trace and stream telemetry.",
+        ),
+    ] = None,
+    standalone: Annotated[
+        bool,
+        typer.Option(
+            "--standalone",
+            help="Run in standalone embedded mode without auto-spawning the Artemis Daemon.",
+        ),
+    ] = False,
 ) -> None:
     """Run an autonomous UI automation task on the connected Android device."""
     if with_video_recording_tools:
         check_ffmpeg_available()
 
     console = Console()
+
+    # Daemon auto-spawn: By default, ensure Daemon is running in background unless standalone mode requested
+    if not standalone and os.environ.get("ARTEMIS_STANDALONE") != "1":
+        try:
+            from artemis.runtime import ensure_daemon_running
+            ensure_daemon_running(timeout=1.5)
+        except Exception as exc:
+            logger.debug(f"Daemon probe/auto-spawn skipped: {exc}")
 
     adb_client = None
     try:
@@ -306,6 +358,8 @@ def run_command(
         asyncio.run(
             execute_task(
                 goal=goal,
+                device_serial=device_serial,
+                session_id=session_id,
                 locked_app_package=locked_app_package,
                 test_name=test_name,
                 traces_output_path_str=traces_path,

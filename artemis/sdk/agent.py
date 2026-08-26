@@ -106,8 +106,46 @@ class Agent:
     _task_lock: asyncio.Lock
     _cloud_mobile_id: str | None = None
 
-    def __init__(self, *, config: AgentConfig | None = None):
-        self._config = config or get_default_agent_config()
+    def __init__(
+        self,
+        *,
+        config: AgentConfig | None = None,
+        device_id: str | None = None,
+        device_serial: str | None = None,
+        concurrency_mode: str | None = None,
+        max_concurrency: int | None = None,
+        session_id: str | None = None,
+    ):
+        raw_sid = (
+            session_id
+            or os.getenv("ARTEMIS_SESSION_ID")
+            or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+        )
+        self._session_id: str | None = str(raw_sid).strip() if raw_sid else None
+        target_dev = device_serial or device_id
+        if config is None:
+            from artemis.sdk.builders import Builders
+            builder = Builders.AgentConfig
+            if target_dev:
+                builder.for_device(DevicePlatform.ANDROID, target_dev)
+            if concurrency_mode:
+                builder.with_concurrency_mode(concurrency_mode)
+            if max_concurrency is not None:
+                builder.with_max_concurrency(max_concurrency)
+            self._config = builder.build()
+        else:
+            self._config = config
+            updates = {}
+            if target_dev:
+                updates["device_id"] = target_dev
+                updates["device_platform"] = DevicePlatform.ANDROID
+            if concurrency_mode:
+                updates["concurrency_mode"] = str(concurrency_mode).strip().lower()
+            if max_concurrency is not None:
+                updates["max_concurrency"] = max_concurrency
+            if updates:
+                self._config = self._config.model_copy(update=updates)
+
         self._tasks = []
         self._tmp_traces_dir = Path(settings.TRACES_PATH)
         self._initialized = False
@@ -116,9 +154,16 @@ class Agent:
     async def init(
         self,
         api_key: str | None = None,
+        device_id: str | None = None,
+        device_serial: str | None = None,
         retry_count: int = 5,
         retry_wait_seconds: int = 5,
     ):
+        target_dev = device_serial or device_id
+        if target_dev:
+            self._config = self._config.model_copy(
+                update={"device_id": target_dev, "device_platform": DevicePlatform.ANDROID}
+            )
 
         return await self._init_internal(
             api_key=api_key,
@@ -187,7 +232,7 @@ class Agent:
 
     async def _prewarm_llm_connections(self, api_key: str | None = None):
         """Pre-warms the HTTP2/gRPC connection pools for both Native GenAI and LangChain clients in the background."""
-        publish_startup_progress("model_warmup", "Warming the model connection")
+        publish_startup_progress("model_warmup", "Warming the model connection", session_id=self._session_id)
         logger.info("Starting background pre-warming of Gemini API connection pools...")
         try:
             key = api_key
@@ -197,7 +242,7 @@ class Agent:
             if not key:
                 logger.warning("Skipping LLM pre-warming: No API key available.")
                 publish_startup_progress(
-                    "model_ready", "Model connection will initialize on first use"
+                    "model_ready", "Model connection will initialize on first use", session_id=self._session_id
                 )
                 return
 
@@ -214,11 +259,11 @@ class Agent:
                 return_exceptions=True,
             )
             logger.success("Gemini API connection pools successfully pre-warmed.")
-            publish_startup_progress("model_ready", "Model connection is ready")
+            publish_startup_progress("model_ready", "Model connection is ready", session_id=self._session_id)
         except Exception as e:
             logger.warning(f"Failed to pre-warm LLM connections: {e}")
             publish_startup_progress(
-                "model_ready", "Model connection will initialize on first use"
+                "model_ready", "Model connection will initialize on first use", session_id=self._session_id
             )
 
     async def install_apk(self, apk_path: str | Path) -> None:
@@ -437,7 +482,12 @@ class Agent:
         logger.info(str(agent_profile))
 
         on_status_changed = None
-        task_id = str(uuid.uuid4())
+        task_id = str(
+            self._session_id
+            or os.getenv("ARTEMIS_SESSION_ID")
+            or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+            or uuid.uuid4()
+        )
 
         task = Task(
             id=task_id,
@@ -475,12 +525,34 @@ class Agent:
             last_state: State | None = None
             last_state_snapshot: dict | None = None
             output = None
-            device_lock = DeviceExecutionLock(
+            effective_mode = getattr(self._config, "concurrency_mode", "per_device")
+            effective_max = getattr(self._config, "max_concurrency", None)
+            sess_id = (
+                self._session_id
+                or os.getenv("ARTEMIS_SESSION_ID")
+                or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+                or getattr(task, "id", None)
+                or getattr(getattr(task, "request", None), "task_name", None)
+            )
+            active_owner = DeviceExecutionLock.get_active_owner(self._device_context.device_id)
+            already_held = (
+                active_owner is not None
+                and active_owner.pid == os.getpid()
+                and (
+                    (sess_id and str(active_owner.session_id) == str(sess_id))
+                    or active_owner.token == self._device_context.device_id
+                )
+            )
+            device_lock = None if already_held else DeviceExecutionLock(
                 self._device_context.device_id,
-                description=f"automation task: {request.goal[:120]}",
+                description=f"{request.goal[:120]}",
+                concurrency_mode=effective_mode,
+                max_concurrency=effective_max,
+                session_id=str(sess_id) if sess_id else None,
+                ingress="agent",
             )
             try:
-                if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
+                if device_lock is not None and os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
                     queue_cancel_event = threading.Event()
                     acquire_task = asyncio.create_task(
                         asyncio.to_thread(
@@ -503,21 +575,21 @@ class Agent:
                 # DataEngine uses a shared database, so a queued task must not
                 # publish a new active session while the current task is still
                 # finishing.
+                self._prepare_tracing(task=task, context=context)
+                self._prepare_output_files(task=task)
                 if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
                     if self._ui_adb_client is not None:
                         publish_startup_progress(
-                            "uiautomator", "Connecting to UI Automator"
+                            "uiautomator", "Connecting to UI Automator", session_id=str(task.id)
                         )
                         await asyncio.to_thread(self._ui_adb_client.connect)
                         publish_startup_progress(
-                            "uiautomator_ready", "UI Automator is ready"
+                            "uiautomator_ready", "UI Automator is ready", session_id=str(task.id)
                         )
                     await self._ensure_device_unlocked()
                 publish_startup_progress(
-                    "environment", "Preparing the device environment"
+                    "environment", "Preparing the device environment", session_id=str(task.id)
                 )
-                self._prepare_tracing(task=task, context=context)
-                self._prepare_output_files(task=task)
                 await self._prepare_app_installation(task=task)
                 await self._prepare_device_environment(context=context)
                 await self._prepare_app_lock(task=task, context=context)
@@ -548,7 +620,7 @@ class Agent:
                             logger.error(f"[{task_name}] Failed to start screen recording: {e}")
 
                     publish_startup_progress(
-                        "environment_ready", "Device environment is ready"
+                        "environment_ready", "Device environment is ready", session_id=str(task.id)
                     )
                     try:
                         if request.profile and request.profile.lower() == "flash":
@@ -707,7 +779,8 @@ class Agent:
                             if self._ui_adb_client is not None:
                                 await asyncio.to_thread(self._ui_adb_client.disconnect)
                         finally:
-                            await asyncio.to_thread(device_lock.release)
+                            if device_lock is not None:
+                                await asyncio.to_thread(device_lock.release)
 
         async with self._task_lock:
             if self._current_task and not self._current_task.done():
@@ -919,7 +992,26 @@ class Agent:
         device_data = context.device.model_dump() if context.device else {}
         if task.request.profile:
             device_data["profile"] = task.request.profile
-        context.data_engine.start_session(goal=task.request.goal, device_info=device_data)
+
+        target_sid = (
+            self._session_id
+            or os.getenv("ARTEMIS_SESSION_ID")
+            or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+            or getattr(task, "id", None)
+            or getattr(getattr(task, "request", None), "task_name", None)
+        )
+        sess_uuid = None
+        if target_sid:
+            try:
+                sess_uuid = uuid.UUID(str(target_sid))
+            except Exception:
+                sess_uuid = str(target_sid)
+
+        context.data_engine.start_session(
+            goal=task.request.goal,
+            device_info=device_data,
+            session_id=sess_uuid,
+        )
 
     async def _finalize_tracing_safely(self, task: Task, context: ArtemisContext):
         """Finalize optional trace artifacts without changing task semantics."""

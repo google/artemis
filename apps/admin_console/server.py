@@ -49,8 +49,10 @@ import uvicorn
 
 from artemis.runtime import (
     DeviceExecutionLock,
+    clear_server_info,
     shutdown_awake_service,
     start_awake_service,
+    write_server_info,
 )
 
 try:
@@ -108,6 +110,7 @@ async def on_startup():
     """Startup lifecycle hooks."""
     state.is_shutting_down = False
     state.shutdown_event.clear()
+    write_server_info(port=getattr(state, "port", 8000), host=getattr(state, "host", "0.0.0.0"))
     await asyncio.to_thread(start_awake_service)
     cleaned_device_locks = DeviceExecutionLock.cleanup_stale_locks()
     if cleaned_device_locks:
@@ -160,6 +163,7 @@ async def on_shutdown():
     await ipc_service.stop_server()
     state.ipc_subscribers.clear()
     await asyncio.to_thread(shutdown_awake_service)
+    clear_server_info()
 
 
 # Mount modular routers
@@ -382,23 +386,30 @@ class ArtemisUvicornServer(uvicorn.Server):
 
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
-    if reload:
-        uvicorn.run(
+    state.host = host
+    state.port = port
+    write_server_info(port=port, host=host)
+
+    try:
+        if reload:
+            uvicorn.run(
+                "apps.admin_console.server:app",
+                host=host,
+                port=port,
+                reload=True,
+                timeout_graceful_shutdown=5,
+            )
+            return
+
+        config = uvicorn.Config(
             app,
             host=host,
             port=port,
-            reload=True,
             timeout_graceful_shutdown=5,
         )
-        return
-
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=port,
-        timeout_graceful_shutdown=5,
-    )
-    ArtemisUvicornServer(config).run()
+        ArtemisUvicornServer(config).run()
+    finally:
+        clear_server_info()
 
 
 def main():

@@ -1148,13 +1148,15 @@
                 const time = new Date(session.start_time * 1000).toLocaleString();
                 const titleText = session.initial_goal || 'Unnamed Session';
                 const sidDisplay = session.session_id || '';
+                const deviceSerial = session.device_serial || session.device_id || '';
+                const devicePrefix = deviceSerial ? `${escapeHtml(deviceSerial)} · ` : '';
                 
                 div.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                         <div style="flex: 1; min-width: 0;">
                             <h3 style="font-size: 0.95rem; margin-bottom: 3px; margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${titleText}">${titleText}</h3>
                             <div style="font-size: 0.75rem; font-family: monospace; opacity: 0.85; margin-bottom: 3px; word-break: break-all; color: ${session.session_id === currentSessionId ? '#edf2f7' : '#4a5568'};">ID: ${sidDisplay}</div>
-                            <small style="color: ${session.session_id === currentSessionId ? '#e2e8f0' : '#718096'}; font-size: 0.75rem;">${time}</small>
+                            <small style="color: ${session.session_id === currentSessionId ? '#e2e8f0' : '#718096'}; font-size: 0.75rem;">${devicePrefix}${time}</small>
                         </div>
                         <button onclick="deleteSession(event, '${session.session_id}')" style="background: none; border: none; color: ${session.session_id === currentSessionId ? '#fff' : '#e53e3e'}; cursor: pointer; font-size: 1.1rem; padding: 0 0 0 8px; line-height: 1; flex-shrink: 0;" title="Delete Session">🗑️</button>
                     </div>

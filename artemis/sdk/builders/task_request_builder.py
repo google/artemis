@@ -57,7 +57,7 @@ class TaskRequestCommonBuilder(BaseModel):
     def __init__(self):
         self._max_steps = RECURSION_LIMIT
         self._record_trace = True
-        self._trace_path = Path("artemis-traces")
+        self._trace_path = Path("traces")
         self._llm_output_path: Path | None = None
         self._locked_app_package: str | None = None
         self._app_path: Path | None = None

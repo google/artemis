@@ -706,7 +706,7 @@ export function resolveStepImageMap(stepData: any): Map<any, ResolvedImageEntry>
       resolvedPost = stepData.post_image_name || stepData.post_screenshot || null;
     }
 
-    // "下一次的决策前是上一次的动作后"
+    // "The next pre-action state is the previous post-action state"
     if (resolvedPost) {
       currentPreImage = resolvedPost;
     }
@@ -778,24 +778,37 @@ export function extractStepReplayFrames(logsOrSteps: any[]): StepReplayFrame[] {
   const rawSteps: any[] = [];
   for (const item of logsOrSteps) {
     if (!item) continue;
-    if (item.type === 'step_updated' && item.data) {
-      rawSteps.push(item.data);
-    } else if (item.type === 'step' && item.data) {
+    if ((item.type === 'step_updated' || item.type === 'step_recorded' || item.type === 'step') && item.data) {
       rawSteps.push(item.data);
     } else if (item.step_number !== undefined || item.step_id !== undefined) {
       rawSteps.push(item);
     }
   }
 
-  // Deduplicate by step_id or step_number, keeping latest
+  // Deduplicate and merge by step_id or step_number
   const stepMap = new Map<any, any>();
   for (const step of rawSteps) {
     const key = step.step_id || step.step_number;
     if (key !== undefined) {
-      stepMap.set(key, step);
+      const existing = stepMap.get(key);
+      if (existing) {
+        stepMap.set(key, {
+          ...existing,
+          ...step,
+          step_number: step.step_number !== undefined ? step.step_number : existing.step_number,
+          pre_image_name: step.pre_image_name || existing.pre_image_name,
+          post_image_name: step.post_image_name || existing.post_image_name,
+          action_taken: step.action_taken || existing.action_taken,
+          last_execution_result: step.last_execution_result || existing.last_execution_result,
+          generic_tools: step.generic_tools || existing.generic_tools
+        });
+      } else {
+        stepMap.set(key, { ...step });
+      }
     }
   }
 
+  // Sort strictly by step_number ascending
   const steps = Array.from(stepMap.values()).sort((a, b) => {
     const numA = Number(a.step_number ?? 0);
     const numB = Number(b.step_number ?? 0);
@@ -804,47 +817,45 @@ export function extractStepReplayFrames(logsOrSteps: any[]): StepReplayFrame[] {
   });
 
   const frames: StepReplayFrame[] = [];
-  let lastImageUrl: string | null = null;
 
-  for (const stepData of steps) {
-    const stepNum = Number(stepData.step_number ?? (frames.length + 1));
+  for (let i = 0; i < steps.length; i++) {
+    const stepData = steps[i];
+    const stepNum = Number(stepData.step_number ?? (i + 1));
     const act = stepData.action_taken;
-    const title = act ? (getActionTitle(act) || 'Action') : 'Step';
+    const title = act ? (getActionTitle(act) || 'Action') : `Step ${stepNum}`;
     const coords = act ? getActionCoords(act) : '';
-    const actionDesc = coords ? `${title} (${coords})` : title;
+    const targetText = act ? getActionTargetText(act) : '';
+    const actionDesc = coords ? `${title} (${coords})` : (targetText ? `${title} (${targetText})` : title);
 
     const preUrl = getStepPreImageUrl(stepData, act);
     const postUrl = getStepPostImageUrl(stepData, act);
 
-    // If pre-image exists and is new, add it
-    if (preUrl && preUrl !== lastImageUrl) {
-      frames.push({
-        index: frames.length,
-        stepNumber: stepNum,
-        title: `Step ${stepNum} (Before Action)`,
-        imageUrl: preUrl,
-        actionText: `Preparing: ${actionDesc}`,
-        isPost: false,
-        timestamp: stepData.timestamp
-      });
-      lastImageUrl = preUrl;
+    // Each step gets exactly one primary frame (Pre-action screenshot where the action is taken)
+    const primaryImg = preUrl || postUrl;
+    if (!primaryImg) {
+      continue;
     }
 
-    // If post-image exists and is different from current screen, add it
-    if (postUrl && postUrl !== lastImageUrl) {
-      frames.push({
-        index: frames.length,
-        stepNumber: stepNum,
-        title: `Step ${stepNum}: ${actionDesc}`,
-        imageUrl: postUrl,
-        actionText: actionDesc,
-        isPost: true,
-        timestamp: stepData.timestamp
-      });
-      lastImageUrl = postUrl;
-    }
+    const failed = isActionFailed(act, stepData);
+
+    frames.push({
+      index: frames.length,
+      stepNumber: stepNum,
+      stepId: String(stepData.step_id || `step-${stepNum}`),
+      title: `Step ${stepNum}: ${title}`,
+      actionText: actionDesc,
+      action: act,
+      actionType: act?.action || act?.name || 'action',
+      targetText,
+      coords,
+      imageUrl: primaryImg,
+      preImageUrl: preUrl,
+      postImageUrl: postUrl,
+      isPost: false,
+      timestamp: stepData.timestamp,
+      status: failed ? 'failed' : 'success'
+    });
   }
 
   return frames;
 }
-

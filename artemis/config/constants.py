@@ -84,6 +84,7 @@ AGENT_CONFIG_FILENAME = "agent_config.json"
 DATA_ENGINE_DB_FILENAME = "data_engine.db"
 IPC_PORT_FILENAME = ".artemis_ipc_port"
 LS_ADDRESS_FILENAME = ".jetski_ls_address"
+SERVER_INFO_FILENAME = ".artemis_server.json"
 DOTENV_FILENAME = ".env"
 
 

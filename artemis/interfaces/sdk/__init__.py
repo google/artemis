@@ -14,11 +14,14 @@
 
 """Python SDK for ARTEMIS."""
 
-from artemis.interfaces.sdk.client import ArtemisClient
-from artemis.interfaces.sdk.task import Task, TaskResult
+from artemis.interfaces.sdk.client import ArtemisClient, ConcurrencyMode
+from artemis.interfaces.sdk.task import StreamEvent, StreamEventType, Task, TaskResult
 
 __all__ = [
     "ArtemisClient",
+    "ConcurrencyMode",
+    "StreamEvent",
+    "StreamEventType",
     "Task",
     "TaskResult",
 ]

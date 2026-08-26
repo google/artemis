@@ -114,6 +114,7 @@ async def run_task(
     locked_app_package: str | None = None,
     app_path: str | None = None,
     expected_output_desc: str | None = None,
+    device_serial: str | None = None,
 ):
     """Executes the mobile automation agent task and logs all actions/results."""
     trace_dir = trace_store.get_trace_dir(trace_id)
@@ -142,6 +143,7 @@ async def run_task(
 
     agent = None
     adb_path = device_utils.resolve_adb_path()
+    target_serial = device_serial
 
     try:
         from artemis.sdk import Agent
@@ -150,15 +152,36 @@ async def run_task(
 
         connected_devices = device_utils.get_connected_devices(adb_path)
 
-        if connected_devices:
-            print(
-                f"✅ Detected active connected device(s): {connected_devices}. "
-                f"Using the first available device: '{connected_devices[0]}'."
-            )
+        if device_serial:
+            target_serial = device_serial
+            if connected_devices and device_serial not in connected_devices:
+                print(
+                    f"⚠️ Warning: Specified device serial '{device_serial}' was not detected in active ADB devices: {connected_devices}. "
+                    "Proceeding with target serial (will attempt direct ADB connection)..."
+                )
+            else:
+                print(f"✅ Using specified target device: '{device_serial}'.")
         else:
-            print("❌ No active connected devices detected. Booting emulator...")
-            if not device_utils.ensure_emulator(adb_path=adb_path):
-                raise RuntimeError("Failed to start or connect to the Android emulator.")
+            if connected_devices:
+                target_serial = settings.ADB_DEVICE_SERIAL or os.environ.get("ADB_DEVICE_SERIAL")
+                if not target_serial:
+                    try:
+                        from artemis.runtime import device_pool
+                        target_serial = device_pool.select_device()
+                    except Exception:
+                        target_serial = connected_devices[0]
+                print(
+                    f"✅ Detected active connected device(s): {connected_devices}. "
+                    f"Auto-selected device: '{target_serial}'."
+                )
+            else:
+                print("❌ No active connected devices detected. Booting emulator...")
+                if not device_utils.ensure_emulator(adb_path=adb_path):
+                    raise RuntimeError("Failed to start or connect to the Android emulator.")
+                target_serial = "emulator-5554"
+
+        if target_serial:
+            trace_store.update_trace_device_serial(trace_id, target_serial)
 
         print("Initializing Artemis Agent...")
         from artemis.config import initialize_llm_config, settings
@@ -173,6 +196,10 @@ async def run_task(
         if settings.ADB_HOST:
             config_builder.with_adb_server(host=settings.ADB_HOST, port=settings.ADB_PORT)
 
+        if target_serial:
+            from artemis.context import DevicePlatform
+            config_builder.for_device(DevicePlatform.ANDROID, target_serial)
+
         config = config_builder.build()
 
         agent = Agent(config=config)
@@ -182,6 +209,12 @@ async def run_task(
             retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
             timeout_seconds=float(os.getenv("ARTEMIS_AGENT_INIT_TIMEOUT_SECONDS", 30)),
         )
+
+        actual_serial = getattr(getattr(agent, "_device_context", None), "device_id", None) or target_serial
+        if actual_serial:
+            target_serial = actual_serial
+            trace_store.update_trace_device_serial(trace_id, actual_serial)
+            print(f"📱 Bound to device serial: '{actual_serial}'")
 
         print("Running task on agent...")
         task_builder = (
@@ -201,17 +234,20 @@ async def run_task(
         result = await agent.run_task(request=task_builder.build())
         print(f"Task completed. Result: {result}")
 
+        device_info_line = f"Device Serial: `{target_serial}`\n" if target_serial else ""
+
         if isinstance(result, dict) and "status" in result and result.get("status") != "completed":
             error_explanation = result.get("explanation", "Task execution returned failed status.")
             print(f"Task finished with non-completed status: {error_explanation}", file=sys.stderr)
             trace_store.update_trace_status(
-                trace_id, "failed", error=error_explanation, result=result
+                trace_id, "failed", error=error_explanation, result=result, device_serial=target_serial
             )
 
             formatted_result = json.dumps(result, indent=2, ensure_ascii=False)
             failure_msg = (
                 f"Artemis background task finished with non-completed status.\n\n"
                 f"Trace ID: {trace_id}\n"
+                f"{device_info_line}"
                 f"Goal: {task_desc}\n"
                 f"Explanation: {error_explanation}\n\n"
                 f"Result:\n```json\n{formatted_result}\n```\n\n"
@@ -223,7 +259,7 @@ async def run_task(
                 message=failure_msg,
                 title="Artemis Task Incomplete",
                 event_type="failed",
-                payload={"trace_id": trace_id, "goal": task_desc, "result": result},
+                payload={"trace_id": trace_id, "device_serial": target_serial, "goal": task_desc, "result": result},
             )
             return
 
@@ -236,7 +272,7 @@ async def run_task(
                     "notes_dir to view more details."
                 )
 
-        trace_store.update_trace_status(trace_id, "completed", result=result)
+        trace_store.update_trace_status(trace_id, "completed", result=result, device_serial=target_serial)
 
         if isinstance(result, dict):
             formatted_result = json.dumps(result, indent=2, ensure_ascii=False)
@@ -248,6 +284,7 @@ async def run_task(
         success_msg = (
             "Artemis background task completed successfully.\n\n"
             f"Trace ID: {trace_id}\n"
+            f"{device_info_line}"
             f"Goal: {task_desc}\n"
             f"{result_str}"
         )
@@ -256,21 +293,22 @@ async def run_task(
             message=success_msg,
             title="Artemis Task Completed",
             event_type="completed",
-            payload={"trace_id": trace_id, "goal": task_desc, "result": result},
+            payload={"trace_id": trace_id, "device_serial": target_serial, "goal": task_desc, "result": result},
         )
 
     except asyncio.CancelledError:
         print("Task was cancelled (asyncio.CancelledError)", file=sys.stderr)
-        trace_store.update_trace_status(trace_id, "cancelled", error="Task was cancelled")
+        trace_store.update_trace_status(trace_id, "cancelled", error="Task was cancelled", device_serial=target_serial)
+        device_info_line = f"Device Serial: `{target_serial}`\n" if target_serial else ""
         cancel_msg = (
-            f"Artemis background task was cancelled.\n\nTrace ID: {trace_id}\nGoal: {task_desc}\n"
+            f"Artemis background task was cancelled.\n\nTrace ID: {trace_id}\n{device_info_line}Goal: {task_desc}\n"
         )
         notify(
             conversation_id=conversation_id,
             message=cancel_msg,
             title="Artemis Task Cancelled",
             event_type="cancelled",
-            payload={"trace_id": trace_id, "goal": task_desc},
+            payload={"trace_id": trace_id, "device_serial": target_serial, "goal": task_desc},
         )
         raise
 
@@ -289,11 +327,13 @@ async def run_task(
         frame_summary = f" (at {tb.tb_frame.f_code.co_name}:{tb.tb_lineno})" if tb else ""
         full_error_desc = f"{error_type}: {raw_error_msg}{frame_summary}"
 
-        trace_store.update_trace_status(trace_id, "failed", error=full_error_desc)
+        trace_store.update_trace_status(trace_id, "failed", error=full_error_desc, device_serial=target_serial)
 
+        device_info_line = f"Device Serial: `{target_serial}`\n" if target_serial else ""
         failure_msg = (
             f"Artemis background task failed.\n\n"
             f"Trace ID: {trace_id}\n"
+            f"{device_info_line}"
             f"Goal: {task_desc}\n"
             f"Error: {full_error_desc}\n\n"
             f'Check the logs using mobile_inspect_trace(action="view_summary", trace_id="{trace_id}") '
@@ -304,7 +344,7 @@ async def run_task(
             message=failure_msg,
             title="Artemis Task Failed",
             event_type="failed",
-            payload={"trace_id": trace_id, "goal": task_desc, "error": full_error_desc},
+            payload={"trace_id": trace_id, "device_serial": target_serial, "goal": task_desc, "error": full_error_desc},
         )
 
     finally:
@@ -330,6 +370,7 @@ if __name__ == "__main__":
     parser.add_argument("--locked-app-package", help="Package name of app to lock execution to")
     parser.add_argument("--app-path", help="Path to local APK to install before running task")
     parser.add_argument("--expected-output-desc", help="Expected output description")
+    parser.add_argument("--device-serial", help="Target specific device serial")
 
     args = parser.parse_args()
 
@@ -342,5 +383,6 @@ if __name__ == "__main__":
             locked_app_package=args.locked_app_package,
             app_path=args.app_path,
             expected_output_desc=args.expected_output_desc,
+            device_serial=args.device_serial,
         )
     )

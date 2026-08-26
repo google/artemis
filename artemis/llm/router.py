@@ -204,6 +204,10 @@ class ModelFactory:
                 or os.environ.get("GOOGLE_API_KEY")
                 or os.environ.get("GEMINI_API_KEY")
             )
+            thinking_level = endpoint.thinking_level
+            if endpoint.model_name and any(v in endpoint.model_name for v in ("2.5", "2.0", "1.5")):
+                thinking_level = None
+
             kwargs: dict[str, Any] = {
                 "model": endpoint.model_name,
                 "temperature": endpoint.temperature,
@@ -211,7 +215,7 @@ class ModelFactory:
                 "api_key": api_key,
                 "timeout": endpoint.timeout_seconds,
                 "thinking_budget": endpoint.thinking_budget,
-                "thinking_level": endpoint.thinking_level,
+                "thinking_level": thinking_level,
                 "include_thoughts": endpoint.include_thoughts,
                 "safety_settings": {
                     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,

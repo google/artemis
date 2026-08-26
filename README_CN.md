@@ -210,21 +210,28 @@ PYTHONPATH = "/path/to/artemis"
 
 ```python
 import asyncio
-from artemis.interfaces.sdk import ArtemisClient
+from artemis import ArtemisClient, ConcurrencyMode
 
 
 async def main():
-    # 初始化测试客户端（支持 "flash" 极速校验模式 或 "pro" 深度推理与自愈模式）
-    client = ArtemisClient(default_profile="flash")
-
-    # 执行自然语言端到端测试用例
-    result = await client.run(
-        "打开系统设置，进入『电池』页面，验证是否正常显示电量百分比，确认页面无异常报错弹窗。"
+    # 1. 初始化测试客户端（支持指定设备序列号与并发策略）：
+    # - concurrency_mode="per_device"（默认）：单设备排队，跨设备支持多任务并发执行
+    # - concurrency_mode="global"：全局单一并发，整个集群跨所有设备同一时刻只执行一个任务
+    client = ArtemisClient(
+        device_serial="emulator-5554",  # 可选：指定目标设备序列号（不传则自动选择空闲设备）
+        default_profile="flash",        # "flash" 极速校验 或 "pro" 深度推理自愈
+        concurrency_mode="per_device",  # 或 ConcurrencyMode.GLOBAL
     )
 
-    # 结构化断言与执行追溯
-    assert result.status == "SUCCESS", f"测试执行失败: {result.failure_reason}"
-    print(f"✅ 测试通过！耗时步数: {result.turns} | Trace ID: {result.trace_id}")
+    # 2. 执行端到端任务（也可在调用时动态覆盖指定设备与并发模式）
+    result = await client.run(
+        "打开系统设置，进入『电池』页面，验证是否正常显示电量百分比，确认页面无异常报错弹窗。",
+        device_serial="emulator-5554",  # 可选：覆盖当前调用的目标设备
+    )
+
+    # 3. 结构化断言与执行追溯
+    assert result.status == "SUCCESS", f"测试执行失败: {result.error}"
+    print(f"✅ 测试通过！设备: {result.device_id} | 步数: {result.turns} | Trace ID: {result.trace_id}")
 
 
 if __name__ == "__main__":
@@ -241,7 +248,7 @@ if __name__ == "__main__":
   <sub><b>控制台功能概览</b>：<b>① 视图切换</b>（主页与工作区） · <b>② 运行模式与回放</b>（Flash/Pro 状态与视频回放） · <b>③ 实时感知推理流</b>（动作感知、目标坐标与结构化总结） · <b>④ 提示词输入坞 (Prompt Dock)</b>（自然语言下发） · <b>⑤ 任务队列看板</b>（生命周期与历史回溯）</sub>
 </p>
 
-* **Web 可视化测试控制台 (`uv run artemis ui`)**：集成设备实时投屏与交互面板，支持通过自然语言下发测试用例，实时观测推理步骤、操作轨迹、截图留存与异常状态回放；
+* **Web 可视化测试控制台 (`uv run artemis ui`)**：集成设备实时投屏与交互面板，支持通过自然语言下发测试用例，实时观测推理步骤、操作轨迹、截图留存与异常状态回放；支持在任意终端使用 `uv run artemis restart`、`uv run artemis stop`、`uv run artemis status` 一键重启、关停或查看服务状态；
 * **原生 MCP 协议 (IDE 协同)**：作为标准 MCP 服务器无缝接入 **Antigravity、Claude Code、Windsurf** 等开发环境，在 IDE 中直接驱动真机完成自动化测试与 Bug 复现验证；
 * **开发者命令行 CLI (`uv run artemis run`)**：支持通过终端直接执行自动化测试用例、探索性稳定性巡检或 AndroidWorld 基准评测，提供高保真结构化终端输出；
 * **Python SDK**：作为标准 Python 库无缝集成至现有自动化测试框架（如 pytest）或 CI/CD 流水线，提供基于 Pydantic 的强类型结构化结果与断言支持。

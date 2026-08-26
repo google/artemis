@@ -180,8 +180,8 @@ async def test_queue_worker_execution_lifecycle():
         assert res["enqueued_count"] == 2
 
         # Give event loop time for queue_worker to execute both tasks
-        for _ in range(30):
-            if len(executed_goals) == 2:
+        for _ in range(40):
+            if len(executed_goals) == 2 and len(state.queue_items) == 0:
                 break
             await asyncio.sleep(0.05)
 
@@ -234,6 +234,7 @@ async def test_queue_worker_cmd_construction():
         cmd = executed_cmds[0]
         assert "--enable-outputter" in cmd
         assert "true" not in cmd
+        assert "--session-id" in cmd
         assert "--output-description" in cmd
         assert "Final summary" in cmd
         assert "--locked-app" in cmd
@@ -265,14 +266,16 @@ async def test_queue_worker_cmd_construction():
 @pytest.mark.asyncio
 async def test_forward_worker_output_preserves_split_utf8(capsys):
     stream = asyncio.StreamReader()
-    encoded = "worker 输出正常\n".encode()
-    stream.feed_data(encoded[:9])
-    stream.feed_data(encoded[9:])
+    # "worker output: \U0001f600\n" contains a 4-byte UTF-8 emoji (b'\xf0\x9f\x98\x80') starting at byte 15.
+    # Splitting at index 17 cuts across the multi-byte sequence to verify partial UTF-8 buffering.
+    encoded = "worker output: \U0001f600\n".encode("utf-8")
+    stream.feed_data(encoded[:17])
+    stream.feed_data(encoded[17:])
     stream.feed_eof()
 
     await TaskQueueService._forward_worker_output(stream)
 
-    assert capsys.readouterr().out == "worker 输出正常\n"
+    assert capsys.readouterr().out == "worker output: \U0001f600\n"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console isolation only")
@@ -539,7 +542,7 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
         await task_queue_service.enqueue_tasks(["Task 2"])
 
         for _ in range(40):
-            if "Task 2" in executed_goals:
+            if "Task 2" in executed_goals and len(state.queue_items) == 0:
                 break
             await asyncio.sleep(0.05)
 

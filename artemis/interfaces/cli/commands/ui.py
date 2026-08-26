@@ -95,10 +95,58 @@ def ui_command(
             help="Enable uvicorn live auto-reload (for development).",
         ),
     ] = False,
+    restart: Annotated[
+        bool,
+        typer.Option(
+            "--restart",
+            "-r",
+            help="Restart server by terminating any existing instance on the port first.",
+        ),
+    ] = False,
 ) -> None:
     """Launch the unified Artemis Showcase UI & Admin Console in one click."""
     console = Console()
     local_url = f"http://localhost:{port}"
+
+    from artemis.runtime.server_lifecycle import (
+        find_server_pids,
+        is_port_in_use,
+        stop_server,
+    )
+
+    if restart:
+        console.print(f"   [yellow]🔄 Restart requested. Recycling port {port}...[/yellow]")
+        stop_server(port=port, timeout=4.0)
+    elif is_port_in_use(port):
+        pids = find_server_pids(port)
+        pid_str = f" (PID: {', '.join(map(str, pids))})" if pids else ""
+        if sys.stdin.isatty():
+            console.print(f"\n   [yellow]⚠ Port {port} is already in use by an active Artemis server{pid_str}.[/yellow]")
+            console.print("   [dim]Choose an action:[/dim]")
+            console.print("     [bold]1[/bold] Open browser (default)")
+            console.print("     [bold]2[/bold] Restart server (stop existing and start here)")
+            console.print("     [bold]3[/bold] Cancel")
+            try:
+                choice = input("   Select [1-3, default 1]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                choice = "1"
+            if choice == "2":
+                console.print(f"\n   [yellow]🔄 Terminating previous Artemis instance on port {port}...[/yellow]")
+                stop_server(port=port, timeout=4.0)
+            elif choice == "3":
+                return
+            else:
+                if open_browser:
+                    webbrowser.open(local_url)
+                return
+        else:
+            console.print(
+                f"\n   [yellow]⚠ Port {port} is already in use by Artemis{pid_str}. "
+                f"Use '[bold]artemis restart[/bold]' to restart.[/yellow]\n"
+            )
+            if open_browser:
+                webbrowser.open(local_url)
+            return
 
     console.print()
     msg = (

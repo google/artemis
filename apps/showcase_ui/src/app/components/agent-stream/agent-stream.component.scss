@@ -550,7 +550,8 @@ $stream-row-height: 25px;
           transform: translateY(-1px);
 
           .item-header .item-header-actions {
-            &:has(.btn-delete-card) .item-time {
+            &:has(.btn-delete-card) .item-time,
+            &:has(.btn-delete-card) .item-time-divider {
               opacity: 0;
             }
 
@@ -580,8 +581,11 @@ $stream-row-height: 25px;
           display: flex;
           align-items: center;
           justify-content: space-between;
+          gap: 8px;
+          min-width: 0;
 
           .task-badge {
+            flex-shrink: 0;
             display: inline-flex;
             align-items: center;
             font-size: 10.5px;
@@ -658,11 +662,67 @@ $stream-row-height: 25px;
           .item-header-actions {
             display: flex;
             align-items: center;
+            gap: 4px;
             position: relative;
+            min-width: 0;
+            flex-shrink: 1;
+            justify-content: flex-end;
+
+            .item-device {
+              display: inline-flex;
+              align-items: center;
+              gap: 2.5px;
+              min-width: 0;
+              flex-shrink: 1;
+              font-size: 10.5px;
+              color: #64748b;
+              line-height: 1;
+              cursor: default;
+              transition: color 0.15s ease, opacity 0.15s ease;
+
+              .device-icon {
+                font-size: 12px;
+                width: 12px;
+                height: 12px;
+                line-height: 12px;
+                color: #64748b;
+                opacity: 0.75;
+                flex-shrink: 0;
+              }
+
+              .device-name {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                min-width: 0;
+                font-family: inherit;
+                letter-spacing: -0.15px;
+              }
+
+              &:hover {
+                color: #334155;
+                .device-icon {
+                  color: #334155;
+                  opacity: 1;
+                }
+              }
+            }
+
+            .item-time-divider {
+              font-size: 10px;
+              color: #94a3b8;
+              line-height: 1;
+              user-select: none;
+              flex-shrink: 0;
+              transition: opacity 0.15s ease;
+            }
 
             .item-time {
               font-size: 11px;
               color: #64748b;
+              white-space: nowrap;
+              flex-shrink: 0;
+              line-height: 1;
               transition: opacity 0.15s ease;
             }
 

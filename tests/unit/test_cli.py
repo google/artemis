@@ -198,9 +198,8 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     claude_data = json.loads((tmp_path / ".claude.json").read_text())
     assert claude_data["mcpServers"]["artemis"]["type"] == "stdio"
 
-    vscode_data = json.loads(
-        (tmp_path / "AppData" / "Roaming" / "Code" / "User" / "mcp.json").read_text()
-    )
+    from artemis.interfaces.cli.commands.mcp import _get_vscode_user_dir
+    vscode_data = json.loads((_get_vscode_user_dir() / "mcp.json").read_text())
     assert vscode_data["servers"]["artemis"]["type"] == "stdio"
     assert "mcpServers" not in vscode_data
 
@@ -333,3 +332,107 @@ def test_cli_mcp_install_openclaw_migrates_legacy_plugin_shape(tmp_path, monkeyp
     assert data["mcp"]["servers"]["artemis"]["command"]
 
 
+def test_cli_restart_help():
+    """Verify 'artemis restart --help' displays lifecycle options."""
+    result = runner.invoke(app, ["restart", "--help"])
+    assert result.exit_code == 0
+    assert "--port" in result.output
+    assert "--host" in result.output
+    assert "--force" in result.output
+    assert "--daemon" in result.output
+    assert "--open" in result.output
+
+
+def test_cli_stop_help():
+    """Verify 'artemis stop --help' displays stop options."""
+    result = runner.invoke(app, ["stop", "--help"])
+    assert result.exit_code == 0
+    assert "--port" in result.output
+    assert "--force" in result.output
+
+
+def test_cli_status_help():
+    """Verify 'artemis status --help' displays status options."""
+    result = runner.invoke(app, ["status", "--help"])
+    assert result.exit_code == 0
+    assert "--port" in result.output
+
+
+def test_cli_status_offline(monkeypatch):
+    """Verify 'artemis status' reports offline when port is unused."""
+    from artemis.runtime import server_lifecycle
+
+    monkeypatch.setattr(server_lifecycle, "is_port_in_use", lambda port, **kwargs: False)
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [])
+    monkeypatch.setattr(server_lifecycle, "read_server_info", lambda: None)
+
+    result = runner.invoke(app, ["status", "--port", "59998"])
+    assert result.exit_code == 0
+    assert "OFFLINE" in result.output or "STOPPED" in result.output
+
+
+def test_cli_status_online(monkeypatch):
+    """Verify 'artemis status' reports online details when server is active."""
+    from artemis.runtime import server_lifecycle
+
+    monkeypatch.setattr(server_lifecycle, "is_port_in_use", lambda port, **kwargs: True)
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [12345])
+    monkeypatch.setattr(
+        server_lifecycle,
+        "read_server_info",
+        lambda: {"pid": 12345, "port": 8000, "started_at": 1000.0, "cwd": "/tmp"},
+    )
+
+    result = runner.invoke(app, ["status", "--port", "8000"])
+    assert result.exit_code == 0
+    assert "ONLINE" in result.output or "RUNNING" in result.output
+    assert "12345" in result.output
+
+
+def test_cli_stop_command(monkeypatch):
+    """Verify 'artemis stop' invokes stop_server with given parameters."""
+    from artemis.interfaces.cli.commands import server_lifecycle as sl_cmd
+
+    mock_called = {}
+
+    def mock_stop(port, timeout=4.0, force=False):
+        mock_called["port"] = port
+        mock_called["force"] = force
+        return True, "Artemis server stopped (PID: 12345).", [12345]
+
+    monkeypatch.setattr(sl_cmd, "find_server_pids", lambda port: [12345])
+    monkeypatch.setattr(sl_cmd, "stop_server", mock_stop)
+
+    result = runner.invoke(app, ["stop", "--port", "8000", "--force"])
+    assert result.exit_code == 0
+    assert mock_called["port"] == 8000
+    assert mock_called["force"] is True
+    assert "stopped successfully" in result.output.lower() or "PID: 12345" in result.output
+
+
+def test_cli_restart_command(monkeypatch):
+    """Verify 'artemis restart' stops previous server and invokes ui_command."""
+    from artemis.interfaces.cli.commands import server_lifecycle as sl_cmd
+    from artemis.runtime import server_lifecycle
+
+    stopped = {}
+    ui_called = {}
+
+    def mock_stop(port, timeout=4.0, force=False):
+        stopped["port"] = port
+        return True, "Stopped server", [12345]
+
+    def mock_ui(host, port, open_browser, reload):
+        ui_called["host"] = host
+        ui_called["port"] = port
+        ui_called["open_browser"] = open_browser
+
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [12345])
+    monkeypatch.setattr(sl_cmd, "stop_server", mock_stop)
+    monkeypatch.setattr(sl_cmd, "ui_command", mock_ui)
+
+    result = runner.invoke(app, ["restart", "--port", "8888", "--no-open"])
+    assert result.exit_code == 0
+    assert stopped["port"] == 8888
+    assert ui_called["port"] == 8888
+    assert ui_called["open_browser"] is False

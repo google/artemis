@@ -28,6 +28,8 @@ export interface TaskQueueItem {
   status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
   created_at?: number;
   start_time?: number;
+  device_serial?: string | null;
+  device_id?: string | null;
 }
 
 export interface Session {
@@ -39,6 +41,9 @@ export interface Session {
   video_url?: string;
   recording_status?: 'recording' | 'finalizing' | 'processing' | 'ready' | 'failed' | 'unavailable';
   model_info?: ModelInfo;
+  device_serial?: string | null;
+  device_id?: string | null;
+  device_info?: any;
 }
 
 export interface AgentStatusResponse {

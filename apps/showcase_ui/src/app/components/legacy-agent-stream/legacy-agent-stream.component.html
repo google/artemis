@@ -35,7 +35,7 @@
           *ngFor="let session of agentService.sessions()"
           [value]="session.session_id"
         >
-          {{ session.initial_goal || 'Unnamed Goal' }} ({{ session.start_time * 1000 | date:'short' }})
+          {{ session.initial_goal || 'Unnamed Goal' }} ({{ session.device_serial ? session.device_serial + ' · ' : '' }}{{ session.start_time * 1000 | date:'short' }})
         </option>
       </select>
       <button class="btn-refresh" (click)="agentService.fetchSessions()">🔄 Refresh</button>

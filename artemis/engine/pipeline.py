@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Literal
 
 from artemis.config import OutputConfig, load_agent_config
@@ -50,13 +51,16 @@ class Pipeline:
         device_id: str = "default-device",
         output_config: OutputConfig | None = None,
         enable_outputter: bool | None = None,
+        locked_package: str | None = None,
+        **kwargs: Any,
     ) -> ExecutionContextState:
         ctx = ExecutionContext(task_goal=goal, device_id=device_id)
         if not driver:
             driver = MockDeviceDriver(device_id=device_id)
 
+        max_turns = kwargs.get("max_turns", 5)
         runner = cls.create_runner(profile=profile, ctx=ctx, driver=driver)
-        state = await runner.run()
+        state = await runner.run(max_turns=max_turns)
 
         # Check Outputter configuration
         try:

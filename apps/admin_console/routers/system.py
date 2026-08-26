@@ -360,3 +360,96 @@ async def get_model_config_and_env():
         "env_filename": ".env",
         "env_vars": env_vars,
     }
+
+
+@router.get("/server-status")
+async def get_server_runtime_status():
+    """Retrieve runtime status, PID, port, and uptime of the Artemis server."""
+    import os
+    from artemis.runtime.server_lifecycle import get_server_status
+
+    try:
+        from apps.admin_console.core.state import state
+    except ImportError:
+        from admin_console.core.state import state
+
+    port = getattr(state, "port", 8000)
+    status = get_server_status(port=port)
+    status["current_pid"] = os.getpid()
+    return status
+
+
+@router.post("/restart")
+async def restart_server_endpoint():
+    """Request a graceful restart of the Artemis server from thin clients/UI."""
+    import asyncio
+    import os
+    import sys
+    import threading
+
+    try:
+        from apps.admin_console.core.state import state
+    except ImportError:
+        from admin_console.core.state import state
+
+    port = getattr(state, "port", 8000)
+    current_pid = os.getpid()
+
+    def _restart_worker():
+        import time
+
+        time.sleep(0.6)
+        if sys.platform != "win32":
+            try:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception:
+                import subprocess
+
+                subprocess.Popen([sys.executable] + sys.argv)
+                os._exit(0)
+        else:
+            import subprocess
+
+            subprocess.Popen([sys.executable] + sys.argv)
+            os._exit(0)
+
+    threading.Thread(target=_restart_worker, daemon=True).start()
+
+    return {
+        "status": "restarting",
+        "message": "Artemis server is restarting. Client reconnection should occur in 2-3 seconds.",
+        "previous_pid": current_pid,
+        "port": port,
+    }
+
+
+@router.post("/shutdown")
+async def shutdown_server_endpoint():
+    """Request a graceful shutdown of the Artemis server."""
+    import os
+    import signal
+    import threading
+
+    try:
+        from apps.admin_console.core.state import state
+    except ImportError:
+        from admin_console.core.state import state
+
+    current_pid = os.getpid()
+
+    def _shutdown_worker():
+        import time
+
+        time.sleep(0.5)
+        try:
+            os.kill(current_pid, signal.SIGTERM)
+        except Exception:
+            os._exit(0)
+
+    threading.Thread(target=_shutdown_worker, daemon=True).start()
+
+    return {
+        "status": "shutting_down",
+        "message": "Artemis server is shutting down.",
+        "pid": current_pid,
+    }

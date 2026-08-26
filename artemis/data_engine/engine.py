@@ -222,19 +222,31 @@ class DataEngine:
 
         self._send_ipc_event(event_type, data)
 
-    def start_session(self, goal: str, device_info: dict[str, Any] | None = None) -> UUID:
+    def start_session(
+        self,
+        goal: str,
+        device_info: dict[str, Any] | None = None,
+        session_id: UUID | str | None = None,
+    ) -> UUID:
         """Start a new session."""
         global _CURRENT_DATA_ENGINE
         _CURRENT_DATA_ENGINE = self
 
-        env_session_id = os.getenv("ARTEMIS_CLOUD_SESSION_ID") or os.getenv("ARTEMIS_SESSION_ID")
-        if env_session_id:
-            try:
-                session_id = UUID(env_session_id)
-            except ValueError:
-                session_id = env_session_id
+        if session_id is not None:
+            if isinstance(session_id, str):
+                try:
+                    session_id = UUID(session_id)
+                except ValueError:
+                    pass
         else:
-            session_id = uuid4()
+            env_session_id = os.getenv("ARTEMIS_CLOUD_SESSION_ID") or os.getenv("ARTEMIS_SESSION_ID")
+            if env_session_id:
+                try:
+                    session_id = UUID(env_session_id)
+                except ValueError:
+                    session_id = env_session_id
+            else:
+                session_id = uuid4()
         self.current_session_id = session_id
         self.session_start_time = time.time()
 

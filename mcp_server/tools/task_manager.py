@@ -43,7 +43,16 @@ def mobile_manage_task(
 
     ### Available Actions:
     - **'status'**: Retrieves execution progress, elapsed time, and metadata.
-    Returns a JSON object.
+    Returns a JSON object containing:
+        * `trace_id`: Unique identifier for the task.
+        * `status`: Task lifecycle state ('running', 'completed', 'failed', 'cancelled').
+        * `device_serial`: The Android device serial number assigned to/running this task
+          (essential in multi-device environments to know which phone this task belongs to).
+        * `task_desc`: The goal/description of the task.
+        * `model`: 'Flash' or 'Pro'.
+        * `elapsed_seconds`: Execution duration in seconds.
+        * `progress`: Live progress data (current turn, latest thoughts and actions for Flash;
+          active task plan for Pro).
         * **How to use the output**:
             - For **Pro Model**, check `progress.task_plan` to see if the
             agent's long-term plan aligns with your goal.
@@ -113,9 +122,51 @@ def mobile_manage_task(
         end_time = status_data.get("end_time") or time.time()
         elapsed = round(end_time - start_time, 1) if start_time else 0
 
+        project_root = env_utils.get_project_root()
+        db_path = os.path.join(trace_store.TRACES_DIR, "data_engine.db")
+        if not os.path.exists(db_path):
+            db_path = os.path.join(project_root, "traces", "data_engine.db")
+
+        device_serial = status_data.get("device_serial")
+        if not device_serial and os.path.exists(db_path):
+            try:
+                conn_dev = sqlite3.connect(db_path)
+                conn_dev.row_factory = sqlite3.Row
+                cur_dev = conn_dev.cursor()
+                cur_dev.execute(
+                    "SELECT device_info FROM sessions WHERE session_id = ? OR pid = ? ORDER BY start_time DESC LIMIT 1",
+                    (trace_id, pid),
+                )
+                row_dev = cur_dev.fetchone()
+                if row_dev and row_dev["device_info"]:
+                    try:
+                        d_info = json.loads(row_dev["device_info"])
+                        if isinstance(d_info, dict) and d_info.get("device_id"):
+                            device_serial = d_info["device_id"]
+                            status_data["device_serial"] = device_serial
+                            trace_store.write_status(trace_id, status_data)
+                    except Exception:
+                        pass
+                conn_dev.close()
+            except Exception:
+                pass
+
+        if not device_serial and pid:
+            try:
+                owners = DeviceExecutionLock.get_active_owners()
+                for clean_id, owner in owners.items():
+                    if owner.pid == pid or owner.session_id == trace_id:
+                        device_serial = owner.device_id
+                        status_data["device_serial"] = device_serial
+                        trace_store.write_status(trace_id, status_data)
+                        break
+            except Exception:
+                pass
+
         response: dict[str, Any] = {
             "trace_id": trace_id,
             "status": current_status,
+            "device_serial": device_serial,
             "elapsed_seconds": elapsed,
             "task_desc": status_data.get("task_desc"),
             "model": status_data.get("model"),

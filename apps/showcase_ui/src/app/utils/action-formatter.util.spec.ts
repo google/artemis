@@ -85,7 +85,7 @@ describe('action-formatter.util screenshot chaining', () => {
     expect(act1Pre).toBe('/images/fbdf17fa7a970d2c37aa52ae4336119e76a7d13ea457811cf8aaab19b3f53843');
     expect(act1Post).toBe('/images/18bd2ac49e64976f1e74e828ddae76e54da1587044b1d3fb01317dd202ff7c67');
 
-    // Action 2: "下一次的决策前是上一次的动作后" -> Pre MUST be Action 1's post (18bd2ac4...), Post should be Action 2's post (484361b1...)
+    // Action 2: "The next pre-action state is the previous post-action state" -> Pre MUST be Action 1's post (18bd2ac4...), Post should be Action 2's post (484361b1...)
     const act2Pre = getStepPreImageUrl(stepData, action2);
     const act2Post = getStepPostImageUrl(stepData, action2);
     expect(act2Pre).toBe('/images/18bd2ac49e64976f1e74e828ddae76e54da1587044b1d3fb01317dd202ff7c67');
@@ -154,7 +154,7 @@ describe('extractStepReplayFrames', () => {
     expect(extractStepReplayFrames(null as any)).toEqual([]);
   });
 
-  it('should extract ordered StepReplayFrames and deduplicate consecutive identical images', () => {
+  it('should extract 1:1 ordered StepReplayFrames with action objects and pre/post images', () => {
     const logs = [
       {
         type: 'step_updated',
@@ -181,13 +181,18 @@ describe('extractStepReplayFrames', () => {
     ];
 
     const frames = extractStepReplayFrames(logs);
-    expect(frames.length).toBe(3);
-    expect(frames[0].title).toBe('Step 1 (Before Action)');
+    expect(frames.length).toBe(2);
+    expect(frames[0].stepNumber).toBe(1);
     expect(frames[0].imageUrl).toBe('/images/img_screen_1');
-    expect(frames[1].title).toContain('Step 1');
+    expect(frames[0].preImageUrl).toBe('/images/img_screen_1');
+    expect(frames[0].postImageUrl).toBe('/images/img_screen_2');
+    expect(frames[0].action).toEqual({ action: 'tap', coordinates: [500, 1000] });
+
+    expect(frames[1].stepNumber).toBe(2);
     expect(frames[1].imageUrl).toBe('/images/img_screen_2');
-    expect(frames[2].title).toContain('Step 2');
-    expect(frames[2].imageUrl).toBe('/images/img_screen_3');
+    expect(frames[1].preImageUrl).toBe('/images/img_screen_2');
+    expect(frames[1].postImageUrl).toBe('/images/img_screen_3');
+    expect(frames[1].action).toEqual({ action: 'input_text', text: 'hello' });
   });
 
   it('should handle terminal step with only pre_image (e.g. cancelled / failed task)', () => {

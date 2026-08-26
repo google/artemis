@@ -218,6 +218,7 @@ class FlashRunner:
 
             for attempt in range(max_retries):
                 try:
+                    stream_exec_id = uuid.uuid4()
 
                     async def run_stream():
                         full_response = None
@@ -226,6 +227,34 @@ class FlashRunner:
                                 full_response = chunk
                             else:
                                 full_response += chunk
+
+                            # Real-time token streaming to DataEngine for live UI display
+                            if (
+                                getattr(self, "ctx", None)
+                                and getattr(self.ctx, "data_engine", None)
+                                and getattr(chunk, "content", None)
+                            ):
+                                text_to_stream = ""
+                                thinking_to_stream = ""
+                                if isinstance(chunk.content, str):
+                                    text_to_stream = chunk.content
+                                elif isinstance(chunk.content, list):
+                                    for item in chunk.content:
+                                        if isinstance(item, str):
+                                            text_to_stream += item
+                                        elif isinstance(item, dict):
+                                            if item.get("type") == "text":
+                                                text_to_stream += item.get("text", "")
+                                            elif item.get("type") == "thinking":
+                                                thinking_to_stream += item.get("thinking", "")
+                                if text_to_stream:
+                                    self.ctx.data_engine.stream_output(
+                                        stream_exec_id, text_to_stream, is_thinking=False
+                                    )
+                                if thinking_to_stream:
+                                    self.ctx.data_engine.stream_output(
+                                        stream_exec_id, thinking_to_stream, is_thinking=True
+                                    )
                         return full_response
 
                     response = await invoke_llm_with_timeout_message(

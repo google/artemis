@@ -74,12 +74,16 @@ os.environ["ARTEMIS_IPC_PORT"] = ""
 mcp = FastMCP("Android_ADB_Controller")
 
 _GLOBAL_CONTROLLER = None
+_CONTROLLERS: dict[str, Any] = {}
 
 
-def _get_controller():
-    """Lazy-load device controller on-demand as a singleton."""
-    global _GLOBAL_CONTROLLER
-    if _GLOBAL_CONTROLLER is not None:
+def _get_controller(device_serial: str | None = None):
+    """Lazy-load device controller on-demand, caching per device serial."""
+    global _GLOBAL_CONTROLLER, _CONTROLLERS
+    target_serial = device_serial or os.environ.get("ARTEMIS_DEVICE_ID") or os.environ.get("ADB_DEVICE_SERIAL")
+    if target_serial and target_serial in _CONTROLLERS:
+        return _CONTROLLERS[target_serial]
+    if not target_serial and _GLOBAL_CONTROLLER is not None:
         return _GLOBAL_CONTROLLER
 
     logger.info("Initializing lazy device controller...")
@@ -87,21 +91,21 @@ def _get_controller():
         logger.info(
             "GCP CLOUD MODE active: initializing CloudMobileDeviceController via UnifiedMobileController..."
         )
-        target_serial = (
-            os.environ.get("ARTEMIS_DEVICE_ID")
-            or os.environ.get("ADB_DEVICE_SERIAL")
-            or "cloud_device"
-        )
+        resolved_serial = target_serial or "cloud_device"
         ctx = ArtemisContext(
             device=DeviceContext(
                 platform=DevicePlatform.ANDROID,
-                device_id=target_serial,
+                device_id=resolved_serial,
                 width=1080,
                 height=2400,
             )
         )
-        _GLOBAL_CONTROLLER = UnifiedMobileController(ctx=ctx)
-        return _GLOBAL_CONTROLLER
+        controller = UnifiedMobileController(ctx=ctx)
+        if resolved_serial:
+            _CONTROLLERS[resolved_serial] = controller
+        if _GLOBAL_CONTROLLER is None:
+            _GLOBAL_CONTROLLER = controller
+        return controller
 
     host = os.environ.get("ADB_HOST", "localhost")
     port_str = os.environ.get("ADB_PORT", "5037")
@@ -110,7 +114,6 @@ def _get_controller():
         os.environ["ADB_SERVER_SOCKET"] = f"tcp:{host}:{port}"
     adb = AdbClient(host=host, port=port)
 
-    target_serial = os.environ.get("ARTEMIS_DEVICE_ID") or os.environ.get("ADB_DEVICE_SERIAL")
     devices = adb.device_list()
     if not devices:
         raise Exception(f"No Android devices found at {host}:{port}")
@@ -148,9 +151,13 @@ def _get_controller():
         ui_adb_client=ui_client,
     )
 
-    _GLOBAL_CONTROLLER = UnifiedMobileController(ctx)
+    controller = UnifiedMobileController(ctx)
+    if device_id:
+        _CONTROLLERS[device_id] = controller
+    if _GLOBAL_CONTROLLER is None:
+        _GLOBAL_CONTROLLER = controller
     logger.info(f"Lazy device controller fully initialized for device: {device_id}")
-    return _GLOBAL_CONTROLLER
+    return controller
 
 
 def _find_element_at_coords(elements: list[dict], x: int, y: int) -> dict | None:

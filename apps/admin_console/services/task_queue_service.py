@@ -241,6 +241,11 @@ class TaskQueueService:
     async def queue_worker(cls):
         """Persistent, self-healing background worker loop processing tasks in FIFO order."""
         print("[QueueWorker] Background worker loop initialized and running.")
+        try:
+            DeviceExecutionLock.cleanup_stale_locks()
+        except Exception as exc:
+            print(f"[QueueWorker] Initial stale lock cleanup notice: {exc}")
+
         while True:
             task_item = None
             sess_id = None
@@ -289,6 +294,7 @@ class TaskQueueService:
                         "session_id": sess_id,
                         "initial_goal": goal,
                         "profile": profile,
+                        "device_serial": task_item.get("device_serial"),
                     },
                 )
 
@@ -322,6 +328,8 @@ class TaskQueueService:
                     "--test-name",
                     test_name,
                 ]
+                if sess_id:
+                    cmd.extend(["--session-id", str(sess_id)])
                 if expected_output:
                     cmd.extend(["--output-description", str(expected_output)])
                 if enable_outputter is not None:
@@ -330,9 +338,13 @@ class TaskQueueService:
                     cmd.extend(["--locked-app", str(locked_app)])
                 if app_path:
                     cmd.extend(["--app-path", str(app_path)])
+                device_serial = task_item.get("device_serial")
+                if device_serial:
+                    cmd.extend(["--device-serial", str(device_serial)])
+                    env["ADB_DEVICE_SERIAL"] = str(device_serial)
 
                 print(
-                    f"[QueueWorker] Starting task [{sess_id}]: '{goal}' (profile: {profile}, outputter: {bool(expected_output or enable_outputter)})"
+                    f"[QueueWorker] Starting task [{sess_id}]: '{goal}' (profile: {profile}, device: {device_serial or 'auto'}, outputter: {bool(expected_output or enable_outputter)})"
                 )
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -349,6 +361,7 @@ class TaskQueueService:
                     str(queue_ticket),
                     proc.pid,
                     description=f"frontend task: {goal[:120]}",
+                    device_id=device_serial or "pending",
                     session_id=str(sess_id) if sess_id else None,
                     ingress="frontend",
                 )
@@ -453,6 +466,7 @@ class TaskQueueService:
         enable_outputter: bool | None = None,
         locked_app_package: str | None = None,
         app_path: str | None = None,
+        device_serial: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker."""
         cls.ensure_worker_running()
@@ -461,8 +475,18 @@ class TaskQueueService:
         now = time.time()
         for i, goal in enumerate(goals):
             sess_id = str(uuid.uuid4())
+            assigned_serial = device_serial
+            if not assigned_serial:
+                try:
+                    from artemis.runtime import device_pool
+
+                    assigned_serial = device_pool.select_device()
+                except Exception:
+                    assigned_serial = None
+
             queue_ticket = DeviceExecutionLock.reserve(
                 description=f"frontend task: {goal[:120]}",
+                device_id=assigned_serial or "pending",
                 session_id=sess_id,
                 ingress="frontend",
             )
@@ -474,6 +498,7 @@ class TaskQueueService:
                 "enable_outputter": enable_outputter,
                 "locked_app_package": locked_app_package,
                 "app_path": app_path,
+                "device_serial": assigned_serial,
                 "status": "pending",
                 "queue_ticket": queue_ticket,
                 "created_at": now + i * 0.001,

@@ -43,6 +43,7 @@ def init_trace(
     task_desc: str,
     model: str,
     conversation_id: str,
+    device_serial: str | None = None,
 ) -> dict[str, Any]:
     """Initializes the trace directory and creates the initial status.json file."""
     trace_dir = get_trace_dir(trace_id)
@@ -54,6 +55,7 @@ def init_trace(
         "model": model,
         "conversation_id": conversation_id,
         "status": "running",
+        "device_serial": device_serial,
         "start_time": time.time(),
         "end_time": None,
         "error": None,
@@ -89,6 +91,7 @@ def update_trace_status(
     status: str,
     error: str | None = None,
     result: Any | None = None,
+    device_serial: str | None = None,
 ) -> dict[str, Any] | None:
     """Updates specific fields of the status.json for a given trace_id."""
     data = read_status(trace_id)
@@ -103,6 +106,19 @@ def update_trace_status(
         data["error"] = error
     if result is not None:
         data["result"] = result
+    if device_serial is not None:
+        data["device_serial"] = device_serial
 
+    write_status(trace_id, data)
+    return data
+
+
+def update_trace_device_serial(trace_id: str, device_serial: str) -> dict[str, Any] | None:
+    """Updates the device_serial field of the status.json for a given trace_id."""
+    data = read_status(trace_id)
+    if not data:
+        return None
+
+    data["device_serial"] = device_serial
     write_status(trace_id, data)
     return data

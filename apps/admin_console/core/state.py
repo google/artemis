@@ -30,6 +30,8 @@ class ServerState:
         self.ipc_server: asyncio.Server | None = None
         self.ipc_serve_task: asyncio.Task | None = None
         self.ipc_port: int | None = None
+        self.port: int = 8000
+        self.host: str = "0.0.0.0"
         self.is_shutting_down: bool = False
 
         self.current_process: asyncio.subprocess.Process | None = None

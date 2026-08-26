@@ -32,6 +32,7 @@ def mobile_run_task(
     locked_app_package: str | None = None,
     app_path: str | None = None,
     expected_output_desc: str | None = None,
+    device_serial: str | None = None,
 ) -> dict[str, Any]:
     """Starts a specialized mobile UI automation subagent to autonomously plan and execute tasks on a connected Android device.
 
@@ -40,6 +41,23 @@ def mobile_run_task(
     This tool supports two execution models: **Flash** (for rapid,
     straightforward UI scripts) and **Pro** (for complex, exploratory tasks
     requiring deep reasoning).
+
+    ### Device Selection & Multi-Device Support (CRITICAL)
+    ARTEMIS supports multi-device execution and provides two device selection modes:
+    1. **Direct Device Specification**: Specify `device_serial` explicitly
+       (e.g., `device_serial="63191FDKX00062"` or `device_serial="emulator-5554"`).
+       Tasks targeting different devices run concurrently via per-device locking.
+    2. **Automatic Device Selection**: If `device_serial` is omitted or `None`,
+       ARTEMIS will automatically select the connected device or allocate an idle device
+       from the device pool.
+
+    **Device Selection Policy & Diagnostics**:
+    - **Prioritize User Choice**: When multiple devices or emulators are connected (or when
+      user intent is not explicitly specified), **ALWAYS PRIORITIZE ASKING THE USER** to
+      choose or confirm the target device before launching tasks.
+    - **Device Diagnosis with `adb devices`**: Always use `adb devices` (or `adb devices -l`)
+      to inspect connected hardware, verify authorization states (`device` vs `unauthorized`),
+      and retrieve active device serials when diagnosing or before delegating tasks.
 
     ### Model Selection Guide (CRITICAL FOR ROUTING)
     You MUST choose the appropriate `model` based on the task complexity:
@@ -81,6 +99,7 @@ def mobile_run_task(
     containing:
     - `trace_id`: The unique session identifier of the task for status tracking
     and inspection.
+    - `device_serial`: The assigned target device serial (or "auto-select").
     - `notes_dir`: (Pro Model Only) The directory where the subagent's execution
     files/notes are located.
     - `stdout_log`: The path to the execution framework log.
@@ -120,6 +139,11 @@ def mobile_run_task(
           summarization agent will aggregate the interaction history
           (motivation, actions, videos) into a summary report saved as
           "output.md" in `notes_dir`. Ignored if `model="Flash"`.
+        device_serial: Optional Android device serial number (e.g. "63191FDKX00062"
+          or "emulator-5554"). If specified, binds execution strictly to that device,
+          allowing multi-device concurrent automation. If omitted, ARTEMIS will
+          automatically select an available device. Prioritize letting the user select
+          the target device if multiple devices are attached.
     """
     # 0. Validate and normalize model
     if model.lower() not in ("flash", "pro"):
@@ -135,18 +159,31 @@ def mobile_run_task(
         task_desc=task_desc,
         model=canonical_model,
         conversation_id=conversation_id,
+        device_serial=device_serial,
     )
 
-    # 3. Resolve project root, python executable, and background runner module
+    # 3. Auto-spawn daemon if not already running (unless standalone forced)
+    if os.environ.get("ARTEMIS_STANDALONE") != "1":
+        try:
+            from artemis.runtime import ensure_daemon_running
+
+            ensure_daemon_running(timeout=1.5)
+        except Exception:
+            pass
+
+    # 4. Resolve project root, python executable, and background runner module
     project_root = env_utils.get_project_root()
     python_exe = env_utils.resolve_python_executable(project_root)
-    queue_ticket = DeviceExecutionLock.reserve(
-        description=f"MCP task: {task_desc[:120]}",
-        session_id=trace_id,
-        ingress="mcp",
-    )
+    reserve_kwargs: dict[str, Any] = {
+        "description": f"MCP task: {task_desc[:120]}",
+        "session_id": trace_id,
+        "ingress": "mcp",
+    }
+    if device_serial:
+        reserve_kwargs["device_id"] = device_serial
+    queue_ticket = DeviceExecutionLock.reserve(**reserve_kwargs)
 
-    # 4. Spawn the background task runner as an independent subprocess
+    # 5. Spawn the background task runner as an independent subprocess
     try:
         cmd = [
             python_exe,
@@ -167,10 +204,15 @@ def mobile_run_task(
             cmd.extend(["--app-path", app_path])
         if expected_output_desc and canonical_model != "Flash":
             cmd.extend(["--expected-output-desc", expected_output_desc])
+        if device_serial:
+            cmd.extend(["--device-serial", device_serial])
 
         env = os.environ.copy()
         env["ARTEMIS_SESSION_ID"] = trace_id
         env["ARTEMIS_TASK_INGRESS"] = "mcp"
+        if device_serial:
+            env["ADB_DEVICE_SERIAL"] = device_serial
+            env["ARTEMIS_DEVICE_ID"] = device_serial
         env[DeviceExecutionLock.QUEUE_TICKET_ENV] = queue_ticket
 
         proc_kwargs = env_utils.get_detached_process_kwargs()
@@ -180,12 +222,18 @@ def mobile_run_task(
             cwd=project_root,
             **proc_kwargs,
         )
+        transfer_kwargs: dict[str, Any] = {
+            "description": f"MCP task: {task_desc[:120]}",
+            "session_id": trace_id,
+            "ingress": "mcp",
+        }
+        if device_serial:
+            transfer_kwargs["device_id"] = device_serial
+
         DeviceExecutionLock.transfer_reservation(
             queue_ticket,
             proc.pid,
-            description=f"MCP task: {task_desc[:120]}",
-            session_id=trace_id,
-            ingress="mcp",
+            **transfer_kwargs,
         )
 
         # 5. Record the PID of the spawned subprocess
@@ -201,6 +249,7 @@ def mobile_run_task(
 
         response_dict: dict[str, Any] = {
             "trace_id": trace_id,
+            "device_serial": device_serial or "auto-select",
             "message": "Successfully started background task.",
             "stdout_log": stdout_log_path,
             "stderr_log": stderr_log_path,

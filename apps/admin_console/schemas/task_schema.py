@@ -23,6 +23,8 @@ class RunRequest(BaseModel):
     enable_outputter: bool | None = None
     locked_app_package: str | None = None
     app_path: str | None = None
+    device_serial: str | None = None
+
 
 
 class ReplayRequest(BaseModel):

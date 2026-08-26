@@ -115,20 +115,21 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
 
     Use this tool DURING a running task or AFTER it has finished (or failed) to
     monitor progress, verify answers, diagnose agent errors, and debug.
-    It provides comprehensive runtime information, raw agent outputs, and visual
-    screenshots for both **Flash** and **Pro** tasks.
+    It provides comprehensive runtime information (including the assigned
+    `device_serial`), raw agent outputs, and visual screenshots for both
+    **Flash** and **Pro** tasks.
 
     ### Available Actions:
     - **'view_summary'**: Retrieves a high-level execution summary across all
-    steps.
+    steps, including the target `device_serial`.
         * **Pro Model**: Displays a hierarchical task plan summary, showing the
-        status and descriptions of all completed, active, and pending steps.
+        status, device serial, and descriptions of all completed, active, and pending steps.
         * **Flash Model**: Displays an all-in-one execution chain containing the
-        complete reasoning (thoughts/motivation) and action taken (`click`,
+        complete reasoning (thoughts/motivation), device serial, and action taken (`click`,
         `input_text`, etc.) for every single step.
 
     - **'view_step_screenshots'**: Retrieves local file paths of screenshots for
-    a specific step (supports both Flash and Pro). Returns:
+    a specific step (supports both Flash and Pro), along with `device_serial`. Returns:
         1. `before_screenshot`: The original device screenshot observed by the
         agent right before taking the action.
         2. `after_screenshot`: A post-action screenshot capturing the failure or
@@ -139,9 +140,10 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
         action visually marked (e.g., red circle for taps, red arrow for
         swipes). CRITICAL for verifying if the agent tapped the correct UI
         element.
+        4. `device_serial`: The serial of the device on which this step was executed.
 
     - **'view_step_details'**: Retrieves deep runtime logs, raw VLM thoughts,
-    and exact actions for a specific step.
+    and exact actions for a specific step, along with `device_serial`.
         * **Pro Model**: Fully supported. Returns detailed per-step diagnostic
         data.
         * **Flash Model**: DO NOT USE. (Flash reasoning and actions are already
@@ -242,11 +244,34 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
 
         status_data = trace_store.read_status(trace_id)
         is_flash = status_data and status_data.get("model", "").lower() == "flash"
+        device_serial = status_data.get("device_serial") if status_data else None
+        if not device_serial and os.path.exists(db_path):
+            try:
+                conn_dev = sqlite3.connect(db_path)
+                conn_dev.row_factory = sqlite3.Row
+                cur_dev = conn_dev.cursor()
+                cur_dev.execute(
+                    "SELECT device_info FROM sessions WHERE session_id = ? LIMIT 1",
+                    (trace_id,),
+                )
+                row_dev = cur_dev.fetchone()
+                if row_dev and row_dev["device_info"]:
+                    try:
+                        d_info = json.loads(row_dev["device_info"])
+                        if isinstance(d_info, dict) and d_info.get("device_id"):
+                            device_serial = d_info["device_id"]
+                    except Exception:
+                        pass
+                conn_dev.close()
+            except Exception:
+                pass
+
+        device_info_str = f" | **Device Serial:** `{device_serial}`" if device_serial else ""
 
         if is_flash:
             summary_lines = [
                 "# ARTEMIS Flash Execution Summary",
-                f"**Session ID:** `{trace_id}` | **Model:** Flash\n",
+                f"**Session ID:** `{trace_id}` | **Model:** Flash{device_info_str}\n",
                 "---",
                 "## Step-by-Step Execution Chain\n",
             ]
@@ -296,6 +321,8 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                 last_n_detailed=0,
                 all_detailed=False,
             )
+            if device_serial and not summary_markdown.startswith("**Session ID:"):
+                summary_markdown = f"**Session ID:** `{trace_id}` | **Model:** Pro{device_info_str}\n\n" + summary_markdown
             return summary_markdown
         except Exception as e:
             return {
@@ -307,6 +334,7 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
     elif action in ("view_step_screenshots", "view_step_details"):
         status_data = trace_store.read_status(trace_id)
         is_flash = status_data and status_data.get("model", "").lower() == "flash"
+        device_serial = status_data.get("device_serial") if status_data else None
 
         if action == "view_step_details" and is_flash:
             return {
@@ -426,6 +454,7 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
 
             return {
                 "trace_id": trace_id,
+                "device_serial": device_serial,
                 "step_number": step_dict["step_number"],
                 "before_screenshot": pre_image,
                 "after_screenshot": post_image,
@@ -451,6 +480,7 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
 
             return {
                 "trace_id": trace_id,
+                "device_serial": device_serial,
                 "step_number": step_dict["step_number"],
                 "details": rendered_text,
             }

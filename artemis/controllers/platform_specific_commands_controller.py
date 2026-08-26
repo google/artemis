@@ -44,7 +44,17 @@ def get_adb_device(ctx: ArtemisContext) -> Any:
 def get_first_device(
     logger: ArtemisLogger | None = None,
 ) -> tuple[str | None, DevicePlatform | None, None]:
-    """Gets the first available device."""
+    """Gets the first available device, prioritizing idle and unassigned devices."""
+    try:
+        from artemis.runtime import device_pool
+
+        chosen = device_pool.select_device()
+        if chosen:
+            return chosen, DevicePlatform.ANDROID, None
+    except Exception as exc:
+        if logger:
+            logger.debug(f"Device pool selection fallback: {exc}")
+
     if which("adb"):
         try:
             android_output = run_shell_command_on_host("adb devices")

@@ -96,7 +96,7 @@ class TaskRequestBase(BaseModel):
     model_config = {"ignored_types": (CyFunctionDetector,)}
     max_steps: int = RECURSION_LIMIT
     record_trace: bool = True
-    trace_path: Path = Path("artemis-traces")
+    trace_path: Path = Path("traces")
     llm_output_path: Path | None = None
 
 

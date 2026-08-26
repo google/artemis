@@ -101,9 +101,17 @@ export interface CheckerResult {
 export interface StepReplayFrame {
   index: number;
   stepNumber: number;
+  stepId?: string;
   title: string;
   imageUrl: string;
+  preImageUrl?: string | null;
+  postImageUrl?: string | null;
+  action?: any;
+  actionType?: string;
   actionText?: string;
+  targetText?: string;
+  coords?: string;
+  status?: 'success' | 'failed' | string;
   isPost?: boolean;
   timestamp?: number;
   phaseId?: string;

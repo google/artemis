@@ -227,3 +227,97 @@ def test_active_owner_is_discoverable_and_can_be_annotated(monkeypatch):
         assert annotated.ingress == "cli"
     finally:
         owner_lock.release()
+
+
+def test_multi_device_locks_can_run_concurrently():
+    lock_a = DeviceExecutionLock("emulator-5554", "task on device A")
+    lock_b = DeviceExecutionLock("pixel-9-test", "task on device B")
+
+    lock_a.acquire()
+    try:
+        # Device B should be acquired without blocking since it's a different device
+        lock_b.acquire(blocking=False)
+        try:
+            active_owners = DeviceExecutionLock.get_active_owners()
+            assert "emulator-5554" in active_owners
+            assert "pixel-9-test" in active_owners
+
+            # A second task on device A should be blocked
+            lock_a_second = DeviceExecutionLock("emulator-5554", "second task on device A")
+            with pytest.raises(DeviceBusyError, match="task on device A"):
+                lock_a_second.acquire(blocking=False)
+        finally:
+            lock_b.release()
+    finally:
+        lock_a.release()
+
+
+def test_global_concurrency_serial_mode_blocks_other_devices(monkeypatch):
+    monkeypatch.setenv("ARTEMIS_MAX_CONCURRENT_TASKS", "1")
+    lock_a = DeviceExecutionLock("device_alpha", "task alpha")
+    lock_b = DeviceExecutionLock("device_beta", "task beta")
+
+    lock_a.acquire()
+    try:
+        with pytest.raises(DeviceBusyError, match="concurrency limit"):
+            lock_b.acquire(blocking=False)
+    finally:
+        lock_a.release()
+
+    # Once lock A is released, lock B can acquire
+    lock_b.acquire(blocking=False)
+    lock_b.release()
+
+
+def test_owner_is_alive_guards_against_recycled_pid():
+    from unittest.mock import MagicMock, patch
+    from artemis.runtime.device_lock import DeviceLockOwner
+
+    owner = DeviceLockOwner(
+        pid=99999,
+        process_created_at=0.0,
+        token="token-1",
+        device_id="dev-1",
+        description="test",
+        acquired_at="now",
+    )
+
+    # 1. PID is 0 or negative -> immediately dead
+    invalid_owner = DeviceLockOwner(
+        pid=0,
+        process_created_at=0.0,
+        token="token-1",
+        device_id="dev-1",
+        description="test",
+        acquired_at="now",
+    )
+    assert DeviceExecutionLock._owner_is_alive(invalid_owner) is False
+
+    # 2. Recycled PID belongs to non-Artemis system process -> treated as dead
+    mock_proc = MagicMock()
+    mock_proc.is_running.return_value = True
+    mock_proc.name.return_value = "systemd"
+    mock_proc.cmdline.return_value = ["/sbin/init"]
+
+    with patch("psutil.Process", return_value=mock_proc):
+        assert DeviceExecutionLock._owner_is_alive(owner) is False
+
+    # 3. PID belongs to a Python / Artemis process -> alive
+    mock_proc.name.return_value = "python3"
+    mock_proc.cmdline.return_value = ["python3", "-m", "artemis.main"]
+    with patch("psutil.Process", return_value=mock_proc):
+        assert DeviceExecutionLock._owner_is_alive(owner) is True
+
+
+def test_safe_unlink_and_replace_retry(tmp_path):
+    f = tmp_path / "test_file.txt"
+    f.write_text("hello")
+
+    assert DeviceExecutionLock._safe_unlink(f) is True
+    assert not f.exists()
+
+    src = tmp_path / "src.txt"
+    dst = tmp_path / "dst.txt"
+    src.write_text("world")
+    assert DeviceExecutionLock._safe_replace(src, dst) is True
+    assert dst.read_text() == "world"

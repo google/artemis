@@ -29,6 +29,8 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AgentService } from '../../services/agent.service';
 import { StepReplayFrame } from '../../core/models/stream.model';
+import { drawActionCoordinatesOnOverlay } from '../../utils/image-overlay.util';
+import { getActionIcon } from '../../utils/action-formatter.util';
 
 @Component({
   selector: 'app-floating-video-player',
@@ -41,6 +43,8 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   public agentService = inject(AgentService);
 
   @ViewChild('videoRef') videoRef?: ElementRef<HTMLVideoElement>;
+  @ViewChild('stepImgRef') stepImgRef?: ElementRef<HTMLImageElement>;
+  @ViewChild('stepOverlayRef') stepOverlayRef?: ElementRef<HTMLElement>;
 
   // Playback state signals
   public isPlaying = signal<boolean>(false);
@@ -65,6 +69,12 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   // Step Replay state signals
   public activeStepIndex = signal<number>(0);
   public isStepPlaying = signal<boolean>(false);
+  public viewMode = signal<'pre' | 'post'>('pre'); // 'pre' = action preview with coords, 'post' = action result
+  public isCardHovered = signal<boolean>(false);
+  public isCardPinned = signal<boolean>(false);
+  public isCardVisible = computed(() => this.isCardHovered() || this.isCardPinned());
+  public isStepImageLoading = signal<boolean>(false);
+  public stepImageError = signal<boolean>(false);
   private stepTimer: any = null;
 
   public stepFrames = computed(() => this.agentService.currentSessionStepFrames());
@@ -73,6 +83,14 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     const frames = this.stepFrames();
     const idx = this.activeStepIndex();
     return frames[idx] || null;
+  });
+  public currentStepImageUrl = computed<string>(() => {
+    const frame = this.currentStepFrame();
+    if (!frame) return '';
+    if (this.viewMode() === 'post' && frame.postImageUrl) {
+      return frame.postImageUrl;
+    }
+    return frame.preImageUrl || frame.imageUrl || '';
   });
   public stepProgressPercent = computed(() => {
     const total = this.totalStepFrames();
@@ -85,10 +103,10 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
 
   // Dragging and window positioning state
   public posX = signal<number>(
-    typeof window !== 'undefined' ? Math.max(20, window.innerWidth - 380) : 100
+    typeof window !== 'undefined' ? Math.max(20, window.innerWidth - 420) : 100
   );
   public posY = signal<number>(
-    typeof window !== 'undefined' ? Math.max(60, window.innerHeight - 660) : 100
+    typeof window !== 'undefined' ? Math.max(60, window.innerHeight - 700) : 100
   );
 
   private isDragging = false;
@@ -117,10 +135,29 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
       () => {
         const _ = this.stepFrames();
         this.activeStepIndex.set(0);
+        this.viewMode.set('pre');
         this.pauseStepPlay();
       },
       { allowSignalWrites: true }
     );
+
+    // Track step screenshot URL changes and reset loading/error state
+    effect(() => {
+      const url = this.currentStepImageUrl();
+      if (url) {
+        this.isStepImageLoading.set(true);
+        this.stepImageError.set(false);
+      } else {
+        this.isStepImageLoading.set(false);
+      }
+    }, { allowSignalWrites: true });
+
+    // Re-draw overlay whenever activeStepIndex or viewMode changes
+    effect(() => {
+      this.activeStepIndex();
+      this.viewMode();
+      setTimeout(() => this.drawStepOverlay(), 40);
+    });
 
     effect(() => {
       const request = this.agentService.videoSeekRequest();
@@ -444,15 +481,18 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
 
   public prevStepFrame(): void {
     this.pauseStepPlay();
+    this.viewMode.set('pre');
     this.activeStepIndex.update((i) => Math.max(0, i - 1));
   }
 
   public nextStepFrame(): void {
     this.pauseStepPlay();
+    this.viewMode.set('pre');
     this.activeStepIndex.update((i) => Math.min(this.totalStepFrames() - 1, i + 1));
   }
 
   public seekStepFrame(index: number): void {
+    this.viewMode.set('pre');
     this.activeStepIndex.set(Math.max(0, Math.min(this.totalStepFrames() - 1, index)));
   }
 
@@ -466,8 +506,75 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     this.startStepPlay();
   }
 
+  public setStepViewMode(mode: 'pre' | 'post', event?: Event): void {
+    if (event) event.stopPropagation();
+    this.viewMode.set(mode);
+    setTimeout(() => this.drawStepOverlay(), 40);
+  }
+
+  public toggleStepViewMode(event?: Event): void {
+    if (event) event.stopPropagation();
+    this.setStepViewMode(this.viewMode() === 'pre' ? 'post' : 'pre');
+  }
+
+  public onViewportMouseEnter(): void {
+    this.isCardHovered.set(true);
+  }
+
+  public onViewportMouseLeave(): void {
+    this.isCardHovered.set(false);
+  }
+
+  public toggleCardPin(event?: Event): void {
+    if (event) event.stopPropagation();
+    this.isCardPinned.update((v) => !v);
+  }
+
+  public cycleSpeed(): void {
+    const current = this.playbackRate();
+    const idx = this.speedOptions.indexOf(current);
+    const nextIdx = (idx + 1) % this.speedOptions.length;
+    this.setSpeed(this.speedOptions[nextIdx]);
+  }
+
+  public onStepImageLoad(): void {
+    this.isStepImageLoading.set(false);
+    this.stepImageError.set(false);
+    this.drawStepOverlay();
+  }
+
+  public onStepImageError(): void {
+    this.isStepImageLoading.set(false);
+    this.stepImageError.set(true);
+  }
+
+  public drawStepOverlay(): void {
+    const img = this.stepImgRef?.nativeElement;
+    const overlay = this.stepOverlayRef?.nativeElement;
+    if (!img || !overlay) return;
+    overlay.innerHTML = '';
+
+    // Only draw coordinate overlays when viewing the pre-action screenshot
+    if (this.viewMode() === 'post') {
+      return;
+    }
+
+    const frame = this.currentStepFrame();
+    if (!frame || !frame.action) return;
+
+    try {
+      drawActionCoordinatesOnOverlay(img, overlay, frame.action);
+    } catch (err) {
+      console.warn('Failed to draw step coordinates overlay:', err);
+    }
+  }
+
+  public getStepActionIcon(action: any): string {
+    return getActionIcon(action);
+  }
+
   public openImageInNewTab(): void {
-    const url = this.currentStepFrame()?.imageUrl;
+    const url = this.currentStepImageUrl() || this.currentStepFrame()?.imageUrl;
     if (url) {
       window.open(url, '_blank');
     }

@@ -24,17 +24,17 @@ from typing import Any
 from artemis.config import read_ipc_port
 
 
-def publish_startup_progress(stage: str, message: str, **details: Any) -> None:
+def publish_startup_progress(stage: str, message: str, session_id: str | None = None, **details: Any) -> None:
     """Publish one startup milestone, ignoring unavailable UI/IPC endpoints."""
-    session_id = os.getenv("ARTEMIS_SESSION_ID") or os.getenv(
+    resolved_session_id = session_id or os.getenv("ARTEMIS_SESSION_ID") or os.getenv(
         "ARTEMIS_CLOUD_SESSION_ID"
     )
     ipc_port = read_ipc_port()
-    if not session_id or not ipc_port:
+    if not resolved_session_id or not ipc_port:
         return
 
     event_data = {
-        "session_id": session_id,
+        "session_id": str(resolved_session_id),
         "stage": stage,
         "message": message,
         "timestamp": time.time(),

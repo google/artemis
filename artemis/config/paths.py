@@ -26,6 +26,7 @@ from artemis.config.constants import (
     ENV_ARTEMIS_USE_USER_DIR,
     IPC_PORT_FILENAME,
     LS_ADDRESS_FILENAME,
+    SERVER_INFO_FILENAME,
 )
 from artemis.platform import platform
 
@@ -108,6 +109,14 @@ def get_ls_address_file() -> Path:
     if app_dir_file.exists():
         return app_dir_file
     return ROOT_DIR / LS_ADDRESS_FILENAME
+
+
+def get_server_info_file() -> Path:
+    """Returns the location of the Artemis server metadata file."""
+    app_dir_file = get_app_dir() / SERVER_INFO_FILENAME
+    if app_dir_file.exists():
+        return app_dir_file
+    return ROOT_DIR / SERVER_INFO_FILENAME
 
 
 def get_config_path(filename: str, default_bundled_path: Path | None = None) -> Path:

@@ -21,7 +21,7 @@ from artemis.agents.operator.prompt_builder import OperatorPromptBuilder
 def test_operator_prompt_builder():
     """Verify prompt rendering formats variables correctly."""
     system_msg = OperatorPromptBuilder.build_system_message()
-    assert "ARTEMIS Operator" in system_msg
+    assert "Android Device Operator" in system_msg
     assert "click" in system_msg
 
     human_msg = OperatorPromptBuilder.build_human_message(

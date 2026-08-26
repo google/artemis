@@ -253,9 +253,11 @@ export class AgentStreamComponent implements AfterViewInit {
     return list.sort((a, b) => {
       const statusA = this.getTaskStatus(a);
       const statusB = this.getTaskStatus(b);
-      if (statusA === 'running' || statusA === 'paused') return -1;
-      if (statusB === 'running' || statusB === 'paused') return 1;
-      return a.start_time - b.start_time;
+      const isRunA = statusA === 'running' || statusA === 'paused';
+      const isRunB = statusB === 'running' || statusB === 'paused';
+      if (isRunA && !isRunB) return -1;
+      if (!isRunA && isRunB) return 1;
+      return (a.start_time || 0) - (b.start_time || 0);
     });
   });
 
@@ -598,16 +600,41 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   public getTaskStatus(session: Session): 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled' {
-    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
-      return this.agentService.agentStatus() as 'running' | 'paused';
-    }
     if (session.status) {
       const s = session.status.toLowerCase();
-      if (s === 'running' || s === 'paused' || s === 'completed' || s === 'pending' || s === 'failed' || s === 'cancelled') {
+      if (s === 'completed' || s === 'success' || s === 'failed' || s === 'cancelled') {
+        return (s === 'success' ? 'completed' : s) as any;
+      }
+      if (s === 'running' || s === 'paused' || s === 'pending') {
         return s as any;
       }
     }
+    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
+      return this.agentService.agentStatus() as 'running' | 'paused';
+    }
     return 'completed';
+  }
+
+  /**
+   * Determine the device serial number for the session
+   */
+  public getDeviceSerial(session: Session): string | null {
+    const serial = session.device_serial || session.device_id;
+    if (serial && serial !== 'pending' && serial !== 'null' && serial !== 'undefined') {
+      return serial;
+    }
+    if (session.device_info) {
+      try {
+        const info = typeof session.device_info === 'string' ? JSON.parse(session.device_info) : session.device_info;
+        const s = info?.device_id || info?.device_serial;
+        if (s && s !== 'pending' && s !== 'null' && s !== 'undefined') {
+          return s;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return null;
   }
 
   public selectTask(sessionId: string, event?: Event): void {

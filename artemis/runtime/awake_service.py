@@ -64,6 +64,24 @@ def _run_awake_adb_command(
         return None
 
 
+def sanitize_device_state(device_id: str) -> None:
+    """Sanitize Android device state by cleaning up orphan screenrecord or modal dialogs."""
+    if not device_id:
+        return
+    # 1. Kill any dangling screenrecord processes left from interrupted tasks
+    _run_awake_adb_command(
+        device_id,
+        ["shell", "pkill", "-f", "screenrecord"],
+        "kill orphan screenrecord processes",
+    )
+    # 2. Close system modal dialogs (ANR / crash popups)
+    _run_awake_adb_command(
+        device_id,
+        ["shell", "am", "broadcast", "-a", "android.intent.action.CLOSE_SYSTEM_DIALOGS"],
+        "dismiss system crash/ANR dialogs",
+    )
+
+
 def _configure_usb_stay_awake(device_id: str) -> str | None:
     """Enable USB stay-awake, falling back to an effective host heartbeat.
 
@@ -131,7 +149,7 @@ def _configure_usb_stay_awake(device_id: str) -> str | None:
 
 
 def _discover_connected_device_ids() -> list[str]:
-    """Return the selected or first connected local Android device."""
+    """Return the selected or all connected local Android devices."""
     if not _awake_enabled() or os.environ.get("ARTEMIS_CLOUD_MODE") == "1":
         return []
 

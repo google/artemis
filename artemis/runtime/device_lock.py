@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Cross-process FIFO execution queue for the local Artemis device."""
+"""Cross-process FIFO execution queue and per-device mutex for Artemis devices."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import re
 import time
 import uuid
 
@@ -29,6 +30,13 @@ from artemis.config.paths import get_temp_dir
 
 class DeviceBusyError(RuntimeError):
     """Raised when another Artemis process already owns a device."""
+
+
+class ConcurrencyMode:
+    """Supported concurrency strategies for Artemis task execution."""
+
+    GLOBAL = "global"  # Strict serial mode: 1 task globally across all devices
+    PER_DEVICE = "per_device"  # 1 task per device: concurrent across different devices
 
 
 @dataclass(frozen=True)
@@ -61,45 +69,73 @@ class DeviceLockOwner:
 
 
 class DeviceExecutionLock:
-    """A PID-aware FIFO lease shared by UI, CLI, SDK, and MCP tasks.
+    """A PID-aware FIFO lease supporting per-device mutexes and global concurrency limits.
 
-    Artemis intentionally supports one active local device. A single global
-    queue therefore orders every local task regardless of which API or process
-    submitted it. Submission layers may reserve a queue ticket before spawning
-    a worker; the worker receives that token through the environment and claims
-    the same position. Tasks without a submission layer reserve at acquire time.
+    Artemis enforces a single active task per mobile device at any time.
+    Different devices can execute tasks concurrently unless a global concurrency
+    limit (e.g. concurrency_mode="global" or ARTEMIS_MAX_CONCURRENT_TASKS=1) is configured.
 
-    Atomic file creation provides exclusion. PID creation time prevents stale
-    owners or queue tickets from blocking execution after a process exits or
-    after the operating system reuses the same PID.
+    Atomic file creation provides exclusion per device serial. PID creation time
+    prevents stale owners or queue tickets from blocking execution after a process
+    exits or after the operating system reuses the same PID.
     """
 
     _MALFORMED_LOCK_GRACE_SECONDS = 5.0
     _DEFAULT_POLL_INTERVAL_SECONDS = 0.1
     QUEUE_TICKET_ENV = "ARTEMIS_DEVICE_QUEUE_TICKET"
 
+    @staticmethod
+    def _normalize_device_id(device_id: str | None) -> str:
+        """Normalize device serial/identifier to a filesystem-safe string."""
+        if not device_id or str(device_id).strip() in ("", "default-device", "default"):
+            return "default"
+        raw = str(device_id).strip()
+        if raw.lower() in ("pending", "any"):
+            return raw.lower()
+        clean = re.sub(r"[^a-zA-Z0-9_-]", "_", raw)
+        return clean or "default"
+
     def __init__(
         self,
-        device_id: str,
+        device_id: str = "default",
         description: str = "Artemis task",
         queue_ticket: str | None = None,
+        max_concurrency: int | None = None,
+        concurrency_mode: str | None = None,
+        session_id: str | None = None,
+        ingress: str | None = None,
     ):
-        self.device_id = device_id
+        self.device_id = device_id or "default"
+        self.clean_device_id = self._normalize_device_id(self.device_id)
         self.description = description
+        self.max_concurrency = max_concurrency
+        self.concurrency_mode = (
+            str(concurrency_mode).strip().lower() if concurrency_mode is not None else None
+        )
         self.token = uuid.uuid4().hex
+
         lock_dir = get_temp_dir("device-locks")
-        self.path = lock_dir / "artemis-global-device.lock"
+        # Per-device lock file
+        self.path = lock_dir / f"artemis-device-{self.clean_device_id}.lock"
+        # Shared FIFO wait queue directory across all processes
         self.queue_dir = lock_dir / "artemis-global-device.queue"
-        self.queue_ticket = queue_ticket or os.environ.pop(self.QUEUE_TICKET_ENV, None)
-        self.session_id = os.getenv("ARTEMIS_SESSION_ID") or os.getenv(
+        self._initial_queue_ticket = queue_ticket or os.environ.pop(self.QUEUE_TICKET_ENV, None)
+        self.queue_ticket = self._initial_queue_ticket
+        self.session_id = session_id or os.getenv("ARTEMIS_SESSION_ID") or os.getenv(
             "ARTEMIS_CLOUD_SESSION_ID"
         )
-        self.ingress = os.getenv("ARTEMIS_TASK_INGRESS") or "sdk"
+        self.ingress = ingress or os.getenv("ARTEMIS_TASK_INGRESS") or "sdk"
         self._queue_path: Path | None = None
         self._acquired = False
 
     @classmethod
+    def _device_lock_path(cls, device_id: str | None) -> Path:
+        clean_id = cls._normalize_device_id(device_id)
+        return get_temp_dir("device-locks") / f"artemis-device-{clean_id}.lock"
+
+    @classmethod
     def _global_lock_path(cls) -> Path:
+        # Kept for backward compatibility and fallback detection
         return get_temp_dir("device-locks") / "artemis-global-device.lock"
 
     @staticmethod
@@ -112,7 +148,33 @@ class DeviceExecutionLock:
             return 0.0
 
     @staticmethod
+    def _safe_unlink(path: Path, max_retries: int = 3, delay: float = 0.02) -> bool:
+        """Safely unlink a file with retries on Windows PermissionError / sharing violations."""
+        for i in range(max_retries):
+            try:
+                path.unlink(missing_ok=True)
+                return True
+            except OSError:
+                if i < max_retries - 1:
+                    time.sleep(delay)
+        return False
+
+    @staticmethod
+    def _safe_replace(src: Path, dst: Path, max_retries: int = 3, delay: float = 0.02) -> bool:
+        """Safely replace a file with retries on Windows PermissionError / sharing violations."""
+        for i in range(max_retries):
+            try:
+                os.replace(src, dst)
+                return True
+            except OSError:
+                if i < max_retries - 1:
+                    time.sleep(delay)
+        return False
+
+    @staticmethod
     def _owner_is_alive(owner: DeviceLockOwner) -> bool:
+        if owner.pid <= 0:
+            return False
         try:
             import psutil
 
@@ -120,7 +182,12 @@ class DeviceExecutionLock:
             if not process.is_running():
                 return False
             if owner.process_created_at <= 0:
-                return True
+                try:
+                    name = process.name().lower()
+                    cmdline = " ".join(process.cmdline()).lower()
+                    return any(k in name or k in cmdline for k in ("python", "artemis", "pytest"))
+                except Exception:
+                    return False
             return abs(process.create_time() - owner.process_created_at) < 1.0
         except Exception:
             return False
@@ -145,11 +212,7 @@ class DeviceExecutionLock:
             except OSError:
                 return True
 
-        try:
-            self.path.unlink(missing_ok=True)
-            return True
-        except OSError:
-            return False
+        return self._safe_unlink(self.path)
 
     @classmethod
     def _owner_payload(
@@ -184,7 +247,7 @@ class DeviceExecutionLock:
         session_id: str | None = None,
         ingress: str | None = None,
     ) -> str:
-        """Reserve a global FIFO position before a worker process is spawned."""
+        """Reserve a FIFO position in the global queue before a worker process is spawned."""
         token = uuid.uuid4().hex
         queue_dir = get_temp_dir("device-locks") / "artemis-global-device.queue"
         queue_dir.mkdir(parents=True, exist_ok=True)
@@ -216,12 +279,13 @@ class DeviceExecutionLock:
             return False
         queue_dir = get_temp_dir("device-locks") / "artemis-global-device.queue"
         removed = False
-        for path in queue_dir.glob(f"*-{token}.wait"):
-            try:
-                path.unlink(missing_ok=True)
-                removed = True
-            except OSError:
-                pass
+        if queue_dir.exists():
+            for path in queue_dir.glob(f"*-{token}.wait"):
+                try:
+                    path.unlink(missing_ok=True)
+                    removed = True
+                except OSError:
+                    pass
         return removed
 
     @classmethod
@@ -235,13 +299,10 @@ class DeviceExecutionLock:
         session_id: str | None = None,
         ingress: str | None = None,
     ) -> bool:
-        """Transfer a submission ticket to its worker process.
-
-        This makes a ticket stale as soon as a worker that failed before Agent
-        initialization exits, instead of keeping it alive with the submitting
-        server process.
-        """
+        """Transfer a submission ticket to its worker process."""
         queue_dir = get_temp_dir("device-locks") / "artemis-global-device.queue"
+        if not queue_dir.exists():
+            return False
         matches = list(queue_dir.glob(f"*-{token}.wait"))
         path = min(matches, default=None)
         if path is None:
@@ -294,7 +355,12 @@ class DeviceExecutionLock:
             path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             return path
 
-        self.queue_ticket = self.reserve(self.description, self.device_id)
+        self.queue_ticket = self.reserve(
+            self.description,
+            self.device_id,
+            session_id=self.session_id,
+            ingress=self.ingress,
+        )
         path = self._find_reserved_ticket()
         if path is None:
             raise DeviceBusyError("The Artemis device queue ticket could not be created.")
@@ -334,6 +400,17 @@ class DeviceExecutionLock:
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
+            current_owner = self._read_owner(self.path)
+            if (
+                current_owner is not None
+                and current_owner.pid == os.getpid()
+                and (
+                    current_owner.token == self.token
+                    or (self.session_id and current_owner.session_id == self.session_id)
+                )
+            ):
+                self._acquired = True
+                return True
             self._remove_stale_lock()
             return False
         try:
@@ -343,6 +420,31 @@ class DeviceExecutionLock:
         self._acquired = True
         return True
 
+    @property
+    def effective_concurrency(self) -> int:
+        """Resolve effective concurrency limit:
+        0: per-device concurrency (multiple devices run concurrently, FIFO per device)
+        1: global concurrency (strict single-task serialization across all devices)
+        >1: global concurrency capped at N tasks across all devices
+        """
+        if self.concurrency_mode is not None:
+            mode = self.concurrency_mode
+            if mode in ("global", "serial", "1"):
+                return 1
+            if mode in ("per_device", "device", "parallel", "0"):
+                return 0
+        if self.max_concurrency is not None:
+            return self.max_concurrency
+        env_mode = os.environ.get("ARTEMIS_CONCURRENCY_MODE", "").strip().lower()
+        if env_mode in ("global", "serial", "1"):
+            return 1
+        if env_mode in ("per_device", "device", "parallel", "0"):
+            return 0
+        try:
+            return int(os.environ.get("ARTEMIS_MAX_CONCURRENT_TASKS", 0))
+        except (ValueError, TypeError):
+            return 0
+
     def acquire(
         self,
         *,
@@ -351,20 +453,71 @@ class DeviceExecutionLock:
         poll_interval: float = _DEFAULT_POLL_INTERVAL_SECONDS,
         cancel_event=None,
     ) -> None:
-        """Wait in FIFO order and acquire exclusive access to the Artemis device."""
+        """Wait in FIFO order and acquire exclusive access to the target Artemis device."""
         self._queue_path = self._claim_or_create_queue_ticket()
         started_at = time.monotonic()
+        effective_concurrency = self.effective_concurrency
         try:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise DeviceBusyError("Waiting for the Artemis device queue was cancelled.")
                 self._remove_stale_queue_entries()
-                queue = sorted(self.queue_dir.glob("*.wait"))
+
                 if not self._queue_path.exists():
                     raise DeviceBusyError("The Artemis queue reservation was cancelled.")
 
-                if queue and queue[0] == self._queue_path and self._try_acquire_owner_lock():
-                    self._queue_path.unlink(missing_ok=True)
+                # 1. Check global concurrency limit if configured (> 0)
+                if effective_concurrency > 0:
+                    active_owners = self.get_active_owners()
+                    active_other_owners = [
+                        o
+                        for o in active_owners.values()
+                        if not (
+                            (o.pid == os.getpid() and ((self.session_id and o.session_id == self.session_id) or o.token == self.token))
+                        )
+                    ]
+                    if len(active_other_owners) >= effective_concurrency:
+                        if not blocking:
+                            owner_desc = (
+                                active_other_owners[0].description
+                                if active_other_owners
+                                else "active task"
+                            )
+                            raise DeviceBusyError(
+                                f"Global task concurrency limit ({effective_concurrency}) reached ({owner_desc})."
+                            )
+                        if timeout is not None and time.monotonic() - started_at >= timeout:
+                            raise DeviceBusyError(
+                                f"Timed out waiting for a concurrency slot after {timeout:.1f}s."
+                            )
+                        time.sleep(max(0.01, poll_interval))
+                        continue
+
+                # 2. Determine FIFO eligibility for this specific device
+                all_wait_files = sorted(self.queue_dir.glob("*.wait"))
+                if effective_concurrency == 1:
+                    # In strict serial mode, global FIFO applies; re-entrant parent processes are always eligible
+                    active_owners = self.get_active_owners()
+                    is_reentrant = any(
+                        o.pid == os.getpid() and ((self.session_id and o.session_id == self.session_id) or o.token == self.token)
+                        for o in active_owners.values()
+                    )
+                    is_eligible = is_reentrant or bool(all_wait_files and all_wait_files[0] == self._queue_path)
+                else:
+                    # In multi-device parallel mode, per-device FIFO applies
+                    target_dev = self.clean_device_id
+                    device_queue: list[Path] = []
+                    for wait_path in all_wait_files:
+                        ticket_owner = self._read_owner(wait_path)
+                        if ticket_owner is None:
+                            continue
+                        ticket_dev = self._normalize_device_id(ticket_owner.device_id)
+                        if ticket_dev == target_dev or ticket_dev in ("pending", "any"):
+                            device_queue.append(wait_path)
+                    is_eligible = bool(device_queue and device_queue[0] == self._queue_path)
+
+                if is_eligible and self._try_acquire_owner_lock():
+                    self._safe_unlink(self._queue_path)
                     self._queue_path = None
                     return
 
@@ -385,8 +538,10 @@ class DeviceExecutionLock:
                 time.sleep(max(0.01, poll_interval))
         except BaseException:
             if self._queue_path is not None:
-                self._queue_path.unlink(missing_ok=True)
+                self._safe_unlink(self._queue_path)
                 self._queue_path = None
+                if not self._initial_queue_ticket:
+                    self.queue_ticket = None
             raise
 
     def release(self) -> None:
@@ -394,15 +549,16 @@ class DeviceExecutionLock:
             return
         try:
             owner = self._read_owner(self.path)
-            if owner is not None and owner.token == self.token:
-                self.path.unlink(missing_ok=True)
+            if owner is not None and (
+                owner.token == self.token
+                or (self.session_id and owner.session_id == self.session_id)
+            ):
+                self._safe_unlink(self.path)
         finally:
             self._acquired = False
 
     @classmethod
-    def get_active_owner(cls) -> DeviceLockOwner | None:
-        """Return the live process that currently owns the global device lease."""
-        path = cls._global_lock_path()
+    def _get_active_owner_for_path(cls, path: Path) -> DeviceLockOwner | None:
         owner = None
         for attempt in range(3):
             owner = cls._read_owner(path)
@@ -413,27 +569,135 @@ class DeviceExecutionLock:
         if owner is None:
             try:
                 if path.exists() and time.time() - path.stat().st_mtime >= cls._MALFORMED_LOCK_GRACE_SECONDS:
-                    path.unlink(missing_ok=True)
+                    cls._safe_unlink(path)
             except OSError:
                 pass
             return None
         if cls._owner_is_alive(owner):
             return owner
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        cls._safe_unlink(path)
         return None
 
     @classmethod
-    def has_owner_record(cls) -> bool:
-        """Return whether an owner record exists, including a record being written."""
-        return cls._global_lock_path().exists()
+    def get_active_owners(cls) -> dict[str, DeviceLockOwner]:
+        """Return a mapping of clean_device_id -> live DeviceLockOwner across all devices."""
+        lock_dir = get_temp_dir("device-locks")
+        if not lock_dir.exists():
+            return {}
+        active_map: dict[str, DeviceLockOwner] = {}
+        seen_tokens = set()
+
+        for lock_path in sorted(lock_dir.glob("artemis-device-*.lock")):
+            owner = cls._get_active_owner_for_path(lock_path)
+            if owner is not None and owner.token not in seen_tokens:
+                dev_key = cls._normalize_device_id(owner.device_id)
+                active_map[dev_key] = owner
+                seen_tokens.add(owner.token)
+
+        # Also check legacy global lock if still present
+        global_lock = lock_dir / "artemis-global-device.lock"
+        if global_lock.exists():
+            owner = cls._get_active_owner_for_path(global_lock)
+            if owner is not None and owner.token not in seen_tokens:
+                dev_key = cls._normalize_device_id(owner.device_id)
+                active_map[dev_key] = owner
+                seen_tokens.add(owner.token)
+
+        return active_map
 
     @classmethod
-    def is_active_owner(cls, expected: DeviceLockOwner) -> bool:
+    def get_active_owner(cls, device_id: str | None = None) -> DeviceLockOwner | None:
+        """Return the live process owning the lock for a specific device, or any device if None."""
+        lock_dir = get_temp_dir("device-locks")
+        if device_id is not None:
+            clean_id = cls._normalize_device_id(device_id)
+            dev_path = lock_dir / f"artemis-device-{clean_id}.lock"
+            owner = cls._get_active_owner_for_path(dev_path)
+            if owner is not None:
+                return owner
+            # Check legacy global lock as fallback
+            global_path = lock_dir / "artemis-global-device.lock"
+            if global_path.exists():
+                return cls._get_active_owner_for_path(global_path)
+            return None
+
+        # Return any active owner for single-device caller backward compatibility
+        active_owners = cls.get_active_owners()
+        for owner in active_owners.values():
+            return owner
+        return None
+
+    @classmethod
+    def get_queued_tasks(cls, device_id: str | None = None) -> list[dict[str, Any]]:
+        """Return all live pending queue tickets across all devices in FIFO order."""
+        lock_dir = get_temp_dir("device-locks")
+        queue_dir = lock_dir / "artemis-global-device.queue"
+        if not queue_dir.exists():
+            return []
+
+        clean_target = cls._normalize_device_id(device_id) if device_id else None
+        active_tokens = {o.token for o in cls.get_active_owners().values()}
+        queued: list[dict[str, Any]] = []
+
+        for path in sorted(queue_dir.glob("*.wait")):
+            owner = cls._read_owner(path)
+            if owner is None:
+                continue
+            # If the owner process died, ignore
+            if not cls._owner_is_alive(owner):
+                continue
+            # If this token already acquired the lock, it is actively running, not pending
+            if owner.token in active_tokens:
+                continue
+
+            target_dev = cls._normalize_device_id(owner.device_id)
+            if clean_target is not None and target_dev not in (clean_target, "pending", "any"):
+                continue
+
+            try:
+                created_at = path.stat().st_mtime
+            except OSError:
+                created_at = time.time()
+
+            queued.append({
+                "session_id": owner.session_id or f"queued-{owner.token[:8]}",
+                "goal": owner.description,
+                "device_id": owner.device_id,
+                "device_serial": owner.device_id,
+                "pid": owner.pid,
+                "token": owner.token,
+                "ingress": owner.ingress or "unknown",
+                "status": "pending",
+                "created_at": created_at,
+                "start_time": created_at,
+            })
+        return queued
+
+    @classmethod
+    def has_owner_record(cls, device_id: str | None = None) -> bool:
+        """Return whether an owner record exists, including a record being written."""
+        lock_dir = get_temp_dir("device-locks")
+        if not lock_dir.exists():
+            return False
+        if device_id is not None:
+            clean_id = cls._normalize_device_id(device_id)
+            return (
+                lock_dir / f"artemis-device-{clean_id}.lock"
+            ).exists() or (lock_dir / "artemis-global-device.lock").exists()
+        return bool(list(lock_dir.glob("artemis-device-*.lock"))) or (
+            lock_dir / "artemis-global-device.lock"
+        ).exists()
+
+    @classmethod
+    def is_active_owner(cls, expected: DeviceLockOwner, device_id: str | None = None) -> bool:
         """Revalidate a previously read owner before performing a destructive action."""
-        current = cls._read_owner(cls._global_lock_path())
+        target_dev = device_id or expected.device_id
+        lock_dir = get_temp_dir("device-locks")
+        clean_id = cls._normalize_device_id(target_dev)
+        path = lock_dir / f"artemis-device-{clean_id}.lock"
+        if not path.exists():
+            path = lock_dir / "artemis-global-device.lock"
+        current = cls._read_owner(path)
         return bool(
             current
             and current.token == expected.token
@@ -443,14 +707,41 @@ class DeviceExecutionLock:
         )
 
     @classmethod
+    def _find_lock_by_pid(cls, pid: int) -> Path | None:
+        lock_dir = get_temp_dir("device-locks")
+        if not lock_dir.exists():
+            return None
+        for path in sorted(lock_dir.glob("artemis-device-*.lock")):
+            owner = cls._read_owner(path)
+            if owner is not None and owner.pid == pid:
+                return path
+        global_path = lock_dir / "artemis-global-device.lock"
+        if global_path.exists():
+            owner = cls._read_owner(global_path)
+            if owner is not None and owner.pid == pid:
+                return global_path
+        return None
+
+    @classmethod
     def annotate_active_owner(
         cls,
         *,
         session_id: str,
         ingress: str | None = None,
+        device_id: str | None = None,
     ) -> bool:
         """Attach session metadata after tracing starts inside the lease owner."""
-        path = cls._global_lock_path()
+        lock_dir = get_temp_dir("device-locks")
+        if device_id is not None:
+            clean_id = cls._normalize_device_id(device_id)
+            path = lock_dir / f"artemis-device-{clean_id}.lock"
+            if not path.exists():
+                path = lock_dir / "artemis-global-device.lock"
+        else:
+            path = cls._find_lock_by_pid(os.getpid())
+            if path is None:
+                path = lock_dir / "artemis-global-device.lock"
+
         owner = cls._read_owner(path)
         if owner is None or owner.pid != os.getpid() or not cls._owner_is_alive(owner):
             return False
@@ -467,50 +758,63 @@ class DeviceExecutionLock:
         temp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         try:
             temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            os.replace(temp_path, path)
+            if not cls._safe_replace(temp_path, path):
+                return False
         except OSError:
             return False
         finally:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            cls._safe_unlink(temp_path)
         return True
 
     @classmethod
-    def cleanup_stale_locks(cls) -> int:
+    def cleanup_stale_locks(cls, device_id: str | None = None) -> int:
         """Remove execution leases and queue tickets whose owners are gone."""
         removed = 0
         lock_dir = get_temp_dir("device-locks")
-        for path in lock_dir.glob("*.lock"):
-            owner = cls._read_owner(path)
-            if owner is not None and cls._owner_is_alive(owner):
-                continue
-            if owner is None:
-                try:
-                    if time.time() - path.stat().st_mtime < cls._MALFORMED_LOCK_GRACE_SECONDS:
-                        continue
-                except OSError:
+        if not lock_dir.exists():
+            return removed
+
+        patterns = (
+            [f"artemis-device-{cls._normalize_device_id(device_id)}.lock"]
+            if device_id
+            else ["artemis-device-*.lock", "artemis-global-device.lock", "*.lock"]
+        )
+        seen_paths: set[Path] = set()
+        for pat in patterns:
+            for path in lock_dir.glob(pat):
+                if path in seen_paths:
                     continue
-            try:
-                path.unlink(missing_ok=True)
-                removed += 1
-            except OSError:
-                pass
-        queue_dir = lock_dir / "artemis-global-device.queue"
-        for path in queue_dir.glob("*.wait"):
-            owner = cls._read_owner(path)
-            if owner is not None and cls._owner_is_alive(owner):
-                continue
-            if owner is None:
-                try:
-                    if time.time() - path.stat().st_mtime < cls._MALFORMED_LOCK_GRACE_SECONDS:
-                        continue
-                except OSError:
+                seen_paths.add(path)
+                owner = cls._read_owner(path)
+                if owner is not None and cls._owner_is_alive(owner):
                     continue
-            try:
-                path.unlink(missing_ok=True)
-                removed += 1
-            except OSError:
-                pass
+                if owner is None:
+                    try:
+                        if (
+                            time.time() - path.stat().st_mtime
+                            < cls._MALFORMED_LOCK_GRACE_SECONDS
+                        ):
+                            continue
+                    except OSError:
+                        continue
+                if cls._safe_unlink(path):
+                    removed += 1
+
+        for q_dir in lock_dir.glob("*.queue"):
+            if q_dir.is_dir():
+                for path in q_dir.glob("*.wait"):
+                    owner = cls._read_owner(path)
+                    if owner is not None and cls._owner_is_alive(owner):
+                        continue
+                    if owner is None:
+                        try:
+                            if (
+                                time.time() - path.stat().st_mtime
+                                < cls._MALFORMED_LOCK_GRACE_SECONDS
+                            ):
+                                continue
+                        except OSError:
+                            continue
+                    if cls._safe_unlink(path):
+                        removed += 1
         return removed

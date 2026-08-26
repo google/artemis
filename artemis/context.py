@@ -75,12 +75,12 @@ class DeviceContext(BaseModel):
         extra="allow",
     )
 
-    host_platform: Literal["WINDOWS", "LINUX", "DARWIN", "MACOS"] | str
-    mobile_platform: DevicePlatform
-    device_id: str
+    host_platform: Literal["WINDOWS", "LINUX", "DARWIN", "MACOS"] | str = "DARWIN"
+    mobile_platform: DevicePlatform = DevicePlatform.ANDROID
+    device_id: str = "default-device"
 
-    device_width: int
-    device_height: int
+    device_width: int = 1080
+    device_height: int = 2400
 
     def to_str(self):
         return (

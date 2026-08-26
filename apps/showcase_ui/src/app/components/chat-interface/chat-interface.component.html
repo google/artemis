@@ -77,6 +77,11 @@
             {{ getTaskStatus(session) | uppercase }}
           </span>
           <div class="task-card-header-actions">
+            <span class="task-device" *ngIf="getDeviceSerial(session)" [title]="'Device: ' + getDeviceSerial(session)">
+              <span class="material-symbols-outlined device-icon">phone_android</span>
+              <span class="device-name">{{ getDeviceSerial(session) }}</span>
+            </span>
+            <span class="task-time-divider" *ngIf="getDeviceSerial(session)">·</span>
             <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
             <button
               *ngIf="getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused'"
@@ -126,6 +131,11 @@
                 {{ getTaskStatus(session) | uppercase }}
               </span>
               <div class="task-card-header-actions">
+                <span class="task-device" *ngIf="getDeviceSerial(session)" [title]="'Device: ' + getDeviceSerial(session)">
+                  <span class="material-symbols-outlined device-icon">phone_android</span>
+                  <span class="device-name">{{ getDeviceSerial(session) }}</span>
+                </span>
+                <span class="task-time-divider" *ngIf="getDeviceSerial(session)">·</span>
                 <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
               <button
                 *ngIf="getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused'"
