@@ -263,7 +263,7 @@ if __name__ == "__main__":
 在 Google Research 发布的业界基准评测 [AndroidWorld](https://github.com/google-research/android_world)（涵盖 20+ 款常用应用与 100+ 项复杂多步长程任务）中：**Artemis 在全套长程任务评测中展现了高鲁棒性，取得了超过 99% 的任务完成率。**
 
 <p align="center">
-  <img src="./docs/assets/androidworld_benchmark_comparison.png" alt="AndroidWorld 评测基准对比" width="85%" />
+  <img src="./docs/assets/androidworld_leaderboard.png?v=1" alt="AndroidWorld 评测基准对比" width="85%" />
 </p>
 
 ## 🚀 ARTEMIS 是如何建构的

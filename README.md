@@ -260,7 +260,7 @@ if __name__ == "__main__":
 Evaluated on [AndroidWorld](https://github.com/google-research/android_world) — Google Research's gold-standard benchmark spanning 20+ real apps and 100+ complex multi-step tasks: **Artemis demonstrated exceptional robustness across the entire benchmark suite, achieving a 99%+ completion rate.**
 
 <p align="center">
-  <img src="./docs/assets/androidworld_benchmark_comparison.png" alt="AndroidWorld Benchmark Comparison" width="85%" />
+  <img src="./docs/assets/androidworld_leaderboard.png?v=1" alt="AndroidWorld Benchmark Comparison" width="85%" />
 </p>
 
 ## 🚀 How ARTEMIS is Architected
