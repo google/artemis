@@ -140,6 +140,7 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   // Computed helper states delegating to SystemService
   public isReady = computed(() => this.systemService.isReady());
+  public hasReadinessReport = computed(() => this.systemService.hasReadinessReport());
   public isLoading = computed(() => this.systemService.isLoading());
   public isRestartingAdb = computed(() => this.systemService.isRestartingAdb());
   public launchingAvd = computed(() => this.systemService.launchingAvd());
@@ -591,7 +592,7 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   public refreshReadiness(): void {
     this.isRefreshingDiagnostics.set(true);
-    this.systemService.fetchReadiness().subscribe({
+    this.systemService.fetchReadiness(false, true).subscribe({
       next: () => {
         this.systemService.fetchModelConfigEnv().subscribe({
           next: () => {

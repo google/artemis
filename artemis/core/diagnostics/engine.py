@@ -48,6 +48,8 @@ logger = get_logger(__name__)
 class ReadinessEngine:
     """Central orchestration engine executing modular readiness probes."""
 
+    _REPORT_CACHE_TTL_SECONDS = 2.0
+
     def __init__(self):
         self._probes: dict[str, BaseProbe] = {}
         self._active_device_serial: str | None = None
@@ -57,6 +59,11 @@ class ReadinessEngine:
         self._credentials_probe = LLMCredentialsProbe()
         self._ocr_probe = VisionOCRProbe()
         self._adb_probe = AdbDeviceProbe()
+        self._report_cache: SystemReadinessReport | None = None
+        self._report_cache_time = 0.0
+        self._report_cache_generation = -1
+        self._cache_generation = 0
+        self._report_lock = asyncio.Lock()
 
         # Register default core probes in logical lifecycle order
         self.register_probe(self._python_probe)
@@ -77,6 +84,7 @@ class ReadinessEngine:
     def set_active_device_serial(self, serial: str | None) -> None:
         """Set user-selected active target device serial."""
         self._active_device_serial = serial
+        self.invalidate_cache()
         if hasattr(self._adb_probe, "set_target_serial"):
             self._adb_probe.set_target_serial(serial)
 
@@ -95,9 +103,74 @@ class ReadinessEngine:
         """Run the bounded device gate used by task submission."""
         return await self._adb_probe.probe_submission_readiness()
 
-    async def run_all(self, categories: list[ProbeCategory] | None = None) -> SystemReadinessReport:
-        """Concurrently run all registered diagnostic probes and compile report."""
-        toolchain.clear_cache()
+    def invalidate_cache(self) -> None:
+        """Invalidate the UI readiness snapshot after an explicit configuration change."""
+        self._cache_generation += 1
+        self._report_cache = None
+        self._report_cache_time = 0.0
+        self._report_cache_generation = -1
+
+    def _cached_report(self, max_age_seconds: float) -> SystemReadinessReport | None:
+        if self._report_cache is None:
+            return None
+        if self._report_cache_generation != self._cache_generation:
+            return None
+        if time.monotonic() - self._report_cache_time > max_age_seconds:
+            return None
+        return self._report_cache.model_copy(deep=True)
+
+    async def run_all(
+        self,
+        categories: list[ProbeCategory] | None = None,
+        *,
+        force_refresh: bool = False,
+    ) -> SystemReadinessReport:
+        """Return a coalesced readiness snapshot.
+
+        The dashboard polls frequently, so allowing every HTTP request to launch a
+        complete toolchain and ADB scan creates a request storm. Full reports are
+        cached briefly and all concurrent refreshes share one execution. The task
+        submission gate remains independent and always performs its own bounded
+        device check.
+        """
+        cacheable = categories is None
+        request_started = time.monotonic()
+        if cacheable and not force_refresh:
+            cached = self._cached_report(self._REPORT_CACHE_TTL_SECONDS)
+            if cached is not None:
+                return cached
+
+        async with self._report_lock:
+            # A refresh that completed while this caller waited satisfies even a
+            # forced request that began before it, coalescing concurrent clicks.
+            if cacheable and self._report_cache_time >= request_started:
+                cached = self._cached_report(float("inf"))
+                if cached is not None:
+                    return cached
+            if cacheable and not force_refresh:
+                cached = self._cached_report(self._REPORT_CACHE_TTL_SECONDS)
+                if cached is not None:
+                    return cached
+
+            if force_refresh:
+                toolchain.clear_cache()
+                self._adb_probe.invalidate_enrichment_cache()
+
+            build_generation = self._cache_generation
+            report = await self._build_report(categories)
+            # If a device/configuration change happened during the scan, return
+            # this result only to its original caller and never publish it as the
+            # shared snapshot for later requests.
+            if cacheable and build_generation == self._cache_generation:
+                self._report_cache = report.model_copy(deep=True)
+                self._report_cache_time = time.monotonic()
+                self._report_cache_generation = build_generation
+            return report
+
+    async def _build_report(
+        self, categories: list[ProbeCategory] | None = None
+    ) -> SystemReadinessReport:
+        """Execute the underlying probes and compile an uncached report."""
         target_probes = [
             probe
             for probe in self._probes.values()

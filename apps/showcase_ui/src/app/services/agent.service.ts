@@ -22,6 +22,8 @@ import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse } from '../core/
 import { StepItemData } from '../core/models/stream.model';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData };
 
+const SESSION_CACHE_KEY = 'artemis.sessions.v1';
+
 export interface VideoSegment {
   url: string;
   start: number;
@@ -118,6 +120,7 @@ export class AgentService {
 
   public currentSessionId = signal<string | null>(null);
   public sessionLogs = signal<any[]>([]); // Dynamic array of all raw events received
+  public isSessionContentLoading = signal<boolean>(false);
   public agentStatus = signal<string>('idle'); // Status of the agent runner process
   public runningSessionId = signal<string | null>(null);
   public runningGoal = signal<string | null>(null);
@@ -154,7 +157,9 @@ export class AgentService {
   public recordingPlaybackStatus = signal<RecordingPlaybackStatus>('idle');
   public recordingPlaybackMessage = signal<string>('');
   public shouldAutoplayVideo = signal<boolean>(false);
+  public videoSeekRequest = signal<{ seconds: number; requestId: number } | null>(null);
   private activeVideoSessionId: string | null = null;
+  private videoSeekRequestId = 0;
   private videoRequestGeneration = 0;
   private videoRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private videoWaitStartedAt = 0;
@@ -204,8 +209,13 @@ export class AgentService {
 
   private eventSource: EventSource | null = null;
   private statusInterval: any = null;
+  private sessionLoadGeneration = 0;
+  private sessionSnapshotRequestId = 0;
+  private sessionSnapshotAppliedId = 0;
+  private pendingSnapshotRequests = new Set<number>();
 
   constructor() {
+    this.restoreSessionsCache();
     this.fetchSessions();
     this.startStatusPolling();
   }
@@ -359,6 +369,7 @@ export class AgentService {
     this.http.get<Session[]>('/api/sessions').subscribe({
       next: (data) => {
         this.rawSessions.set(data);
+        this.persistSessionsCache(data);
         this.updateModelForCurrentView(data);
         // On initial load, if nothing is selected, not pinned, not running, and sessions exist, select latest
         if (!this.currentSessionId() && !this.userPinnedSessionId() && this.agentStatus() !== 'running' && data.length > 0) {
@@ -377,6 +388,7 @@ export class AgentService {
   public deleteSession(sessionId: string): Observable<any> {
     // 1. Optimistically update local session state immediately
     this.rawSessions.update((list) => list.filter((s) => s.session_id !== sessionId));
+    this.persistSessionsCache(this.rawSessions());
     this.pendingQueue.update((list) => list.filter((s) => s.session_id !== sessionId));
 
     if (this.userPinnedSessionId() === sessionId) {
@@ -420,6 +432,7 @@ export class AgentService {
     // 1. Optimistically clear all local session state immediately
     this.userPinnedSessionId.set(null);
     this.rawSessions.set([]);
+    this.clearSessionsCache();
     this.pendingQueue.set([]);
     this.selectSession('', false);
     if (this.isVideoWindowOpen()) {
@@ -464,6 +477,9 @@ export class AgentService {
     }
 
     if (!sessionId) {
+      this.sessionLoadGeneration++;
+      this.pendingSnapshotRequests.clear();
+      this.isSessionContentLoading.set(false);
       this.currentSessionId.set(null);
       this.sessionLogs.set([]);
       this.currentNotes.set({});
@@ -478,6 +494,10 @@ export class AgentService {
       return; // Already selected
     }
 
+    const loadGeneration = ++this.sessionLoadGeneration;
+    this.pendingSnapshotRequests.clear();
+    this.sessionSnapshotAppliedId = 0;
+    this.isSessionContentLoading.set(true);
     this.currentSessionId.set(sessionId);
     this.sessionLogs.set([]); // Reset logs for new session selection
     this.activePauseCardKey = null;
@@ -498,14 +518,22 @@ export class AgentService {
     }
 
     console.log(`Connecting to session: ${sessionId}`);
+    // Start reading the persisted snapshot immediately. Previously this waited
+    // for the SSE `info` event, adding connection latency to every history click.
+    this.backfillSessionSteps(sessionId, loadGeneration);
+
     this.eventSource = new EventSource(`/api/stream/${sessionId}`);
 
-    // The server emits info only after this client has been registered as an
-    // SSE subscriber. Fetching the persisted snapshot after that acknowledgement
-    // closes the snapshot-to-stream gap: earlier events are in history and later
-    // events are already queued for this connection.
+    // Active runs get one reconciliation snapshot after the stream subscribes,
+    // closing the snapshot-to-stream gap without delaying the first paint.
+    const selectedStatus = this.sessions().find((session) => session.session_id === sessionId)?.status;
+    const shouldReconcileAfterSubscribe = selectedStatus === 'running'
+      || selectedStatus === 'paused'
+      || selectedStatus === 'pending';
     this.eventSource.addEventListener('info', () => {
-      this.backfillSessionSteps(sessionId);
+      if (shouldReconcileAfterSubscribe) {
+        this.backfillSessionSteps(sessionId, loadGeneration);
+      }
     });
 
     // Listen to standard SSE keep-alive
@@ -804,10 +832,18 @@ export class AgentService {
    * from SSE. Snapshot logs are replaceable, while live logs remain append-only;
    * the stream aggregator merges matching steps and trace IDs within each step.
    */
-  private backfillSessionSteps(sessionId: string): void {
+  private backfillSessionSteps(sessionId: string, loadGeneration = this.sessionLoadGeneration): void {
+    const requestId = ++this.sessionSnapshotRequestId;
+    this.pendingSnapshotRequests.add(requestId);
     this.http.get<StepItemData[]>(`/api/sessions/${sessionId}/steps`).subscribe({
       next: (steps) => {
-        if (this.currentSessionId() !== sessionId) return;
+        this.pendingSnapshotRequests.delete(requestId);
+        if (
+          this.currentSessionId() !== sessionId
+          || loadGeneration !== this.sessionLoadGeneration
+          || requestId < this.sessionSnapshotAppliedId
+        ) return;
+        this.sessionSnapshotAppliedId = requestId;
         const historicalLogs = steps.map((step) => ({
           type: 'step_updated',
           session_id: sessionId,
@@ -820,11 +856,49 @@ export class AgentService {
           ...historicalLogs,
           ...logs.filter((log) => !log.history_snapshot)
         ]);
+        this.isSessionContentLoading.set(false);
       },
       error: (err) => {
+        this.pendingSnapshotRequests.delete(requestId);
         console.error('Failed to backfill session steps:', err);
+        if (
+          this.currentSessionId() === sessionId
+          && loadGeneration === this.sessionLoadGeneration
+          && this.pendingSnapshotRequests.size === 0
+        ) {
+          this.isSessionContentLoading.set(false);
+        }
       }
     });
+  }
+
+  private restoreSessionsCache(): void {
+    try {
+      const cached = localStorage.getItem(SESSION_CACHE_KEY);
+      if (!cached) return;
+      const sessions = JSON.parse(cached);
+      if (Array.isArray(sessions)) {
+        this.rawSessions.set(sessions);
+      }
+    } catch {
+      this.clearSessionsCache();
+    }
+  }
+
+  private persistSessionsCache(sessions: Session[]): void {
+    try {
+      localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(sessions));
+    } catch {
+      // Storage can be unavailable in private browsing or embedded contexts.
+    }
+  }
+
+  private clearSessionsCache(): void {
+    try {
+      localStorage.removeItem(SESSION_CACHE_KEY);
+    } catch {
+      // No-op when browser storage is unavailable.
+    }
   }
 
   /**
@@ -1169,7 +1243,12 @@ export class AgentService {
   /**
    * Open the video player for a given session or the current session
    */
-  public openVideoPlayer(sessionId?: string, videoUrl?: string, title?: string): void {
+  public openVideoPlayer(
+    sessionId?: string,
+    videoUrl?: string,
+    title?: string,
+    seekSeconds?: number
+  ): void {
     const targetSessionId = sessionId || this.currentSessionId();
     const session = this.sessions().find(s => s.session_id === targetSessionId);
     const targetUrl = videoUrl || session?.video_url || null;
@@ -1184,6 +1263,7 @@ export class AgentService {
     this.shouldAutoplayVideo.set(false);
     this.recordingPlaybackMessage.set('');
     this.activeVideoSegments.set([]);
+    if (Number.isFinite(seekSeconds)) this.requestVideoSeek(Number(seekSeconds));
     if (!targetSessionId) {
       this.activeVideoUrl.set(null);
       this.isVideoLoading.set(false);
@@ -1345,6 +1425,14 @@ export class AgentService {
     const shouldAutoplay = this.shouldAutoplayVideo();
     this.shouldAutoplayVideo.set(false);
     return shouldAutoplay;
+  }
+
+  public requestVideoSeek(seconds: number): void {
+    if (!Number.isFinite(seconds)) return;
+    this.videoSeekRequest.set({
+      seconds: Math.max(0, seconds),
+      requestId: ++this.videoSeekRequestId
+    });
   }
 
   /**

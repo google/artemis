@@ -181,6 +181,9 @@ async def test_exec_analyze_audio_universal(mock_context, tmp_path):
         assert "Heard notification sound" in result
         assert len(agent.blackboard_entries) == 1
         assert agent.blackboard_entries[0]["summary"] == "Heard notification sound."
+        sent_content = mock_bound.ainvoke.await_args.args[0][1].content
+        assert sent_content[1]["type"] == "audio"
+        assert sent_content[1]["base64"] == "YXVkaW9fYnl0ZXM="
 
 
 @pytest.mark.asyncio

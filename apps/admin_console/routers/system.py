@@ -30,9 +30,9 @@ class SelectDeviceRequest(BaseModel):
 
 
 @router.get("/readiness", response_model=SystemReadinessReport)
-async def get_system_readiness() -> SystemReadinessReport:
+async def get_system_readiness(force: bool = False) -> SystemReadinessReport:
     """Execute all diagnostic probes and return a comprehensive system readiness report."""
-    return await readiness_engine.run_all()
+    return await readiness_engine.run_all(force_refresh=force)
 
 
 @router.post("/devices/select")
@@ -44,7 +44,7 @@ async def select_active_device(request: SelectDeviceRequest):
 
     readiness_engine.set_active_device_serial(serial)
     # Return updated readiness
-    report = await readiness_engine.run_all()
+    report = await readiness_engine.run_all(force_refresh=True)
     return {
         "status": "success",
         "selected_serial": serial,
@@ -56,7 +56,8 @@ async def select_active_device(request: SelectDeviceRequest):
 async def restart_adb_server():
     """Restart local ADB server and return an updated readiness check."""
     restart_result = await readiness_engine.restart_adb_server()
-    updated_report = await readiness_engine.run_all()
+    readiness_engine.invalidate_cache()
+    updated_report = await readiness_engine.run_all(force_refresh=True)
     return {
         "restart_result": restart_result,
         "report": updated_report,
@@ -85,7 +86,8 @@ class ConnectAdbRequest(BaseModel):
 async def connect_wireless_adb(request: ConnectAdbRequest):
     """Connect to a device over Wi-Fi and return updated readiness."""
     connect_result = await readiness_engine.connect_wireless_adb(request.host, request.port)
-    updated_report = await readiness_engine.run_all()
+    readiness_engine.invalidate_cache()
+    updated_report = await readiness_engine.run_all(force_refresh=True)
     return {
         "connect_result": connect_result,
         "report": updated_report,
@@ -222,7 +224,8 @@ async def update_credentials(request: UpdateCredentialsRequest):
         settings.set_api_key(provider, key, persist_to_env=request.persist_to_env)
 
         # Re-run all diagnostic probes to build updated report
-        updated_report = await readiness_engine.run_all()
+        readiness_engine.invalidate_cache()
+        updated_report = await readiness_engine.run_all(force_refresh=True)
         action_desc = (
             "successfully verified, updated, and applied" if key else "successfully cleared"
         )

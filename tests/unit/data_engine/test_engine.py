@@ -101,6 +101,29 @@ def test_ipc_does_not_reconnect_after_engine_shutdown(tmp_path):
     connected_socket.close.assert_called_once()
 
 
+def test_ipc_connection_failure_is_backed_off(tmp_path):
+    """A stale desktop port must not block every emitted trace event."""
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    with (
+        patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
+        patch("artemis.data_engine.engine.get_ipc_port_file", return_value=tmp_path / "none"),
+        patch(
+            "artemis.data_engine.engine.socket.create_connection",
+            side_effect=TimeoutError("stale port"),
+        ) as create_connection,
+    ):
+        engine = DataEngine(mock_ctx)
+        for index in range(20):
+            engine._publish("llm_stream", {"chunk": str(index)})
+
+    assert create_connection.call_count == 1
+
+
 def test_get_or_create_image_updates_missing_data(tmp_path):
     # Setup mock context
     mock_ctx = MagicMock(spec=ArtemisContext)

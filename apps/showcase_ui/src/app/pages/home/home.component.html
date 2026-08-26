@@ -109,7 +109,7 @@
 
   <div class="guide-card-body">
     <!-- One-Click Dependency Installer Bar when any env dep is missing -->
-    @if (!isEnvironmentReady()) {
+    @if (hasReadinessReport() && !isEnvironmentReady()) {
     <div class="one-click-install-bar">
       <div class="install-bar-left">
         <div class="install-bar-icon-box">
@@ -154,7 +154,7 @@
           </div>
           <div class="item-title-group">
             <div class="item-name">Python Runtime</div>
-            <div class="item-subtitle">{{ pythonProbe()?.summary || 'Python 3.12+' }}</div>
+            <div class="item-subtitle">{{ pythonProbe()?.summary || 'Checking…' }}</div>
           </div>
           <div class="item-status">
             <span class="status-dot" [class.dot-pass]="pythonProbe()?.status === 'pass'" [class.dot-fail]="pythonProbe()?.status === 'fail'"></span>
@@ -187,7 +187,7 @@
           </div>
           <div class="item-title-group">
             <div class="item-name">Android Platform-Tools</div>
-            <div class="item-subtitle">{{ adbProbe()?.metadata?.['installed'] ? 'ADB Installed' : 'ADB Missing' }}</div>
+            <div class="item-subtitle">{{ !adbProbe() ? 'Checking…' : (adbProbe()?.metadata?.['installed'] ? 'ADB Installed' : 'ADB Missing') }}</div>
           </div>
           <div class="item-status">
             <span class="status-dot" [class.dot-pass]="adbProbe()?.metadata?.['installed']" [class.dot-fail]="adbProbe()?.status === 'fail'"></span>
@@ -1497,7 +1497,7 @@
       <section class="task-launcher-view">
 
         <!-- Prerequisites Drop Alert if any blocker probe is not passing -->
-        @if (!isReady()) {
+        @if (hasReadinessReport() && !isReady()) {
           <div class="launcher-warning-bar" (click)="setTab('diagnostics')">
             <span class="material-symbols-outlined warn-icon">{{ adbProbe()?.summary === 'Device Locked' ? 'lock' : 'warning' }}</span>
             <span>

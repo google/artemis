@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 from typing import Any
 
 from artemis.core.diagnostics.probes.base import BaseProbe
@@ -40,8 +41,14 @@ logger = get_logger(__name__)
 class AdbDeviceProbe(BaseProbe):
     """Deep inspection probe for Android Debug Bridge, connected mobile devices, and local AVD emulators."""
 
+    _ENRICHMENT_CACHE_TTL_SECONDS = 60.0
+    _LAST_LOCK_STATE_TTL_SECONDS = 15.0
+
     def __init__(self, target_serial: str | None = None):
         self._target_serial = target_serial
+        self._device_enrichment_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._last_lock_states: dict[str, tuple[float, bool]] = {}
+        self._lock_state_sources: dict[str, str] = {}
 
     @property
     def probe_id(self) -> str:
@@ -59,9 +66,13 @@ class AdbDeviceProbe(BaseProbe):
         """Set or update preferred active device serial."""
         self._target_serial = serial
 
+    def invalidate_enrichment_cache(self) -> None:
+        """Refresh static device metadata on an explicit full re-check."""
+        self._device_enrichment_cache.clear()
+
     def _locate_adb(self) -> str | None:
         """Find the adb binary path from ToolchainResolver."""
-        return toolchain.resolve("adb", force_refresh=True)
+        return toolchain.resolve("adb")
 
     def _locate_emulator(self) -> str | None:
         """Find the emulator binary path from PATH or standard SDK environments."""
@@ -170,10 +181,19 @@ class AdbDeviceProbe(BaseProbe):
             trust_match.group(1).lower() in {"true", "1"} if trust_match else None
         )
 
-        states = [state for state in [policy_showing, trust_locked, *legacy_states] if state is not None]
-        if any(states):
+        # Prefer the modern, current-user signals. Legacy fields can coexist in
+        # dumpsys output as stale or display-specific diagnostics and must not
+        # override an explicit modern unlocked result.
+        modern_states = [
+            state for state in [policy_showing, trust_locked] if state is not None
+        ]
+        if any(modern_states):
             return True
-        if states:
+        if modern_states:
+            return False
+        if any(legacy_states):
+            return True
+        if legacy_states:
             return False
         return None
 
@@ -217,6 +237,85 @@ class AdbDeviceProbe(BaseProbe):
         except Exception as exc:
             logger.debug(f"Failed to query lock state for {serial}: {exc}")
             return None
+
+    async def _get_confirmed_device_lock_state(
+        self,
+        adb_path: str,
+        serial: str,
+        timeout_seconds: float = 2.0,
+    ) -> bool | None:
+        """Confirm a positive lock result so one transient sample cannot flap the UI."""
+        first = await self._get_device_lock_state(
+            adb_path, serial, timeout_seconds=timeout_seconds
+        )
+        if first is not True:
+            return first
+
+        second = await self._get_device_lock_state(
+            adb_path, serial, timeout_seconds=timeout_seconds
+        )
+        if second is True:
+            return True
+        if second is False:
+            return False
+        return None
+
+    async def _get_dashboard_lock_state(
+        self,
+        adb_path: str,
+        serial: str,
+        timeout_seconds: float = 2.0,
+    ) -> bool | None:
+        """Use a recent confirmed state when one dashboard sample times out.
+
+        This smoothing is intentionally dashboard-only. Task submission uses the
+        fresh confirmed probe and fails closed when the state is unknown.
+        """
+        observed = await self._get_confirmed_device_lock_state(
+            adb_path, serial, timeout_seconds=timeout_seconds
+        )
+        now = time.monotonic()
+        if observed is not None:
+            self._last_lock_states[serial] = (now, observed)
+            self._lock_state_sources[serial] = "observed"
+            return observed
+
+        previous = self._last_lock_states.get(serial)
+        if previous and now - previous[0] <= self._LAST_LOCK_STATE_TTL_SECONDS:
+            self._lock_state_sources[serial] = "recent_confirmed"
+            return previous[1]
+
+        self._lock_state_sources[serial] = "unknown"
+        return None
+
+    @staticmethod
+    async def _run_adb_shell(
+        adb_path: str,
+        serial: str,
+        *args: str,
+        timeout_seconds: float = 2.5,
+    ) -> str:
+        """Run a bounded ADB shell command and always reap timed-out children."""
+        proc = await asyncio.create_subprocess_exec(
+            adb_path,
+            "-s",
+            serial,
+            "shell",
+            *args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return ""
+        if proc.returncode != 0:
+            return ""
+        return stdout.decode(errors="replace").strip()
 
     async def _get_device_states(
         self,
@@ -322,7 +421,7 @@ class AdbDeviceProbe(BaseProbe):
             if self._target_serial in ready_serials
             else ready_serials[0]
         )
-        is_locked = await self._get_device_lock_state(
+        is_locked = await self._get_confirmed_device_lock_state(
             adb_path,
             serial,
             timeout_seconds=1.0,
@@ -412,66 +511,60 @@ class AdbDeviceProbe(BaseProbe):
         except Exception as e:
             logger.error(f"Error querying adb devices: {e}")
 
-        # For authorized devices, attempt non-blocking quick property enrichment
+        # Lock state stays live, while static device properties and the installed
+        # package inventory are cached to keep frequent dashboard probes cheap.
         for dev in devices:
             if dev.state == "device":
                 try:
-                    p_prop = await asyncio.create_subprocess_exec(
-                        adb_path,
-                        "-s",
-                        dev.serial,
-                        "shell",
-                        "getprop ro.build.version.release",
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                    )
-                    p_size = await asyncio.create_subprocess_exec(
-                        adb_path,
-                        "-s",
-                        dev.serial,
-                        "shell",
-                        "wm size",
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                    )
                     lock_state_task = asyncio.create_task(
-                        self._get_device_lock_state(adb_path, dev.serial)
+                        self._get_dashboard_lock_state(adb_path, dev.serial)
                     )
-                    out_prop, _ = await p_prop.communicate()
-                    out_size, _ = await p_size.communicate()
-                    dev.is_locked = await lock_state_task
-
-                    if out_prop:
-                        dev.android_version = out_prop.decode(errors="replace").strip()
-                    if out_size:
-                        size_str = out_size.decode(errors="replace").strip()
-                        if "Physical size:" in size_str:
-                            dev.screen_resolution = size_str.split("Physical size:")[-1].strip()
-
-                    # Query installed application packages with timeout protection
-                    try:
-                        p_pkg = await asyncio.create_subprocess_exec(
+                    cached = self._device_enrichment_cache.get(dev.serial)
+                    now = time.monotonic()
+                    if cached and now - cached[0] <= self._ENRICHMENT_CACHE_TTL_SECONDS:
+                        enrichment = cached[1]
+                    else:
+                        prop_task = self._run_adb_shell(
                             adb_path,
-                            "-s",
                             dev.serial,
-                            "shell",
-                            "pm list packages",
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
+                            "getprop",
+                            "ro.build.version.release",
                         )
-                        out_pkg, _ = await asyncio.wait_for(p_pkg.communicate(), timeout=2.5)
-                        if out_pkg:
-                            pkgs = [
+                        size_task = self._run_adb_shell(
+                            adb_path, dev.serial, "wm", "size"
+                        )
+                        packages_task = self._run_adb_shell(
+                            adb_path,
+                            dev.serial,
+                            "pm",
+                            "list",
+                            "packages",
+                        )
+                        android_version, size_str, packages_output = await asyncio.gather(
+                            prop_task, size_task, packages_task
+                        )
+                        enrichment = {
+                            "android_version": android_version or None,
+                            "screen_resolution": (
+                                size_str.split("Physical size:")[-1].strip()
+                                if "Physical size:" in size_str
+                                else None
+                            ),
+                            "installed_packages": [
                                 line.split("package:", 1)[1].strip()
-                                for line in out_pkg.decode(errors="replace").splitlines()
+                                for line in packages_output.splitlines()
                                 if line.startswith("package:")
                                 and line.split("package:", 1)[1].strip()
-                            ]
-                            dev.installed_packages = pkgs
-                    except Exception as e_pkg:
-                        logger.debug(f"Failed to query packages for {dev.serial}: {e_pkg}")
-                except Exception:
-                    pass
+                            ],
+                        }
+                        self._device_enrichment_cache[dev.serial] = (now, enrichment)
+
+                    dev.android_version = enrichment["android_version"]
+                    dev.screen_resolution = enrichment["screen_resolution"]
+                    dev.installed_packages = list(enrichment["installed_packages"])
+                    dev.is_locked = await lock_state_task
+                except Exception as exc:
+                    logger.debug(f"Failed to enrich device {dev.serial}: {exc}")
 
         return devices
 
@@ -714,6 +807,9 @@ class AdbDeviceProbe(BaseProbe):
             display_name = f"{display_name} ({active_dev.screen_resolution})"
 
         metadata["active_device"] = active_dev.model_dump()
+        metadata["lock_state_source"] = self._lock_state_sources.get(
+            active_dev.serial, "unknown"
+        )
 
         if active_dev.is_locked is not False:
             is_locked = active_dev.is_locked is True

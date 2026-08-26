@@ -84,6 +84,8 @@ class DataEngine:
         self.ipc_socket = None
         self._ipc_socket_lock = threading.Lock()
         self._ipc_shutdown = False
+        self._ipc_retry_after = 0.0
+        self._ipc_failure_count = 0
         with self._ipc_socket_lock:
             self._connect_ipc_locked()
 
@@ -110,25 +112,35 @@ class DataEngine:
                 logger.debug(f"Could not read refreshed IPC port from {port_file}: {exc}")
         return candidates
 
-    def _connect_ipc_locked(self) -> bool:
+    def _connect_ipc_locked(self, *, force: bool = False) -> bool:
         """Connect to the UI event bridge while holding ``_ipc_socket_lock``."""
         if self._ipc_shutdown:
             return False
         if self.ipc_socket is not None:
             return True
+        if not force and time.monotonic() < self._ipc_retry_after:
+            return False
 
         for ipc_port in self._ipc_port_candidates():
             try:
-                sock = socket.create_connection(("127.0.0.1", ipc_port), timeout=1.0)
+                # A localhost listener either accepts immediately or is absent.
+                # A short connect cap prevents telemetry from stalling the
+                # automation/data worker when the desktop event bridge is stale.
+                sock = socket.create_connection(("127.0.0.1", ipc_port), timeout=0.2)
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 sock.settimeout(None)
                 self.ipc_socket = sock
+                self._ipc_failure_count = 0
+                self._ipc_retry_after = 0.0
                 logger.info(f"Connected to IPC server on port {ipc_port} with TCP_NODELAY")
                 return True
             except OSError as exc:
                 logger.warning(f"Failed to connect to IPC server on port {ipc_port}: {exc}")
 
         self.ipc_socket = None
+        self._ipc_failure_count += 1
+        retry_delay = min(30.0, 0.5 * (2 ** min(self._ipc_failure_count - 1, 6)))
+        self._ipc_retry_after = time.monotonic() + retry_delay
         return False
 
     def _send_ipc_event(self, event_type: str, data: Any) -> None:
@@ -143,8 +155,8 @@ class DataEngine:
         encoded_payload = payload.encode("utf-8")
 
         with self._ipc_socket_lock:
-            for _attempt in range(2):
-                if not self._connect_ipc_locked():
+            for attempt in range(2):
+                if not self._connect_ipc_locked(force=attempt > 0):
                     return
                 try:
                     self.ipc_socket.sendall(encoded_payload)
@@ -156,6 +168,7 @@ class DataEngine:
                     except Exception:
                         pass
                     self.ipc_socket = None
+                    self._ipc_retry_after = 0.0
 
     @property
     def base_dir(self) -> Path:

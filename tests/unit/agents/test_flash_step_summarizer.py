@@ -14,8 +14,8 @@
 
 """Unit tests for VisualStepSummarizer and Context Compressor in Flash profile."""
 
-import asyncio
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
+from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -65,27 +65,26 @@ async def test_summarizer_dispatch_and_caching(mock_context):
 
 
 @pytest.mark.asyncio
-async def test_summarizer_retrigger_stalled_steps(mock_context):
-    """Verify that earlier stalled steps are re-triggered when subsequent steps arrive."""
+async def test_summarizer_retries_independently(mock_context):
+    """A failed summary retries without waiting for another action to arrive."""
     summarizer = VisualStepSummarizer(mock_context)
     attempt_count = 0
 
     async def mock_ainvoke(messages):
         nonlocal attempt_count
         attempt_count += 1
-        # Fail the first attempt (Step 1 first call)
+        # Fail the first attempt, then return the requested step summary.
         if attempt_count == 1:
-            raise asyncio.CancelledError("Simulated timeout")
-        # Check messages for step number
+            raise TimeoutError("Simulated timeout")
         msg_str = str(messages)
         if "Step 1" in msg_str:
             return AIMessage(content="[Step 1 State: Recovered Step 1 summary]")
-        return AIMessage(content="[Step 2 State: Step 2 summary]")
+        raise AssertionError("Unexpected step")
 
     summarizer._llm = Mock()
     summarizer._llm.ainvoke = AsyncMock(side_effect=mock_ainvoke)
 
-    # Dispatch step 1 (fails on first attempt)
+    # No Step 2 dispatch is needed to trigger the retry.
     summarizer.dispatch(
         step_number=1,
         action_name="click",
@@ -95,22 +94,10 @@ async def test_summarizer_retrigger_stalled_steps(mock_context):
         exec_outcome="Outcome 1",
     )
     await summarizer.flush()
-    assert not summarizer.has_summary(1)
-
-    # Dispatch step 2 (should detect stalled Step 1 and re-trigger)
-    summarizer.dispatch(
-        step_number=2,
-        action_name="swipe",
-        action_args={"action": "up"},
-        pre_img_bytes=b"pre2",
-        post_img_bytes=b"post2",
-        exec_outcome="Outcome 2",
-    )
-    await summarizer.flush()
 
     assert summarizer.has_summary(1)
-    assert summarizer.has_summary(2)
     assert "Recovered Step 1" in summarizer.get_summary(1)
+    assert attempt_count == 2
 
 
 def test_context_compressor_with_ready_summaries(mock_context):
@@ -156,7 +143,10 @@ def test_context_compressor_with_ready_summaries(mock_context):
     # Step 1 (ToolMessage 1): Image replaced with Step 1 summary, old XML pruned
     assert len(messages[1].content) == 2
     assert messages[1].content[0]["text"] == "Action 'click' completed."
-    assert messages[1].content[1]["text"] == "[Step 1 State: Tapped Search bar. Keyboard appeared.]"
+    assert messages[1].content[1]["text"] == (
+        "--- Historical Visual Transition ---\n"
+        "[Step 1 State: Tapped Search bar. Keyboard appeared.]"
+    )
 
     # Step 2 (ToolMessage 2 - Latest live screen): Image and latest live XML MUST be preserved
     assert len(messages[2].content) == 3
@@ -196,6 +186,173 @@ def test_context_compressor_graceful_fallback(mock_context):
     # Turn 2 (Latest) preserves image
     assert len(messages[1].content) == 2
     assert messages[1].content[1]["type"] == "image_url"
+
+
+def test_context_compressor_backfills_late_summary_idempotently(mock_context):
+    """A pending image remains until its late summary replaces it."""
+    summarizer = VisualStepSummarizer(mock_context)
+    summarizer._step_inputs["action-1"] = {"step_number": 1}
+    messages = [
+        HumanMessage(
+            content=[
+                {"type": "text", "text": "Task: Search"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,IMG_1"}},
+            ]
+        ),
+        ToolMessage(
+            tool_call_id="action-1",
+            name="click",
+            content=[
+                {"type": "text", "text": "Tapped Search."},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,IMG_2"}},
+            ],
+        ),
+        ToolMessage(
+            tool_call_id="action-2",
+            name="input_text",
+            content=[
+                {"type": "text", "text": "Typed query."},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,IMG_3"}},
+            ],
+        ),
+    ]
+
+    compress_flash_messages(messages, summarizer=summarizer)
+    assert any(block["type"] == "image_url" for block in messages[1].content)
+    assert len(messages[1].content) == 2
+
+    summarizer._summaries["action-1"] = "Search field focused; keyboard appeared."
+    compress_flash_messages(messages, summarizer=summarizer)
+    compress_flash_messages(messages, summarizer=summarizer)
+
+    generated_blocks = [
+        block
+        for block in messages[1].content
+        if block.get("text", "").startswith("--- Historical Visual Transition ---")
+    ]
+    assert len(generated_blocks) == 1
+    assert generated_blocks[0]["text"].endswith("Search field focused; keyboard appeared.")
+    assert all(block["type"] != "image_url" for block in messages[1].content)
+
+
+def test_context_compressor_uses_tool_call_id_over_message_ordinal(mock_context):
+    """Generic tool messages cannot shift action summaries onto the wrong result."""
+    summarizer = VisualStepSummarizer(mock_context)
+    summarizer._summaries["click-id"] = "Click-specific visual memory."
+    summarizer._summaries["type-id"] = "Typing-specific visual memory."
+
+    messages = [
+        ToolMessage(
+            tool_call_id="click-id",
+            name="click",
+            content=[
+                {"type": "text", "text": "Clicked."},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,A"}},
+            ],
+        ),
+        ToolMessage(
+            tool_call_id="explorer-id",
+            name="ask_explorer",
+            content=[{"type": "text", "text": "Explorer result."}],
+        ),
+        ToolMessage(
+            tool_call_id="type-id",
+            name="input_text",
+            content=[
+                {"type": "text", "text": "Typed."},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,B"}},
+            ],
+        ),
+    ]
+
+    compress_flash_messages(messages, summarizer=summarizer)
+
+    assert "Click-specific visual memory." in str(messages[0].content)
+    assert "Typing-specific visual memory." not in str(messages[0].content)
+    assert "Visual Transition" not in str(messages[1].content)
+    # The latest live observation remains uncompressed until a newer screen exists.
+    assert messages[2].content[-1]["type"] == "image_url"
+
+
+def test_context_compressor_preserves_text_before_embedded_ui_list(mock_context):
+    """Pruning a combined XML block must retain its action result prefix."""
+    messages = [
+        ToolMessage(
+            tool_call_id="old",
+            name="click",
+            content=[
+                {
+                    "type": "text",
+                    "text": "Tapped Settings.\n--- UI Element List ---\n[huge tree]",
+                },
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,A"}},
+            ],
+        ),
+        ToolMessage(
+            tool_call_id="live",
+            name="click",
+            content=[
+                {"type": "text", "text": "Opened page."},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,B"}},
+            ],
+        ),
+    ]
+
+    compress_flash_messages(messages, prune_history_xml=True)
+
+    assert messages[0].content == [{"type": "text", "text": "Tapped Settings."}]
+
+
+@pytest.mark.asyncio
+async def test_summarizer_keys_actions_independently_of_turn_number(mock_context):
+    """Multiple actions from one LLM turn keep independent inputs and summaries."""
+    mock_context.data_engine = Mock()
+    summarizer = VisualStepSummarizer(mock_context)
+
+    async def mock_ainvoke(messages):
+        prompt = str(messages)
+        if "first action" in prompt:
+            return AIMessage(content="First action memory.")
+        return AIMessage(content="Second action memory.")
+
+    summarizer._llm = Mock()
+    summarizer._llm.ainvoke = AsyncMock(side_effect=mock_ainvoke)
+    first_step_id = uuid4()
+    second_step_id = uuid4()
+
+    summarizer.dispatch(
+        step_number=1,
+        action_name="click",
+        action_args={"label": "first action"},
+        pre_img_bytes=None,
+        post_img_bytes=None,
+        exec_outcome="one",
+        action_key="tc-1",
+        data_engine_step_id=first_step_id,
+    )
+    summarizer.dispatch(
+        step_number=2,
+        action_name="click",
+        action_args={"label": "second action"},
+        pre_img_bytes=None,
+        post_img_bytes=None,
+        exec_outcome="two",
+        action_key="tc-2",
+        data_engine_step_id=second_step_id,
+    )
+    await summarizer.flush()
+
+    assert summarizer.get_summary("tc-1") == "First action memory."
+    assert summarizer.get_summary("tc-2") == "Second action memory."
+    assert summarizer._step_inputs["tc-1"]["data_engine_step_id"] == first_step_id
+    assert summarizer._step_inputs["tc-2"]["data_engine_step_id"] == second_step_id
+    mock_context.data_engine.update_step_summary.assert_has_calls(
+        [
+            call(first_step_id, "First action memory."),
+            call(second_step_id, "Second action memory."),
+        ],
+        any_order=True,
+    )
 
 
 def test_flash_config_and_builder():

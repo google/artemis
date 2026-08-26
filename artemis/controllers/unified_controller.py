@@ -61,7 +61,9 @@ class UnifiedMobileController:
     def __init__(self, ctx: ArtemisContext):
         self.ctx = ctx
         self._driver: BaseDeviceDriver = get_driver(ctx)
-        self._segment_cache: dict[tuple[float, float | None], VideoRecordingResult] = {}
+        self._segment_cache: dict[
+            tuple[str, int, float, float], VideoRecordingResult
+        ] = {}
 
     @property
     def driver(self) -> BaseDeviceDriver:
@@ -290,18 +292,6 @@ class UnifiedMobileController:
         output_path: Path | None = None,
     ) -> VideoRecordingResult:
         """Get a video segment for a specific time range (relative to video start)."""
-        cache_key = (
-            round(start_time, 1),
-            round(end_time, 1) if end_time is not None else None,
-        )
-        if cache_key in self._segment_cache:
-            cached_res = self._segment_cache[cache_key]
-            if cached_res.success and cached_res.video_path and cached_res.video_path.exists():
-                logger.info(
-                    f"Reusing cached trimmed video segment for range {cache_key[0]}s to {cache_key[1]}s"
-                )
-                return cached_res
-
         device_id = self._get_device_id()
 
         # Handle mock driver
@@ -323,6 +313,22 @@ class UnifiedMobileController:
                 success=False,
                 message=f"No active recording for device {device_id}",
             )
+
+        cache_key = None
+        if end_time is not None:
+            cache_key = (
+                str(session.video_id),
+                session.generation,
+                round(start_time, 1),
+                round(end_time, 1),
+            )
+            cached_res = self._segment_cache.get(cache_key)
+            if cached_res and cached_res.success and cached_res.video_path and cached_res.video_path.exists():
+                logger.info(
+                    "Reusing generation-scoped trimmed video segment for range "
+                    f"{cache_key[2]}s to {cache_key[3]}s"
+                )
+                return cached_res
 
         try:
             mkv_path = session.local_video_path
@@ -425,8 +431,15 @@ class UnifiedMobileController:
                 duration_seconds=round(duration, 2),
                 actual_start_relative_time=actual_start,
                 warning=truncation_warning,
+                video_id=session.video_id,
+                generation=session.generation,
+                sealed_until=session.sealed_until,
+                source_revision=(
+                    f"{session.video_id}:{session.generation}:{round(actual_end, 3)}"
+                ),
             )
-            self._segment_cache[cache_key] = res
+            if cache_key is not None:
+                self._segment_cache[cache_key] = res
             return res
 
         except Exception as e:
@@ -469,11 +482,16 @@ class UnifiedMobileController:
                 "start": max(0.0, start_time - session.start_time),
                 "end": max(0.0, end_time - session.start_time),
                 "rotation": session.android_rotation,
+                "generation": session.generation,
                 "conversion_scheduled": True,
             }
         )
         session.android_conversion_tasks.append(
             asyncio.create_task(self._remux_segment_record(session.android_segment_records[-1]))
+        )
+        session.sealed_until = max(
+            session.sealed_until,
+            max(0.0, end_time - session.start_time),
         )
 
     def _record_recording_failure(self, session: RecordingSession, message: str) -> None:
@@ -490,6 +508,7 @@ class UnifiedMobileController:
         self, session: RecordingSession, display_state: tuple[int, int, int] | None
     ) -> bool:
         session.android_segment_index += 1
+        session.generation = session.android_segment_index
         output_dir = session.local_video_path.parent
         new_video_path = output_dir / f"recording_{session.android_segment_index:03d}.mkv"
         process = await self._spawn_scrcpy(
@@ -635,6 +654,10 @@ class UnifiedMobileController:
             return VideoRecordingResult(
                 success=True,
                 message=f"Recording started on {device_id}",
+                video_id=session.video_id,
+                generation=session.generation,
+                sealed_until=session.sealed_until,
+                source_revision=f"{session.video_id}:{session.generation}:active",
             )
 
         except Exception as e:
@@ -743,6 +766,10 @@ class UnifiedMobileController:
                 success=True,
                 message=f"Recording stopped, saved {len(mp4_paths)} orientation-safe segments",
                 video_path=mp4_paths[0],
+                video_id=session.video_id,
+                generation=session.generation,
+                sealed_until=session.sealed_until,
+                source_revision=f"{session.video_id}:{session.generation}:sealed",
             )
 
         except Exception as e:

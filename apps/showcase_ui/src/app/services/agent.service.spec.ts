@@ -7,8 +7,13 @@ describe('AgentService live LLM retry timeline', () => {
   function createServiceWithoutPolling(): AgentService {
     const service = Object.create(AgentService.prototype) as AgentService;
     service.sessionLogs = signal<any[]>([]);
+    service.isSessionContentLoading = signal(false);
     service.startupProgressBySession = signal({});
     (service as any).pendingStartupProgress = signal<any[]>([]);
+    (service as any).sessionLoadGeneration = 0;
+    (service as any).sessionSnapshotRequestId = 0;
+    (service as any).sessionSnapshotAppliedId = 0;
+    (service as any).pendingSnapshotRequests = new Set<number>();
     return service;
   }
 
@@ -108,6 +113,7 @@ describe('AgentService live LLM retry timeline', () => {
       { type: 'step_updated', history_snapshot: true, data: { step_id: 'old-step' } },
       { type: 'trace_recorded', data: { trace_id: 'live-retry', name: 'llm_retry' } }
     ]);
+    service.isSessionContentLoading.set(true);
 
     (service as any).backfillSessionSteps('session-1');
 
@@ -116,6 +122,7 @@ describe('AgentService live LLM retry timeline', () => {
     expect(logs[0].history_snapshot).toBeTrue();
     expect(logs[0].data.step_id).toBe('step-1');
     expect(logs[1].data.trace_id).toBe('live-retry');
+    expect(service.isSessionContentLoading()).toBeFalse();
   });
 
   it('follows a just-started task even when status polling saw it first', () => {
@@ -246,5 +253,22 @@ describe('AgentService recording finalization lifecycle', () => {
     expect(service.recordingPlaybackStatus()).toBe('failed');
     expect(service.isVideoLoading()).toBeFalse();
     expect(service.recordingPlaybackMessage()).toBe('ffmpeg failed');
+  });
+});
+
+describe('AgentService video analysis seeking', () => {
+  it('publishes repeatable, clamped seek requests for the floating player', () => {
+    const service = Object.create(AgentService.prototype) as AgentService;
+    service.videoSeekRequest = signal<{ seconds: number; requestId: number } | null>(null);
+    (service as any).videoSeekRequestId = 0;
+
+    service.requestVideoSeek(-5);
+    const first = service.videoSeekRequest();
+    service.requestVideoSeek(0);
+    const second = service.videoSeekRequest();
+
+    expect(first?.seconds).toBe(0);
+    expect(second?.seconds).toBe(0);
+    expect(second?.requestId).toBeGreaterThan(first?.requestId || 0);
   });
 });

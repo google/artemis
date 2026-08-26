@@ -155,6 +155,7 @@ class FlashRunner:
         ]
 
         turns = 0
+        action_sequence = 0
         final_report = None
         current_pre_screenshot_bytes = img_bytes
         current_xml_list = xml_list
@@ -186,15 +187,13 @@ class FlashRunner:
                 except Exception as e:
                     logger.warning(f"Failed to check injected instruction in FlashRunner: {e}")
 
-            # Compress previous history before LLM call to save context and inject objective summaries
-            if self.summarizer:
-                compress_flash_messages(
-                    messages,
-                    summarizer=self.summarizer,
-                    prune_history_xml=self.step_summarizer_cfg.prune_history_xml,
-                )
-            else:
-                prune_intermediate_screenshots(messages)
+            # Compress history even when visual summarization is disabled, so
+            # screenshot and historical XML pruning have identical semantics.
+            compress_flash_messages(
+                messages,
+                summarizer=self.summarizer,
+                prune_history_xml=self.step_summarizer_cfg.prune_history_xml,
+            )
 
             # Tool restriction on the final turn
             if turns == self.max_turns:
@@ -418,6 +417,7 @@ class FlashRunner:
                             )
 
                     # Record telemetry / step in DataEngine
+                    recorded_step_id = None
                     if self.ctx.data_engine and name in ACTION_TOOL_NAMES:
                         try:
                             if self.ctx.data_engine.current_step_id is None:
@@ -475,7 +475,7 @@ class FlashRunner:
                                 action_dict["normalized_start_coordinates"] = norm_start
                                 action_dict["normalized_end_coordinates"] = norm_end
 
-                            self.ctx.data_engine.record_step(
+                            recorded_step_id = self.ctx.data_engine.record_step(
                                 pre_screenshot_bytes=current_pre_screenshot_bytes,
                                 post_screenshot_bytes=post_img_bytes,
                                 ui_tree=(exec_result.ui_elements_text or current_xml_list),
@@ -489,13 +489,16 @@ class FlashRunner:
 
                     # ⚡ Non-blocking dispatch of objective visual transition summarizer
                     if self.summarizer and name in ACTION_TOOL_NAMES:
+                        action_sequence += 1
                         self.summarizer.dispatch(
-                            step_number=turns,
+                            step_number=action_sequence,
                             action_name=name,
                             action_args=args,
                             pre_img_bytes=current_pre_screenshot_bytes,
                             post_img_bytes=post_img_bytes,
                             exec_outcome=exec_result.text_summary,
+                            action_key=str(tc_id),
+                            data_engine_step_id=recorded_step_id,
                         )
 
                     if post_img_bytes:

@@ -895,6 +895,8 @@ class StorageManager:
         with self._get_connection() as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             tables = [
+                "video_analysis_observations",
+                "video_analysis_segments",
                 "failed_outputs",
                 "traces",
                 "background_tasks",
@@ -951,13 +953,16 @@ class StorageManager:
 
         # 1. Get video paths before deleting from DB
         video_paths = []
+        video_ids: list[str] = []
         try:
             with self._get_connection() as conn:
                 cursor = conn.execute(
-                    "SELECT local_video_path FROM video_recordings WHERE session_id = ?",
+                    "SELECT video_id, local_video_path FROM video_recordings WHERE session_id = ?",
                     (session_id_str,),
                 )
                 for row in cursor.fetchall():
+                    if row["video_id"]:
+                        video_ids.append(str(row["video_id"]))
                     if row["local_video_path"]:
                         video_paths.append(Path(row["local_video_path"]))
         except sqlite3.OperationalError as e:
@@ -966,6 +971,20 @@ class StorageManager:
         # 2. Delete from DB tables
         with self._get_connection() as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
+            board_keys = [f"session:{session_id_str}"] + [
+                f"video:{video_id}" for video_id in video_ids
+            ]
+            for table in (
+                "video_analysis_observations",
+                "video_analysis_segments",
+            ):
+                try:
+                    conn.executemany(
+                        f"DELETE FROM {table} WHERE board_key = ?",
+                        [(key,) for key in board_keys],
+                    )
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Failed to delete video memory from {table}: {e}")
             tables = [
                 "failed_outputs",
                 "traces",

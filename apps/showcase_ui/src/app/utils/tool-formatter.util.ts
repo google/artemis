@@ -64,7 +64,133 @@ export function isVideoTool(tool: any): boolean {
   if (!tool || !tool.name) return false;
   const cleanName = tool.name.replace(/^(_)?(self\.)?exec_/, '');
   const nameLower = cleanName.toLowerCase();
-  return ['video_analyzer', 'video_analyzer_pure'].includes(nameLower);
+  return [
+    'video_analysis',
+    'video_analyzer',
+    'video_analyzer_pure',
+    'spawn_sub_agent',
+    'analyze_audio_only'
+  ].includes(nameLower);
+}
+
+export type VideoAnalysisOutcome = 'running' | 'recovering' | 'waiting' | 'complete' | 'partial' | 'failed';
+
+export interface VideoAnalysisRange {
+  start: number;
+  end: number;
+  category?: string;
+  retryable?: boolean;
+}
+
+export interface VideoAnalysisView {
+  outcome: VideoAnalysisOutcome;
+  title: string;
+  query: string;
+  summary: string;
+  reuse: 'none' | 'partial' | 'full';
+  requestedRange: VideoAnalysisRange | null;
+  completedRanges: VideoAnalysisRange[];
+  failedRanges: VideoAnalysisRange[];
+  evidenceCount: number;
+  completedCount: number;
+  totalCount: number;
+  fallbackUsed: boolean;
+}
+
+function numericRange(value: any): VideoAnalysisRange | null {
+  if (!value || typeof value !== 'object') return null;
+  const start = Number(value.start);
+  const end = Number(value.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return {
+    start,
+    end,
+    category: value.category ? String(value.category) : undefined,
+    retryable: value.retryable === true
+  };
+}
+
+function parseVideoResultText(text: string): Partial<VideoAnalysisView> {
+  const value = text.trim();
+  if (!value) return {};
+  if (value.startsWith('CACHED VIDEO ANALYSIS:')) {
+    return { outcome: 'complete', reuse: 'full', summary: value.replace(/^CACHED VIDEO ANALYSIS:\s*/, '') };
+  }
+  if (value.startsWith('PARTIAL VIDEO ANALYSIS')) {
+    return { outcome: 'partial', reuse: 'partial', summary: value };
+  }
+  if (value.startsWith('All sub-agent chunks failed') || value.startsWith('Error:')) {
+    return { outcome: 'failed', summary: value };
+  }
+  if (value.includes('Analysis is already in progress in another video agent')) {
+    return { outcome: 'waiting', summary: 'Another video agent is already analyzing this evidence.' };
+  }
+  return { outcome: 'complete', summary: value };
+}
+
+/** Build the user-facing, backward-compatible video analysis state. */
+export function getVideoAnalysisView(tool: any): VideoAnalysisView | null {
+  if (!isVideoTool(tool)) return null;
+  const args = getToolArgs(tool);
+  const payload = tool?.payload && typeof tool.payload === 'object' ? tool.payload : {};
+  const rawResult = payload.result ?? tool.result ?? null;
+  const structured = rawResult && typeof rawResult === 'object' ? rawResult : {};
+  const parsed = typeof rawResult === 'string' ? parseVideoResultText(rawResult) : {};
+
+  let outcome = String(structured.outcome || payload.outcome || parsed.outcome || '').toLowerCase() as VideoAnalysisOutcome;
+  if (!['running', 'recovering', 'waiting', 'complete', 'partial', 'failed'].includes(outcome)) {
+    outcome = tool?.status === 'failed' || tool?.status === 'error'
+      ? 'failed'
+      : tool?.status === 'running' ? 'running' : 'complete';
+  }
+  const recovering = structured.recovering === true || structured.fallback_used === true;
+  if (outcome === 'running' && recovering) outcome = 'recovering';
+
+  const start = Number(args.start_time ?? structured.requested_range?.start);
+  const end = Number(args.end_time ?? structured.requested_range?.end);
+  const requestedRange = Number.isFinite(start) && Number.isFinite(end) && end > start
+    ? { start, end }
+    : numericRange(structured.requested_range);
+  const completedRanges = Array.isArray(structured.completed_ranges)
+    ? structured.completed_ranges.map(numericRange).filter((range: VideoAnalysisRange | null): range is VideoAnalysisRange => Boolean(range))
+    : [];
+  const failedRanges = Array.isArray(structured.failed_ranges)
+    ? structured.failed_ranges.map(numericRange).filter((range: VideoAnalysisRange | null): range is VideoAnalysisRange => Boolean(range))
+    : [];
+  const completedCount = Number(structured.completed_count ?? completedRanges.length ?? 0);
+  const totalCount = Number(structured.total_count ?? (completedRanges.length + failedRanges.length));
+  const titleByOutcome: Record<VideoAnalysisOutcome, string> = {
+    running: 'Analyzing screen recording',
+    recovering: 'Analyzing unfinished recording segment',
+    waiting: 'Waiting for existing video analysis',
+    complete: structured.reuse === 'full' || parsed.reuse === 'full'
+      ? 'Reused video analysis'
+      : 'Analyzed screen recording',
+    partial: 'Video analysis partially completed',
+    failed: 'Video analysis returned no result'
+  };
+
+  return {
+    outcome,
+    title: titleByOutcome[outcome],
+    query: String(args.specific_query || args.query || args.prompt || structured.query || ''),
+    summary: String(structured.summary || parsed.summary || ''),
+    reuse: (structured.reuse || parsed.reuse || 'none') as 'none' | 'partial' | 'full',
+    requestedRange,
+    completedRanges,
+    failedRanges,
+    evidenceCount: Number(structured.evidence_count || 0),
+    completedCount: Number.isFinite(completedCount) ? completedCount : 0,
+    totalCount: Number.isFinite(totalCount) ? totalCount : 0,
+    fallbackUsed: structured.fallback_used === true
+  };
+}
+
+export function formatVideoTime(seconds: number): string {
+  const safe = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(safe / 60);
+  const secs = Math.floor(safe % 60);
+  return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
 /**
@@ -301,7 +427,107 @@ export function getUniqueGenericTools(tools: any[] | undefined): any[] {
       }
     }
   }
-  return result;
+  return collapseVideoAnalysisTools(result);
+}
+
+/**
+ * Present one note-style timeline row for one video-analyzer execution. Child
+ * chunk, audio, and wrapper traces stay available in the raw trace but do not
+ * look like repeated user-visible analyses.
+ */
+function collapseVideoAnalysisTools(tools: any[]): any[] {
+  const groups = new Map<string, { firstIndex: number; tools: any[] }>();
+  const passthrough: Array<{ index: number; tool: any }> = [];
+
+  tools.forEach((tool, index) => {
+    if (!isVideoTool(tool)) {
+      passthrough.push({ index, tool });
+      return;
+    }
+    const cleanName = String(tool.name || '').replace(/^(_)?(self\.)?exec_/, '').toLowerCase();
+    const groupId = cleanName === 'video_analyzer' || cleanName === 'video_analyzer_pure'
+      ? String(tool.trace_id || tool.parent_trace_id || `video-${index}`)
+      : String(tool.parent_trace_id || tool.trace_id || `video-${index}`);
+    const existing = groups.get(groupId);
+    if (existing) {
+      existing.tools.push(tool);
+    } else {
+      groups.set(groupId, { firstIndex: index, tools: [tool] });
+    }
+  });
+
+  const collapsed = [...passthrough];
+  for (const [groupId, group] of groups) {
+    const views = group.tools
+      .map(getVideoAnalysisView)
+      .filter((view): view is VideoAnalysisView => Boolean(view));
+    if (!views.length) continue;
+
+    const hasActive = views.some(view => view.outcome === 'running' || view.outcome === 'recovering');
+    const completed = views.filter(view => view.outcome === 'complete');
+    const hasPartial = views.some(view => view.outcome === 'partial');
+    const failed = views.filter(view => view.outcome === 'failed');
+    const waiting = views.filter(view => view.outcome === 'waiting');
+    let outcome: VideoAnalysisOutcome;
+    if (hasActive) {
+      outcome = views.some(view => view.outcome === 'recovering') ? 'recovering' : 'running';
+    } else if (hasPartial || (completed.length > 0 && failed.length > 0)) {
+      outcome = 'partial';
+    } else if (completed.length > 0) {
+      outcome = 'complete';
+    } else if (waiting.length > 0) {
+      outcome = 'waiting';
+    } else {
+      outcome = 'failed';
+    }
+
+    const ranges = views
+      .map(view => view.requestedRange)
+      .filter((range): range is VideoAnalysisRange => Boolean(range));
+    const requestedRange = ranges.length
+      ? {
+          start: Math.min(...ranges.map(range => range.start)),
+          end: Math.max(...ranges.map(range => range.end))
+        }
+      : null;
+    const reuse = completed.length > 0 && completed.every(view => view.reuse === 'full')
+      ? 'full'
+      : views.some(view => view.reuse !== 'none') ? 'partial' : 'none';
+    const base = group.tools[0];
+    const structuredResult = {
+      outcome,
+      reuse,
+      requested_range: requestedRange,
+      completed_count: completed.length,
+      total_count: views.length,
+      evidence_count: views.reduce((sum, view) => sum + view.evidenceCount, 0),
+      query: views.find(view => view.query)?.query || '',
+      recovering: outcome === 'recovering',
+      fallback_used: views.some(view => view.fallbackUsed)
+    };
+
+    collapsed.push({
+      index: group.firstIndex,
+      tool: {
+        ...base,
+        trace_id: `video-analysis-${groupId}`,
+        name: 'video_analysis',
+        status: outcome === 'running' || outcome === 'recovering' ? 'running' : 'success',
+        payload: {
+          ...(base.payload || {}),
+          args: {
+            ...(base.payload?.args || base.args || {}),
+            start_time: requestedRange?.start,
+            end_time: requestedRange?.end
+          },
+          result: structuredResult
+        }
+      }
+    });
+  }
+
+  collapsed.sort((a, b) => a.index - b.index);
+  return collapsed.map(item => item.tool);
 }
 
 /**

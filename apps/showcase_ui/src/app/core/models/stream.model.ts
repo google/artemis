@@ -39,7 +39,7 @@ export interface ActionExecution {
 }
 
 export interface StepEvent {
-  type: 'action' | 'tool';
+  type: 'thinking' | 'text' | 'action' | 'tool';
   data: any;
   timestamp?: number;
 }

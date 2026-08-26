@@ -20,6 +20,7 @@ $text-secondary: #1f1f1f;
 $text-muted: #1f1f1f;
 $bg-main: #f9fafb;
 $uniform-gap: 8px;
+$stream-row-height: 25px;
 
 :host {
   display: flex;
@@ -957,6 +958,20 @@ $uniform-gap: 8px;
     overflow-y: auto;
     padding: 72px 24px 100px 24px;
     position: relative;
+
+    .session-loading-state {
+      min-height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      color: #64748b;
+      font-size: 13px;
+
+      .material-symbols-outlined {
+        font-size: 18px;
+      }
+    }
     display: flex;
     flex-direction: column;
 
@@ -1879,7 +1894,8 @@ $uniform-gap: 8px;
               padding: 0;
 
               .llm-retry-note {
-                min-height: 20px;
+                min-height: $stream-row-height;
+                box-sizing: border-box;
                 display: flex;
                 align-items: center;
                 gap: 8px;
@@ -1923,6 +1939,14 @@ $uniform-gap: 8px;
 
             .step-generic-tool {
               border: 1px solid transparent;
+
+              &.is-video-attention:not(.is-running) {
+                .tool-call-label .stream-status-dot {
+                  background: #f59e0b;
+                  box-shadow: none;
+                  animation: none;
+                }
+              }
 
               &.is-llm-error {
                 .tool-call-label {
@@ -1994,7 +2018,7 @@ $uniform-gap: 8px;
                 font-family: 'Google Sans', 'Google Sans Text', 'Inter', Arial, sans-serif;
                 letter-spacing: 0.5px;
                 line-height: 1.5;
-                min-height: 20px;
+                min-height: 22px;
                 box-sizing: border-box;
                 display: inline-flex;
                 align-items: center;
@@ -2065,15 +2089,11 @@ $uniform-gap: 8px;
                     color: #1557b0;
                     background: rgba(26, 115, 232, 0.08);
                   }
+                }
 
-                  &.video-pill {
-                    color: #0284c7;
-
-                    &:hover {
-                      color: #0369a1;
-                      background: rgba(2, 132, 199, 0.08);
-                    }
-                  }
+                .video-status-detail {
+                  color: inherit;
+                  margin-left: 2px;
                 }
               }
             }

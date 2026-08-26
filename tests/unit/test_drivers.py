@@ -16,7 +16,7 @@
 
 import base64
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -166,3 +166,35 @@ async def test_android_driver_parses_xml_hierarchy_fallback():
 
     assert screen_data.ui_hierarchy_xml is not None
     assert any(element.get("text") == "Settings" for element in screen_data.ui_elements)
+
+
+@pytest.mark.asyncio
+async def test_find_element_prefers_fresh_bounds_over_stale_center():
+    """Layout transitions must not leave dynamic element taps at old coordinates."""
+    driver = MockDeviceDriver(device_id="test-mock", width=1080, height=2400)
+    driver.get_screen_data = AsyncMock(
+        return_value=ScreenData(
+            screenshot_bytes=base64.b64decode(_ONE_PIXEL_PNG),
+            screenshot_base64=_ONE_PIXEL_PNG,
+            ui_elements=[
+                {
+                    "resource_id": "app:id/digit_4",
+                    "bounds": "[10,1700][270,1940]",
+                    "parsed_bounds": {
+                        "left": 10,
+                        "top": 1700,
+                        "right": 270,
+                        "bottom": 1940,
+                    },
+                    "center": [140, 1600],
+                }
+            ],
+            width=1080,
+            height=2400,
+        )
+    )
+
+    _, center, error = await driver.find_element(resource_id="app:id/digit_4")
+
+    assert error is None
+    assert center == [140, 1820]

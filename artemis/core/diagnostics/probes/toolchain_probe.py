@@ -41,8 +41,8 @@ class ToolchainProbe(BaseProbe):
         return False
 
     async def probe(self) -> ProbeResult:
-        ffmpeg_path = toolchain.resolve("ffmpeg", force_refresh=True)
-        scrcpy_path = toolchain.resolve("scrcpy", force_refresh=True)
+        ffmpeg_path = toolchain.resolve("ffmpeg")
+        scrcpy_path = toolchain.resolve("scrcpy")
 
         tools_installed = []
         tools_missing = []

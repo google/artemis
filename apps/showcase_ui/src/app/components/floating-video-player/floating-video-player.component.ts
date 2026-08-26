@@ -58,6 +58,7 @@ export class FloatingVideoPlayerComponent {
   });
   private pendingLocalTime: number | null = null;
   private pendingAutoplay = false;
+  private pendingAbsoluteSeek: number | null = null;
 
   // Available speed options
   public speedOptions = [0.5, 1.0, 1.5, 2.0, 4.0];
@@ -90,6 +91,19 @@ export class FloatingVideoPlayerComponent {
       },
       { allowSignalWrites: true }
     );
+
+    effect(() => {
+      const request = this.agentService.videoSeekRequest();
+      if (!request) return;
+      this.pendingAbsoluteSeek = request.seconds;
+      if (this.agentService.recordingPlaybackStatus() !== 'ready') return;
+      const video = this.videoRef?.nativeElement;
+      if (video && video.readyState >= 1) {
+        const target = this.pendingAbsoluteSeek;
+        this.pendingAbsoluteSeek = null;
+        this.seek(target, true);
+      }
+    });
   }
 
   public onLiveStreamError(): void {
@@ -194,6 +208,14 @@ export class FloatingVideoPlayerComponent {
       v.playbackRate = this.playbackRate();
       v.loop = this.isLooping() && !segments.length;
       v.muted = this.isMuted();
+      if (this.pendingAbsoluteSeek !== null) {
+        const target = this.pendingAbsoluteSeek;
+        this.pendingAbsoluteSeek = null;
+        this.seek(target, true);
+        // A seek into another finalized segment changes the video source. Let
+        // that segment's metadata event apply pendingLocalTime.
+        if (this.pendingLocalTime !== null) return;
+      }
       if (this.pendingLocalTime !== null) {
         v.currentTime = Math.max(0, Math.min(v.duration || this.pendingLocalTime, this.pendingLocalTime));
         this.pendingLocalTime = null;

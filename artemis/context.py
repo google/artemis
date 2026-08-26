@@ -171,6 +171,9 @@ class ArtemisContext(BaseModel):
     task_plan_content_before: str | None = None
 
     _genai_client: Any | None = PrivateAttr(default=None)
+    _video_blackboard: Any | None = PrivateAttr(default=None)
+    _video_circuit_breaker: Any | None = PrivateAttr(default=None)
+    _mobile_controller: Any | None = PrivateAttr(default=None)
     mcp_client_ctx: Any | None = None
     mcp_session: Any | None = None
 

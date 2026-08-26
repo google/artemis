@@ -290,14 +290,19 @@
 
   <!-- Event Logs Section -->
   <main class="stream-logs-content" (scroll)="onStreamScroll($event)">
-    <div *ngIf="consolidatedBlocks().length === 0 && !showPlanningLoader() && startupWorkItems().length === 0" class="empty-state">
+    <div *ngIf="agentService.isSessionContentLoading()" class="session-loading-state" aria-live="polite">
+      <span class="material-symbols-outlined spin-animation">progress_activity</span>
+      <span>Loading run history...</span>
+    </div>
+
+    <div *ngIf="!agentService.isSessionContentLoading() && consolidatedBlocks().length === 0 && !showPlanningLoader() && startupWorkItems().length === 0" class="empty-state">
       <div class="empty-icon"><span class="material-symbols-outlined">sensors</span></div>
       <h3>No Stream Activity Selected</h3>
       <p>Please select a session from the Task List on the right to view its real-time log payloads.</p>
     </div>
 
     <!-- The phase-based session logs list -->
-    <div class="logs-list-container" *ngIf="phases().length > 0 || showPlanningLoader() || startupWorkItems().length > 0">
+    <div class="logs-list-container" *ngIf="!agentService.isSessionContentLoading() && (phases().length > 0 || showPlanningLoader() || startupWorkItems().length > 0)">
       <div class="phase-container startup-phase" *ngIf="startupWorkItems().length > 0" aria-live="polite">
         <div class="phase-header first-phase">
           <span class="phase-worked-time">Worked for {{ startupPreparationDuration() }}s</span>
@@ -343,37 +348,38 @@
             >
               <!-- Unified Step / Stream Body -->
               <div class="step-body">
-                <!-- Native Thinking (Thought) -->
-                <div *ngIf="getNativeThinking(block) as nativeText"
-                     class="thinking-stream-details native-thinking-details" 
-                     [class.is-running]="isBlockRunning(block)"
-                     [class.collapsed]="collapsedStreams().has(block.data.execution_id || block.data.step_id || block.id)">
-                  <div class="details-summary" (click)="toggleCollapse(block.data.execution_id || block.data.step_id || block.id)">
-                    <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
-                    Thought
-                  </div>
-                  <div class="details-content-wrapper">
-                    <div class="details-content stream-box">
-                      <div class="stream-text" [innerHTML]="renderMarkdown(typedTextsSignal()[block.id + '-native'] || nativeText)"></div>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Raw Thinking / Plan / Message (Work) -->
-                <div *ngIf="getRawThinking(block) as rawText" class="step-raw-thinking-message" [class.is-running]="isBlockRunning(block)">
-                  <div class="report-header">
-                    <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
-                    Work
-                  </div>
-                  <div class="report-content stream-box">
-                    <div class="stream-text" [innerHTML]="renderMarkdown(typedTextsSignal()[block.id] || rawText)"></div>
-                  </div>
-                </div>
-
-
-                <!-- Tool Call / Action section (Unified Chronological Loop matching Debug UI execution order) -->
-                <div class="step-actions-container" *ngIf="(block.data.generic_tools && block.data.generic_tools.length > 0) || block.data.action_taken">
+                <!-- Text, tool calls, and actions share one chronological timeline. -->
+                <div class="step-actions-container" *ngIf="getSortedStepEvents(block.data).length > 0">
                   <ng-container *ngFor="let item of getSortedStepEvents(block.data); let itemIdx = index; trackBy: trackStepEvent">
+                    <!-- Native Thinking (Thought) -->
+                    <div *ngIf="item.type === 'thinking'"
+                         class="thinking-stream-details native-thinking-details"
+                         [class.is-running]="isBlockRunning(block)"
+                         [class.collapsed]="collapsedStreams().has(block.data.execution_id || block.data.step_id || block.id)">
+                      <div class="details-summary" (click)="toggleCollapse(block.data.execution_id || block.data.step_id || block.id)">
+                        <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                        Thought
+                      </div>
+                      <div class="details-content-wrapper">
+                        <div class="details-content stream-box">
+                          <div class="stream-text" [innerHTML]="renderMarkdown(typedTextsSignal()[block.id + '-native'] || item.data.text)"></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Raw Thinking / Plan / Message (Work) -->
+                    <div *ngIf="item.type === 'text' && getRawThinking(block)"
+                         class="step-raw-thinking-message"
+                         [class.is-running]="isBlockRunning(block)">
+                      <div class="report-header">
+                        <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                        Work
+                      </div>
+                      <div class="report-content stream-box">
+                        <div class="stream-text" [innerHTML]="renderMarkdown(typedTextsSignal()[block.id] || item.data.text)"></div>
+                      </div>
+                    </div>
+
                     <!-- Task Submission / Report Card (when item is report_task_status action or tool) -->
                     <div class="step-android-action-card task-report-card"
                          [class.is-completed]="getReportStatusValue(item.data) === 'completed' || getReportStatusValue(item.data) === 'success'"
@@ -630,11 +636,12 @@
                            [class.is-running]="isItemRunning(item, block)"
                            [class.is-note-tool]="isNoteTool(item.data)"
                            [class.is-video-tool]="isVideoTool(item.data)"
+                           [class.is-video-attention]="isVideoTool(item.data) && isVideoAnalysisAttention(item.data)"
                            *ngIf="shouldShowTool(item.data, block.data) && !isDeviceActionTool(item.data)">
                         <div class="tool-call-label">
                           <span class="stream-status-dot" [class.streaming]="isItemRunning(item, block)"></span>
                           <div class="tool-call-text">
-                            <span>{{ getToolDisplayLabel(item.data) }}{{ ((isNoteTool(item.data) && getToolKey(item.data)) || (isVideoTool(item.data) && getVideoToolTarget(item.data))) ? ':' : '' }}</span>
+                            <span>{{ isVideoTool(item.data) ? getVideoAnalysisLabel(item.data) : getToolDisplayLabel(item.data) }}{{ ((isNoteTool(item.data) && getToolKey(item.data)) || isVideoTool(item.data)) ? ':' : '' }}</span>
                             
                             <!-- Note Tool Pill -->
                             <ng-container *ngIf="isNoteTool(item.data) && getToolKey(item.data) as key">
@@ -649,15 +656,16 @@
                             </ng-container>
 
                             <!-- Video Tool Pill -->
-                            <ng-container *ngIf="isVideoTool(item.data) && getVideoToolTarget(item.data) as videoTarget">
-                              <span 
-                                class="tool-key-pill video-pill" 
+                            <ng-container *ngIf="isVideoTool(item.data)">
+                              <span
+                                class="tool-key-pill"
                                 (click)="onVideoToolClick(item.data)"
-                                title="Click to open video player"
+                                [title]="'Open recording at ' + getVideoAnalysisRangeLabel(item.data)"
                               >
                                 <span class="material-symbols-outlined pill-icon">videocam</span>
-                                {{ videoTarget }}
+                                {{ getVideoAnalysisRangeLabel(item.data) }}
                               </span>
+                              <span class="video-status-detail" *ngIf="getVideoAnalysisDetail(item.data) as detail">· {{ detail }}</span>
                             </ng-container>
                           </div>
                         </div>

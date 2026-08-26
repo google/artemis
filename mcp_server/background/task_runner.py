@@ -45,6 +45,29 @@ from mcp_server.notifiers import notify
 from mcp_server.utils import device_utils, trace_store
 
 
+async def _initialize_agent(
+    agent,
+    *,
+    retry_count: int,
+    retry_wait_seconds: int,
+    timeout_seconds: float,
+) -> None:
+    """Initialize one SDK agent without allowing a detached runner to hang forever."""
+    try:
+        await asyncio.wait_for(
+            agent.init(
+                retry_count=retry_count,
+                retry_wait_seconds=retry_wait_seconds,
+            ),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError as error:
+        raise TimeoutError(
+            "Artemis Agent initialization exceeded "
+            f"{timeout_seconds:.1f}s; check ADB/UIAutomator health and the device queue."
+        ) from error
+
+
 def resolve_profile_file() -> str | None:
     """Resolves the LLM configuration profile across multiple locations."""
     candidates = []
@@ -153,9 +176,11 @@ async def run_task(
         config = config_builder.build()
 
         agent = Agent(config=config)
-        await agent.init(
+        await _initialize_agent(
+            agent,
             retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
             retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
+            timeout_seconds=float(os.getenv("ARTEMIS_AGENT_INIT_TIMEOUT_SECONDS", 30)),
         )
 
         print("Running task on agent...")

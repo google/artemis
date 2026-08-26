@@ -118,6 +118,8 @@ class RecordingSession(BaseModel):
     android_segment_started_at: float | None = None
     android_segment_records: list[dict[str, Any]] = []
     android_conversion_tasks: list[asyncio.Task] = []
+    generation: int = 0
+    sealed_until: float = 0.0
     is_active: bool = True
     errors: list[str] = []
 
@@ -132,6 +134,10 @@ class VideoRecordingResult(BaseModel):
     duration_seconds: float | None = None
     actual_start_relative_time: float | None = None
     warning: str | None = None
+    video_id: UUID | None = None
+    generation: int | None = None
+    sealed_until: float | None = None
+    source_revision: str | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -798,6 +804,27 @@ async def extract_audio_from_video(input_path: Path) -> Path:
     if not input_path.exists():
         raise FileNotFoundError(f"Video file not found: {input_path}")
 
+    probe_cmd = [
+        get_ffprobe_path(),
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=index",
+        "-of",
+        "csv=p=0",
+        str(input_path),
+    ]
+    probe = await asyncio.create_subprocess_exec(
+        *probe_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    probe_stdout, _ = await probe.communicate()
+    if probe.returncode != 0 or not probe_stdout.strip():
+        raise ValueError("Video has no audio stream")
+
     output_path = input_path.parent / f"audio_{input_path.stem}.mp3"
     logger.info(f"Extracting audio from {input_path} to {output_path}")
 
@@ -823,17 +850,17 @@ async def extract_audio_from_video(input_path: Path) -> Path:
         _, stderr = await proc.communicate()
 
         if proc.returncode != 0:
-            err_msg = stderr.decode().strip()
-            logger.error(f"ffmpeg audio extraction failed: {err_msg}")
+            err_msg = stderr.decode(errors="replace").strip()
+            concise_error = "\n".join(err_msg.splitlines()[-8:])
+            logger.error(f"ffmpeg audio extraction failed: {concise_error}")
             raise RuntimeError(
-                f"ffmpeg audio extraction failed (code {proc.returncode}): {err_msg}"
+                f"ffmpeg audio extraction failed (code {proc.returncode}): {concise_error}"
             )
 
         return output_path
 
-    except Exception as e:
-        logger.error(f"Audio extraction failed: {e}")
-        raise e
+    except Exception:
+        raise
 
 
 def extract_keyframes_from_video(
@@ -879,4 +906,55 @@ def extract_keyframes_from_video(
         frame_idx += 1
 
     cap.release()
+    return frames
+
+
+def extract_frames_at_timestamps(
+    video_path: Path | str,
+    timestamps: list[float],
+    *,
+    max_frames: int = 30,
+    max_dimension: int = 1080,
+) -> list[tuple[float, bytes]]:
+    """Seek to exact video-relative timestamps and return JPEG evidence frames."""
+
+    if max_frames <= 0:
+        return []
+    requested = sorted(
+        {
+            round(float(timestamp), 3)
+            for timestamp in timestamps
+            if isinstance(timestamp, (int, float)) and float(timestamp) >= 0.0
+        }
+    )[:max_frames]
+    if not requested:
+        return []
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        logger.error(f"Failed to open video file for targeted frame extraction: {video_path}")
+        return []
+
+    frames: list[tuple[float, bytes]] = []
+    try:
+        for timestamp in requested:
+            cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000.0)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            h, w = frame.shape[:2]
+            if max(h, w) > max_dimension:
+                scale = max_dimension / max(h, w)
+                frame = cv2.resize(
+                    frame,
+                    (max(1, int(w * scale)), max(1, int(h * scale))),
+                    interpolation=cv2.INTER_AREA,
+                )
+            encoded, buffer = cv2.imencode(
+                ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+            )
+            if encoded:
+                frames.append((timestamp, buffer.tobytes()))
+    finally:
+        cap.release()
     return frames

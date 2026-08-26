@@ -21,6 +21,7 @@ from artemis.config import (
     FlashProfileConfig,
     OutputterConfig,
     ProProfileConfig,
+    VideoAnalyzerConfig,
 )
 from artemis.context import DevicePlatform
 from artemis.sdk.types.task import AgentProfile, TaskRequestCommon
@@ -127,6 +128,7 @@ class AgentConfig(BaseModel):
     explorer_versions: dict[str, Literal["flash", "pro", "ultra"]]
     denylisted_tools: dict[str, list[str]]
     enable_video_ledger: bool = True
+    video_analyzer: VideoAnalyzerConfig = Field(default_factory=VideoAnalyzerConfig)
 
     model_config = {"arbitrary_types_allowed": True}
 

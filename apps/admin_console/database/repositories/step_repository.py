@@ -163,7 +163,12 @@ class StepRepository:
         co = (len(resp_text) // 4) + (resp_images * 258)
         return int(pr), int(co), int(pr + co)
 
-    def _clean_tool_payload(self, payload_raw: Any, trace_type: str | None = None) -> Any:
+    def _clean_tool_payload(
+        self,
+        payload_raw: Any,
+        trace_type: str | None = None,
+        trace_name: str | None = None,
+    ) -> Any:
         if not payload_raw:
             return None
         payload_obj = payload_raw
@@ -204,8 +209,18 @@ class StepRepository:
         )
         result_payload: dict[str, Any] = {"args": cleaned_args}
 
-        # Extract structured action execution results
+        # Extract structured action execution results. Video analysis keeps its
+        # result because the task stream needs to distinguish cached, partial,
+        # recovering, waiting, completed, and terminal outcomes. Other tools
+        # retain the historical compact payload to avoid sending large blobs.
         res = payload_obj.get("result")
+        is_video_analysis = str(trace_name or "").lower() in {
+            "video_analysis",
+            "video_analyzer",
+            "video_analyzer_pure",
+            "spawn_sub_agent",
+            "analyze_audio_only",
+        }
         if isinstance(res, dict):
             if res.get("post_image_name"):
                 result_payload["post_image_name"] = res["post_image_name"]
@@ -213,8 +228,12 @@ class StepRepository:
                 result_payload["pre_image_name"] = res["pre_image_name"]
             if res.get("outcome"):
                 result_payload["outcome"] = res["outcome"]
+            if is_video_analysis:
+                result_payload["result"] = self._clean_value(res)
         elif res:
             res_str = str(res)
+            if is_video_analysis:
+                result_payload["result"] = res_str
             match = re.search(r"([a-f0-9]{64})", res_str)
             if match:
                 result_payload["post_image_name"] = match.group(1)
@@ -259,7 +278,7 @@ class StepRepository:
                 return trace_dict
 
         trace_dict["payload"] = self._clean_tool_payload(
-            trace_dict.get("payload"), trace_dict.get("type")
+            trace_dict.get("payload"), trace_dict.get("type"), trace_dict.get("name")
         )
         return trace_dict
 

@@ -88,6 +88,43 @@ class SessionRepository:
         except Exception:
             return None
 
+    def get_latest_video_recordings_map(self) -> dict[str, dict[str, Any]]:
+        """Return the newest recording row for every session in one query.
+
+        The task-list endpoint renders every session at once. Calling
+        ``get_video_recording_for_session`` in that loop used to open a new
+        SQLite connection for every row, which made a refresh progressively
+        slower as history grew.
+        """
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='video_recordings'"
+                )
+                if cursor.fetchone() is None:
+                    return {}
+
+                rows = cursor.execute(
+                    "SELECT * FROM video_recordings WHERE session_id IS NOT NULL "
+                    "ORDER BY start_time DESC"
+                ).fetchall()
+                latest: dict[str, dict[str, Any]] = {}
+                for row in rows:
+                    recording = dict(row)
+                    session_id = str(recording.get("session_id") or "")
+                    if not session_id or session_id in latest:
+                        continue
+                    if "status" not in recording:
+                        recording["status"] = (
+                            "ready" if recording.get("end_time") is not None else "recording"
+                        )
+                    recording.setdefault("error", None)
+                    latest[session_id] = recording
+                return latest
+        except Exception:
+            return {}
+
     def mark_recording_failed_if_pending(self, session_id: str, error: str) -> bool:
         """Close a recording lifecycle when its worker exits before finalization."""
         try:
@@ -114,6 +151,40 @@ class SessionRepository:
             rows = cursor.fetchall()
             return [r[0] for r in rows if r and r[0]]
 
+    def get_llm_traces_for_profiles_map(
+        self, session_ids: list[str] | None = None, limit: int = 3
+    ) -> dict[str, list[str]]:
+        """Return bounded LLM payloads for only the sessions needing fallback."""
+        if session_ids is not None and not session_ids:
+            return {}
+
+        session_filter = ""
+        params: list[Any] = []
+        if session_ids is not None:
+            placeholders = ",".join("?" for _ in session_ids)
+            session_filter = f" AND session_id IN ({placeholders})"
+            params.extend(session_ids)
+        params.append(limit)
+
+        with db_session(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT session_id, payload FROM ("
+                " SELECT session_id, payload, ROW_NUMBER() OVER ("
+                "  PARTITION BY session_id ORDER BY timestamp ASC"
+                " ) AS row_number FROM traces WHERE type = 'llm_call'"
+                f"{session_filter}"
+                ") WHERE row_number <= ?",
+                params,
+            )
+            result: dict[str, list[str]] = {}
+            for row in cursor.fetchall():
+                session_id = str(row[0] or "")
+                payload = row[1]
+                if session_id and payload:
+                    result.setdefault(session_id, []).append(payload)
+            return result
+
     def get_agent_trace_names(self, session_id: str) -> list[str]:
         try:
             with db_session(self.db_path) as conn:
@@ -126,6 +197,23 @@ class SessionRepository:
                 return [r[0] for r in rows if r and r[0]]
         except Exception:
             return []
+
+    def get_agent_trace_names_map(self) -> dict[str, list[str]]:
+        """Return distinct agent/LLM trace names grouped by session."""
+        with db_session(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT session_id, name FROM traces "
+                "WHERE type IN ('agent', 'llm_call') AND session_id IS NOT NULL "
+                "GROUP BY session_id, name"
+            )
+            result: dict[str, list[str]] = {}
+            for row in cursor.fetchall():
+                session_id = str(row[0] or "")
+                name = row[1]
+                if session_id and name:
+                    result.setdefault(session_id, []).append(name)
+            return result
 
     def get_session_by_id(self, session_id: str) -> dict[str, Any] | None:
         try:

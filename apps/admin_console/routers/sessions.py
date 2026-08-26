@@ -40,14 +40,18 @@ async def list_sessions():
     try:
         rows = session_repo.get_all_sessions()
         video_rec_map = session_repo.get_video_recordings_map()
+        latest_recordings = session_repo.get_latest_video_recordings_map()
+        agent_names_by_session = session_repo.get_agent_trace_names_map()
         video_idx = media_service.build_video_index()
+        default_model_info = model_service.get_active_model_info()
 
         orphaned_ids = []
+        unresolved_profiles = []
         result = []
 
         for row_dict in rows:
             s_id = str(row_dict.get("session_id"))
-            recording = session_repo.get_video_recording_for_session(s_id)
+            recording = latest_recordings.get(s_id)
             if row_dict.get("status") == "running":
                 is_active = s_id in state.active_connections or (
                     state.is_running and s_id == str(state.active_session_id)
@@ -66,14 +70,35 @@ async def list_sessions():
                 else None
             )
 
-            llm_traces = session_repo.get_llm_traces_for_profile(s_id)
-            agent_names = session_repo.get_agent_trace_names(s_id)
+            agent_names = agent_names_by_session.get(s_id, [])
             sess_profile = model_service.resolve_session_profile(
-                row_dict, llm_traces, state.current_profile, agent_names=agent_names
+                row_dict, None, state.current_profile, agent_names=agent_names
             )
-
-            row_dict["model_info"] = model_service.get_active_model_info(sess_profile)
+            row_dict["model_info"] = (
+                model_service.get_active_model_info(sess_profile)
+                if sess_profile
+                else default_model_info
+            )
+            if not sess_profile:
+                unresolved_profiles.append(row_dict)
             result.append(row_dict)
+
+        # Most sessions carry a profile in device_info or an agent trace name.
+        # Only inspect the much larger LLM payload for legacy rows that remain
+        # ambiguous after those cheap checks.
+        if unresolved_profiles:
+            unresolved_ids = [str(row.get("session_id")) for row in unresolved_profiles]
+            llm_traces_by_session = session_repo.get_llm_traces_for_profiles_map(unresolved_ids)
+            for row_dict in unresolved_profiles:
+                s_id = str(row_dict.get("session_id"))
+                llm_traces = llm_traces_by_session.get(s_id)
+                if not llm_traces:
+                    continue
+                sess_profile = model_service.resolve_session_profile(
+                    row_dict, llm_traces, state.current_profile
+                )
+                if sess_profile:
+                    row_dict["model_info"] = model_service.get_active_model_info(sess_profile)
 
         if orphaned_ids:
             try:

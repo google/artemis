@@ -153,6 +153,8 @@ import {
   getToolArgs,
   isNoteTool,
   isVideoTool,
+  getVideoAnalysisView,
+  formatVideoTime,
   getVideoToolTarget,
   isDeviceActionTool,
   isFailureAnalyzerActionTool,
@@ -240,7 +242,7 @@ export class AgentStreamComponent implements AfterViewInit {
   // Performance caches for parameter and event extractions
   private actionParamsCache = new WeakMap<any, ActionParam[]>();
   private toolParamsCache = new WeakMap<any, ActionParam[]>();
-  private sortedEventsCache = new WeakMap<any, { length: number; actionTs: any; events: StepEvent[] }>();
+  private sortedEventsCache = new WeakMap<any, { signature: string; events: StepEvent[] }>();
 
   // Top Nav Task Queue Computed Properties
   public activeQueue = computed(() => {
@@ -897,10 +899,40 @@ export class AgentStreamComponent implements AfterViewInit {
     return getVideoToolTarget(tool);
   }
 
+  public getVideoAnalysisLabel(tool: any): string {
+    return getVideoAnalysisView(tool)?.title || 'Analyzing screen recording';
+  }
+
+  public getVideoAnalysisRangeLabel(tool: any): string {
+    const range = getVideoAnalysisView(tool)?.requestedRange;
+    if (!range) return 'Screen recording';
+    return `${formatVideoTime(range.start)}–${formatVideoTime(range.end)}`;
+  }
+
+  public getVideoAnalysisDetail(tool: any): string {
+    const view = getVideoAnalysisView(tool);
+    if (!view || view.totalCount <= 1) return '';
+    if (view.outcome === 'running' || view.outcome === 'recovering') {
+      return view.completedCount > 0
+        ? `${view.completedCount}/${view.totalCount} segments saved`
+        : '';
+    }
+    if (view.outcome === 'partial') {
+      return `${view.completedCount}/${view.totalCount} segments saved`;
+    }
+    return '';
+  }
+
+  public isVideoAnalysisAttention(tool: any): boolean {
+    const outcome = getVideoAnalysisView(tool)?.outcome;
+    return outcome === 'partial' || outcome === 'failed';
+  }
+
   public onVideoToolClick(toolData: any): void {
     const curSessionId = this.agentService.currentSessionId();
     if (curSessionId) {
-      this.agentService.openVideoPlayer(curSessionId);
+      const start = getVideoAnalysisView(toolData)?.requestedRange?.start;
+      this.agentService.openVideoPlayer(curSessionId, undefined, undefined, start);
     }
   }
 
@@ -1231,7 +1263,7 @@ export class AgentStreamComponent implements AfterViewInit {
 
   public trackStepEvent(index: number, item: { type: string; data: any }): string {
     if (!item || !item.data) return index.toString();
-    return item.type + '-' + (item.data.timestamp || item.data.start_time || item.data.created_at || item.data.id || item.data.action || item.data.name || index);
+    return item.type + '-' + (item.data.timestamp || item.data.start_time || item.data.created_at || item.data.id || item.data.action || item.data.name || item.data.text?.length || index);
   }
 
   public trackParam(index: number, param: { key: string; value: string }): string {

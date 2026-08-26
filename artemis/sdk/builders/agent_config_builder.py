@@ -74,6 +74,7 @@ class AgentConfigBuilder:
         self._explorer = agent_cfg.explorer
         self._explorer_versions = agent_cfg.explorer_versions
         self._denylisted_tools = agent_cfg.denylisted_tools
+        self._video_analyzer = agent_cfg.video_analyzer
         self._enable_video_ledger = agent_cfg.video_analyzer.enable_ledger
         if agent_cfg.video_analyzer.enabled is not None:
             self._video_recording_tools_enabled = agent_cfg.video_analyzer.enabled
@@ -507,6 +508,9 @@ class AgentConfigBuilder:
             explorer_versions=self._explorer_versions,
             denylisted_tools=self._denylisted_tools,
             enable_video_ledger=self._enable_video_ledger,
+            video_analyzer=self._video_analyzer.model_copy(
+                update={"enable_ledger": self._enable_video_ledger}
+            ),
         )
 
 

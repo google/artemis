@@ -16,7 +16,7 @@
 
 import { Injectable, signal, computed, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, tap } from 'rxjs';
+import { Observable, finalize, shareReplay, tap } from 'rxjs';
 import { SystemReadinessReport, DeviceInfo, ProbeResult, EmulatorLaunchState, EmulatorLaunchStage } from '../core/models/system.model';
 
 @Injectable({
@@ -27,6 +27,7 @@ export class SystemService {
 
   // Core reactive signals
   public readinessReport = signal<SystemReadinessReport | null>(null);
+  public hasReadinessReport = computed(() => this.readinessReport() !== null);
   public isLoading = signal<boolean>(false);
   public isRestartingAdb = signal<boolean>(false);
   public launchingAvd = signal<string | null>(null);
@@ -136,9 +137,9 @@ export class SystemService {
   });
 
   private pollingTimer: any = null;
+  private readinessRequest$: Observable<SystemReadinessReport> | null = null;
 
   constructor() {
-    this.fetchReadiness();
     this.startAutoPolling(3000);
   }
 
@@ -171,27 +172,50 @@ export class SystemService {
    * Fetch latest system readiness report from backend
    * @param silent If true, updates signals silently without triggering global isLoading spinner
    */
-  public fetchReadiness(silent: boolean = false): Observable<SystemReadinessReport> {
+  public fetchReadiness(
+    silent: boolean = false,
+    forceRefresh: boolean = false
+  ): Observable<SystemReadinessReport> {
     if (!silent) {
       this.isLoading.set(true);
     }
-    return this.http.get<SystemReadinessReport>('/api/system/readiness').pipe(
+
+    // Share one request across initialization, focus events, polling, and manual
+    // refreshes. This prevents a slow probe from creating an unbounded queue.
+    if (this.readinessRequest$) {
+      return this.readinessRequest$;
+    }
+
+    const request$ = this.http.get<SystemReadinessReport>('/api/system/readiness', {
+      params: forceRefresh ? { force: true } : {}
+    }).pipe(
       tap({
         next: (report) => {
-          this.readinessReport.set(report);
-          this.lastCheckedTime.set(new Date());
-          if (!silent) {
-            this.isLoading.set(false);
-          }
+          this.applyReadinessReport(report);
         },
         error: (err) => {
           console.error('Failed to fetch system readiness:', err);
-          if (!silent) {
-            this.isLoading.set(false);
-          }
         }
-      })
+      }),
+      finalize(() => {
+        if (this.readinessRequest$ === request$) {
+          this.readinessRequest$ = null;
+        }
+        this.isLoading.set(false);
+      }),
+      shareReplay({ bufferSize: 1, refCount: false })
     );
+    this.readinessRequest$ = request$;
+    return request$;
+  }
+
+  private applyReadinessReport(report: SystemReadinessReport): void {
+    const current = this.readinessReport();
+    if (current && report.timestamp < current.timestamp) {
+      return;
+    }
+    this.readinessReport.set(report);
+    this.lastCheckedTime.set(new Date(report.timestamp * 1000));
   }
 
   /**
@@ -337,8 +361,7 @@ export class SystemService {
       tap({
         next: (res) => {
           if (res?.report) {
-            this.readinessReport.set(res.report);
-            this.lastCheckedTime.set(new Date());
+            this.applyReadinessReport(res.report);
           }
           this.isRestartingAdb.set(false);
         },
@@ -358,8 +381,7 @@ export class SystemService {
       tap({
         next: (res) => {
           if (res?.report) {
-            this.readinessReport.set(res.report);
-            this.lastCheckedTime.set(new Date());
+            this.applyReadinessReport(res.report);
           }
         }
       })
@@ -375,7 +397,7 @@ export class SystemService {
       tap({
         next: (res) => {
           if (res?.report) {
-            this.readinessReport.set(res.report);
+            this.applyReadinessReport(res.report);
           }
           this.isLoading.set(false);
         },
@@ -436,8 +458,7 @@ export class SystemService {
       tap({
         next: (res) => {
           if (res?.report) {
-            this.readinessReport.set(res.report);
-            this.lastCheckedTime.set(new Date());
+            this.applyReadinessReport(res.report);
           }
           // Refresh model config & env after updating key
           this.fetchModelConfigEnv().subscribe();

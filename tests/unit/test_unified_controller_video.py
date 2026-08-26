@@ -16,6 +16,7 @@
 
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -28,6 +29,8 @@ from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.utils.video import (
     RecordingSession,
     build_scrcpy_record_command,
+    extract_audio_from_video,
+    extract_frames_at_timestamps,
     get_ffmpeg_path,
     get_active_session,
     normalize_recording_to_mp4,
@@ -35,6 +38,33 @@ from artemis.utils.video import (
     remove_active_session,
     set_active_session,
 )
+
+
+@pytest.mark.asyncio
+async def test_audio_extraction_rejects_silent_video_without_running_ffmpeg(tmp_path):
+    silent_video = tmp_path / "silent.mp4"
+    silent_video.write_bytes(b"video")
+    probe = MagicMock(returncode=0)
+    probe.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=probe)) as spawn:
+        with pytest.raises(ValueError, match="no audio stream"):
+            await extract_audio_from_video(silent_video)
+
+    assert spawn.await_count == 1
+
+
+def test_targeted_frame_extraction_uses_requested_timestamps():
+    fixture = Path(__file__).parents[1] / "tools" / "inputs" / "recording.mp4"
+    frames = extract_frames_at_timestamps(
+        fixture,
+        [0.0, 0.2, 0.4, 0.2, -1.0],
+        max_frames=3,
+        max_dimension=320,
+    )
+
+    assert [timestamp for timestamp, _ in frames] == [0.0, 0.2, 0.4]
+    assert all(data.startswith(b"\xff\xd8") for _, data in frames)
 
 
 def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
@@ -289,6 +319,38 @@ async def test_unified_controller_extract_segment_metadata(mock_ctx, tmp_path):
         assert res.video_path.exists()
         # Ensure session is still active (not stopped by extraction!)
         assert get_active_session("emulator-5554") is not None
+    remove_active_session("emulator-5554")
+
+
+@pytest.mark.asyncio
+async def test_segment_cache_is_scoped_to_recording_generation(mock_ctx, tmp_path):
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+    recording = tmp_path / "recording.mkv"
+    recording.write_bytes(b"recording")
+    session = RecordingSession(
+        video_id=uuid4(),
+        device_id="emulator-5554",
+        start_time=time.time() - 20.0,
+        data_engine_start_time=time.time() - 20.0,
+        local_video_path=recording,
+        process=MagicMock(returncode=None),
+    )
+    set_active_session("emulator-5554", session)
+
+    render = AsyncMock(
+        side_effect=lambda source, start, end, output: output.write_bytes(b"clip") or True
+    )
+    with patch("artemis.controllers.unified_controller.render_timeline_clip", render):
+        first = await controller.extract_segment_metadata(2.0, 8.0)
+        cached = await controller.extract_segment_metadata(2.0, 8.0)
+        session.generation = 1
+        regenerated = await controller.extract_segment_metadata(2.0, 8.0)
+
+    assert first is cached
+    assert regenerated is not cached
+    assert regenerated.generation == 1
+    assert render.await_count == 2
     remove_active_session("emulator-5554")
 
 
