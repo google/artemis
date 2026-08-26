@@ -244,16 +244,6 @@ if __name__ == "__main__":
 * **Developer CLI (`uv run artemis run`)**: Direct terminal execution for automated test cases, exploratory stability inspection, or AndroidWorld benchmarks with high-fidelity structured terminal output;
 * **Python SDK**: Integrates as a standard Python library into existing automated testing frameworks (e.g., pytest) or CI/CD pipelines with strongly typed Pydantic structured outputs and assertion support.
 
-## Head-to-Head Comparison
-
-| Evaluation Dimension | Traditional Test Automation (Appium / Maestro) | Generic Mobile VLM Agents | **ARTEMIS (Next-Gen AI Testing)** |
-| :--- | :--- | :--- | :--- |
-| **Test Case Maintenance** | ❌ Fragile XPath/ID dependencies; UI changes cause test failures | ⚠️ Unreliable execution; cannot be reused as regression tests | **Zero Maintenance**: Natural language test cases resilient to UI drift & redesigns |
-| **Execution Latency & Throughput** | ⚡ Fast script execution, but extreme setup and locator debugging costs | ❌ Sluggish 20–30s per step; too slow for regression testing | **High Throughput**: Optimistic Async Pipeline runs at 3–5s per step |
-| **Popup Resilience & Self-Healing** | ❌ System popups or permissions immediately crash the script | ❌ Easily gets stuck or loops endlessly on unexpected dialogs | **Pre-Execution Safety Net**: Automatically intercepts and clears interfering popups |
-| **Diagnostics & Multimedia** | ❌ Blind static waits (sleep); cannot assert dynamic video/animations | ❌ Static screenshots only; no system logs or underlying state | **Deep Diagnostics**: Live video stream analysis & **Logcat crash stack capture** |
-| **Dev Environment Integration** | ❌ Standalone runner; requires manual log collection upon failure | ❌ Isolated web demos; difficult to embed into dev pipelines | **Native MCP & SDK**: Drive physical test devices and debug directly inside Antigravity / Claude Code |
-
 <a id="benchmarks"></a>
 ## Benchmarks: AndroidWorld (SOTA 99%+)
 
@@ -275,26 +265,17 @@ Evaluated on [AndroidWorld](https://github.com/google-research/android_world) �
 
 ## Execution Profiles: Flash vs. Pro
 
-| Feature / Dimension | **ARTEMIS Flash** (`--profile flash`) | **ARTEMIS Pro** (`--profile pro`) |
-| :--- | :--- | :--- |
-| **Design Purpose** | **Lightweight & Fast**: Direct deterministic UI actions | **Deep Reasoning**: Multi-step planning & complex self-healing |
-| **Step Latency** | **3–5 seconds** / step | **15–30 seconds** / turn (includes planning & verification) |
-| **Task Duration** | Minute-level short tasks (typically ≤35 steps) | Runs stably for **10+ hours**; monitoring tasks support **24/7 execution** |
-| **Best Suited For** | Well-defined standard UI tasks | Complex cross-app workflows, failure self-healing, continuous monitoring |
-| **Self-Healing** | Local step retries | **Safety Net Gate** + dialog suppression + crash recovery + snapshot rollback |
-| **Media Analysis** | **Basic visual perception** + High-Speed OCR | Full `scrcpy`/`ffmpeg` video stream analysis + Logcat logs |
+ARTEMIS supports two execution profiles tailored for different automation requirements:
+
+* **Flash Profile (`--profile flash`)**: Fast and token-efficient reactive loop (~3–5s per step). Ideal for routine, deterministic UI tasks within 25–30 steps. *Limitations*: Does not support long-term state monitoring, video stream analysis, or multi-step failure self-healing.
+* **Pro Profile (`--profile pro`)**: Our most capable model architecture (~15–40s per step). Powered by a multi-agent graph with planning, visual verification, and automated recovery. Capable of handling 100+ step long-horizon workflows, continuous device state monitoring, and multimedia video analysis.
 
 ## Roadmap
 
-- [x] **Optimistic Asynchronous Pipeline**: Ultra-lean main loop + background context compression & milestone checks.
-- [x] **Pre-Execution Safety Net**: Millisecond pre-check gate & speculative chained actions.
-- [x] **Time-Sensitive Media Tasks**: Fullscreen video and audio stream analysis with `scrcpy` & `ffmpeg`.
-- [x] **Native MCP Server**: Seamless integration with tools like Antigravity and Claude Desktop.
-- [x] **Web Visual Console**: Live screen projection, interactive playground, and trajectory review.
-- [x] **AndroidWorld SOTA**: Achieved 99%+ task completion rate.
-- [ ] **Cross-Platform Extensions**: Exploring iOS and desktop Web perception and execution.
-- [ ] **On-Device Lightweight VLMs**: Zero-cloud local execution with lightweight edge vision models.
-- [ ] **Real-time Duplex Voice Mode**: Natural voice input with real-time interruption (barge-in) control.
+- [ ] **Android Studio Integration**: Native IDE plugin and workflow integration to enable in-editor debugging, test recording, and automated device control directly within Android Studio.
+- [ ] **iOS Platform Expansion**: Extending multimodal perception and mobile automation to iOS devices and simulators.
+- [ ] **On-Device Lightweight VLMs**: Local execution with lightweight edge vision models for low-latency, privacy-first automation.
+- [ ] **Real-time Duplex Voice Interaction**: Voice-driven task dispatch with real-time conversational control and interruption handling.
 
 ## Community & Contributing
 
