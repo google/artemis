@@ -27,8 +27,6 @@
 <!-- 演示效果图 -->
 <p align="center">
   <img src="./docs/assets/demo.gif" alt="Artemis 演示效果" width="88%" />
-  <br>
-  <em><b>实机演示</b>：在 Google Maps 中设置驾车路线并计算总耗时，随后打开 YouTube 播放 Coldplay 的歌曲。</em>
 </p>
 
 ## ✨ 核心亮点

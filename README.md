@@ -27,8 +27,6 @@
 <!-- Demo Showcase -->
 <p align="center">
   <img src="./docs/assets/demo.gif" alt="Artemis in Action" width="88%" />
-  <br>
-  <em><b>Live Demo</b>: Setup driving routes and calculate total durations in Google Maps, then open YouTube to play a Coldplay song.</em>
 </p>
 
 ## ✨ Key Highlights
