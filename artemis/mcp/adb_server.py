@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from typing import Any
 
 # Ensure repository root is in sys.path when executed directly or via MCP runner
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)

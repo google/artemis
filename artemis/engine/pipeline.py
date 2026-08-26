@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from typing import Literal
+from typing import Any, Literal
 
 from artemis.config import OutputConfig, load_agent_config
 from artemis.core.context import ExecutionContext
