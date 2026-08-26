@@ -26,7 +26,9 @@
 
 <!-- 演示效果图 -->
 <p align="center">
-  <img src="./docs/assets/demo.gif" alt="Artemis 演示效果" width="88%" />
+  <img src="./docs/assets/demo.gif" alt="Artemis 演示效果" width="100%" />
+  <br>
+  <em><b>实机演示</b>：在 Google Maps 中设置驾车路线并计算总耗时，随后打开 YouTube 播放 Coldplay 的歌曲。</em>
 </p>
 
 ## ✨ 核心亮点
@@ -36,7 +38,7 @@
 * 🐞 **IDE 内一键 Bug 复现与 Logcat 诊断**：原生支持 **MCP 协议**，可在 **Antigravity、Claude Code、Windsurf** 中直接用自然语言驱动真机复现缺陷，自动抓取关键帧截图与 **Logcat 崩溃堆栈**，完成研发测试闭环；
 * ⚡ **极速执行吞吐（单步 3–5 秒）**：首创**全链路乐观异步流水线 (Optimistic Async Pipeline)**，解耦重度推理与页面操作，在 Flash 模式下实现丝滑的高频交互与快速回归验证；
 * 🛡️ **干扰弹窗自愈与超长程巡检**：独创 **Safety Net** 执行前校验机制，自动识别并清除系统权限弹窗、通知遮挡等异常；Pro 模式支持连续 **10+ 小时** 无人值守稳定性巡检与探索性测试 (Exploratory / Monkey-plus Testing)；
-* 🏆 **业界顶尖 SOTA**：在 Google Research **AndroidWorld** 基准评测（100+ 复杂长程系统与应用交互任务）中取得 **99%+ 任务完成率**。
+* **业界顶尖 SOTA**：在 Google Research **AndroidWorld** 基准评测（100+ 复杂长程系统与应用交互任务）中取得 **99%+ 任务完成率**。
 
 <a id="workflow-showcase"></a>
 <a id="全流程演示"></a>
@@ -47,24 +49,24 @@
 <table width="100%">
   <tr>
     <td width="50%" align="center">
-      <b>1️⃣ 输入测试提示词 (Task Dispatch)</b><br>
+      <b>1. 输入测试提示词 (Task Dispatch)</b><br>
       <sub>在 Antigravity 中用自然语言描述测试需求与目标指标</sub><br><br>
       <img src="./docs/assets/workflow-1-prompt.png" width="100%" alt="步骤一：输入测试提示词" />
     </td>
     <td width="50%" align="center">
-      <b>2️⃣ 生成测试方案 (Test Plan Generation)</b><br>
+      <b>2. 生成测试方案 (Test Plan Generation)</b><br>
       <sub>自动拆解任务，生成详细测试步骤与架构图供确认</sub><br><br>
       <img src="./docs/assets/workflow-2-plan.png" width="100%" alt="步骤二：生成测试方案" />
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
-      <b>3️⃣ 自主执行测试 (Autonomous Test Execution)</b><br>
+      <b>3. 自主执行测试 (Autonomous Test Execution)</b><br>
       <sub>接管真机自动化操作，跳过广告并实时采集性能指标</sub><br><br>
       <img src="./docs/assets/workflow-3-exec.png" width="100%" alt="步骤三：自主执行测试" />
     </td>
     <td width="50%" align="center">
-      <b>4️⃣ 交付最终报告 (Comprehensive Final Report)</b><br>
+      <b>4. 交付最终报告 (Comprehensive Final Report)</b><br>
       <sub>生成结构化测试报告，交付性能图表、结论与原始数据</sub><br><br>
       <img src="./docs/assets/workflow-4-report.png" width="100%" alt="步骤四：交付最终报告" />
     </td>
@@ -73,13 +75,13 @@
 
 <a id="quick-start"></a>
 <a id="快速上手"></a>
-## ⚡ 快速上手
+## 快速上手
 
 确保电脑已连接 Android 实体机（已开启 **USB 调试**）或 Android 模拟器。一键启动脚本将会自动完成以下配置：
 - 🛠️ **安装系统环境依赖**：自动检测并安装 ADB、scrcpy、FFmpeg 与 Python（`uv`）运行时及项目依赖。
 - 🔌 **全局挂载 MCP 服务与测试准则 (Rules)**：主动引导并自动将全局 MCP 服务与 **Artemis 移动端测试思维准则 (`rules.md`)** 挂载至你使用的 AI IDE（支持 **Antigravity**、**Cursor**、**Claude Code**、**Codex**、**Windsurf**、**VS Code**、**Cline/Roo**、**OpenClaw**）。
 
-### 🍎 macOS 与 🐧 Linux
+### macOS 与 Linux
 
 ```bash
 # 1. 克隆代码仓库并进入目录
@@ -89,7 +91,7 @@ git clone https://github.com/google/artemis.git && cd artemis
 ./start.sh
 ```
 
-### 🪟 Windows PowerShell
+### Windows PowerShell
 
 ```powershell
 # 1. 克隆代码仓库并进入目录
@@ -102,7 +104,7 @@ cd artemis
 
 > PowerShell 默认不会从当前目录查找可执行脚本，因此必须使用 `.\start.bat`，且命令末尾不要添加 `\`。如果使用传统命令提示符（CMD），则运行 `start.bat`。
 
-> 💡 **提示**：启动后将自动在默认浏览器中打开 Web 控制台（`http://localhost:8000`），提供设备连接向导、实时投屏、任务演练与状态回放面板。你也可以通过命令行直接运行：`uv run artemis run "打开系统设置，找到电池选项并告诉我当前电量" --profile flash`。
+> **提示**：启动后将自动在默认浏览器中打开 Web 控制台（`http://localhost:8000`），提供设备连接向导、实时投屏、任务演练与状态回放面板。你也可以通过命令行直接运行：`uv run artemis run "打开系统设置，找到电池选项并告诉我当前电量" --profile flash`。
 
 <a id="mcp-setup"></a>
 <a id="mcp"></a>
@@ -125,7 +127,7 @@ uv run artemis mcp --install antigravity
 uv run artemis mcp --install all
 ```
 
-> 💡 **提示**：你也可以在首次运行 `uv run artemis init` 配置向导时，交互式完成 IDE 的 MCP 自动挂载。
+> **提示**：你也可以在首次运行 `uv run artemis init` 配置向导时，交互式完成 IDE 的 MCP 自动挂载。
 > **进阶提示**：如果希望在任意目录下都不需要加 `uv run` 就能全局直接使用 `artemis` 命令，可在项目根目录下执行一次 `uv tool install -e .`。
 
 ### 2. 手动配置（可选）
@@ -231,22 +233,22 @@ if __name__ == "__main__":
 
 </details>
 
-## 🕹️ 使用方式
+## 使用方式
 
 <p align="center">
-  <img src="./docs/assets/artemis-ui-showcase.png" alt="Artemis 可视化控制台" width="90%" />
+  <img src="./docs/assets/artemis-ui-showcase.png" alt="Artemis 可视化控制台" width="100%" />
   <br />
-  <sub>💡 <b>控制台功能布局</b>：<b>① 顶栏视图切换</b>（主页与工作区） · <b>② 运行模式与录屏回放</b>（Flash/Pro 状态与视频回放） · <b>③ 实时感知推理流</b>（动作分解、点击坐标与结构化总结） · <b>④ 自然语言下发胶囊</b>（自然语言驱动真机） · <b>⑤ 任务队列看板</b>（状态流转与历史回溯）</sub>
+  <sub><b>控制台功能布局</b>：<b>① 顶栏视图切换</b>（主页与工作区） · <b>② 运行模式与录屏回放</b>（Flash/Pro 状态与视频回放） · <b>③ 实时感知推理流</b>（动作分解、点击坐标与结构化总结） · <b>④ 自然语言下发胶囊</b>（自然语言驱动真机） · <b>⑤ 任务队列看板</b>（状态流转与历史回溯）</sub>
 </p>
 
-* 🖥️ **Web 可视化测试控制台 (`uv run artemis ui`)**：集成设备实时投屏与交互面板，支持通过自然语言下发测试用例，实时观测推理步骤、操作轨迹、截图留存与异常状态回放；
-* 🔌 **MCP 协议集成 (AI IDE 协同)**：作为标准 MCP 服务器无缝接入 **Antigravity、Claude Code、Windsurf** 等开发环境，在 IDE 中直接驱动真机完成自动化测试与 Bug 复现验证；
-* 💻 **命令行工具 (`uv run artemis run`)**：支持通过 CLI 直接执行自动化用例、稳定性巡检或 AndroidWorld 基准评测，提供高保真结构化终端输出；
-* 🐍 **Python SDK**：作为标准 Python 库无缝集成至现有自动化测试框架（如 pytest）或 CI/CD 流水线，提供基于 Pydantic 的强类型结构化结果与断言支持。
+* **Web 可视化测试控制台 (`uv run artemis ui`)**：集成设备实时投屏与交互面板，支持通过自然语言下发测试用例，实时观测推理步骤、操作轨迹、截图留存与异常状态回放；
+* **MCP 协议集成 (AI IDE 协同)**：作为标准 MCP 服务器无缝接入 **Antigravity、Claude Code、Windsurf** 等开发环境，在 IDE 中直接驱动真机完成自动化测试与 Bug 复现验证；
+* **命令行工具 (`uv run artemis run`)**：支持通过 CLI 直接执行自动化用例、稳定性巡检或 AndroidWorld 基准评测，提供高保真结构化终端输出；
+* **Python SDK**：作为标准 Python 库无缝集成至现有自动化测试框架（如 pytest）或 CI/CD 流水线，提供基于 Pydantic 的强类型结构化结果与断言支持。
 
-## 📊 方案横向对比
+## 方案横向对比
 
-| 评估维度 | 传统自动化测试框架 (Appium / Maestro) | 常见移动端 VLM Agent | **ARTEMIS ☕ (下一代 AI 测试平台)** |
+| 评估维度 | 传统自动化测试框架 (Appium / Maestro) | 常见移动端 VLM Agent | **ARTEMIS (下一代 AI 测试平台)** |
 | :--- | :--- | :--- | :--- |
 | **用例编写与维护** | ❌ 强依赖 XPath/ID，UI 微调即导致大面积报错 | ⚠️ 缺乏工程化封装，执行不可靠，无法作为用例复用 | 🧪 **零脚本维护**：自然语言直接定义用例，无惧 UI 漂移与改版 |
 | **执行延迟与吞吐** | ⚡ 脚本执行快，但编写与定位调试耗时极长 | ❌ 单步推理动辄 20-30 秒，无法满足回归测试要求 | ⚡ **高吞吐低延迟**：首创乐观异步流水线，单步仅需 3-5 秒 |
@@ -256,7 +258,7 @@ if __name__ == "__main__":
 
 <a id="benchmarks"></a>
 <a id="基准评测"></a>
-## 🏆 基准评测：AndroidWorld (SOTA 99%+)
+## 基准评测：AndroidWorld (SOTA 99%+)
 
 在 Google Research 发布的业界基准评测 [AndroidWorld](https://github.com/google-research/android_world)（涵盖 20+ 款常用应用与 100+ 项复杂多步长程任务）中：**Artemis 在全套长程任务评测中展现了高鲁棒性，取得了超过 99% 的任务完成率。**
 
@@ -264,19 +266,19 @@ if __name__ == "__main__":
   <img src="./docs/assets/androidworld_leaderboard.png?v=2" alt="AndroidWorld 评测基准对比" width="100%" />
 </p>
 
-## 🚀 ARTEMIS 是如何建构的
+## ARTEMIS 是如何建构的
 
-* 🛡️ **Pre-Touch 触控前像素守门与预测性连点**：彻底杜绝大模型推理延迟造成的「静默误触」。动作下发前毫秒级拦截意外弹窗（0 Token、0 云端等待），Micro-ROI 局部校验目标稳定性；针对视频全屏等瞬态控件，结合历史先验毫秒级连击唤醒，在淡出窗口期内瞬时闭环；
-* 🎯 **三层递进式目标定位引擎 (Progressive Grounding)**：首层通过本地 OCR 与无障碍树几何融合（~150ms、0 Token），以无偏移数字索引承载 85%+ 常见交互；二层对 Flutter/Compose/Canvas 等自绘组件自动回退至空间视觉模型，三层辅以沙箱 CV 探针核验细微像素状态；
-* 🧠 **弹性双执行引擎与运行时上下文动态压缩**：兼顾 3–5 秒秒级响应的 CI 高吞吐回归（Flash 模式）与深度长程认知状态图探索（Pro 模式），后台异步生成视觉增量并剪除冗余 DOM，长程任务 Token 消耗锐降 70%+，支持 10+ 小时无人值守稳定性压测。
+* **Pre-Touch 触控前像素守门与预测性连点**：彻底杜绝大模型推理延迟造成的「静默误触」。动作下发前毫秒级拦截意外弹窗（0 Token、0 云端等待），Micro-ROI 局部校验目标稳定性；针对视频全屏等瞬态控件，结合历史先验毫秒级连击唤醒，在淡出窗口期内瞬时闭环；
+* **三层递进式目标定位引擎 (Progressive Grounding)**：首层通过本地 OCR 与无障碍树几何融合（~150ms、0 Token），以无偏移数字索引承载 85%+ 常见交互；二层对 Flutter/Compose/Canvas 等自绘组件自动回退至空间视觉模型，三层辅以沙箱 CV 探针核验细微像素状态；
+* **弹性双执行引擎与运行时上下文动态压缩**：兼顾 3–5 秒秒级响应的 CI 高吞吐回归（Flash 模式）与深度长程认知状态图探索（Pro 模式），后台异步生成视觉增量并剪除冗余 DOM，长程任务 Token 消耗锐降 70%+，支持 10+ 小时无人值守稳定性压测。
 
 <p align="center">
   <img src="./docs/assets/artemis_architecture_diagram.png" alt="ARTEMIS 架构系统示意图" width="100%" />
 </p>
 
-## ⚡ 运行模式对比：Flash vs. Pro
+## 运行模式对比：Flash vs. Pro
 
-| 特性对比 | ⚡ **ARTEMIS Flash** (`--profile flash`) | 🧠 **ARTEMIS Pro** (`--profile pro`) |
+| 特性对比 | **ARTEMIS Flash** (`--profile flash`) | **ARTEMIS Pro** (`--profile pro`) |
 | :--- | :--- | :--- |
 | **设计定位** | **轻量极速**：面向常规确定性操作 | **深度规划**：面向长流程与复杂自愈 |
 | **单步延迟** | **3–5 秒** / 步 | **15–30 秒** / 轮 (包含深度推理与全局校验) |
@@ -285,7 +287,7 @@ if __name__ == "__main__":
 | **自愈机制** | 基础局部重试 | **Safety Net 校验** + 弹窗处理 + 崩溃恢复 + 快照回滚 |
 | **多媒体分析** | 基础视觉感知 + 高速 OCR | 完整 `scrcpy`/`ffmpeg` 视频流分析 + Logcat 日志采集 |
 
-## 🗺️ 路线图
+## 路线图
 
 - [x] **全链路乐观异步流水线**：主流程轻量化，后台并发执行记忆压缩与断言校验。
 - [x] **Safety Net 执行前校验**：动作下发前双层核验与预测性链式执行。
@@ -297,13 +299,13 @@ if __name__ == "__main__":
 - [ ] **端侧轻量化模型**：支持在设备本地离线运行的轻量级 Edge VLM 模型。
 - [ ] **实时语音双工交互**：支持自然语音输入与实时打断控制。
 
-## 🤝 社区与贡献
+## 社区与贡献
 
 欢迎通过以下方式参与项目建设：
-* ⭐ **Star 本项目**以关注最新进展与更新
-* 💬 加入 [Discord 社区](https://discord.gg/wF2FN4WHGY) 参与技术探讨与功能建议
-* 🐛 提交 [Issue](https://github.com/google/artemis/issues) 反馈 Bug，欢迎发起 [Pull Request](https://github.com/google/artemis/pulls) 贡献代码
+* **Star 本项目**以关注最新进展与更新
+* 加入 [Discord 社区](https://discord.gg/wF2FN4WHGY) 参与技术探讨与功能建议
+* 提交 [Issue](https://github.com/google/artemis/issues) 反馈 Bug，欢迎发起 [Pull Request](https://github.com/google/artemis/pulls) 贡献代码
 
-## 📄 开源许可证
+## 开源许可证
 
 本项目基于 [Apache License 2.0](LICENSE) 协议开源。
