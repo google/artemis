@@ -16,7 +16,7 @@
 
 from pathlib import Path
 import tempfile
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
@@ -218,8 +218,12 @@ def test_output_config_and_recording():
 
 def test_runtime_state_and_ipc(tmp_path, monkeypatch):
     """Test IPC port and LS address state helpers."""
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", MagicMock(side_effect=Exception("offline")))
     ipc_state_file = tmp_path / ".artemis_ipc_port"
     monkeypatch.setattr("artemis.config.runtime.get_ipc_port_file", lambda: ipc_state_file)
+    monkeypatch.setattr("artemis.config.runtime.ROOT_DIR", tmp_path)
+    monkeypatch.setattr("artemis.config.runtime.get_app_dir", lambda: tmp_path)
     # Test IPC port
     write_ipc_port(49152)
     assert read_ipc_port() == 49152
@@ -365,8 +369,8 @@ def test_checker_builder_and_context_propagation():
     mock_task.request.record_trace = False
     mock_task.request.name = "test_task"
     mock_task.request.profile = None
-    mock_task.request.goal = "Test goal"
-    agent._prepare_tracing(mock_task, ctx)
+    with patch("artemis.sdk.agent.DataEngine"):
+        agent._prepare_tracing(mock_task, ctx)
 
     assert ctx.execution_setup is not None
     assert ctx.execution_setup.disable_checker is False
@@ -455,8 +459,8 @@ def test_explorer_builder_and_resolution(monkeypatch):
     mock_task.request.record_trace = False
     mock_task.request.name = "explorer_test_task"
     mock_task.request.profile = None
-    mock_task.request.goal = "Test explorer propagation"
-    agent._prepare_tracing(mock_task, ctx)
+    with patch("artemis.sdk.agent.DataEngine"):
+        agent._prepare_tracing(mock_task, ctx)
 
     assert ctx.execution_setup is not None
     assert ctx.execution_setup.explorer_version == "pro"
@@ -505,7 +509,8 @@ def test_outputter_builder_and_context_propagation():
     mock_task.request.name = "outputter_test_task"
     mock_task.request.profile = None
     mock_task.request.goal = "Test outputter propagation"
-    agent._prepare_tracing(mock_task, ctx)
+    with patch("artemis.sdk.agent.DataEngine"):
+        agent._prepare_tracing(mock_task, ctx)
 
     assert ctx.execution_setup is not None
     assert ctx.execution_setup.disable_outputter is False

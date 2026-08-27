@@ -90,7 +90,14 @@ class ReadinessEngine:
 
     def get_active_device_serial(self) -> str | None:
         """Get currently selected active device serial."""
-        return self._active_device_serial
+        if self._report_cache and self._report_cache.active_device:
+            if self._report_cache.active_device.is_locked is False:
+                return self._report_cache.active_device.serial
+        if self._active_device_serial:
+            return self._active_device_serial
+        if self._report_cache and self._report_cache.active_device:
+            return self._report_cache.active_device.serial
+        return None
 
     async def run_probe(self, probe_id: str) -> ProbeResult | None:
         """Execute a single specific probe by ID."""
@@ -99,9 +106,11 @@ class ReadinessEngine:
             return None
         return await probe.probe()
 
-    async def run_device_submission_probe(self) -> ProbeResult:
+    async def run_device_submission_probe(
+        self, target_serial: str | None = None
+    ) -> ProbeResult:
         """Run the bounded device gate used by task submission."""
-        return await self._adb_probe.probe_submission_readiness()
+        return await self._adb_probe.probe_submission_readiness(target_serial=target_serial)
 
     def invalidate_cache(self) -> None:
         """Invalidate the UI readiness snapshot after an explicit configuration change."""

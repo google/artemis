@@ -77,10 +77,29 @@ export class WorkspaceComponent implements OnInit {
   }
 
   /**
-   * Computed boolean whether a task is currently executing or active
+   * Computed boolean whether the currently viewed task is actively running or paused.
+   * Only displays the stop/cancel button when inspecting an active task.
    */
   public isTaskRunning = computed(() => {
-    return this.agentService.isRunningTask();
+    return this.agentService.isCurrentSessionRunning();
+  });
+
+  /**
+   * Dynamic tooltip and label indicating which task will be stopped
+   */
+  public stopButtonTitle = computed(() => {
+    const session = this.agentService.currentSession();
+    if (session?.initial_goal) {
+      const truncated = session.initial_goal.length > 45
+        ? session.initial_goal.substring(0, 42) + '...'
+        : session.initial_goal;
+      return `Stop current task: "${truncated}"`;
+    }
+    const curId = this.agentService.currentSessionId();
+    if (curId) {
+      return `Stop current task (${curId})`;
+    }
+    return 'Stop current running task';
   });
 
   /**
@@ -216,7 +235,7 @@ export class WorkspaceComponent implements OnInit {
   }
 
   /**
-   * Stop currently running task
+   * Stop currently viewed task
    */
   public stopTask(event?: MouseEvent): void {
     if (event) {
@@ -225,9 +244,10 @@ export class WorkspaceComponent implements OnInit {
     if (!this.isTaskRunning()) {
       return;
     }
+    const targetSessionId = this.agentService.currentSessionId();
     this.isSubmitting = true;
     this.errorMessage = null;
-    this.agentService.stopTask(false);
+    this.agentService.stopTask(targetSessionId, false);
     setTimeout(() => {
       this.isSubmitting = false;
     }, 400);

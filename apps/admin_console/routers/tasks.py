@@ -16,7 +16,7 @@ import asyncio
 from contextlib import suppress
 import json
 from typing import Any
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
@@ -84,14 +84,29 @@ async def run_task(request: RunRequest):
     # polling intervals cannot start through a stale Ready state. Use the
     # bounded submission probe: the full diagnostics path also scans packages,
     # emulator installations, Android version, and screen size.
-    device_probe = await readiness_engine.run_device_submission_probe()
+    target_serial = request.device_serial or readiness_engine.get_active_device_serial()
+    device_probe = await readiness_engine.run_device_submission_probe(
+        target_serial=target_serial
+    )
     if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
+        locked_serial = (
+            device_probe.metadata.get("active_device", {}).get("serial")
+            or target_serial
+            or ""
+        )
         detail = (
-            "Android device is locked. Unlock it and enter the home screen before running a task."
+            f"Android device {locked_serial} is locked. Unlock it and enter the home screen before running a task.".replace("  ", " ").strip()
             if device_probe.summary == "Device Locked"
-            else "Android device lock state could not be verified. Keep it unlocked on the home screen and try again."
+            else f"Android device {locked_serial} lock state could not be verified. Keep it unlocked on the home screen and try again.".replace("  ", " ").strip()
         )
         raise HTTPException(status_code=409, detail=detail)
+
+    if device_probe and device_probe.metadata.get("active_device"):
+        verified_serial = device_probe.metadata["active_device"].get("serial")
+        if verified_serial:
+            target_serial = verified_serial
+            if readiness_engine.get_active_device_serial() != verified_serial:
+                readiness_engine.set_active_device_serial(verified_serial)
 
     return await task_queue_service.enqueue_tasks(
         incoming_goals,
@@ -100,7 +115,10 @@ async def run_task(request: RunRequest):
         enable_outputter=request.enable_outputter,
         locked_app_package=request.locked_app_package,
         app_path=request.app_path,
-        device_serial=request.device_serial,
+        device_serial=target_serial,
+        ingress=request.ingress or "frontend",
+        session_id=request.session_id,
+        conversation_id=request.conversation_id,
     )
 
 
@@ -112,11 +130,37 @@ async def list_devices():
 
 
 @router.post("/api/stop")
-async def stop_task(all: bool = False):
-    stopped = task_queue_service.stop_tasks(clear_all=all)
+async def stop_task(
+    request: Request,
+    all: bool = False,
+    session_id: str | None = None,
+    device_id: str | None = None,
+):
+    target_all = all
+    target_sid = session_id
+    target_dev = device_id
+
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            if "all" in body:
+                target_all = bool(body["all"]) or target_all
+            if body.get("session_id"):
+                target_sid = str(body["session_id"])
+            if body.get("device_id"):
+                target_dev = str(body["device_id"])
+    except Exception:
+        pass
+
+    stopped = task_queue_service.stop_tasks(
+        clear_all=target_all,
+        session_id=target_sid,
+        device_id=target_dev,
+    )
     if stopped:
-        return {"status": "stopped"}
+        return {"status": "stopped", "session_id": target_sid}
     return {"status": "no_running_task"}
+
 
 
 @router.post("/api/resume")
@@ -258,8 +302,9 @@ async def get_status():
     }
 
 
+@router.get("/api/stream")
 @router.get("/api/stream/{session_id}")
-async def stream_events(session_id: str, client: str | None = None):
+async def stream_events(session_id: str = "active", client: str | None = None):
     async def event_generator():
         queue = asyncio.Queue()
         event_loop = asyncio.get_running_loop()
@@ -295,7 +340,45 @@ async def stream_events(session_id: str, client: str | None = None):
 
         state.add_subscriber(callback)
         yield f'event: info\ndata: {{"message": "Subscribed to session {session_id}"}}\n\n'
-        if session_id not in ("all", "active"):
+
+        if session_id in ("all", "active"):
+            active_sid = state.active_session_id
+            if not active_sid:
+                running_item = next(
+                    (t for t in state.queue_items if isinstance(t, dict) and t.get("status") == "running"),
+                    None,
+                )
+                if running_item:
+                    active_sid = running_item.get("session_id")
+            if not active_sid:
+                owner = DeviceExecutionLock.get_active_owner()
+                if owner and owner.session_id:
+                    active_sid = owner.session_id
+
+            if active_sid:
+                goal = state.current_goal or ""
+                profile = state.current_profile or "flash"
+                yield (
+                    "event: session_started\n"
+                    f"data: {json.dumps({'session_id': str(active_sid), 'initial_goal': goal, 'profile': profile}, default=str)}\n\n"
+                )
+                for progress_event in state.get_startup_progress(str(active_sid)):
+                    yield (
+                        "event: startup_progress\n"
+                        f"data: {json.dumps(progress_event, default=str)}\n\n"
+                    )
+                try:
+                    from apps.admin_console.database.repositories.step_repository import step_repo
+
+                    recorded_steps = step_repo.get_session_steps(str(active_sid))
+                    for step_dict in recorded_steps:
+                        yield (
+                            "event: step_recorded\n"
+                            f"data: {json.dumps(step_dict, default=str)}\n\n"
+                        )
+                except Exception as exc:
+                    print(f"[Stream] Could not replay active steps: {exc}")
+        else:
             for progress_event in state.get_startup_progress(session_id):
                 yield (
                     "event: startup_progress\n"

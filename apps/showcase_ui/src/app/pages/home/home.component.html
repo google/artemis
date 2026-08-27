@@ -1375,6 +1375,31 @@
                     <span>{{ isRefreshingDiagnostics() ? 'Checking...' : 'Check Again' }}</span>
                   </button>
                 </div>
+
+                <!-- Multi-Device Switcher if multiple devices detected -->
+                @if (connectedDevices().length > 1) {
+                  <div class="multi-device-switcher" style="margin-top: 12px;">
+                    <span class="switcher-label">Select Active Device:</span>
+                    <div class="switcher-chips">
+                      @for (dev of connectedDevices(); track dev.serial) {
+                        <button
+                          type="button"
+                          class="device-chip-btn"
+                          [class.selected]="dev.serial === activeDevice()?.serial"
+                          (click)="selectTargetDevice(dev.serial)"
+                        >
+                          <span class="material-symbols-outlined chip-icon">
+                            phone_android
+                          </span>
+                          <span>{{ dev.model || dev.serial }}</span>
+                          @if (dev.serial === activeDevice()?.serial) {
+                            <span class="active-check">✓ Active</span>
+                          }
+                        </button>
+                      }
+                    </div>
+                  </div>
+                }
               </div>
             }
 

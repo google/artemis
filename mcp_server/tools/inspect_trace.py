@@ -24,6 +24,7 @@ from PIL import Image, ImageDraw
 
 from mcp_server.base import mcp
 from mcp_server.utils import env_utils, trace_store
+from artemis.utils.visualization import draw_action_overlay_on_image
 from artemis.utils.task_tree import (
     _render_step_detailed,
     build_plan_and_history,
@@ -31,79 +32,41 @@ from artemis.utils.task_tree import (
 
 
 def _draw_action_overlay(bg_image_path: str, action_obj: dict, output_path: str) -> bool:
-    """Draws the action (tap, swipe, etc.) on the image and saves it."""
+    """Draws the action overlay on the image using Artemis's native visualization engine."""
     try:
-        with Image.open(bg_image_path) as img:
-            draw_img = img.convert("RGBA")
-            draw = ImageDraw.Draw(draw_img)
+        if not os.path.exists(bg_image_path):
+            return False
 
-            act_type = action_obj.get("action") or action_obj.get("name")
-            coords = action_obj.get("coordinates") or action_obj.get("target")
+        with open(bg_image_path, "rb") as f:
+            raw_bytes = f.read()
 
-            if not act_type or not coords:
-                return False
+        act_name = action_obj.get("action") or action_obj.get("name") or ""
+        action_args = dict(action_obj.get("args") or {})
+        for k in (
+            "target",
+            "coordinates",
+            "point",
+            "direction",
+            "sequence",
+            "targets",
+            "normalized_coordinates",
+        ):
+            if k in action_obj and k not in action_args:
+                action_args[k] = action_obj[k]
 
-            fill_color = (255, 0, 0, 80)
-            outline_color = (255, 0, 0, 255)
-            outline_width = 4
+        annotated_bytes = draw_action_overlay_on_image(
+            image_bytes=raw_bytes,
+            action_name=act_name,
+            action_args=action_args,
+        )
 
-            if act_type in (
-                "tap",
-                "click",
-                "long_press",
-                "focus_and_input_text",
-                "focus_and_clear_text",
-            ):
-                if isinstance(coords, list) and len(coords) == 2:
-                    x, y = coords[0], coords[1]
-                    r = 25
-                    draw.ellipse(
-                        [x - r, y - r, x + r, y + r],
-                        fill=fill_color,
-                        outline=outline_color,
-                        width=outline_width,
-                    )
-                    r_center = 4
-                    draw.ellipse(
-                        [
-                            x - r_center,
-                            y - r_center,
-                            x + r_center,
-                            y + r_center,
-                        ],
-                        fill=outline_color,
-                        outline=outline_color,
-                    )
-            elif act_type == "swipe":
-                if isinstance(coords, list) and len(coords) == 4:
-                    x1, y1, x2, y2 = coords[0], coords[1], coords[2], coords[3]
-                    draw.line([x1, y1, x2, y2], fill=outline_color, width=6)
-                    r_start = 8
-                    draw.ellipse(
-                        [
-                            x1 - r_start,
-                            y1 - r_start,
-                            x1 + r_start,
-                            y1 + r_start,
-                        ],
-                        fill=outline_color,
-                    )
-                    dx = x2 - x1
-                    dy = y2 - y1
-                    angle = math.atan2(dy, dx)
-                    arrow_length = 30
-                    arrow_angle = math.pi / 6
+        if not annotated_bytes or annotated_bytes == raw_bytes:
+            return False
 
-                    p1_x = x2 - arrow_length * math.cos(angle - arrow_angle)
-                    p1_y = y2 - arrow_length * math.sin(angle - arrow_angle)
-                    p2_x = x2 - arrow_length * math.cos(angle + arrow_angle)
-                    p2_y = y2 - arrow_length * math.sin(angle + arrow_angle)
-
-                    draw.polygon([x2, y2, p1_x, p1_y, p2_x, p2_y], fill=outline_color)
-
-            final_img = draw_img.convert("RGB")
-            final_img.save(output_path, "JPEG", quality=85)
-            return True
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "wb") as f:
+            f.write(annotated_bytes)
+        return True
     except Exception as e:
         print(f"Error drawing action overlay: {e}", file=sys.stderr)
         return False
@@ -434,7 +397,7 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                         action_obj[0] if isinstance(action_obj, list) and action_obj else action_obj
                     )
 
-                    if isinstance(action_parsed, dict) and action_parsed.get("action"):
+                    if isinstance(action_parsed, dict) and (action_parsed.get("action") or action_parsed.get("name")):
                         if not os.path.exists(overlay_abs_path):
                             success_draw = _draw_action_overlay(
                                 path, action_parsed, overlay_abs_path

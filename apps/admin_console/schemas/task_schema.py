@@ -24,6 +24,9 @@ class RunRequest(BaseModel):
     locked_app_package: str | None = None
     app_path: str | None = None
     device_serial: str | None = None
+    ingress: str | None = "frontend"
+    session_id: str | None = None
+    conversation_id: str | None = None
 
 
 
@@ -32,3 +35,10 @@ class ReplayRequest(BaseModel):
     user_submits: dict
     tool_name: str = "ask_explorer"
     replay_id: str | None = None
+
+
+class StopRequest(BaseModel):
+    session_id: str | None = None
+    device_id: str | None = None
+    all: bool = False
+

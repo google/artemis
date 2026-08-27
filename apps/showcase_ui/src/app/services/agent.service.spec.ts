@@ -275,3 +275,108 @@ describe('AgentService video analysis seeking', () => {
     expect(second?.requestId).toBeGreaterThan(first?.requestId || 0);
   });
 });
+
+describe('AgentService task cancellation and active session tracking', () => {
+  it('computes isCurrentSessionRunning true only when viewing an active running/paused session', () => {
+    const service = Object.create(AgentService.prototype) as any;
+    service.currentSessionId = signal<string | null>(null);
+    service.rawSessions = signal<any[]>([]);
+    service.activeTasks = signal<any[]>([]);
+    service.pendingQueue = signal<any[]>([]);
+    service.agentStatus = signal('idle');
+    service.runningSessionId = signal<string | null>(null);
+    service.runningGoal = signal<string | null>(null);
+    service.activeSessionTracking = new Map();
+
+    service.currentSession = computed(() => {
+      const curId = service.currentSessionId();
+      if (!curId) return null;
+      return service.sessions().find((s: any) => s.session_id === curId) || null;
+    });
+
+    service.sessions = computed(() => {
+      return service.rawSessions();
+    });
+
+    service.isCurrentSessionRunning = computed(() => {
+      const curId = service.currentSessionId();
+      if (!curId) return false;
+      const session = service.currentSession();
+      if (session) {
+        return session.status === 'running' || session.status === 'paused';
+      }
+      const isActiveStatus = service.agentStatus() === 'running' || service.agentStatus() === 'paused';
+      if (isActiveStatus && service.runningSessionId() === curId) {
+        return true;
+      }
+      if (service.activeTasks().some((at: any) => at.session_id === curId)) {
+        return true;
+      }
+      return false;
+    });
+
+    // 1. No session selected -> false
+    expect(service.isCurrentSessionRunning()).toBeFalse();
+
+    // 2. Completed session selected -> false
+    service.rawSessions.set([
+      { session_id: 'sess-completed', status: 'completed', initial_goal: 'Done', start_time: 100 },
+      { session_id: 'sess-running', status: 'running', initial_goal: 'Running', start_time: 101 }
+    ]);
+    service.currentSessionId.set('sess-completed');
+    expect(service.isCurrentSessionRunning()).toBeFalse();
+
+    // 3. Active running session selected -> true
+    service.currentSessionId.set('sess-running');
+    expect(service.isCurrentSessionRunning()).toBeTrue();
+
+    // 4. Paused session selected -> true
+    service.rawSessions.set([
+      { session_id: 'sess-paused', status: 'paused', initial_goal: 'Paused', start_time: 102 }
+    ]);
+    service.currentSessionId.set('sess-paused');
+    expect(service.isCurrentSessionRunning()).toBeTrue();
+  });
+
+  it('stops a specific session by passing its session_id', () => {
+    const service = Object.create(AgentService.prototype) as AgentService;
+    service.currentSessionId = signal<string | null>('sess-2');
+    service.runningSessionId = signal<string | null>('sess-1');
+    service.runningGoal = signal<string | null>('Goal 1');
+    service.agentStatus = signal('running');
+    service.isPaused = signal(false);
+    service.pausedError = signal<string | null>(null);
+    service.isRetrying = signal(false);
+    service.sessionLogs = signal<any[]>([]);
+    service.activeTasks = signal<any[]>([{ session_id: 'sess-1' }, { session_id: 'sess-2' }]);
+    (service as any).pendingQueue = signal<any[]>([]);
+    (service as any).rawSessions = signal<any[]>([
+      { session_id: 'sess-1', status: 'running', initial_goal: 'Goal 1' },
+      { session_id: 'sess-2', status: 'running', initial_goal: 'Goal 2' }
+    ]);
+    service.sessions = computed(() => (service as any).rawSessions());
+
+    let postedUrl = '';
+    let postedPayload: any = null;
+    (service as any).http = {
+      post: (url: string, payload: any) => {
+        postedUrl = url;
+        postedPayload = payload;
+        return of({});
+      }
+    };
+    (service as any).setSessionStatus = (sid: string, st: string) => {};
+    (service as any).fetchStatus = () => {};
+    (service as any).fetchSessions = () => {};
+
+    // Stop sess-2 specifically
+    service.stopTask('sess-2', false);
+
+    expect(postedUrl).toContain('session_id=sess-2');
+    expect(postedPayload?.session_id).toBe('sess-2');
+    // Because sess-1 is still running, agentStatus should NOT be reset to idle
+    expect(service.agentStatus()).toBe('running');
+    // activeTasks should have filtered out sess-2
+    expect(service.activeTasks().map((at: any) => at.session_id)).toEqual(['sess-1']);
+  });
+});

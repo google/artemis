@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -92,12 +93,26 @@ def test_submit_task_to_daemon():
     mock_resp.read.return_value = b'{"status": "queued", "tasks": [{"session_id": "test-sess"}]}'
     mock_resp.__enter__.return_value = mock_resp
 
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
         res = submit_task_to_daemon(
             "test goal",
             profile="flash",
             device_serial="pixel-8",
+            session_id="custom-sess-789",
+            ingress="mcp",
+            conversation_id="conv-123",
         )
         assert res is not None
         assert res["status"] == "queued"
         assert res["tasks"][0]["session_id"] == "test-sess"
+
+        # Verify request payload
+        req = mock_urlopen.call_args[0][0]
+        data = json.loads(req.data.decode("utf-8"))
+        assert data["goal"] == "test goal"
+        assert data["profile"] == "flash"
+        assert data["device_serial"] == "pixel-8"
+        assert data["session_id"] == "custom-sess-789"
+        assert data["ingress"] == "mcp"
+        assert data["conversation_id"] == "conv-123"
+

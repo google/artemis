@@ -297,11 +297,14 @@ $text-muted: #a1a1aa;
 
         .task-card-header .task-card-header-actions {
           &:has(.btn-delete-card) .task-time,
-          &:has(.btn-delete-card) .task-time-divider {
+          &:has(.btn-delete-card) .task-time-divider,
+          &:has(.btn-stop-card) .task-time,
+          &:has(.btn-stop-card) .task-time-divider {
             opacity: 0;
           }
 
-          .btn-delete-card {
+          .btn-delete-card,
+          .btn-stop-card {
             opacity: 1;
             pointer-events: auto;
           }
@@ -501,6 +504,43 @@ $text-muted: #a1a1aa;
             &:hover:not(:disabled) {
               color: #ef4444;
               background: #fee2e2;
+            }
+
+            &:disabled {
+              opacity: 0.3;
+              cursor: not-allowed;
+            }
+          }
+
+          .btn-stop-card {
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 20px;
+            height: 20px;
+            padding: 0;
+            border: none;
+            background: transparent;
+            border-radius: 4px;
+            color: #ef4444;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.15s ease;
+
+            .material-symbols-outlined {
+              font-size: 15px;
+              line-height: 1;
+            }
+
+            &:hover:not(:disabled) {
+              color: #dc2626;
+              background: #fee2e2;
+              transform: translateY(-50%) scale(1.1);
             }
 
             &:disabled {

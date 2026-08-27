@@ -158,6 +158,9 @@ def submit_task_to_daemon(
     enable_outputter: bool | None = None,
     locked_app_package: str | None = None,
     app_path: str | None = None,
+    session_id: str | None = None,
+    ingress: str = "client",
+    conversation_id: str | None = None,
     base_url: str | None = None,
     timeout: float = 5.0,
 ) -> dict[str, Any] | None:
@@ -174,6 +177,9 @@ def submit_task_to_daemon(
         "enable_outputter": enable_outputter,
         "locked_app_package": locked_app_package,
         "app_path": app_path,
+        "session_id": session_id,
+        "ingress": ingress,
+        "conversation_id": conversation_id,
     }
 
     try:

@@ -75,6 +75,16 @@
             <span class="item-time-divider" *ngIf="getDeviceSerial(session)">·</span>
             <span class="item-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
             <button
+              *ngIf="getTaskStatus(session) === 'running' || getTaskStatus(session) === 'paused'"
+              type="button"
+              class="btn-stop-card" 
+              (click)="stopTask(session.session_id, $event)" 
+              title="Stop this task"
+              aria-label="Stop this task"
+            >
+              <span class="material-symbols-outlined">stop_circle</span>
+            </button>
+            <button
               *ngIf="getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused'"
               type="button"
               class="btn-delete-card" 

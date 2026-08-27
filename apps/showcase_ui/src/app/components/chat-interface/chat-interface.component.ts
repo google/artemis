@@ -99,6 +99,19 @@ export class ChatInterfaceComponent {
   }
 
   /**
+   * Stop an individual task session
+   */
+  public stopTask(sessionId: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.isSubmitting = true;
+    this.errorMessage = null;
+    this.agentService.stopTask(sessionId, false);
+    setTimeout(() => {
+      this.isSubmitting = false;
+    }, 400);
+  }
+
+  /**
    * Stop the currently running task and optionally clear the backend queue
    */
   public stopTasks(stopAll: boolean = false): void {

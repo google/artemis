@@ -314,6 +314,55 @@ async def test_submission_probe_fails_closed_when_lock_state_is_unknown(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_submission_probe_falls_back_to_unlocked_device(monkeypatch):
+    """When the first device is locked but a second device is unlocked, submission probe falls back."""
+    probe = AdbDeviceProbe()
+    monkeypatch.setattr(
+        probe,
+        "_get_device_states",
+        AsyncMock(return_value=[("device-locked", "device"), ("device-unlocked", "device")]),
+    )
+
+    async def mock_lock_state(adb_path, serial, timeout_seconds=1.0):
+        return True if serial == "device-locked" else False
+
+    monkeypatch.setattr(probe, "_get_confirmed_device_lock_state", mock_lock_state)
+
+    result = await probe.probe_submission_readiness()
+
+    assert result.status == ProbeStatus.PASS
+    assert result.summary == "Connected"
+    assert result.metadata["active_device"]["serial"] == "device-unlocked"
+    assert result.metadata["active_device"]["is_locked"] is False
+
+
+@pytest.mark.asyncio
+async def test_adb_probe_prefers_unlocked_device_when_one_is_locked(monkeypatch):
+    """When multiple ready devices exist, probe() should pick the unlocked one as active."""
+    from artemis.core.diagnostics.schema import DeviceInfo
+
+    probe = AdbDeviceProbe()
+    monkeypatch.setattr(probe, "_locate_adb", lambda: "/usr/bin/adb")
+    monkeypatch.setattr(probe, "_get_adb_version", AsyncMock(return_value="1.0.41"))
+    monkeypatch.setattr(probe, "_locate_emulator", lambda: "/usr/bin/emulator")
+    monkeypatch.setattr(probe, "_list_installed_avds", lambda _: [])
+
+    devices = [
+        DeviceInfo(serial="dev-locked-1", state="device", model="Pixel 7", is_locked=True),
+        DeviceInfo(serial="dev-unlocked-2", state="device", model="Pixel 8", is_locked=False),
+    ]
+    monkeypatch.setattr(probe, "_parse_adb_devices", AsyncMock(return_value=devices))
+
+    result = await probe.probe()
+
+    assert result.status == ProbeStatus.PASS
+    assert result.summary == "Connected"
+    assert result.metadata["active_device"]["serial"] == "dev-unlocked-2"
+    assert result.metadata["active_device"]["is_locked"] is False
+
+
+
+@pytest.mark.asyncio
 async def test_llm_credentials_probe_structure():
     """Verify LLMCredentialsProbe returns correct category and schema."""
     probe = LLMCredentialsProbe()

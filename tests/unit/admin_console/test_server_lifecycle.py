@@ -60,6 +60,33 @@ async def test_cancelled_event_stream_reaps_queue_waiter():
 
 
 @pytest.mark.asyncio
+async def test_stream_events_active_session_replay():
+    """Verify stream_events with default 'active' replays running session info and steps."""
+    state.is_shutting_down = False
+    state.shutdown_event.clear()
+    state.active_session_id = "replay-sess-123"
+    state.current_goal = "Replay Goal"
+    state.current_profile = "flash"
+
+    with patch("apps.admin_console.database.repositories.step_repository.step_repo") as mock_step_repo:
+        mock_step_repo.get_session_steps.return_value = [
+            {"step_number": 1, "description": "Step 1", "status": "completed"}
+        ]
+        response = await stream_events()
+        iterator = response.body_iterator
+        first_event = await anext(iterator)
+        assert "Subscribed to session active" in first_event
+        second_event = await anext(iterator)
+        assert "session_started" in second_event
+        assert "replay-sess-123" in second_event
+        third_event = await anext(iterator)
+        assert "step_recorded" in third_event
+        assert "Step 1" in third_event
+        await iterator.aclose()
+
+
+
+@pytest.mark.asyncio
 async def test_windows_sigint_is_ignored_while_task_is_active():
     state.current_process = MagicMock(returncode=None)
     state.is_shutting_down = False

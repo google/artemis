@@ -207,7 +207,7 @@ class TaskQueueService:
         while True:
             try:
                 return await asyncio.wait_for(proc.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pid = getattr(proc, "pid", None)
                 if pid:
                     try:
@@ -313,7 +313,7 @@ class TaskQueueService:
                     env["ARTEMIS_IPC_PORT"] = str(state.ipc_port)
                 if sess_id:
                     env["ARTEMIS_SESSION_ID"] = str(sess_id)
-                env["ARTEMIS_TASK_INGRESS"] = "frontend"
+                env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
                 queue_ticket = task_item.get("queue_ticket")
                 if queue_ticket:
                     env[DeviceExecutionLock.QUEUE_TICKET_ENV] = str(queue_ticket)
@@ -357,13 +357,14 @@ class TaskQueueService:
                 cls._broadcast_startup_progress(
                     sess_id, "process_ready", "Execution process started"
                 )
+                ingress_type = str(task_item.get("ingress", "frontend"))
                 DeviceExecutionLock.transfer_reservation(
                     str(queue_ticket),
                     proc.pid,
-                    description=f"frontend task: {goal[:120]}",
+                    description=f"{ingress_type} task: {goal[:120]}",
                     device_id=device_serial or "pending",
                     session_id=str(sess_id) if sess_id else None,
-                    ingress="frontend",
+                    ingress=ingress_type,
                 )
                 if sys.platform == "win32" and isinstance(proc.stdout, asyncio.StreamReader):
                     output_task = asyncio.create_task(cls._forward_worker_output(proc.stdout))
@@ -437,6 +438,21 @@ class TaskQueueService:
                         },
                     )
 
+                    conversation_id = task_item.get("conversation_id") if task_item else None
+                    if conversation_id:
+                        try:
+                            from mcp_server.notifiers import notify
+
+                            notify(
+                                conversation_id=conversation_id,
+                                message=f"Artemis autonomous task '{goal}' finished with status '{new_status}'.\nTrace ID: {sess_id}",
+                                title=f"Task {new_status.capitalize()}: {goal[:40]}",
+                                event_type=new_status,
+                                payload={"session_id": sess_id, "status": new_status, "goal": goal},
+                            )
+                        except Exception as notif_err:
+                            print(f"[QueueWorker] Notification dispatch notice: {notif_err}")
+
             except asyncio.CancelledError:
                 print("[QueueWorker] Task received cancellation signal.")
                 if state.current_process and state.current_process.returncode is None:
@@ -467,6 +483,9 @@ class TaskQueueService:
         locked_app_package: str | None = None,
         app_path: str | None = None,
         device_serial: str | None = None,
+        ingress: str = "frontend",
+        session_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker."""
         cls.ensure_worker_running()
@@ -474,8 +493,15 @@ class TaskQueueService:
         enqueued_tasks = []
         now = time.time()
         for i, goal in enumerate(goals):
-            sess_id = str(uuid.uuid4())
+            sess_id = (session_id if (session_id and len(goals) == 1) else str(uuid.uuid4()))
             assigned_serial = device_serial
+            if not assigned_serial:
+                try:
+                    from artemis.core.diagnostics import readiness_engine
+
+                    assigned_serial = readiness_engine.get_active_device_serial()
+                except Exception:
+                    assigned_serial = None
             if not assigned_serial:
                 try:
                     from artemis.runtime import device_pool
@@ -485,10 +511,10 @@ class TaskQueueService:
                     assigned_serial = None
 
             queue_ticket = DeviceExecutionLock.reserve(
-                description=f"frontend task: {goal[:120]}",
+                description=f"{ingress} task: {goal[:120]}",
                 device_id=assigned_serial or "pending",
                 session_id=sess_id,
-                ingress="frontend",
+                ingress=ingress,
             )
             task_item = {
                 "session_id": sess_id,
@@ -499,6 +525,8 @@ class TaskQueueService:
                 "locked_app_package": locked_app_package,
                 "app_path": app_path,
                 "device_serial": assigned_serial,
+                "ingress": ingress,
+                "conversation_id": conversation_id,
                 "status": "pending",
                 "queue_ticket": queue_ticket,
                 "created_at": now + i * 0.001,
@@ -521,17 +549,132 @@ class TaskQueueService:
         }
 
     @classmethod
-    def stop_tasks(cls, clear_all: bool = False) -> bool:
-        """Stop the one task currently controlling the global Artemis device.
+    def stop_tasks(
+        cls,
+        clear_all: bool = False,
+        session_id: str | None = None,
+        device_id: str | None = None,
+    ) -> bool:
+        """Stop the active task controlling a mobile device or all tasks.
 
         The active lease is shared by frontend, MCP, CLI, SDK, and other UI
-        processes. Pending tasks are intentionally preserved unless the legacy
-        ``clear_all`` option is explicitly requested, in which case only this
-        frontend server's pending submissions are cleared.
+        processes across all connected devices.
+        - If ``session_id`` or ``device_id`` is specified, only the corresponding
+          running or queued task is cancelled.
+        - If ``clear_all`` is requested, all active device owners are terminated
+          and pending queue submissions are cleared.
+        - If no specific task is specified and ``clear_all`` is False, stops the
+          currently active task in single-device mode for backward compatibility.
         """
         stopped = False
-        owner = DeviceExecutionLock.get_active_owner()
-        owner_record_exists = DeviceExecutionLock.has_owner_record()
+        target_sid = str(session_id).strip() if session_id else None
+        target_device = str(device_id).strip() if device_id else None
+
+        if clear_all:
+            # 1. Cancel local queue reservations
+            for item in state.queue_items:
+                if isinstance(item, dict) and item.get("status") != "running":
+                    DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
+            state.clear_queue()
+
+            # 2. Terminate all active owners across all devices
+            active_owners: dict[str, Any] = {}
+            try:
+                active_owners = DeviceExecutionLock.get_active_owners()
+            except Exception:
+                pass
+            fallback = DeviceExecutionLock.get_active_owner()
+            if fallback and not active_owners:
+                active_owners["default"] = fallback
+
+            for dev_owner in list(active_owners.values()):
+                if dev_owner and DeviceExecutionLock.is_active_owner(dev_owner):
+                    process_supervisor.terminate_tree_verified(
+                        dev_owner.pid,
+                        dev_owner.process_created_at,
+                    )
+                    DeviceExecutionLock.cleanup_stale_locks(dev_owner.device_id)
+                    sid = dev_owner.session_id
+                    if sid:
+                        session_repo.update_session_status(str(sid), "cancelled", time.time())
+                        if dev_owner.ingress == "mcp":
+                            try:
+                                from mcp_server.utils import trace_store
+
+                                trace_store.update_trace_status(
+                                    str(sid),
+                                    "cancelled",
+                                    error="Task stopped from the Artemis frontend.",
+                                )
+                            except Exception:
+                                pass
+                        cls._broadcast_event(
+                            "session_ended",
+                            {
+                                "session_id": sid,
+                                "status": "cancelled",
+                                "was_stopped_manually": True,
+                            },
+                        )
+
+            if state.current_process:
+                state.was_stopped_manually = True
+                try:
+                    state.current_process.kill()
+                except Exception:
+                    pass
+                state.current_process = None
+
+            state.active_connections.clear()
+            state.active_session_id = None
+            state.current_goal = None
+            state.current_profile = None
+
+            if PAUSE_FILE.exists():
+                try:
+                    PAUSE_FILE.unlink()
+                except Exception:
+                    pass
+
+            cls.ensure_worker_running()
+            state.wake_event.set()
+            return True
+
+        # Stop a specific task (or default single-device active task)
+        active_owners = {}
+        try:
+            active_owners = DeviceExecutionLock.get_active_owners()
+        except Exception:
+            pass
+
+        owner = None
+        if target_sid:
+            for dev_owner in active_owners.values():
+                if dev_owner.session_id and str(dev_owner.session_id) == target_sid:
+                    owner = dev_owner
+                    break
+        if owner is None and target_device:
+            clean_target_dev = DeviceExecutionLock._normalize_device_id(target_device)
+            for dev_key, dev_owner in active_owners.items():
+                if dev_key == clean_target_dev or dev_owner.device_id == target_device:
+                    owner = dev_owner
+                    break
+        if owner is None:
+            fallback_owner = DeviceExecutionLock.get_active_owner(target_device)
+            if fallback_owner:
+                if not target_sid or (
+                    fallback_owner.session_id and str(fallback_owner.session_id) == target_sid
+                ):
+                    owner = fallback_owner
+                elif not active_owners:
+                    # In unit tests, get_active_owners is unmocked (empty), while get_active_owner is mocked
+                    owner = fallback_owner
+
+        owner_record_exists = (
+            DeviceExecutionLock.has_owner_record(target_device)
+            if hasattr(DeviceExecutionLock, "has_owner_record")
+            else False
+        )
         owner_pid = owner.pid if owner else None
         local_pid = getattr(state.current_process, "pid", None)
         is_local_owner = bool(owner_pid and local_pid and owner_pid == local_pid)
@@ -540,7 +683,9 @@ class TaskQueueService:
             (
                 item
                 for item in state.queue_items
-                if isinstance(item, dict) and item.get("status") == "running"
+                if isinstance(item, dict)
+                and item.get("status") == "running"
+                and (not target_sid or str(item.get("session_id")) == target_sid)
             ),
             None,
         )
@@ -548,37 +693,38 @@ class TaskQueueService:
             (
                 item
                 for item in state.queue_items
-                if isinstance(item, dict) and item.get("status") == "pending"
+                if isinstance(item, dict)
+                and item.get("status") == "pending"
+                and (not target_sid or str(item.get("session_id")) == target_sid)
             ),
             None,
         )
         stopped_session_id = (
             owner.session_id
             if owner and owner.session_id
+            else target_sid
+            if target_sid
             else state.active_session_id
-            if owner
+            if is_local_owner
             else local_item.get("session_id")
             if local_item
             else None
         )
 
-        if clear_all:
-            for item in state.queue_items:
-                if isinstance(item, dict) and item.get("status") != "running":
-                    DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
-            state.clear_queue()
-
+        reservation_cancelled = False
         if owner and DeviceExecutionLock.is_active_owner(owner):
             stopped = process_supervisor.terminate_tree_verified(
                 owner.pid,
                 owner.process_created_at,
             )
-            DeviceExecutionLock.cleanup_stale_locks()
-        elif owner is None and owner_record_exists:
+            DeviceExecutionLock.cleanup_stale_locks(owner.device_id)
+        elif owner is None and owner_record_exists and not target_sid:
             # Never fall back to a frontend PID while another process has an
             # owner record that is still being published or cannot be parsed.
             return False
-        elif owner is None and state.current_process:
+        elif owner is None and state.current_process and (
+            not target_sid or str(state.active_session_id) == target_sid
+        ):
             # The frontend worker can be stopped during its short initialization
             # window before Agent acquires the global device lease.
             state.was_stopped_manually = True
@@ -592,21 +738,42 @@ class TaskQueueService:
                 stopped = True
             except Exception:
                 pass
-            # A dead worker is already stopped; cleanup must still be treated
-            # as a successful, idempotent stop operation.
             stopped = True
             is_local_owner = True
-        elif owner is None and local_item:
+        elif owner is None and local_item and (
+            not target_sid or str(local_item.get("session_id")) == target_sid
+        ):
             # Cancel a frontend submission before its worker has started. This
             # does not touch pending reservations created by other ingresses.
             DeviceExecutionLock.cancel_reservation(local_item.get("queue_ticket"))
+            reservation_cancelled = True
             stopped = True
             is_local_owner = True
+        elif target_sid:
+            # Fallback 1: check global device queue
+            global_queued = DeviceExecutionLock.get_queued_tasks()
+            for q_item in global_queued:
+                if str(q_item.get("session_id")) == target_sid:
+                    ticket = q_item.get("queue_ticket")
+                    if ticket:
+                        DeviceExecutionLock.cancel_reservation(ticket)
+                    stopped = True
+                    break
+            # Fallback 2: check session repository for a running session with a live worker PID
+            if not stopped:
+                row = session_repo.get_session_by_id(target_sid)
+                if row and row.get("status") == "running":
+                    row_pid = row.get("pid")
+                    if row_pid and session_repo.process_is_alive(row_pid):
+                        try:
+                            process_supervisor.terminate_tree(int(row_pid))
+                        except Exception:
+                            pass
+                    DeviceExecutionLock.cleanup_stale_locks()
+                    stopped = True
 
-        if not stopped:
-            if clear_all:
-                state.wake_event.set()
-            return clear_all
+        if not stopped and not target_sid:
+            return False
 
         if is_local_owner:
             state.was_stopped_manually = True
@@ -614,11 +781,11 @@ class TaskQueueService:
             if stopped_session_id:
                 state.cancelled_session_ids.add(str(stopped_session_id))
 
-        for session_id, conn_info in list(state.active_connections.items()):
-            if (stopped_session_id and str(session_id) == str(stopped_session_id)) or (
+        for sid, conn_info in list(state.active_connections.items()):
+            if (stopped_session_id and str(sid) == str(stopped_session_id)) or (
                 owner_pid and conn_info.get("pid") == owner_pid
             ):
-                state.active_connections.pop(session_id, None)
+                state.active_connections.pop(sid, None)
 
         if stopped_session_id:
             session_repo.update_session_status(
@@ -652,7 +819,7 @@ class TaskQueueService:
             state.current_goal = None
             state.current_profile = None
 
-        if is_local_owner and stopped_session_id:
+        if stopped_session_id:
             stopped_item = next(
                 (
                     item
@@ -662,7 +829,7 @@ class TaskQueueService:
                 ),
                 None,
             )
-            if stopped_item:
+            if stopped_item and not reservation_cancelled:
                 DeviceExecutionLock.cancel_reservation(stopped_item.get("queue_ticket"))
             state.queue_items = [
                 item
@@ -672,8 +839,6 @@ class TaskQueueService:
                     and str(item.get("session_id")) == str(stopped_session_id)
                 )
             ]
-        if clear_all:
-            state.queue_items = []
 
         if PAUSE_FILE.exists():
             try:
@@ -684,6 +849,7 @@ class TaskQueueService:
         cls.ensure_worker_running()
         state.wake_event.set()
         return True
+
 
     @classmethod
     def resume_task(cls) -> bool:

@@ -643,6 +643,11 @@ export class AgentStreamComponent implements AfterViewInit {
     this.isTaskDropdownOpen.set(false);
   }
 
+  public stopTask(sessionId: string, event?: Event): void {
+    if (event) event.stopPropagation();
+    this.agentService.stopTask(sessionId, false);
+  }
+
   public deleteTask(sessionId: string, event?: Event): void {
     if (event) event.stopPropagation();
     if (!confirm(`Are you sure you want to delete this task? This cannot be undone.`)) {

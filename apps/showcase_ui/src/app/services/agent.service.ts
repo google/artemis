@@ -275,12 +275,25 @@ export class AgentService {
   });
 
   /**
-   * Computed whether the currently viewed session is running
+   * Computed whether the currently viewed session is actively running or paused.
+   * Returns false when viewing completed/failed/cancelled tasks, or when no session is selected.
    */
   public isCurrentSessionRunning = computed(() => {
+    const curId = this.currentSessionId();
+    if (!curId) return false;
     const session = this.currentSession();
-    if (session) return session.status === 'running' || session.status === 'paused';
-    return this.agentStatus() === 'running' || this.agentStatus() === 'paused';
+    if (session) {
+      return session.status === 'running' || session.status === 'paused';
+    }
+    // Fallback if session was just submitted/selected but not yet merged into sessions list
+    const isActiveStatus = this.agentStatus() === 'running' || this.agentStatus() === 'paused';
+    if (isActiveStatus && this.runningSessionId() === curId) {
+      return true;
+    }
+    if (this.activeTasks().some((at) => at.session_id === curId)) {
+      return true;
+    }
+    return false;
   });
 
   /**
@@ -312,6 +325,7 @@ export class AgentService {
     this.restoreSessionsCache();
     this.fetchSessions();
     this.startStatusPolling();
+    this.ensureLiveStream();
   }
 
   /**
@@ -382,43 +396,86 @@ export class AgentService {
   }
 
   /**
-   * Stop the currently running task (and optionally clear queue)
+   * Stop the currently viewed task (or specified task), and optionally clear queue.
+   * Supports stopping any task across any ingress/platform (Web, CLI, MCP, SDK).
    */
-  public stopTask(stopAll: boolean = false): void {
-    const stoppingSessionId = this.runningSessionId()
-      || this.sessions().find((session) => session.status === 'running' || session.status === 'paused')?.session_id
-      || null;
+  public stopTask(targetOrStopAll?: string | boolean | null, stopAll: boolean = false): void {
+    let targetSessionId: string | null = null;
+    let effectiveStopAll = stopAll;
+
+    if (typeof targetOrStopAll === 'boolean') {
+      effectiveStopAll = targetOrStopAll;
+    } else if (typeof targetOrStopAll === 'string' && targetOrStopAll.trim()) {
+      targetSessionId = targetOrStopAll.trim();
+    } else {
+      // Default to currently viewed session, or currently running session
+      targetSessionId = this.currentSessionId() || this.runningSessionId() || null;
+    }
+
+    if (!effectiveStopAll && !targetSessionId) {
+      targetSessionId = this.sessions().find(
+        (session) => session.status === 'running' || session.status === 'paused'
+      )?.session_id || null;
+    }
 
     // Keep the task's terminal state stable while the stop request and the
     // persisted session update cross the network. Clearing the global runner
     // state first used to make the session merger infer "completed" from the
     // still-stale DB row, causing a brief completed -> cancelled flicker.
-    this.setSessionStatus(stoppingSessionId, 'cancelled');
+    if (targetSessionId) {
+      this.setSessionStatus(targetSessionId, 'cancelled');
+    }
 
-    // Apply optimistic updates: only set idle if stopAll is true or pending queue is empty
-    if (stopAll || this.pendingQueue().length === 0) {
+    // Determine if other active sessions are still executing across multiple devices
+    const otherRunningSessions = this.sessions().filter(
+      (s) => (s.status === 'running' || s.status === 'paused') && s.session_id !== targetSessionId
+    );
+
+    // Apply optimistic updates: only set idle if effectiveStopAll is true or no other tasks are running
+    if (effectiveStopAll || otherRunningSessions.length === 0) {
       this.agentStatus.set('idle');
       this.runningSessionId.set(null);
       this.runningGoal.set(null);
+    } else if (this.runningSessionId() === targetSessionId) {
+      this.runningSessionId.set(otherRunningSessions[0].session_id);
+      this.runningGoal.set(otherRunningSessions[0].initial_goal || null);
     }
+
     this.isPaused.set(false);
     this.pausedError.set(null);
     this.isRetrying.set(false);
-    if (stopAll) {
+    if (effectiveStopAll) {
       this.pendingQueue.set([]);
     }
 
-    // Mark active streaming / pending logs in current session as finished
-    this.sessionLogs.update((logs) =>
-      logs.map((l) => {
-        if (l.type === 'llm_stream' && !l.data?.isCompleted) {
-          return { ...l, data: { ...l.data, isCompleted: true } };
-        }
-        return l;
-      })
-    );
+    // Mark active streaming / pending logs as finished if viewing target session
+    if (!targetSessionId || this.currentSessionId() === targetSessionId) {
+      this.sessionLogs.update((logs) =>
+        logs.map((l) => {
+          if (l.type === 'llm_stream' && !l.data?.isCompleted) {
+            return { ...l, data: { ...l.data, isCompleted: true } };
+          }
+          return l;
+        })
+      );
+    }
 
-    this.http.post<any>(`/api/stop?all=${stopAll}`, {}).subscribe({
+    // Optimistically remove from activeTasks
+    if (targetSessionId) {
+      this.activeTasks.update((list) => list.filter((at) => at.session_id !== targetSessionId));
+    }
+
+    let url = `/api/stop?all=${effectiveStopAll}`;
+    if (!effectiveStopAll && targetSessionId) {
+      url += `&session_id=${encodeURIComponent(targetSessionId)}`;
+    }
+
+    const payload: any = { all: effectiveStopAll };
+    if (targetSessionId) {
+      payload.session_id = targetSessionId;
+    }
+
+    this.http.post<any>(url, payload).subscribe({
       next: () => {
         this.fetchStatus();
         this.fetchSessions();
@@ -577,10 +634,6 @@ export class AgentService {
       this.currentSessionId.set(null);
       this.sessionLogs.set([]);
       this.currentNotes.set({});
-      if (this.eventSource) {
-        this.eventSource.close();
-        this.eventSource = null;
-      }
       return;
     }
 
@@ -605,37 +658,36 @@ export class AgentService {
       this.openVideoPlayer(sessionId);
     }
 
-    // Clean up previous event stream connection if any
+    console.log(`Selecting session: ${sessionId}`);
+    // Start reading the persisted snapshot immediately
+    this.backfillSessionSteps(sessionId, loadGeneration);
+    this.ensureLiveStream();
+  }
+
+  /**
+   * Ensure persistent single-channel live stream is established via /api/stream.
+   * Eliminates reconnect tearing, race conditions, and disconnect dropouts.
+   */
+  public ensureLiveStream(): void {
     if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
+      return;
     }
 
-    console.log(`Connecting to session: ${sessionId}`);
-    // Start reading the persisted snapshot immediately. Previously this waited
-    // for the SSE `info` event, adding connection latency to every history click.
-    this.backfillSessionSteps(sessionId, loadGeneration);
+    console.log('Establishing persistent unified live stream via /api/stream');
+    this.eventSource = new EventSource('/api/stream');
 
-    this.eventSource = new EventSource(`/api/stream/${sessionId}`);
-
-    // Active runs get one reconciliation snapshot after the stream subscribes,
-    // closing the snapshot-to-stream gap without delaying the first paint.
-    const selectedStatus = this.sessions().find((session) => session.session_id === sessionId)?.status;
-    const shouldReconcileAfterSubscribe = selectedStatus === 'running'
-      || selectedStatus === 'paused'
-      || selectedStatus === 'pending';
     this.eventSource.addEventListener('info', () => {
-      if (shouldReconcileAfterSubscribe) {
-        this.backfillSessionSteps(sessionId, loadGeneration);
+      // Reconcile current session if active
+      const curId = this.currentSessionId();
+      if (curId) {
+        this.backfillSessionSteps(curId);
       }
     });
 
-    // Listen to standard SSE keep-alive
     this.eventSource.addEventListener('keep-alive', () => {
-      // No-op keep-alive tick
+      // Keep-alive tick
     });
 
-    // Listen to raw events and append them directly to the logs array
     const eventTypes = [
       'llm_stream',
       'trace_recorded',
@@ -656,8 +708,6 @@ export class AgentService {
       this.eventSource?.addEventListener(eventType, (event: MessageEvent) => {
         try {
           const parsedData = JSON.parse(event.data);
-
-          // If the event carries a session_id for a different session, update global states if applicable and ignore
           const evtSessionId = parsedData?.session_id;
 
           if (eventType === 'recording_ready' || eventType === 'recording_failed') {
@@ -682,50 +732,8 @@ export class AgentService {
             return;
           }
 
-          const isDifferentSession = evtSessionId
-            && String(evtSessionId).trim().toLowerCase() !== String(sessionId).trim().toLowerCase();
-
-          if (isDifferentSession) {
-            if (eventType === 'session_started') {
-              this.agentStatus.set('running');
-              this.runningSessionId.set(parsedData.session_id);
-              if (parsedData?.initial_goal) {
-                this.runningGoal.set(parsedData.initial_goal);
-              }
-              this.fetchSessions();
-              // Only auto-select if user has no current session at all
-              const currentId = this.currentSessionId();
-              if (!currentId && parsedData?.session_id) {
-                this.selectSession(parsedData.session_id, false);
-              }
-            } else if (eventType === 'session_ended') {
-              this.applySessionEndedStatus(evtSessionId, parsedData);
-              this.activeTasks.update(list => list.filter(at => at.session_id !== evtSessionId));
-              const remaining = this.activeTasks();
-              if (remaining.length > 0) {
-                if (this.runningSessionId() === evtSessionId) {
-                  this.runningSessionId.set(remaining[0].session_id);
-                  this.runningGoal.set(remaining[0].goal || null);
-                }
-              } else if (this.pendingQueue().length > 0) {
-                const nextPending = this.pendingQueue()[0];
-                this.agentStatus.set('running');
-                this.runningSessionId.set(nextPending.session_id);
-                this.runningGoal.set(nextPending.initial_goal || null);
-              } else {
-                this.agentStatus.set('idle');
-                this.runningSessionId.set(null);
-                this.runningGoal.set(null);
-              }
-              this.fetchStatus();
-              this.fetchSessions();
-              this.updateModelForCurrentView();
-            }
-            return;
-          }
-
-          // Guard against obsolete subscriptions
-          if (this.currentSessionId() !== sessionId) {
+          if (eventType === 'background_tasks_updated') {
+            this.fetchStatus();
             return;
           }
 
@@ -738,12 +746,20 @@ export class AgentService {
               this.runningGoal.set(parsedData.initial_goal);
             }
             this.fetchSessions();
+
+            // Auto-follow: if user has not explicitly pinned a historical session, switch view to new active session
+            if (!this.userPinnedSessionId() && parsedData?.session_id) {
+              this.selectSession(parsedData.session_id, false);
+            }
             return;
           }
 
           if (eventType === 'session_ended') {
-            this.applySessionEndedStatus(sessionId, parsedData);
-            this.activeTasks.update(list => list.filter(at => at.session_id !== sessionId));
+            const endedId = evtSessionId || this.runningSessionId();
+            if (endedId) {
+              this.applySessionEndedStatus(endedId, parsedData);
+              this.activeTasks.update(list => list.filter(at => at.session_id !== endedId));
+            }
             const remaining = this.activeTasks();
             if (remaining.length > 0) {
               this.agentStatus.set('running');
@@ -763,20 +779,40 @@ export class AgentService {
             this.isPaused.set(false);
             this.fetchSessions();
             this.fetchStatus();
-            this.fetchNotes(sessionId);
-            this.updateModelForCurrentView();
-            if (
-              this.isVideoWindowOpen()
-              && this.activeVideoSessionId === sessionId
-              && this.recordingPlaybackStatus() === 'live'
-            ) {
-              this.beginRecordingFinalization(sessionId);
+            if (endedId) {
+              this.fetchNotes(endedId);
+              if (
+                this.isVideoWindowOpen()
+                && this.activeVideoSessionId === endedId
+                && this.recordingPlaybackStatus() === 'live'
+              ) {
+                this.beginRecordingFinalization(endedId);
+              }
             }
+            this.updateModelForCurrentView();
             return;
           }
 
           if (eventType === 'startup_progress') {
-            this.appendStartupProgress(parsedData, sessionId);
+            const targetSid = evtSessionId || this.currentSessionId();
+            if (targetSid) {
+              this.appendStartupProgress(parsedData, targetSid);
+              const curId = this.currentSessionId();
+              if (
+                !this.userPinnedSessionId() &&
+                (!curId || String(targetSid).trim().toLowerCase() !== String(curId).trim().toLowerCase())
+              ) {
+                this.agentStatus.set('running');
+                this.runningSessionId.set(targetSid);
+                this.selectSession(targetSid, false);
+              }
+            }
+            return;
+          }
+
+          // If the event is for a different session than what user is currently viewing, ignore for logs
+          const curId = this.currentSessionId();
+          if (evtSessionId && curId && String(evtSessionId).trim().toLowerCase() !== String(curId).trim().toLowerCase()) {
             return;
           }
 
@@ -788,7 +824,9 @@ export class AgentService {
             const attemptText = attempt && max ? ` (Attempt ${attempt}/${max})` : '';
             const delayText = delay > 0 ? `; retrying in ${delay.toFixed(2).replace(/\.00$/, '')}s` : '';
             this.retryMessage.set(`AI service is temporarily busy${attemptText}${delayText}...`);
-            this.appendLiveLLMRetryTrace(parsedData, sessionId);
+            if (curId) {
+              this.appendLiveLLMRetryTrace(parsedData, curId);
+            }
             return;
           }
 
@@ -796,17 +834,19 @@ export class AgentService {
             this.isPaused.set(true);
             this.isRetrying.set(false);
             this.agentStatus.set('paused');
-            this.runningSessionId.set(sessionId);
-            this.setSessionStatus(sessionId, 'paused');
-            const pauseError = parsedData.error || 'AI call failed';
-            this.pausedError.set(pauseError);
-            this.appendPausedErrorCard(
-              pauseError,
-              sessionId,
-              parsedData.timestamp,
-              parsedData.step_id,
-              parsedData
-            );
+            if (curId) {
+              this.runningSessionId.set(curId);
+              this.setSessionStatus(curId, 'paused');
+              const pauseError = parsedData.error || 'AI call failed';
+              this.pausedError.set(pauseError);
+              this.appendPausedErrorCard(
+                pauseError,
+                curId,
+                parsedData.timestamp,
+                parsedData.step_id,
+                parsedData
+              );
+            }
             return;
           }
 
@@ -814,9 +854,9 @@ export class AgentService {
             this.isPaused.set(false);
             this.isRetrying.set(false);
             this.pausedError.set(null);
-            if (this.runningSessionId() === sessionId) {
+            if (curId && this.runningSessionId() === curId) {
               this.agentStatus.set('running');
-              this.setSessionStatus(sessionId, 'running');
+              this.setSessionStatus(curId, 'running');
             }
             this.activePauseCardKey = null;
             return;
@@ -833,7 +873,6 @@ export class AgentService {
             const streamType = parsedData.stream_type || 'text';
 
             this.sessionLogs.update((logs) => {
-              // Find if there is an active stream log with same execution_id and stream_type
               const existingIndex = logs.findIndex(
                 (l) => l.type === 'llm_stream' && 
                        l.data.execution_id === execId && 
@@ -841,7 +880,6 @@ export class AgentService {
               );
 
               if (existingIndex > -1) {
-                // Append text in place
                 const updatedLogs = [...logs];
                 const existingLog = updatedLogs[existingIndex];
                 updatedLogs[existingIndex] = {
@@ -854,7 +892,6 @@ export class AgentService {
                 };
                 return updatedLogs;
               } else {
-                // First mark any other active streams of same stream_type as completed
                 const updatedLogs = logs.map((l) => {
                   if (l.type === 'llm_stream' && 
                       (l.data.stream_type || 'text') === streamType && 
@@ -867,7 +904,6 @@ export class AgentService {
                   return l;
                 });
 
-                // Add new stream log
                 return [
                   ...updatedLogs,
                   {
@@ -885,7 +921,6 @@ export class AgentService {
               }
             });
           } else {
-            // For other event types, mark any active stream as completed
             this.sessionLogs.update((logs) => {
               const updatedLogs = logs.map((l) => {
                 if (l.type === 'llm_stream' && !l.data.isCompleted) {
@@ -907,9 +942,6 @@ export class AgentService {
                 data: parsedData
               };
 
-              // A retry is published both as trace_recorded and as the
-              // purpose-built llm_retrying event. Replace the optimistic live
-              // copy when the persisted trace arrives instead of duplicating it.
               if (eventType === 'trace_recorded' && parsedData?.trace_id) {
                 const existingTraceIndex = updatedLogs.findIndex((log) =>
                   log.type === 'trace_recorded'
@@ -930,14 +962,13 @@ export class AgentService {
             const trName = parsedData.name || '';
             if (['save_note', 'read_note', 'update_note', 'append_note', 'list_notes', 'outputter'].includes(trName.toLowerCase())) {
               const curSessionId = this.currentSessionId();
-              if (curSessionId === sessionId) {
+              if (curSessionId) {
                 this.fetchNotes(curSessionId);
               }
             }
           }
         } catch (e) {
           console.error(`Failed to parse ${eventType} event data:`, e);
-          // Fallback to plain event data if parsing fails
           this.sessionLogs.update((logs) => [
             ...logs,
             {
@@ -951,7 +982,7 @@ export class AgentService {
     });
 
     this.eventSource.onerror = (err) => {
-      console.error('EventSource connection error:', err);
+      console.warn('Persistent live stream issue, browser will auto-reconnect:', err);
     };
   }
 
@@ -997,6 +1028,27 @@ export class AgentService {
           this.isSessionContentLoading.set(false);
         }
       }
+    });
+
+    this.http.get<StartupProgressEvent[]>(`/api/sessions/${sessionId}/startup_progress`).subscribe({
+      next: (events) => {
+        if (Array.isArray(events) && events.length > 0) {
+          this.startupProgressBySession.update((current) => {
+            const existing = current[sessionId] || [];
+            const merged = [...existing];
+            for (const ev of events) {
+              if (!merged.some((m) => m.stage === ev.stage)) {
+                merged.push(ev);
+              }
+            }
+            return {
+              ...current,
+              [sessionId]: merged
+            };
+          });
+        }
+      },
+      error: () => {}
     });
   }
 
@@ -1268,10 +1320,10 @@ export class AgentService {
             this.beginRecordingFinalization(oldRunningSessionId);
           }
 
-          // Auto-select the session ONLY if nothing is currently selected
+          // Auto-select the active session if user has not explicitly pinned a historical session
           if (isActive && data.session_id) {
             const currentId = this.currentSessionId();
-            if (!currentId) {
+            if (!currentId || (!this.userPinnedSessionId() && currentId !== data.session_id)) {
               this.selectSession(data.session_id, false);
             }
           }

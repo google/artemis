@@ -223,6 +223,16 @@ class DevicePool:
             # If not detected by ADB, still return it so ADB can attempt connection
             return preferred_serial
 
+        # Prefer active ready device from readiness engine if available
+        try:
+            from artemis.core.diagnostics import readiness_engine
+
+            active_serial = readiness_engine.get_active_device_serial()
+            if active_serial and any(d.serial == active_serial and d.state == "device" for d in all_devs):
+                return active_serial
+        except Exception:
+            pass
+
         # Pick first idle device
         for dev in ready_devs:
             if not dev.is_busy:

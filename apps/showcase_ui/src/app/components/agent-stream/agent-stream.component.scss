@@ -551,11 +551,14 @@ $stream-row-height: 25px;
 
           .item-header .item-header-actions {
             &:has(.btn-delete-card) .item-time,
-            &:has(.btn-delete-card) .item-time-divider {
+            &:has(.btn-delete-card) .item-time-divider,
+            &:has(.btn-stop-card) .item-time,
+            &:has(.btn-stop-card) .item-time-divider {
               opacity: 0;
             }
 
-            .btn-delete-card {
+            .btn-delete-card,
+            .btn-stop-card {
               opacity: 1;
               pointer-events: auto;
             }
@@ -754,6 +757,38 @@ $stream-row-height: 25px;
               &:hover {
                 color: #ef4444;
                 background: #fee2e2;
+              }
+            }
+
+            .btn-stop-card {
+              position: absolute;
+              right: 0;
+              top: 50%;
+              transform: translateY(-50%);
+              width: 18px;
+              height: 18px;
+              padding: 0;
+              border: none;
+              background: transparent;
+              border-radius: 3px;
+              color: #ef4444;
+              cursor: pointer;
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              opacity: 0;
+              pointer-events: none;
+              transition: all 0.15s ease;
+
+              .material-symbols-outlined {
+                font-size: 14px;
+                line-height: 1;
+              }
+
+              &:hover {
+                color: #dc2626;
+                background: #fee2e2;
+                transform: translateY(-50%) scale(1.1);
               }
             }
           }

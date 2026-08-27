@@ -607,3 +607,198 @@ def test_darwin_terminate_process_tree_preserves_direct_child_for_asyncio():
         for call_args in mock_wait_procs.call_args_list:
             procs_waited = call_args[0][0]
             assert parent not in procs_waited
+
+
+@pytest.mark.asyncio
+async def test_enqueue_tasks_unified_ingress():
+    """Verify enqueue_tasks correctly propagates ingress, custom session_id, and conversation_id."""
+    with patch.object(TaskQueueService, "ensure_worker_running"):
+        res = await task_queue_service.enqueue_tasks(
+            ["Test unified goal"],
+            profile="flash",
+            ingress="mcp",
+            session_id="custom-mcp-session-123",
+            conversation_id="conv-456",
+        )
+        assert res["status"] in ("started", "queued")
+        assert len(res["tasks"]) == 1
+        task = res["tasks"][0]
+        assert task["session_id"] == "custom-mcp-session-123"
+        assert task["ingress"] == "mcp"
+        assert task["conversation_id"] == "conv-456"
+        assert task["goal"] == "Test unified goal"
+
+
+@pytest.mark.asyncio
+async def test_queue_worker_notifies_conversation():
+    """Verify queue_worker calls notify() when conversation_id is attached to task."""
+    executed_cmds = []
+
+    async def fake_subprocess_exec(*args, **kwargs):
+        executed_cmds.append(list(args))
+        proc = MagicMock()
+        proc.pid = 99999
+        proc.wait = AsyncMock(return_value=0)
+        proc.returncode = 0
+        return proc
+
+    with (
+        patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
+        patch("apps.admin_console.services.task_queue_service.media_service"),
+        patch("mcp_server.notifiers.notify") as mock_notify,
+        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+    ):
+        mock_repo.get_running_session_id.return_value = None
+
+        await task_queue_service.enqueue_tasks(
+            ["Notify goal"],
+            profile="flash",
+            ingress="mcp",
+            conversation_id="conv-789",
+            device_serial="test-mock-serial",
+        )
+
+        for _ in range(30):
+            if mock_notify.called and len(state.queue_items) == 0:
+                break
+            await asyncio.sleep(0.05)
+
+        mock_notify.assert_called_once()
+        kwargs = mock_notify.call_args[1]
+        assert kwargs["conversation_id"] == "conv-789"
+        assert "Notify goal" in kwargs["message"]
+
+        task = state.worker_task
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+def test_stop_tasks_by_session_id_targets_correct_task_among_multiple():
+    """Stopping by session_id terminates only the targeted owner among multiple concurrent devices."""
+    owner_a = DeviceLockOwner(
+        pid=11111,
+        process_created_at=100.0,
+        token="token-a",
+        device_id="device-a",
+        description="Task on device A",
+        acquired_at="2026-08-24T00:00:00+00:00",
+        session_id="session-a",
+        ingress="cli",
+    )
+    owner_b = DeviceLockOwner(
+        pid=22222,
+        process_created_at=200.0,
+        token="token-b",
+        device_id="device-b",
+        description="Task on device B",
+        acquired_at="2026-08-24T00:00:00+00:00",
+        session_id="session-b",
+        ingress="mcp",
+    )
+
+    with (
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.get_active_owners",
+            return_value={"device_a": owner_a, "device_b": owner_b},
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.is_active_owner",
+            return_value=True,
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.cleanup_stale_locks"
+        ) as cleanup_locks,
+        patch(
+            "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree_verified",
+            return_value=True,
+        ) as terminate_verified,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
+        ) as update_status,
+        patch("mcp_server.utils.trace_store.update_trace_status") as update_trace,
+    ):
+        # Explicitly stop session-b
+        assert task_queue_service.stop_tasks(clear_all=False, session_id="session-b") is True
+
+        # Only session-b's process (22222) should be terminated
+        terminate_verified.assert_called_once_with(22222, 200.0)
+        cleanup_locks.assert_called_once_with("device-b")
+        update_status.assert_called_once()
+        assert update_status.call_args[0][0] == "session-b"
+        assert update_status.call_args[0][1] == "cancelled"
+        update_trace.assert_called_once_with(
+            "session-b",
+            "cancelled",
+            error="Task stopped from the Artemis frontend.",
+        )
+
+
+def test_stop_tasks_by_device_id_targets_specific_device():
+    """Stopping by device_id targets the active task on that specific device."""
+    owner_a = DeviceLockOwner(
+        pid=33333,
+        process_created_at=300.0,
+        token="token-a",
+        device_id="pixel-8",
+        description="Task on Pixel 8",
+        acquired_at="2026-08-24T00:00:00+00:00",
+        session_id="session-pixel8",
+        ingress="sdk",
+    )
+
+    with (
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.get_active_owners",
+            return_value={"pixel_8": owner_a},
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.is_active_owner",
+            return_value=True,
+        ),
+        patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.cleanup_stale_locks"),
+        patch(
+            "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree_verified",
+            return_value=True,
+        ) as terminate_verified,
+        patch("apps.admin_console.services.task_queue_service.session_repo.update_session_status"),
+    ):
+        assert task_queue_service.stop_tasks(clear_all=False, device_id="pixel-8") is True
+        terminate_verified.assert_called_once_with(33333, 300.0)
+
+
+def test_stop_tasks_queued_item_by_session_id():
+    """Stopping a queued task by session_id cancels its reservation and removes it from queue."""
+    state.queue_items = [
+        {"session_id": "queue-1", "goal": "Goal 1", "status": "pending", "queue_ticket": "ticket-1"},
+        {"session_id": "queue-2", "goal": "Goal 2", "status": "pending", "queue_ticket": "ticket-2"},
+    ]
+
+    with (
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.get_active_owners",
+            return_value={},
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.get_active_owner",
+            return_value=None,
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.cancel_reservation",
+            return_value=True,
+        ) as cancel_res,
+        patch("apps.admin_console.services.task_queue_service.session_repo.update_session_status") as update_status,
+    ):
+        assert task_queue_service.stop_tasks(clear_all=False, session_id="queue-1") is True
+        cancel_res.assert_called_once_with("ticket-1")
+        # queue-2 should remain in queue
+        assert len(state.queue_items) == 1
+        update_status.assert_called_once()
+        assert update_status.call_args[0][0] == "queue-1"
+        assert update_status.call_args[0][1] == "cancelled"
+
+
+

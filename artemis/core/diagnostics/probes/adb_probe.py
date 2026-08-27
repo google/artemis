@@ -358,7 +358,9 @@ class AdbDeviceProbe(BaseProbe):
             logger.debug(f"Failed submission-time ADB device check: {exc}")
             return None
 
-    async def probe_submission_readiness(self) -> ProbeResult:
+    async def probe_submission_readiness(
+        self, target_serial: str | None = None
+    ) -> ProbeResult:
         """Run the minimal fail-safe device check required before enqueueing.
 
         The full diagnostics probe enriches device metadata, scans packages,
@@ -416,16 +418,42 @@ class AdbDeviceProbe(BaseProbe):
                 },
             )
 
-        serial = (
-            self._target_serial
+        preferred = (
+            target_serial
+            if target_serial and target_serial in ready_serials
+            else self._target_serial
             if self._target_serial in ready_serials
             else ready_serials[0]
         )
+
+        serial = preferred
         is_locked = await self._get_confirmed_device_lock_state(
             adb_path,
             serial,
             timeout_seconds=1.0,
         )
+
+        # If preferred device is locked or unknown, check remaining ready devices for an unlocked one
+        if is_locked is not False and len(ready_serials) > 1:
+            for candidate in ready_serials:
+                if candidate == preferred:
+                    continue
+                candidate_locked = await self._get_confirmed_device_lock_state(
+                    adb_path,
+                    candidate,
+                    timeout_seconds=1.0,
+                )
+                if candidate_locked is False:
+                    logger.info(
+                        f"Device {preferred} is not ready/unlocked ({is_locked}); "
+                        f"switching to unlocked ready device {candidate}"
+                    )
+                    serial = candidate
+                    is_locked = False
+                    break
+                elif candidate_locked is None and is_locked is True:
+                    serial = candidate
+                    is_locked = None
         summary = (
             "Device Locked"
             if is_locked is True
@@ -796,11 +824,21 @@ class AdbDeviceProbe(BaseProbe):
                 )
 
         # 4. Ready device available
-        active_dev = ready_devices[0]
+        preferred_dev = None
         if self._target_serial:
-            matched = next((d for d in ready_devices if d.serial == self._target_serial), None)
-            if matched:
-                active_dev = matched
+            preferred_dev = next((d for d in ready_devices if d.serial == self._target_serial), None)
+
+        if preferred_dev and preferred_dev.is_locked is False:
+            active_dev = preferred_dev
+        else:
+            # Prefer a confirmed unlocked ready device
+            unlocked_dev = next((d for d in ready_devices if d.is_locked is False), None)
+            if unlocked_dev:
+                active_dev = unlocked_dev
+            else:
+                # If no confirmed unlocked device, prefer undetermined lock state over confirmed locked
+                unknown_dev = next((d for d in ready_devices if d.is_locked is None), None)
+                active_dev = preferred_dev or unknown_dev or ready_devices[0]
 
         display_name = active_dev.model or active_dev.serial
         if active_dev.screen_resolution:

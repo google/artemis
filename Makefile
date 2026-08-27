@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: help test install install-deps setup start ui build-ui doctor clean precommit-install precommit lint format typecheck
+.PHONY: help test install install-deps setup start ui restart stop status build-ui doctor clean precommit-install precommit lint format typecheck
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -25,6 +25,15 @@ start: ## One-click start Artemis Showcase UI and auto-open browser
 
 ui: ## Launch the unified Showcase UI & Admin Console in browser
 	@uv run artemis ui --open
+
+restart: ## Restart running Artemis Web UI & server
+	@uv run artemis restart
+
+stop: ## Stop running Artemis Web UI & server
+	@uv run artemis stop
+
+status: ## Display Artemis Web UI & server status
+	@uv run artemis status
 
 build-ui: ## Build the Showcase UI Angular frontend
 	@echo "🎨 Building Showcase UI..."

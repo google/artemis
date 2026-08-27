@@ -436,3 +436,22 @@ def test_cli_restart_command(monkeypatch):
     assert stopped["port"] == 8888
     assert ui_called["port"] == 8888
     assert ui_called["open_browser"] is False
+
+
+def test_cli_server_lifecycle_aliases(monkeypatch):
+    """Verify 'artemis server status/stop/restart' subcommands are accessible."""
+    from artemis.runtime import server_lifecycle
+
+    monkeypatch.setattr(server_lifecycle, "is_port_in_use", lambda port, **kwargs: False)
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [])
+    monkeypatch.setattr(server_lifecycle, "read_server_info", lambda: None)
+
+    result = runner.invoke(app, ["server", "status", "--port", "59998"])
+    assert result.exit_code == 0
+    assert "OFFLINE" in result.output or "STOPPED" in result.output
+
+    help_result = runner.invoke(app, ["server", "--help"])
+    assert help_result.exit_code == 0
+    assert "restart" in help_result.output
+    assert "stop" in help_result.output
+    assert "status" in help_result.output

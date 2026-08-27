@@ -161,6 +161,14 @@ async def get_session_background_tasks(session_id: str):
         return []
 
 
+@router.get("/api/sessions/{session_id}/startup_progress")
+async def get_session_startup_progress(session_id: str):
+    try:
+        return state.get_startup_progress(session_id)
+    except Exception:
+        return []
+
+
 @router.post("/api/cleanup")
 async def cleanup_history_endpoint():
     try:

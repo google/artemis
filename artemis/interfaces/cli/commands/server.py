@@ -23,11 +23,20 @@ from typing import Annotated
 import urllib.error
 import urllib.request
 
+from artemis.interfaces.cli.commands.server_lifecycle import (
+    restart_command,
+    status_command,
+    stop_command,
+)
 from artemis.utils.logger import get_logger
 import typer
 
 logger = get_logger(__name__)
 server_app = typer.Typer(help="Cloud proxy and server management commands.")
+
+server_app.command("restart", help="Restart running Artemis Web UI & server.")(restart_command)
+server_app.command("stop", help="Stop running Artemis Web UI & server.")(stop_command)
+server_app.command("status", help="Display Artemis Web UI & server status.")(status_command)
 
 cached_token = ""
 token_expire_time = 0.0

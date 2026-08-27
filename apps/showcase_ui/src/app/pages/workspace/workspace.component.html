@@ -116,11 +116,11 @@
                 <span class="material-symbols-outlined">close</span>
               </button>
               
-              <!-- Stop Button (Visible when task is running) -->
+              <!-- Stop Button (Visible when currently viewed task is active) -->
               <button *ngIf="isTaskRunning()" type="button" class="dock-circle-btn btn-stop" [disabled]="isSubmitting"
                 (click)="stopTask($event)"
-                title="Stop running task"
-                aria-label="Stop running task"
+                [title]="stopButtonTitle()"
+                [attr.aria-label]="stopButtonTitle()"
               >
                 <span class="material-symbols-outlined">stop</span>
               </button>
@@ -161,12 +161,12 @@
           </div>
         </div>
 
-        <!-- Separate Standalone Stop Button Beside the Capsule (Visible when task is running) -->
+        <!-- Separate Standalone Stop Button Beside the Capsule (Visible when currently viewed task is active) -->
         <button *ngIf="isTaskRunning()" type="button" class="standalone-stop-btn"
           [disabled]="isSubmitting"
           (click)="stopTask($event)"
-          title="Stop running task"
-          aria-label="Stop running task"
+          [title]="stopButtonTitle()"
+          [attr.aria-label]="stopButtonTitle()"
         >
           <span class="material-symbols-outlined">stop</span>
         </button>

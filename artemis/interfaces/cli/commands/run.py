@@ -77,7 +77,6 @@ async def execute_task(
         explorer_flash_mode: Override Explorer version mode for Flash execution profile.
         explorer_pro_mode: Override Explorer version mode for Pro execution profile.
     """
-    publish_startup_progress("configuration", "Loading the run configuration")
     effective_sid = (
         session_id
         or os.getenv("ARTEMIS_SESSION_ID")
@@ -85,6 +84,9 @@ async def execute_task(
     )
     if effective_sid:
         os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
+    publish_startup_progress(
+        "configuration", "Loading the run configuration", session_id=str(effective_sid) if effective_sid else None
+    )
 
     llm_config = initialize_llm_config()
     agent_profile = AgentProfile(name="default", llm_config=llm_config)
@@ -142,13 +144,11 @@ async def execute_task(
 
     agent: Agent | None = None
     try:
-        publish_startup_progress("device_check", "Checking the Android device")
         agent = Agent(config=config.build(), session_id=effective_sid)
         await agent.init(
             retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
             retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
         )
-        publish_startup_progress("device_ready", "Android device connected")
 
         task = agent.new_task(goal)
         if locked_app_package:

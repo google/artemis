@@ -203,6 +203,7 @@ class Agent:
             raise DeviceNotFoundError(error_msg)
 
         # Initialize clients
+        publish_startup_progress("device_check", "Checking the Android device", session_id=self._session_id)
         if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
             self._init_clients(
                 device_id=device_id,
@@ -221,6 +222,7 @@ class Agent:
             device_id=device_id, platform=platform
         )
         logger.info(self._device_context.to_str())
+        publish_startup_progress("device_ready", "Android device connected", session_id=self._session_id)
 
         # Asynchronously pre-warm LLM connection pools in the background
         asyncio.create_task(self._prewarm_llm_connections(api_key))
@@ -580,15 +582,15 @@ class Agent:
                 if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
                     if self._ui_adb_client is not None:
                         publish_startup_progress(
-                            "uiautomator", "Connecting to UI Automator", session_id=str(task.id)
+                            "uiautomator", "Connecting to UI Automator", session_id=str(sess_id)
                         )
                         await asyncio.to_thread(self._ui_adb_client.connect)
                         publish_startup_progress(
-                            "uiautomator_ready", "UI Automator is ready", session_id=str(task.id)
+                            "uiautomator_ready", "UI Automator is ready", session_id=str(sess_id)
                         )
                     await self._ensure_device_unlocked()
                 publish_startup_progress(
-                    "environment", "Preparing the device environment", session_id=str(task.id)
+                    "environment", "Preparing the device environment", session_id=str(sess_id)
                 )
                 await self._prepare_app_installation(task=task)
                 await self._prepare_device_environment(context=context)
@@ -620,7 +622,7 @@ class Agent:
                             logger.error(f"[{task_name}] Failed to start screen recording: {e}")
 
                     publish_startup_progress(
-                        "environment_ready", "Device environment is ready", session_id=str(task.id)
+                        "environment_ready", "Device environment is ready", session_id=str(sess_id)
                     )
                     try:
                         if request.profile and request.profile.lower() == "flash":

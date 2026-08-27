@@ -162,16 +162,53 @@ def mobile_run_task(
         device_serial=device_serial,
     )
 
-    # 3. Auto-spawn daemon if not already running (unless standalone forced)
+    # 3. Dispatch via unified Artemis Daemon scheduler if available (unless standalone forced)
     if os.environ.get("ARTEMIS_STANDALONE") != "1":
         try:
-            from artemis.runtime import ensure_daemon_running
+            from artemis.runtime import ensure_daemon_running, submit_task_to_daemon
 
-            ensure_daemon_running(timeout=1.5)
-        except Exception:
-            pass
+            is_running, base_url = ensure_daemon_running(timeout=2.0, wait_ready=True)
+            if is_running:
+                resp = submit_task_to_daemon(
+                    goal=task_desc,
+                    profile=canonical_model.lower(),
+                    device_serial=device_serial,
+                    expected_output=expected_output_desc if canonical_model != "Flash" else None,
+                    locked_app_package=locked_app_package,
+                    app_path=app_path,
+                    session_id=trace_id,
+                    ingress="mcp",
+                    conversation_id=conversation_id,
+                    base_url=base_url,
+                )
+                if resp and resp.get("tasks"):
+                    assigned_sid = resp["tasks"][0].get("session_id", trace_id)
+                    trace_store.update_trace_status(
+                        assigned_sid, "running", device_serial=device_serial
+                    )
+                    notes_dir = str(trace_store.get_trace_notes_dir(assigned_sid))
+                    stdout_log = str(trace_store.get_trace_stdout_log_path(assigned_sid))
+                    stderr_log = str(trace_store.get_trace_stderr_log_path(assigned_sid))
+                    return {
+                        "trace_id": assigned_sid,
+                        "status": "running",
+                        "message": (
+                            f"Autonomous task '{task_desc}' enqueued via unified Artemis Daemon.\n"
+                            f"Trace ID: {assigned_sid}\n"
+                            f"Model: {canonical_model}\n"
+                            f"Live telemetry: streaming to web workspace."
+                        ),
+                        "notes_dir": notes_dir,
+                        "stdout_log": stdout_log,
+                        "stderr_log": stderr_log,
+                    }
+        except Exception as exc:
+            import logging
+            logging.getLogger("mcp_server").warning(
+                f"Daemon dispatch failed, falling back to standalone runner: {exc}"
+            )
 
-    # 4. Resolve project root, python executable, and background runner module
+    # 4. Standalone Fallback: Resolve project root, python executable, and background runner module
     project_root = env_utils.get_project_root()
     python_exe = env_utils.resolve_python_executable(project_root)
     reserve_kwargs: dict[str, Any] = {
@@ -214,6 +251,14 @@ def mobile_run_task(
             env["ADB_DEVICE_SERIAL"] = device_serial
             env["ARTEMIS_DEVICE_ID"] = device_serial
         env[DeviceExecutionLock.QUEUE_TICKET_ENV] = queue_ticket
+        try:
+            from artemis.config.runtime import read_ipc_port
+
+            ipc_port = read_ipc_port()
+            if ipc_port:
+                env["ARTEMIS_IPC_PORT"] = str(ipc_port)
+        except Exception:
+            pass
 
         proc_kwargs = env_utils.get_detached_process_kwargs()
         proc = subprocess.Popen(
