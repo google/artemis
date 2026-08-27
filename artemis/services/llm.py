@@ -35,6 +35,7 @@ from uuid import uuid4
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from artemis.config import (
+    PAUSE_FILE,
     AgentNode,
     AgentNodeWithFallback,
     LLMUtilsNode,
@@ -233,7 +234,7 @@ def _handle_llm_pause_and_resume(last_error: Exception) -> Path:
         err_msg = err_msg[:1000] + "... [Truncated by LLM Wrapper]"
 
     llm_logger.warning(f"LLM Error: {err_msg}. Pausing execution to wait for resume signal...")
-    pause_file = Path(settings.TRACES_PATH).parent / ".artemis_paused"
+    pause_file = PAUSE_FILE
     try:
         pause_file.write_text(f"LLM Error: {err_msg}")
     except Exception:
@@ -594,7 +595,7 @@ async def invoke_llm_with_timeout_message[T](
                 if llm_task.done():
                     return llm_task.result()
 
-                pause_file = Path(settings.TRACES_PATH).parent / ".artemis_paused"
+                pause_file = PAUSE_FILE
                 if pause_file.exists():
                     start_time = asyncio.get_event_loop().time()
                     continue

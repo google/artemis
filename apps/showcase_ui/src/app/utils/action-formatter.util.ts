@@ -33,9 +33,15 @@ export function getActionObject(action: any): any {
  * Check if the action is a user interaction action on Android
  */
 export function isAndroidAction(action: any): boolean {
-  const act = getActionObject(action);
-  if (!act) return false;
-  const name = (act.name || act.action || '').toLowerCase();
+  if (!action) return false;
+  let name = '';
+  if (typeof action === 'string') {
+    name = action.toLowerCase();
+  } else {
+    const act = getActionObject(action);
+    if (!act) return false;
+    name = (act.name || act.action || '').toLowerCase();
+  }
   return [
     'tap', 'click', 'click_sequence', 'input', 'input_text', 'swipe', 'scroll', 'press_key', 
     'press_home', 'press_back', 'launch_app', 'manage_app', 'open_app',
@@ -48,9 +54,16 @@ export function isAndroidAction(action: any): boolean {
  * Check if the action or tool is a task completion / submission report
  */
 export function isReportStatusAction(action: any): boolean {
-  const act = getActionObject(action);
-  if (!act) return false;
-  const name = (act.name || act.action || '').toLowerCase().replace(/^(_)?(self\.)?exec_/, '');
+  if (!action) return false;
+  let name = '';
+  if (typeof action === 'string') {
+    name = action.toLowerCase();
+  } else {
+    const act = getActionObject(action);
+    if (!act) return false;
+    name = (act.name || act.action || '').toLowerCase();
+  }
+  name = name.replace(/^(_)?(self\.)?exec_/, '');
   return name === 'report_task_status' || name === 'report_status' || name === 'submit_task_status';
 }
 
@@ -785,21 +798,31 @@ export function extractStepReplayFrames(logsOrSteps: any[]): StepReplayFrame[] {
     }
   }
 
-  // Deduplicate and merge by step_id or step_number
+  // Deduplicate and merge by step_number (fallback to step_id if step_number missing)
   const stepMap = new Map<any, any>();
   for (const step of rawSteps) {
-    const key = step.step_id || step.step_number;
+    const key = (step.step_number !== undefined && step.step_number !== null)
+      ? `step_${step.step_number}`
+      : (step.step_id || Math.random());
     if (key !== undefined) {
       const existing = stepMap.get(key);
       if (existing) {
+        // When merging duplicate records with the same step_number:
+        // Prefer real actions over report_task_status
+        const existingAct = existing.action_taken;
+        const newAct = step.action_taken;
+        const preferExistingAction = existingAct && isAndroidAction(existingAct) && isReportStatusAction(newAct);
+        const preferNewAction = newAct && isAndroidAction(newAct) && isReportStatusAction(existingAct);
+
         stepMap.set(key, {
           ...existing,
           ...step,
           step_number: step.step_number !== undefined ? step.step_number : existing.step_number,
-          pre_image_name: step.pre_image_name || existing.pre_image_name,
-          post_image_name: step.post_image_name || existing.post_image_name,
-          action_taken: step.action_taken || existing.action_taken,
+          pre_image_name: (preferExistingAction ? existing.pre_image_name : (step.pre_image_name || existing.pre_image_name)),
+          post_image_name: (preferExistingAction ? (existing.post_image_name || step.post_image_name) : (step.post_image_name || existing.post_image_name)),
+          action_taken: preferExistingAction ? existing.action_taken : (preferNewAction ? newAct : (step.action_taken || existing.action_taken)),
           last_execution_result: step.last_execution_result || existing.last_execution_result,
+          summary: (preferExistingAction ? (existing.summary || step.summary) : (step.summary || existing.summary)),
           generic_tools: step.generic_tools || existing.generic_tools
         });
       } else {
@@ -820,7 +843,8 @@ export function extractStepReplayFrames(logsOrSteps: any[]): StepReplayFrame[] {
 
   for (let i = 0; i < steps.length; i++) {
     const stepData = steps[i];
-    const stepNum = Number(stepData.step_number ?? (i + 1));
+    // Guarantee 1-indexed sequential step numbering so frames never duplicate numbers
+    const stepNum = i + 1;
     const act = stepData.action_taken;
     const title = act ? (getActionTitle(act) || 'Action') : `Step ${stepNum}`;
     const coords = act ? getActionCoords(act) : '';

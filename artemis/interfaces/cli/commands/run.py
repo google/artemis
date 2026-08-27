@@ -84,6 +84,8 @@ async def execute_task(
     )
     if effective_sid:
         os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
+    if not os.environ.get("ARTEMIS_TASK_INGRESS"):
+        os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
     publish_startup_progress(
         "configuration", "Loading the run configuration", session_id=str(effective_sid) if effective_sid else None
     )
@@ -324,13 +326,80 @@ def run_command(
 
     console = Console()
 
-    # Daemon auto-spawn: By default, ensure Daemon is running in background unless standalone mode requested
-    if not standalone and os.environ.get("ARTEMIS_STANDALONE") != "1":
+    is_worker = (
+        os.environ.get("ARTEMIS_TASK_WORKER") == "1"
+        or os.environ.get("ARTEMIS_DEVICE_QUEUE_TICKET") is not None
+    )
+    is_standalone = standalone or os.environ.get("ARTEMIS_STANDALONE") == "1"
+
+    # All platforms route through unified Artemis Daemon unless specifically configured as standalone
+    if not is_worker and not is_standalone:
         try:
-            from artemis.runtime import ensure_daemon_running
-            ensure_daemon_running(timeout=1.5)
+            import uuid
+            from artemis.runtime import (
+                ensure_daemon_running,
+                submit_task_to_daemon,
+                wait_for_daemon_task,
+                stop_task_on_daemon,
+            )
+
+            console.print("[dim]Connecting to Artemis Daemon scheduler...[/dim]")
+            is_running, base_url = ensure_daemon_running(timeout=8.0, wait_ready=True)
+            if is_running and base_url:
+                target_sid = session_id or str(uuid.uuid4())
+                console.print(f"[bold green]✓[/bold green] Artemis Daemon active at [cyan]{base_url}[/cyan]")
+                resp = submit_task_to_daemon(
+                    goal=goal,
+                    profile=profile or "pro",
+                    device_serial=device_serial,
+                    expected_output=output_description,
+                    enable_outputter=enable_outputter,
+                    locked_app_package=locked_app_package,
+                    app_path=app_path,
+                    session_id=target_sid,
+                    ingress="cli",
+                    base_url=base_url,
+                )
+                if resp and resp.get("tasks"):
+                    console.print(f"[bold green]✓[/bold green] Task scheduled in unified queue (Session: [cyan]{target_sid}[/cyan])")
+                    console.print(f"[dim]Live dashboard & replay: {base_url}[/dim]\n")
+
+                    def on_status(sess_info):
+                        st = sess_info.get("status")
+                        if st == "queued":
+                            console.print(f"[yellow]⏳ Task queued in scheduler, waiting for device...[/yellow]")
+                        elif st == "running":
+                            console.print(f"[green]▶ Task executing on mobile device...[/green]")
+
+                    try:
+                        final_res = wait_for_daemon_task(
+                            target_sid,
+                            base_url=base_url,
+                            timeout=1800.0,
+                            on_status_update=on_status,
+                        )
+                        final_st = final_res.get("status")
+                        if final_st in ("completed", "success"):
+                            console.print(f"\n[bold green]✅ Task completed successfully![/bold green]")
+                            return
+                        else:
+                            err = final_res.get("error") or final_res.get("explanation") or ""
+                            console.print(f"\n[bold red]✖ Task {final_st}[/bold red]: {err}")
+                            raise SystemExit(1)
+                    except KeyboardInterrupt:
+                        console.print("\n[yellow]Stopping task on Daemon...[/yellow]")
+                        stop_task_on_daemon(target_sid, base_url=base_url)
+                        console.print("[yellow]Task cancelled.[/yellow]")
+                        raise SystemExit(130)
+                else:
+                    console.print("[yellow]Warning: Could not enqueue task to Daemon. Falling back to local execution...[/yellow]")
+            else:
+                console.print("[yellow]Warning: Artemis Daemon could not be started. Falling back to local execution...[/yellow]")
+        except SystemExit:
+            raise
         except Exception as exc:
-            logger.debug(f"Daemon probe/auto-spawn skipped: {exc}")
+            logger.debug(f"Daemon dispatch error: {exc}")
+            console.print(f"[yellow]Daemon routing notice: {exc}. Falling back to local execution...[/yellow]")
 
     adb_client = None
     try:

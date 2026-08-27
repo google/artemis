@@ -202,11 +202,53 @@ def mobile_run_task(
                         "stdout_log": stdout_log,
                         "stderr_log": stderr_log,
                     }
+
+                # Check if the task was already enqueued despite a slow or None response:
+                try:
+                    queued_tasks = DeviceExecutionLock.get_queued_tasks()
+                    for q in queued_tasks:
+                        if str(q.get("session_id")) == str(trace_id):
+                            trace_store.update_trace_status(
+                                trace_id, "running", device_serial=device_serial
+                            )
+                            return {
+                                "trace_id": trace_id,
+                                "status": "running",
+                                "message": (
+                                    f"Autonomous task '{task_desc}' enqueued via unified Artemis Daemon.\n"
+                                    f"Trace ID: {trace_id}\n"
+                                    f"Model: {canonical_model}\n"
+                                    f"Live telemetry: streaming to web workspace."
+                                ),
+                                "notes_dir": str(trace_store.get_trace_notes_dir(trace_id)),
+                                "stdout_log": str(trace_store.get_trace_stdout_log_path(trace_id)),
+                                "stderr_log": str(trace_store.get_trace_stderr_log_path(trace_id)),
+                            }
+                except Exception:
+                    pass
+
+                # When Daemon is running, refuse to launch a conflicting standalone runner on the same device
+                import logging
+                logging.getLogger("mcp_server").warning(
+                    f"Daemon dispatch failed for task '{task_desc}'. Aborting dispatch to prevent runner collision."
+                )
+                return {
+                    "trace_id": trace_id,
+                    "status": "failed",
+                    "error": f"Failed to enqueue task '{task_desc}' to running Artemis Daemon scheduler.",
+                    "message": "Task rejected or timed out in Artemis Daemon. Standalone fallback blocked to prevent runner collision.",
+                }
         except Exception as exc:
             import logging
             logging.getLogger("mcp_server").warning(
-                f"Daemon dispatch failed, falling back to standalone runner: {exc}"
+                f"Daemon dispatch failed: {exc}"
             )
+            return {
+                "trace_id": trace_id,
+                "status": "failed",
+                "error": f"Daemon dispatch error: {exc}",
+                "message": "Failed to dispatch task to Artemis Daemon.",
+            }
 
     # 4. Standalone Fallback: Resolve project root, python executable, and background runner module
     project_root = env_utils.get_project_root()

@@ -26,6 +26,8 @@ from artemis.runtime import (
     DeviceStatus,
     device_pool,
     ensure_daemon_running,
+    submit_task_to_daemon,
+    wait_for_daemon_task,
 )
 from artemis.utils.logger import get_logger
 
@@ -145,6 +147,9 @@ class ArtemisClient:
         )
 
         task_session_id = str(uuid.uuid4())
+        prev_ingress = os.environ.get("ARTEMIS_TASK_INGRESS")
+        prev_sess_id = os.environ.get("ARTEMIS_SESSION_ID")
+
         lock = DeviceExecutionLock(
             device_id=target_device,
             description=f"{goal[:120]}",
@@ -154,19 +159,58 @@ class ArtemisClient:
             ingress="sdk",
         )
 
-        await asyncio.to_thread(
-            lock.acquire,
-            blocking=blocking,
-            timeout=lock_timeout,
-        )
-
         try:
+            os.environ["ARTEMIS_TASK_INGRESS"] = "sdk"
+            os.environ["ARTEMIS_SESSION_ID"] = task_session_id
+
+            await asyncio.to_thread(
+                lock.acquire,
+                blocking=blocking,
+                timeout=lock_timeout,
+            )
+
             # Check if targeting a live connected device
             devices = device_pool.list_devices()
             connected_serials = {d.serial for d in devices}
             is_live_device = target_device in connected_serials and os.environ.get("ARTEMIS_MOCK_DRIVER") != "1"
 
             if is_live_device:
+                # Route through unified Artemis Daemon scheduler unless standalone explicitly configured
+                if not self.standalone and os.environ.get("ARTEMIS_STANDALONE") != "1":
+                    try:
+                        is_running, base_url = ensure_daemon_running(timeout=8.0, wait_ready=True)
+                        if is_running and base_url:
+                            dev_serial = target_device if target_device != "default-device" else None
+                            resp = submit_task_to_daemon(
+                                goal=goal,
+                                profile=target_profile,
+                                device_serial=dev_serial,
+                                expected_output=kwargs.get("expected_output"),
+                                enable_outputter=kwargs.get("enable_outputter"),
+                                locked_app_package=kwargs.get("locked_package") or kwargs.get("locked_app_package"),
+                                app_path=kwargs.get("app_path"),
+                                session_id=task_session_id,
+                                ingress="sdk",
+                                base_url=base_url,
+                            )
+                            if resp and resp.get("tasks"):
+                                final_res = wait_for_daemon_task(
+                                    task_session_id,
+                                    base_url=base_url,
+                                    timeout=float(kwargs.get("timeout", 1800.0)),
+                                )
+                                final_st = final_res.get("status", "completed")
+                                err = final_res.get("error")
+                                return TaskResult(
+                                    trace_id=task_session_id,
+                                    status="completed" if final_st in ("completed", "success") else final_st,
+                                    turns=final_res.get("turns", 1),
+                                    error=err,
+                                    device_id=target_device,
+                                )
+                    except Exception as exc:
+                        logger.debug(f"SDK daemon routing notice: {exc}")
+
                 from artemis.sdk.agent import Agent
                 from artemis.sdk.builders import Builders
                 from artemis.context import DevicePlatform
@@ -215,7 +259,16 @@ class ArtemisClient:
                 device_id=target_device,
             )
         finally:
-            await asyncio.to_thread(lock.release)
+            if prev_sess_id is not None:
+                os.environ["ARTEMIS_SESSION_ID"] = prev_sess_id
+            else:
+                os.environ.pop("ARTEMIS_SESSION_ID", None)
+            if prev_ingress is not None:
+                os.environ["ARTEMIS_TASK_INGRESS"] = prev_ingress
+            else:
+                os.environ.pop("ARTEMIS_TASK_INGRESS", None)
+            if lock._acquired:
+                await asyncio.to_thread(lock.release)
 
     async def stream_run(
         self,
@@ -245,19 +298,28 @@ class ArtemisClient:
             f"with profile '{target_profile}' (concurrency_mode='{mode}')..."
         )
 
+        task_session_id = str(uuid.uuid4())
+        prev_ingress = os.environ.get("ARTEMIS_TASK_INGRESS")
+        prev_sess_id = os.environ.get("ARTEMIS_SESSION_ID")
+
         lock = DeviceExecutionLock(
             device_id=target_device,
             description=f"ArtemisClient streaming task: {goal[:120]}",
             concurrency_mode=mode,
             max_concurrency=concurrency_limit,
+            session_id=task_session_id,
+            ingress="sdk",
         )
 
-        await asyncio.to_thread(
-            lock.acquire,
-            blocking=blocking,
-            timeout=lock_timeout,
-        )
         try:
+            os.environ["ARTEMIS_TASK_INGRESS"] = "sdk"
+            os.environ["ARTEMIS_SESSION_ID"] = task_session_id
+
+            await asyncio.to_thread(
+                lock.acquire,
+                blocking=blocking,
+                timeout=lock_timeout,
+            )
             # 1. Emit initial starting event
             start_event = StreamEvent(
                 event_type=StreamEventType.STATUS,
@@ -341,7 +403,16 @@ class ArtemisClient:
                             pass
                 yield err_ev
         finally:
-            await asyncio.to_thread(lock.release)
+            if prev_sess_id is not None:
+                os.environ["ARTEMIS_SESSION_ID"] = prev_sess_id
+            else:
+                os.environ.pop("ARTEMIS_SESSION_ID", None)
+            if prev_ingress is not None:
+                os.environ["ARTEMIS_TASK_INGRESS"] = prev_ingress
+            else:
+                os.environ.pop("ARTEMIS_TASK_INGRESS", None)
+            if lock._acquired:
+                await asyncio.to_thread(lock.release)
 
     async def run_task(
         self,

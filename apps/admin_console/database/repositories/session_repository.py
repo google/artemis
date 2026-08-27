@@ -285,6 +285,17 @@ class SessionRepository:
                         ("failed", now, row["session_id"], "running"),
                     )
                     count += cursor.rowcount
+                    try:
+                        from mcp_server.utils import trace_store
+
+                        if trace_store.read_status(str(row["session_id"])):
+                            trace_store.update_trace_status(
+                                str(row["session_id"]),
+                                "failed",
+                                error="Process terminated prior to server startup.",
+                            )
+                    except Exception:
+                        pass
                 conn.commit()
                 return count
         except Exception:

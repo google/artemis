@@ -298,6 +298,7 @@ async def get_status():
         "background_tasks": bg_tasks,
         "queue": queue_data,
         "active_tasks": active_tasks,
+        "model_info": model_info,
         "ipc_port": state.ipc_port,
     }
 

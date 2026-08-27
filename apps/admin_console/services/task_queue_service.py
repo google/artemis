@@ -24,27 +24,21 @@ from typing import Any
 import uuid
 
 try:
-    from admin_console.core.config import (
-        PAUSE_FILE,
-        TEST_DATA_DIR,
-        TEST_OUTPUTS_DIR,
-        WORKSPACE_ROOT,
-    )
     from admin_console.core.state import state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.services.media_service import media_service
-    from artemis.runtime import DeviceExecutionLock, process_supervisor
 except ImportError:
-    from apps.admin_console.core.config import (
-        PAUSE_FILE,
-        TEST_DATA_DIR,
-        TEST_OUTPUTS_DIR,
-        WORKSPACE_ROOT,
-    )
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.services.media_service import media_service
-    from artemis.runtime import DeviceExecutionLock, process_supervisor
+
+from artemis.config import (
+    PAUSE_FILE,
+    TEST_DATA_DIR,
+    TEST_OUTPUTS_DIR,
+    WORKSPACE_ROOT,
+)
+from artemis.runtime import DeviceExecutionLock, process_supervisor
 
 
 class TaskQueueService:
@@ -314,6 +308,7 @@ class TaskQueueService:
                 if sess_id:
                     env["ARTEMIS_SESSION_ID"] = str(sess_id)
                 env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
+                env["ARTEMIS_TASK_WORKER"] = "1"
                 queue_ticket = task_item.get("queue_ticket")
                 if queue_ticket:
                     env[DeviceExecutionLock.QUEUE_TICKET_ENV] = str(queue_ticket)
@@ -354,6 +349,16 @@ class TaskQueueService:
                 )
                 state.current_process = proc
                 task_item["pid"] = proc.pid
+                if sess_id:
+                    try:
+                        from mcp_server.utils import trace_store
+
+                        st = trace_store.read_status(str(sess_id))
+                        if st:
+                            st["pid"] = proc.pid
+                            trace_store.write_status(str(sess_id), st)
+                    except Exception:
+                        pass
                 cls._broadcast_startup_progress(
                     sess_id, "process_ready", "Execution process started"
                 )
@@ -398,6 +403,17 @@ class TaskQueueService:
                             f"[QueueWorker] Preserved authoritative session {sess_id} "
                             f"status '{new_status}'"
                         )
+                    try:
+                        from mcp_server.utils import trace_store
+
+                        if trace_store.read_status(str(sess_id)):
+                            canonical_mcp_status = "completed" if new_status in ("completed", "success") else new_status
+                            trace_store.update_trace_status(
+                                str(sess_id),
+                                canonical_mcp_status,
+                            )
+                    except Exception:
+                        pass
                     rec_info = session_repo.get_video_recording_for_session(sess_id)
                     rec_status = (rec_info or {}).get("status")
                     recovered_video_path = None
@@ -428,6 +444,7 @@ class TaskQueueService:
                                 "recording_failed",
                                 {"session_id": sess_id, "error": recording_error},
                             )
+
                     state.active_connections.pop(sess_id, None)
                     cls._broadcast_event(
                         "session_ended",
@@ -439,16 +456,21 @@ class TaskQueueService:
                     )
 
                     conversation_id = task_item.get("conversation_id") if task_item else None
-                    if conversation_id:
+                    if conversation_id or task_item.get("ingress") == "mcp":
                         try:
                             from mcp_server.notifiers import notify
 
                             notify(
-                                conversation_id=conversation_id,
+                                conversation_id=conversation_id or "",
                                 message=f"Artemis autonomous task '{goal}' finished with status '{new_status}'.\nTrace ID: {sess_id}",
                                 title=f"Task {new_status.capitalize()}: {goal[:40]}",
                                 event_type=new_status,
-                                payload={"session_id": sess_id, "status": new_status, "goal": goal},
+                                payload={
+                                    "trace_id": sess_id,
+                                    "session_id": sess_id,
+                                    "status": new_status,
+                                    "goal": goal,
+                                },
                             )
                         except Exception as notif_err:
                             print(f"[QueueWorker] Notification dispatch notice: {notif_err}")
@@ -492,6 +514,56 @@ class TaskQueueService:
 
         enqueued_tasks = []
         now = time.time()
+
+        # 1. Deduplication by session_id: if session_id is already running or queued, do not re-enqueue
+        if session_id and len(goals) == 1:
+            target_sid = str(session_id)
+            if state.active_session_id and str(state.active_session_id) == target_sid:
+                return {
+                    "status": "started",
+                    "tasks": [{"session_id": target_sid, "status": "running"}],
+                    "enqueued_count": 0,
+                    "total_queued": len(state.queue_tasks),
+                }
+            existing_item = next(
+                (
+                    item
+                    for item in state.queue_items
+                    if isinstance(item, dict) and str(item.get("session_id")) == target_sid
+                ),
+                None,
+            )
+            if existing_item:
+                return {
+                    "status": existing_item.get("status", "queued"),
+                    "tasks": [existing_item],
+                    "enqueued_count": 0,
+                    "total_queued": len(state.queue_tasks),
+                }
+
+        # 2. Debounce duplicate rapid submissions (e.g. UI double-click or network retry within 1s)
+        if len(goals) == 1:
+            first_goal = goals[0]
+            recent_duplicate = next(
+                (
+                    item
+                    for item in reversed(state.queue_items)
+                    if isinstance(item, dict)
+                    and item.get("status") == "pending"
+                    and item.get("goal") == first_goal
+                    and (not device_serial or item.get("device_serial") == device_serial)
+                    and (now - float(item.get("created_at", 0))) < 1.0
+                ),
+                None,
+            )
+            if recent_duplicate:
+                return {
+                    "status": "queued",
+                    "tasks": [recent_duplicate],
+                    "enqueued_count": 0,
+                    "total_queued": len(state.queue_tasks),
+                }
+
         for i, goal in enumerate(goals):
             sess_id = (session_id if (session_id and len(goals) == 1) else str(uuid.uuid4()))
             assigned_serial = device_serial
@@ -597,17 +669,18 @@ class TaskQueueService:
                     sid = dev_owner.session_id
                     if sid:
                         session_repo.update_session_status(str(sid), "cancelled", time.time())
-                        if dev_owner.ingress == "mcp":
-                            try:
-                                from mcp_server.utils import trace_store
+                        try:
+                            from mcp_server.utils import trace_store
 
+                            is_mcp = bool(dev_owner and dev_owner.ingress == "mcp")
+                            if is_mcp or trace_store.read_status(str(sid)):
                                 trace_store.update_trace_status(
                                     str(sid),
                                     "cancelled",
                                     error="Task stopped from the Artemis frontend.",
                                 )
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
                         cls._broadcast_event(
                             "session_ended",
                             {
@@ -791,17 +864,18 @@ class TaskQueueService:
             session_repo.update_session_status(
                 str(stopped_session_id), "cancelled", time.time()
             )
-            if owner and owner.ingress == "mcp":
-                try:
-                    from mcp_server.utils import trace_store
+            try:
+                from mcp_server.utils import trace_store
 
+                is_mcp = bool(owner and owner.ingress == "mcp")
+                if is_mcp or trace_store.read_status(str(stopped_session_id)):
                     trace_store.update_trace_status(
                         str(stopped_session_id),
                         "cancelled",
                         error="Task stopped from the Artemis frontend.",
                     )
-                except Exception as exc:
-                    print(f"Failed to update MCP cancellation status: {exc}")
+            except Exception as exc:
+                print(f"Failed to update MCP cancellation status: {exc}")
             cls._broadcast_event(
                 "session_ended",
                 {

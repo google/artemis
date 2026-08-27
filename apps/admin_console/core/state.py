@@ -16,10 +16,7 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-try:
-    from admin_console.core.config import PAUSE_FILE
-except ImportError:
-    from apps.admin_console.core.config import PAUSE_FILE
+from artemis.config import PAUSE_FILE
 
 
 class ServerState:

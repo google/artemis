@@ -24,9 +24,14 @@ from artemis.config.constants import (
     ENV_ARTEMIS_APP_DIR,
     ENV_ARTEMIS_TRACES_DIR,
     ENV_ARTEMIS_USE_USER_DIR,
+    IMAGES_DIRNAME,
     IPC_PORT_FILENAME,
     LS_ADDRESS_FILENAME,
+    PAUSE_FILENAME,
+    REPLAY_DIRNAME,
     SERVER_INFO_FILENAME,
+    TEST_DATA_DIRNAME,
+    TEST_OUTPUTS_DIRNAME,
 )
 from artemis.platform import platform
 
@@ -168,3 +173,47 @@ def get_config_path(filename: str, default_bundled_path: Path | None = None) -> 
 
 GLOBAL_APP_DIR = get_app_dir()
 GLOBAL_JETSKI_DIR = GLOBAL_APP_DIR  # Backward-compatibility alias
+
+
+def get_pause_file() -> Path:
+    """Returns the central pause signal file path."""
+    return ROOT_DIR / PAUSE_FILENAME
+
+
+def get_replay_dir() -> Path:
+    """Returns the central step replay directory."""
+    replay_dir = get_default_traces_path() / REPLAY_DIRNAME
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    return replay_dir
+
+
+def get_test_data_dir() -> Path:
+    """Returns the test replay data directory."""
+    d = get_replay_dir() / TEST_DATA_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_test_outputs_dir() -> Path:
+    """Returns the test replay outputs directory."""
+    d = get_replay_dir() / TEST_OUTPUTS_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_images_dir() -> Path:
+    """Returns the traces images directory."""
+    d = get_default_traces_path() / IMAGES_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# Module-level convenience constants & backward-compatible aliases
+WORKSPACE_ROOT = ROOT_DIR
+TRACES_PATH = get_default_traces_path()
+DB_PATH = get_data_engine_db_path()
+PAUSE_FILE = get_pause_file()
+REPLAY_BASE_DIR = get_replay_dir()
+TEST_DATA_DIR = get_test_data_dir()
+TEST_OUTPUTS_DIR = get_test_outputs_dir()
+IMAGES_DIR = get_images_dir()

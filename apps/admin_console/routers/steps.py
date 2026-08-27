@@ -17,13 +17,13 @@ import traceback
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 
+from artemis.config import TEST_OUTPUTS_DIR
+
 try:
-    from admin_console.core.config import TEST_OUTPUTS_DIR
     from admin_console.database.repositories.step_repository import step_repo
     from admin_console.database.repositories.trace_repository import trace_repo
     from admin_console.services.media_service import media_service
 except ImportError:
-    from apps.admin_console.core.config import TEST_OUTPUTS_DIR
     from apps.admin_console.database.repositories.step_repository import step_repo
     from apps.admin_console.database.repositories.trace_repository import trace_repo
     from apps.admin_console.services.media_service import media_service

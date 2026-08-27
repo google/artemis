@@ -38,6 +38,7 @@ from mcp_server.utils import trace_store
 def temp_trace_env(monkeypatch):
     temp_dir = tempfile.mkdtemp()
     monkeypatch.setattr(trace_store, "TRACES_DIR", temp_dir)
+    monkeypatch.setenv("ARTEMIS_STANDALONE", "1")
     yield temp_dir
     shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -149,6 +150,33 @@ def test_mobile_run_task_with_device_serial(temp_trace_env):
 
     status = trace_store.read_status(result["trace_id"])
     assert status["device_serial"] == "pixel-11-pro-001"
+
+
+def test_mobile_run_task_dispatched_to_daemon(temp_trace_env, monkeypatch):
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    with (
+        patch(
+            "artemis.runtime.ensure_daemon_running",
+            return_value=(True, "http://127.0.0.1:8000"),
+        ),
+        patch(
+            "artemis.runtime.submit_task_to_daemon",
+            return_value={"status": "started", "tasks": [{"session_id": "daemon-sid-1"}]},
+        ),
+        patch("mcp_server.tools.task_runner.subprocess.Popen") as popen,
+    ):
+        result = mobile_run_task(
+            task_desc="Open Settings via Daemon",
+            conversation_id="conv-daemon",
+            model="Flash",
+        )
+
+    popen.assert_not_called()
+    assert result["trace_id"] == "daemon-sid-1"
+    assert result["status"] == "running"
+    assert "enqueued via unified Artemis Daemon" in result["message"]
+    assert "stdout_log" in result
+    assert "stderr_log" in result
 
 
 def test_mobile_manage_task_unknown_trace(temp_trace_env):
@@ -325,3 +353,52 @@ async def test_mcp_server_auto_registers_tools():
         "mobile_get_device_state",
         "mobile_inspect_trace",
     }.issubset(tool_names)
+
+
+def test_mobile_manage_task_syncs_terminal_status_from_db(temp_trace_env):
+    import sqlite3
+    trace_id = str(uuid.uuid4())
+    trace_store.init_trace(trace_id, "Running task to sync", "Flash", "conv-sync")
+
+    db_path = os.path.join(temp_trace_env, "data_engine.db")
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            status TEXT,
+            pid INTEGER,
+            start_time REAL,
+            end_time REAL,
+            device_info TEXT
+        )"""
+    )
+    cur.execute(
+        "INSERT INTO sessions (session_id, status, pid, start_time) VALUES (?, ?, ?, ?)",
+        (trace_id, "completed", 54321, 1000.0),
+    )
+    conn.commit()
+    conn.close()
+
+    res = mobile_manage_task(action="status", trace_id=trace_id)
+    assert res["status"] == "completed"
+    # Ensure status.json was persisted
+    saved_st = trace_store.read_status(trace_id)
+    assert saved_st["status"] == "completed"
+    assert saved_st["pid"] == 54321
+
+
+def test_mobile_manage_task_stop_via_daemon(temp_trace_env, monkeypatch):
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    trace_id = str(uuid.uuid4())
+    trace_store.init_trace(trace_id, "Daemon task to stop", "Flash", "conv-stop")
+
+    with (
+        patch("artemis.runtime.is_daemon_running", return_value=True),
+        patch("artemis.runtime.stop_task_on_daemon", return_value=True) as mock_stop,
+    ):
+        res = mobile_manage_task(action="stop", trace_id=trace_id)
+        mock_stop.assert_called_once_with(trace_id)
+        assert res["status"] == "cancelled"
+        assert trace_store.read_status(trace_id)["status"] == "cancelled"
+

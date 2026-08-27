@@ -94,6 +94,38 @@ def mobile_manage_task(
     pid = status_data.get("pid")
     is_alive = False
 
+    project_root = env_utils.get_project_root()
+    db_path = os.path.join(trace_store.TRACES_DIR, "data_engine.db")
+    if not os.path.exists(db_path):
+        db_path = os.path.join(project_root, "traces", "data_engine.db")
+
+    # If status is still running or pending, sync from database if available
+    if current_status in ("running", "pending") and os.path.exists(db_path):
+        try:
+            conn_st = sqlite3.connect(db_path)
+            conn_st.row_factory = sqlite3.Row
+            cur_st = conn_st.cursor()
+            cur_st.execute(
+                "SELECT status, pid FROM sessions WHERE session_id = ? ORDER BY start_time DESC LIMIT 1",
+                (trace_id,),
+            )
+            row_st = cur_st.fetchone()
+            if row_st:
+                db_status = row_st["status"]
+                db_pid = row_st["pid"]
+                if db_pid and not pid:
+                    pid = db_pid
+                    status_data["pid"] = pid
+                    trace_store.write_status(trace_id, status_data)
+                if db_status in ("completed", "success", "failed", "cancelled"):
+                    canonical_status = "completed" if db_status in ("completed", "success") else db_status
+                    current_status = canonical_status
+                    status_data["status"] = canonical_status
+                    trace_store.write_status(trace_id, status_data)
+            conn_st.close()
+        except Exception:
+            pass
+
     if pid and current_status in ("running", "pending"):
         try:
             os.kill(pid, 0)
@@ -300,50 +332,78 @@ def mobile_manage_task(
                 "message": f"Cannot stop task because it is already in a terminal state: {current_status}",
             }
 
+        # 1. First attempt graceful cancellation via unified Daemon if available
+        stopped_via_daemon = False
+        if os.environ.get("ARTEMIS_STANDALONE") != "1":
+            try:
+                from artemis.runtime import is_daemon_running, stop_task_on_daemon
+
+                if is_daemon_running():
+                    stopped_via_daemon = stop_task_on_daemon(trace_id)
+            except Exception:
+                pass
+
+        # 2. Cancel queue reservation if present
+        queue_ticket = status_data.get("queue_ticket")
+        if queue_ticket:
+            try:
+                DeviceExecutionLock.cancel_reservation(queue_ticket)
+            except Exception:
+                pass
+
+        # 3. If process PID is missing, try to resolve from active device owners
         if not pid:
+            try:
+                active_owners = DeviceExecutionLock.get_active_owners()
+                for dev_owner in active_owners.values():
+                    if dev_owner.session_id and str(dev_owner.session_id) == trace_id:
+                        pid = dev_owner.pid
+                        status_data["pid"] = pid
+                        trace_store.write_status(trace_id, status_data)
+                        break
+            except Exception:
+                pass
+
+        # 4. If process PID could not be determined and not stopped via daemon or queue
+        if not pid and not stopped_via_daemon and not queue_ticket:
             return {
                 "trace_id": trace_id,
                 "status": current_status,
                 "message": "Process ID (PID) is missing from the task status. Cannot stop task.",
             }
 
-        try:
-            DeviceExecutionLock.cancel_reservation(status_data.get("queue_ticket"))
-            if sys.platform == "win32":
-                if not process_supervisor.terminate_tree(pid):
-                    import psutil
+        # 5. If process PID is available, terminate the process tree
+        if pid:
+            try:
+                if sys.platform == "win32":
+                    if not process_supervisor.terminate_tree(pid):
+                        import psutil
 
-                    if psutil.pid_exists(pid):
-                        raise RuntimeError(
-                            f"Failed to terminate Windows process tree rooted at {pid}"
-                        )
-                DeviceExecutionLock.cleanup_stale_locks()
-            else:
-                # Preserve the existing POSIX signal behavior.
-                os.kill(pid, signal.SIGTERM)
-            trace_store.update_trace_status(
-                trace_id, "cancelled", error="Task aborted by user request."
-            )
-            return {
-                "trace_id": trace_id,
-                "status": "cancelled",
-                "message": f"Successfully sent termination signal to background process {pid}.",
-            }
-        except ProcessLookupError:
-            trace_store.update_trace_status(
-                trace_id, "cancelled", error="Task aborted (process was already stopped)."
-            )
-            return {
-                "trace_id": trace_id,
-                "status": "cancelled",
-                "message": f"Process {pid} was not found; it may have already exited. Status marked as cancelled.",
-            }
-        except Exception as e:
-            return {
-                "trace_id": trace_id,
-                "status": current_status,
-                "message": f"Failed to terminate process {pid}: {e}",
-            }
+                        if psutil.pid_exists(pid):
+                            raise RuntimeError(
+                                f"Failed to terminate Windows process tree rooted at {pid}"
+                            )
+                    DeviceExecutionLock.cleanup_stale_locks()
+                else:
+                    os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                if not stopped_via_daemon:
+                    return {
+                        "trace_id": trace_id,
+                        "status": current_status,
+                        "message": f"Failed to terminate process {pid}: {e}",
+                    }
+
+        trace_store.update_trace_status(
+            trace_id, "cancelled", error="Task aborted by user request."
+        )
+        return {
+            "trace_id": trace_id,
+            "status": "cancelled",
+            "message": f"Successfully stopped background task '{trace_id}'.",
+        }
 
     elif action == "inject_instruction":
         if not instruction:

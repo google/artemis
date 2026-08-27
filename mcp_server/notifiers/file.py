@@ -44,7 +44,7 @@ class FileNotifier(BaseNotifier):
         event_type: str = "completed",
         payload: dict[str, Any] | None = None,
     ) -> bool:
-        trace_id = (payload or {}).get("trace_id")
+        trace_id = (payload or {}).get("trace_id") or (payload or {}).get("session_id")
         if not trace_id:
             return False
 

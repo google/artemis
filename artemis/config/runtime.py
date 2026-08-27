@@ -181,3 +181,16 @@ def cleanup_temp_dir(subfolder: str | None = None, max_age_seconds: float | None
                 logger.warning(f"Could not delete temporary file {file_path}: {e}")
 
     return deleted_count
+
+
+def init_ls_address() -> None:
+    """Automatically write ANTIGRAVITY_LS_ADDRESS to shared synchronization file on startup.
+
+    Allows decoupled background processes to communicate with Jetski.
+    """
+    ls_addr = os.environ.get(ENV_ANTIGRAVITY_LS_ADDRESS)
+    if ls_addr:
+        try:
+            write_ls_address(ls_addr)
+        except Exception as e:
+            logger.debug(f"Failed to write LS address on startup: {e}")

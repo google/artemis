@@ -17,15 +17,15 @@ import time
 from uuid import UUID
 from fastapi import APIRouter, HTTPException
 
+from artemis.config import DB_PATH, TRACES_PATH
+
 try:
-    from admin_console.core.config import DB_PATH, TRACES_PATH
     from admin_console.core.state import state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.database.repositories.trace_repository import trace_repo
     from admin_console.services.media_service import media_service
     from admin_console.services.model_service import model_service
 except ImportError:
-    from apps.admin_console.core.config import DB_PATH, TRACES_PATH
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.database.repositories.trace_repository import trace_repo
@@ -137,12 +137,33 @@ async def list_sessions():
             try:
                 harvested = session_repo.harvest_orphaned_sessions(orphaned_ids)
                 print(f"[list_sessions] Auto-harvested {harvested} orphaned running session(s).")
+                try:
+                    from mcp_server.utils import trace_store
+
+                    for o_id in orphaned_ids:
+                        if trace_store.read_status(str(o_id)):
+                            trace_store.update_trace_status(
+                                str(o_id),
+                                "failed",
+                                error="Process terminated unexpectedly (auto-harvested).",
+                            )
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[list_sessions] Failed to update orphaned sessions: {e}")
 
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/sessions/{session_id}")
+async def get_session_details(session_id: str):
+    """Retrieve details for a single automation session."""
+    row = session_repo.get_session_by_id(session_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    return dict(row)
 
 
 @router.get("/api/sessions/{session_id}/tree")

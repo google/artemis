@@ -37,6 +37,8 @@ async def run_batch_tasks(
     delay_seconds: float = 5.0,
 ) -> None:
     """Executes a list of automation tasks sequentially."""
+    if not os.environ.get("ARTEMIS_TASK_INGRESS"):
+        os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
     llm_config = initialize_llm_config()
     profile = AgentProfile(name="default", llm_config=llm_config)
     config = Builders.AgentConfig.with_default_profile(profile).build()
@@ -116,6 +118,13 @@ def batch_command(
             help="Delay in seconds between successive tasks.",
         ),
     ] = 5.0,
+    standalone: Annotated[
+        bool,
+        typer.Option(
+            "--standalone",
+            help="Run in standalone embedded mode without routing through Artemis Daemon.",
+        ),
+    ] = False,
 ) -> None:
     """Execute multiple automation tasks in sequence."""
     task_list: list[str] = []
@@ -156,5 +165,55 @@ def batch_command(
             "Error: No tasks provided. Use --file or pass goals as arguments.", fg=typer.colors.RED
         )
         raise typer.Exit(1)
+
+    is_standalone = standalone or os.environ.get("ARTEMIS_STANDALONE") == "1"
+    if not is_standalone:
+        try:
+            from artemis.runtime import (
+                ensure_daemon_running,
+                submit_batch_to_daemon,
+                wait_for_daemon_task,
+            )
+
+            console = Console()
+            console.print("[dim]Connecting to Artemis Daemon scheduler...[/dim]")
+            is_running, base_url = ensure_daemon_running(timeout=8.0, wait_ready=True)
+            if is_running and base_url:
+                console.print(f"[bold green]✓[/bold green] Artemis Daemon active at [cyan]{base_url}[/cyan]")
+                resp = submit_batch_to_daemon(task_list, profile=profile, base_url=base_url)
+                if resp and resp.get("tasks"):
+                    console.print(f"[bold green]✓[/bold green] Enqueued {len(task_list)} batch tasks in Daemon scheduler.\n")
+                    results = []
+                    for idx, t_item in enumerate(resp["tasks"], 1):
+                        sid = t_item.get("session_id")
+                        goal = t_item.get("goal")
+                        console.print(f"[cyan]Waiting for Task {idx}/{len(task_list)}: '{goal}' (Session: {sid})...[/cyan]")
+                        final_sess = wait_for_daemon_task(sid, base_url=base_url, timeout=1800.0)
+                        st = final_sess.get("status")
+                        err = final_sess.get("error") or ""
+                        results.append({
+                            "task": goal,
+                            "status": "SUCCESS" if st in ("completed", "success") else "FAILED",
+                            "error": err,
+                        })
+
+                    table = Table(title="Batch Execution Summary")
+                    table.add_column("#", justify="right", style="cyan")
+                    table.add_column("Task Goal", style="white")
+                    table.add_column("Status", justify="center")
+                    table.add_column("Notes", style="red")
+
+                    for i, res in enumerate(results, 1):
+                        status_styled = (
+                            "[bold green]PASS[/bold green]"
+                            if res["status"] == "SUCCESS"
+                            else "[bold red]FAIL[/bold red]"
+                        )
+                        table.add_row(str(i), res["task"], status_styled, res["error"])
+
+                    console.print(table)
+                    return
+        except Exception as exc:
+            logger.debug(f"Batch daemon routing notice: {exc}")
 
     asyncio.run(run_batch_tasks(task_list, profile_name=profile, delay_seconds=delay))

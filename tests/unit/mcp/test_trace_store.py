@@ -75,3 +75,11 @@ def test_update_trace_status(temp_trace_env):
 def test_read_nonexistent_status(temp_trace_env):
     non_existent = str(uuid.uuid4())
     assert trace_store.read_status(non_existent) is None
+
+
+def test_trace_paths(temp_trace_env):
+    trace_id = "test-paths-id"
+    trace_dir = trace_store.get_trace_dir(trace_id)
+    assert trace_store.get_trace_notes_dir(trace_id) == f"{trace_dir}/notes"
+    assert trace_store.get_trace_stdout_log_path(trace_id) == f"{trace_dir}/stdout.log"
+    assert trace_store.get_trace_stderr_log_path(trace_id) == f"{trace_dir}/stderr.log"

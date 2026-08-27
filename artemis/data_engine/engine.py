@@ -24,7 +24,7 @@ import time
 from typing import Any
 from uuid import UUID, uuid4
 
-from artemis.config import get_ipc_port_file, read_ipc_port, settings
+from artemis.config import PAUSE_FILE, get_ipc_port_file, read_ipc_port, settings
 from artemis.context import ArtemisContext
 from artemis.data_engine.models import (
     BackgroundTaskRecord,
@@ -251,7 +251,7 @@ class DataEngine:
         self.session_start_time = time.time()
 
         # Clear old pause file if it exists
-        pause_file = self.global_base_dir.parent / ".artemis_paused"
+        pause_file = PAUSE_FILE
         if pause_file.exists():
             try:
                 pause_file.unlink()
@@ -276,8 +276,18 @@ class DataEngine:
             )
         except Exception as exc:
             logger.debug(f"Could not annotate active device owner: {exc}")
-        self.current_step_number = 0
-        logger.info(f"Session started: {session_id}")
+        # Initialize step counter from existing steps if resuming an existing session
+        existing_steps = []
+        if self.storage and hasattr(self.storage, "get_steps"):
+            try:
+                existing_steps = self.storage.get_steps(session_id) or []
+            except Exception:
+                existing_steps = []
+        if existing_steps:
+            self.current_step_number = max([s.step_number for s in existing_steps], default=0)
+        else:
+            self.current_step_number = 0
+        logger.info(f"Session started: {session_id} (current step counter: {self.current_step_number})")
         self._publish("session_started", session.model_dump())
         return session_id
 
@@ -287,14 +297,13 @@ class DataEngine:
             return
 
         # Clear pause file if it exists
-        if hasattr(self, "global_base_dir") and self.global_base_dir:
-            pause_file = self.global_base_dir.parent / ".artemis_paused"
-            if pause_file.exists():
-                try:
-                    pause_file.unlink()
-                    logger.info("Removed pause file on session end.")
-                except Exception as e:
-                    logger.error(f"Failed to delete pause file on session end: {e}")
+        pause_file = PAUSE_FILE
+        if pause_file.exists():
+            try:
+                pause_file.unlink()
+                logger.info("Removed pause file on session end.")
+            except Exception as e:
+                logger.error(f"Failed to delete pause file on session end: {e}")
 
         session_id = self.current_session_id
         end_time = time.time()
@@ -484,7 +493,14 @@ class DataEngine:
             raise ValueError("No active session. Call start_session first.")
 
         with self.lock:
-            self.current_step_number += 1
+            existing_steps = []
+            if self.storage and hasattr(self.storage, "get_steps") and self.current_session_id:
+                try:
+                    existing_steps = self.storage.get_steps(self.current_session_id) or []
+                except Exception:
+                    existing_steps = []
+            max_existing = max([s.step_number for s in existing_steps], default=0) if existing_steps else 0
+            self.current_step_number = max(self.current_step_number, max_existing) + 1
             step_number = self.current_step_number
 
             step_id = self.current_step_id or uuid4()

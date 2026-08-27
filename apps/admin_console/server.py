@@ -55,17 +55,18 @@ from artemis.runtime import (
     write_server_info,
 )
 
+from artemis.config import (
+    DB_PATH,
+    IMAGES_DIR,
+    REPLAY_BASE_DIR,
+    TEST_DATA_DIR,
+    TEST_OUTPUTS_DIR,
+    TRACES_PATH,
+    WORKSPACE_ROOT,
+    init_ls_address,
+)
+
 try:
-    from admin_console.core.config import (
-        DB_PATH,
-        IMAGES_DIR,
-        REPLAY_BASE_DIR,
-        TEST_DATA_DIR,
-        TEST_OUTPUTS_DIR,
-        TRACES_PATH,
-        WORKSPACE_ROOT,
-        init_ls_address,
-    )
     from admin_console.core.state import ServerState, state
     from admin_console.database.connection import db_session, get_db
     from admin_console.database.repositories.session_repository import session_repo
@@ -78,9 +79,6 @@ try:
     from admin_console.services.model_service import model_service
     from admin_console.services.task_queue_service import task_queue_service
 except ImportError:
-    from apps.admin_console.core.config import (
-        init_ls_address,
-    )
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.routers import media, replay, sessions, steps, stream, system, tasks

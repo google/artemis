@@ -697,6 +697,8 @@ class StorageManager:
                 )
         return steps
 
+    get_session_steps = get_steps
+
     def get_traces_for_step(self, step_id: UUID | str) -> list[TraceRecord]:
         """Retrieve all traces for a step."""
         traces = []

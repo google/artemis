@@ -162,7 +162,7 @@ def submit_task_to_daemon(
     ingress: str = "client",
     conversation_id: str | None = None,
     base_url: str | None = None,
-    timeout: float = 5.0,
+    timeout: float = 15.0,
 ) -> dict[str, Any] | None:
     """Submit a task to the running Daemon via REST API.
 
@@ -197,3 +197,153 @@ def submit_task_to_daemon(
         logger.debug(f"Failed to submit task to Daemon at {url}: {exc}")
         return None
     return None
+
+
+def stop_task_on_daemon(
+    session_id: str,
+    *,
+    base_url: str | None = None,
+    timeout: float = 5.0,
+) -> bool:
+    """Request the running Artemis Daemon to stop a task by session ID."""
+    url = f"{base_url or f'http://{DEFAULT_DAEMON_HOST}:{DEFAULT_DAEMON_PORT}'}/api/stop"
+    payload = {"session_id": session_id}
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json", "User-Agent": "Artemis-Client"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                return resp_data.get("status") == "stopped"
+    except Exception as exc:
+        logger.debug(f"Failed to request stop from Daemon at {url}: {exc}")
+        return False
+    return False
+
+
+def get_daemon_session(
+    session_id: str,
+    *,
+    base_url: str | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any] | None:
+    """Fetch details of a single session from the Artemis Daemon."""
+    url = f"{base_url or f'http://{DEFAULT_DAEMON_HOST}:{DEFAULT_DAEMON_PORT}'}/api/sessions/{session_id}"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Artemis-Client"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        logger.debug(f"Failed to get session {session_id} from Daemon at {url}: {exc}")
+        return None
+    return None
+
+
+def get_daemon_status(
+    *,
+    base_url: str | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any] | None:
+    """Fetch global scheduler and device status from the Artemis Daemon."""
+    url = f"{base_url or f'http://{DEFAULT_DAEMON_HOST}:{DEFAULT_DAEMON_PORT}'}/api/status"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Artemis-Client"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        logger.debug(f"Failed to get status from Daemon at {url}: {exc}")
+        return None
+    return None
+
+
+def submit_batch_to_daemon(
+    goals: list[str],
+    *,
+    profile: str = "flash",
+    device_serial: str | None = None,
+    ingress: str = "cli",
+    base_url: str | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any] | None:
+    """Submit a batch of goals to the running Daemon."""
+    url = f"{base_url or f'http://{DEFAULT_DAEMON_HOST}:{DEFAULT_DAEMON_PORT}'}/api/run"
+    payload = {
+        "goals": goals,
+        "profile": profile,
+        "device_serial": device_serial,
+        "ingress": ingress,
+    }
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json", "User-Agent": "Artemis-Client"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status in (200, 201):
+                return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        logger.debug(f"Failed to submit batch to Daemon at {url}: {exc}")
+        return None
+    return None
+
+
+def wait_for_daemon_task(
+    session_id: str,
+    *,
+    base_url: str | None = None,
+    timeout: float = 600.0,
+    poll_interval: float = 1.0,
+    on_status_update: Any = None,
+) -> dict[str, Any]:
+    """Poll the Daemon until the task reaches a terminal status (completed, failed, cancelled)."""
+    started = time.monotonic()
+    last_status = None
+
+    while time.monotonic() - started < timeout:
+        sess = get_daemon_session(session_id, base_url=base_url)
+        if sess:
+            status = sess.get("status")
+            if status != last_status:
+                last_status = status
+                if callable(on_status_update):
+                    on_status_update(sess)
+
+            if status in ("completed", "success", "failed", "cancelled"):
+                return sess
+        else:
+            # Check if task is queued in daemon status
+            st = get_daemon_status(base_url=base_url)
+            if st:
+                queue = st.get("queue") or []
+                is_queued = any(
+                    isinstance(item, dict) and str(item.get("session_id")) == str(session_id)
+                    for item in queue
+                )
+                current_st = "queued" if is_queued else "launching"
+                if current_st != last_status:
+                    last_status = current_st
+                    if callable(on_status_update):
+                        on_status_update({"status": current_st, "session_id": session_id})
+
+        time.sleep(poll_interval)
+
+    return {"session_id": session_id, "status": "timeout", "error": f"Timed out after {timeout}s"}
+

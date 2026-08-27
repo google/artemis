@@ -116,3 +116,22 @@ def test_submit_task_to_daemon():
         assert data["ingress"] == "mcp"
         assert data["conversation_id"] == "conv-123"
 
+
+def test_stop_task_on_daemon():
+    from artemis.runtime.daemon_client import stop_task_on_daemon
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = b'{"status": "stopped", "session_id": "test-sess-stop"}'
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        assert stop_task_on_daemon("test-sess-stop") is True
+        req = mock_urlopen.call_args[0][0]
+        data = json.loads(req.data.decode("utf-8"))
+        assert data["session_id"] == "test-sess-stop"
+
+    mock_resp.read.return_value = b'{"status": "no_running_task"}'
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        assert stop_task_on_daemon("non-existent-sess") is False
+

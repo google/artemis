@@ -211,4 +211,67 @@ describe('extractStepReplayFrames', () => {
     expect(frames[0].imageUrl).toBe('/images/img_start');
     expect(frames[0].stepNumber).toBe(1);
   });
+
+  it('should deduplicate steps with identical step_number and prefer real physical actions', () => {
+    const logs = [
+      {
+        step_id: 'step-click',
+        step_number: 1,
+        pre_image_name: 'img_screen_1',
+        post_image_name: 'img_screen_2',
+        action_taken: { action: 'click', coordinates: [106, 101] },
+        summary: 'In Step 1, I tapped the back arrow',
+        timestamp: 100
+      },
+      {
+        step_id: 'step-failed-report',
+        step_number: 1,
+        pre_image_name: 'img_screen_2',
+        post_image_name: null,
+        action_taken: { action: 'report_task_status', args: { status: 'failed' } },
+        timestamp: 200
+      },
+      {
+        step_id: 'step-completed-report',
+        step_number: 2,
+        pre_image_name: 'img_screen_2',
+        post_image_name: null,
+        action_taken: { action: 'report_task_status', args: { status: 'completed' } },
+        timestamp: 150
+      }
+    ];
+
+    const frames = extractStepReplayFrames(logs);
+    // Duplicate step_number: 1 merges into Step 1, while Step 2 report is faithfully displayed
+    expect(frames.length).toBe(2);
+    expect(frames[0].stepNumber).toBe(1);
+    expect(frames[0].action?.action).toBe('click');
+    expect(frames[0].actionText).toContain('Tapping Element');
+    expect(frames[1].stepNumber).toBe(2);
+    expect(frames[1].title).toContain('Report Task Status');
+  });
+
+  it('should enforce strictly sequential stepNumber without duplicates', () => {
+    const logs = [
+      {
+        step_id: 's-1',
+        step_number: 1,
+        pre_image_name: 'img_1',
+        action_taken: { action: 'click', coordinates: [100, 100] },
+        timestamp: 100
+      },
+      {
+        step_id: 's-2',
+        step_number: 2,
+        pre_image_name: 'img_2',
+        action_taken: { action: 'swipe', direction: 'up' },
+        timestamp: 200
+      }
+    ];
+
+    const frames = extractStepReplayFrames(logs);
+    expect(frames.length).toBe(2);
+    expect(frames[0].stepNumber).toBe(1);
+    expect(frames[1].stepNumber).toBe(2);
+  });
 });

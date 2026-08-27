@@ -52,9 +52,26 @@ def clean_state(tmp_path, monkeypatch):
     state.queue_items.clear()
     state.active_connections.clear()
     state.cancelled_session_ids.clear()
+    state.active_session_id = None
+    state.current_process = None
+    state.current_goal = None
+    state.current_profile = None
+    state.was_stopped_manually = False
+    if hasattr(state, "recent_submissions"):
+        state.recent_submissions.clear()
     if state.worker_task and not state.worker_task.done():
         state.worker_task.cancel()
     state.worker_task = None
+    from artemis.config.paths import get_temp_dir
+    from artemis.runtime.device_lock import DeviceExecutionLock
+    DeviceExecutionLock.cleanup_stale_locks()
+    queue_dir = get_temp_dir("device-locks") / "artemis-global-device.queue"
+    if queue_dir.exists():
+        for p in queue_dir.glob("*.wait"):
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def test_paused_error_reads_persisted_reason(tmp_path):
@@ -612,7 +629,10 @@ def test_darwin_terminate_process_tree_preserves_direct_child_for_asyncio():
 @pytest.mark.asyncio
 async def test_enqueue_tasks_unified_ingress():
     """Verify enqueue_tasks correctly propagates ingress, custom session_id, and conversation_id."""
-    with patch.object(TaskQueueService, "ensure_worker_running"):
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve", return_value="mock-ticket-unified"),
+    ):
         res = await task_queue_service.enqueue_tasks(
             ["Test unified goal"],
             profile="flash",
@@ -799,6 +819,46 @@ def test_stop_tasks_queued_item_by_session_id():
         update_status.assert_called_once()
         assert update_status.call_args[0][0] == "queue-1"
         assert update_status.call_args[0][1] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_enqueue_tasks_deduplicates_by_session_id():
+    state.queue_items = []
+    state.active_session_id = None
+
+    with (
+        patch("apps.admin_console.services.task_queue_service.session_repo"),
+        patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve", return_value="ticket-123"),
+    ):
+        res1 = await task_queue_service.enqueue_tasks(["Task goal"], session_id="sid-dedup-1")
+        assert len(state.queue_items) == 1
+        assert res1["enqueued_count"] == 1
+
+        # Second submission with same session_id must not enqueue a duplicate
+        res2 = await task_queue_service.enqueue_tasks(["Task goal again"], session_id="sid-dedup-1")
+        assert len(state.queue_items) == 1
+        assert res2["enqueued_count"] == 0
+        assert res2["tasks"][0]["session_id"] == "sid-dedup-1"
+
+
+@pytest.mark.asyncio
+async def test_enqueue_tasks_debounces_rapid_identical_submissions():
+    state.queue_items = []
+    state.active_session_id = None
+
+    with (
+        patch("apps.admin_console.services.task_queue_service.session_repo"),
+        patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve", return_value="ticket-456"),
+    ):
+        res1 = await task_queue_service.enqueue_tasks(["Rapid duplicate goal"], device_serial="dev-1")
+        assert len(state.queue_items) == 1
+        assert res1["enqueued_count"] == 1
+
+        # Immediate second submission (within 1s) must debounce
+        res2 = await task_queue_service.enqueue_tasks(["Rapid duplicate goal"], device_serial="dev-1")
+        assert len(state.queue_items) == 1
+        assert res2["enqueued_count"] == 0
+
 
 
 

@@ -38,6 +38,21 @@ def get_status_path(trace_id: str) -> str:
     return os.path.join(get_trace_dir(trace_id), "status.json")
 
 
+def get_trace_notes_dir(trace_id: str) -> str:
+    """Returns the absolute path to the notes directory for a given trace_id."""
+    return os.path.join(get_trace_dir(trace_id), "notes")
+
+
+def get_trace_stdout_log_path(trace_id: str) -> str:
+    """Returns the absolute path to the stdout.log file for a given trace_id."""
+    return os.path.join(get_trace_dir(trace_id), "stdout.log")
+
+
+def get_trace_stderr_log_path(trace_id: str) -> str:
+    """Returns the absolute path to the stderr.log file for a given trace_id."""
+    return os.path.join(get_trace_dir(trace_id), "stderr.log")
+
+
 def init_trace(
     trace_id: str,
     task_desc: str,

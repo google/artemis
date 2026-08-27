@@ -270,6 +270,8 @@ def test_update_step_execution_result_suppresses_identical_post_screenshot(tmp_p
         pre_screenshot_bytes=image_bytes,
         summary="Initial step",
     )
+    for t in list(engine._pending_threads):
+        t.join()
 
     step_record = engine.storage.get_steps(engine.current_session_id)[0]
     assert step_record.post_image_name is None
@@ -293,3 +295,34 @@ def test_update_step_execution_result_suppresses_identical_post_screenshot(tmp_p
 
     updated_step_distinct = engine.storage.get_steps(engine.current_session_id)[0]
     assert updated_step_distinct.post_image_name == "distinct_new_hash_789"
+
+
+def test_resumed_session_monotonic_step_numbering(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    # First runner records Step 1 and Step 2
+    engine1 = DataEngine(mock_ctx)
+    sid = engine1.start_session("Monotonic test")
+    engine1.record_step(summary="Step 1 action")
+    engine1.record_step(summary="Step 2 action")
+    for t in list(engine1._pending_threads):
+        t.join()
+
+    # Second runner starts or resumes the same session
+    engine2 = DataEngine(mock_ctx)
+    engine2.start_session("Resumed goal", session_id=sid)
+    assert engine2.current_step_number == 2
+
+    # Recording a new step must be Step 3, strictly monotonic
+    engine2.record_step(summary="Step 3 action")
+    for t in list(engine2._pending_threads):
+        t.join()
+
+    steps = engine2.storage.get_steps(sid)
+    assert len(steps) == 3
+    assert [s.step_number for s in steps] == [1, 2, 3]
+

@@ -22,10 +22,7 @@ from typing import Any
 import urllib.parse
 from fastapi import HTTPException
 
-try:
-    from admin_console.core.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
-except ImportError:
-    from apps.admin_console.core.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
+from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
 
 
 class MediaService:

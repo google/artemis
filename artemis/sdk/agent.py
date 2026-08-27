@@ -551,7 +551,7 @@ class Agent:
                 concurrency_mode=effective_mode,
                 max_concurrency=effective_max,
                 session_id=str(sess_id) if sess_id else None,
-                ingress="agent",
+                ingress=os.getenv("ARTEMIS_TASK_INGRESS") or "agent",
             )
             try:
                 if device_lock is not None and os.environ.get("ARTEMIS_CLOUD_MODE") != "1":

@@ -16,10 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 
-try:
-    from admin_console.core.config import DB_PATH
-except ImportError:
-    from apps.admin_console.core.config import DB_PATH
+from artemis.config import DB_PATH
 
 
 _initialized_dbs = set()
