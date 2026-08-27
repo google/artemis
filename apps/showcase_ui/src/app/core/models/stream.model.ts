@@ -101,6 +101,7 @@ export interface CheckerResult {
 export interface StepReplayFrame {
   index: number;
   stepNumber: number;
+  rawStepNumber?: number;
   stepId?: string;
   title: string;
   imageUrl: string;
@@ -115,5 +116,6 @@ export interface StepReplayFrame {
   isPost?: boolean;
   timestamp?: number;
   phaseId?: string;
+  summary?: string;
 }
 

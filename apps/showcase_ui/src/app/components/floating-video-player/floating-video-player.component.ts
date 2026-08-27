@@ -130,13 +130,20 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
       { allowSignalWrites: true }
     );
 
-    // Reset step playback state when session changes
+    // Reset step playback state only when session actually changes
+    let lastTrackedSessionId: string | null = null;
     effect(
       () => {
-        const _ = this.stepFrames();
-        this.activeStepIndex.set(0);
-        this.viewMode.set('pre');
-        this.pauseStepPlay();
+        const curSessionId = this.agentService.currentSessionId();
+        const total = this.totalStepFrames();
+        if (curSessionId !== lastTrackedSessionId) {
+          lastTrackedSessionId = curSessionId;
+          this.activeStepIndex.set(0);
+          this.viewMode.set('pre');
+          this.pauseStepPlay();
+        } else if (total > 0 && this.activeStepIndex() >= total) {
+          this.activeStepIndex.set(total - 1);
+        }
       },
       { allowSignalWrites: true }
     );
@@ -170,6 +177,12 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
         this.pendingAbsoluteSeek = null;
         this.seek(target, true);
       }
+    });
+
+    effect(() => {
+      const request = this.agentService.stepSeekRequest();
+      if (!request) return;
+      this.seekStepFrame(request.index);
     });
   }
 

@@ -79,6 +79,7 @@ class DataEngine:
         self._accumulated_logs = {}
         self._bg_task_to_trace_id = {}
         self._trace_name_cache = {}
+        self._step_number_cache: dict[str, int] = {}
         # Background tasks are written directly to SQLite storage
 
         self.ipc_socket = None
@@ -284,8 +285,13 @@ class DataEngine:
             except Exception:
                 existing_steps = []
         if existing_steps:
+            self._step_number_cache.clear()
+            for s in existing_steps:
+                if s.step_id and s.step_number is not None:
+                    self._step_number_cache[str(s.step_id)] = s.step_number
             self.current_step_number = max([s.step_number for s in existing_steps], default=0)
         else:
+            self._step_number_cache.clear()
             self.current_step_number = 0
         logger.info(f"Session started: {session_id} (current step counter: {self.current_step_number})")
         self._publish("session_started", session.model_dump())
@@ -505,6 +511,7 @@ class DataEngine:
 
             step_id = self.current_step_id or uuid4()
             self.last_recorded_step_id = step_id
+            self._step_number_cache[str(step_id)] = step_number
             # Reset current_step_id so subsequent steps will allocate a new one
             self.current_step_id = None
 
@@ -890,17 +897,42 @@ class DataEngine:
 
         self._run_in_background(_update_and_write)
 
+        step_num = self.get_step_number(step_id)
         update_payload = {
             "step_id": str(step_id),
             "action_taken": action_taken,
             "generic_tools": self._get_generic_tools_for_sse(step_id),
         }
+        if step_num is not None:
+            update_payload["step_number"] = step_num
+
         tokens = self._get_step_token_usage_for_sse(step_id)
         if tokens:
             update_payload["token_usage"] = tokens
             update_payload["total_tokens"] = tokens["total_tokens"]
 
         self._publish("step_updated", update_payload)
+
+    def get_step_number(self, step_id: UUID | int | str | None) -> int | None:
+        """Resolve the 1-based sequential step number for a step ID."""
+        if step_id is None:
+            return None
+        if isinstance(step_id, int):
+            return step_id
+        sid = str(step_id)
+        cached = self._step_number_cache.get(sid)
+        if cached is not None:
+            return cached
+        if self.storage and hasattr(self.storage, "get_step"):
+            try:
+                target_uuid = UUID(sid) if isinstance(step_id, str) else step_id
+                step_record = self.storage.get_step(target_uuid)
+                if step_record and getattr(step_record, "step_number", None) is not None:
+                    self._step_number_cache[sid] = int(step_record.step_number)
+                    return int(step_record.step_number)
+            except Exception:
+                pass
+        return None
 
     def update_step_summary(self, step_id: UUID | int | str, summary: str):
         """Update the step with a concise summary in background."""
@@ -925,26 +957,28 @@ class DataEngine:
             return
 
         self._run_in_background(self.storage.update_step_summary, target_uuid, summary)
-        self._publish(
-            "step_updated",
-            {
-                "step_id": str(target_uuid),
-                "summary": summary,
-                "generic_tools": self._get_generic_tools_for_sse(target_uuid),
-            },
-        )
+        step_num = self.get_step_number(target_uuid if not isinstance(step_id, int) else step_id)
+        payload = {
+            "step_id": str(target_uuid),
+            "summary": summary,
+            "generic_tools": self._get_generic_tools_for_sse(target_uuid),
+        }
+        if step_num is not None:
+            payload["step_number"] = step_num
+        self._publish("step_updated", payload)
 
     def update_step_thinking(self, step_id: UUID, operator_raw_thinking: str):
         """Update step's thinking in SQLite in background."""
         self._run_in_background(self.storage.update_step_thinking, step_id, operator_raw_thinking)
-        self._publish(
-            "step_updated",
-            {
-                "step_id": str(step_id),
-                "operator_raw_thinking": operator_raw_thinking,
-                "generic_tools": self._get_generic_tools_for_sse(step_id),
-            },
-        )
+        step_num = self.get_step_number(step_id)
+        payload = {
+            "step_id": str(step_id),
+            "operator_raw_thinking": operator_raw_thinking,
+            "generic_tools": self._get_generic_tools_for_sse(step_id),
+        }
+        if step_num is not None:
+            payload["step_number"] = step_num
+        self._publish("step_updated", payload)
 
     def update_step_native_thinking(self, step_id: UUID, operator_native_thinking: str):
         """Update step's native thinking in SQLite in background."""
@@ -953,14 +987,15 @@ class DataEngine:
             step_id,
             operator_native_thinking,
         )
-        self._publish(
-            "step_updated",
-            {
-                "step_id": str(step_id),
-                "operator_native_thinking": operator_native_thinking,
-                "generic_tools": self._get_generic_tools_for_sse(step_id),
-            },
-        )
+        step_num = self.get_step_number(step_id)
+        payload = {
+            "step_id": str(step_id),
+            "operator_native_thinking": operator_native_thinking,
+            "generic_tools": self._get_generic_tools_for_sse(step_id),
+        }
+        if step_num is not None:
+            payload["step_number"] = step_num
+        self._publish("step_updated", payload)
 
     def update_step_execution_result(
         self,
@@ -975,15 +1010,16 @@ class DataEngine:
             last_execution_result,
             post_image_name,
         )
-        self._publish(
-            "step_updated",
-            {
-                "step_id": str(step_id),
-                "last_execution_result": last_execution_result,
-                "post_image_name": post_image_name,
-                "generic_tools": self._get_generic_tools_for_sse(step_id),
-            },
-        )
+        step_num = self.get_step_number(step_id)
+        payload = {
+            "step_id": str(step_id),
+            "last_execution_result": last_execution_result,
+            "post_image_name": post_image_name,
+            "generic_tools": self._get_generic_tools_for_sse(step_id),
+        }
+        if step_num is not None:
+            payload["step_number"] = step_num
+        self._publish("step_updated", payload)
 
     def get_relative_time(self, timestamp: float) -> str:
         """Compute relative time since session start."""

@@ -232,9 +232,11 @@ export class AgentService {
   public recordingPlaybackMessage = signal<string>('');
   public shouldAutoplayVideo = signal<boolean>(false);
   public videoSeekRequest = signal<{ seconds: number; requestId: number } | null>(null);
+  public stepSeekRequest = signal<{ index: number; requestId: number } | null>(null);
   public playerMode = signal<'video' | 'steps'>('video');
   private activeVideoSessionId: string | null = null;
   private videoSeekRequestId = 0;
+  private stepSeekRequestId = 0;
   private videoRequestGeneration = 0;
   private videoRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private videoWaitStartedAt = 0;
@@ -256,6 +258,11 @@ export class AgentService {
 
   public togglePlayerMode(): void {
     this.playerMode.update((mode) => (mode === 'video' ? 'steps' : 'video'));
+  }
+
+  public requestStepSeek(index: number): void {
+    this.stepSeekRequestId++;
+    this.stepSeekRequest.set({ index, requestId: this.stepSeekRequestId });
   }
 
   /**
@@ -1407,7 +1414,8 @@ export class AgentService {
     sessionId?: string,
     videoUrl?: string,
     title?: string,
-    seekSeconds?: number
+    seekSeconds?: number,
+    stepIndex?: number
   ): void {
     const targetSessionId = sessionId || this.currentSessionId();
     const session = this.sessions().find(s => s.session_id === targetSessionId);
@@ -1424,6 +1432,10 @@ export class AgentService {
     this.recordingPlaybackMessage.set('');
     this.activeVideoSegments.set([]);
     if (Number.isFinite(seekSeconds)) this.requestVideoSeek(Number(seekSeconds));
+    if (Number.isFinite(stepIndex)) {
+      this.playerMode?.set('steps');
+      this.requestStepSeek(Number(stepIndex));
+    }
     if (!targetSessionId) {
       this.activeVideoUrl.set(null);
       this.isVideoLoading.set(false);

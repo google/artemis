@@ -326,3 +326,40 @@ def test_resumed_session_monotonic_step_numbering(tmp_path):
     assert len(steps) == 3
     assert [s.step_number for s in steps] == [1, 2, 3]
 
+
+def test_update_step_summary_includes_step_number_in_sse(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    published_events = []
+
+    def mock_subscriber(event_type, data):
+        published_events.append((event_type, data))
+
+    engine = DataEngine(mock_ctx)
+    engine.subscribe(mock_subscriber)
+    sid = engine.start_session("SSE step_number verification")
+
+    step_id = engine.record_step(summary="Initial step 1")
+    for t in list(engine._pending_threads):
+        t.join()
+
+    assert engine.get_step_number(step_id) == 1
+
+    # Call update_step_summary
+    engine.update_step_summary(step_id, "Updated concise summary for Step 1")
+    for t in list(engine._pending_threads):
+        t.join()
+
+    # Find the published step_updated event
+    step_updated_events = [e for e in published_events if e[0] == "step_updated"]
+    assert len(step_updated_events) >= 1
+    last_update = step_updated_events[-1][1]
+    assert last_update["step_id"] == str(step_id)
+    assert last_update["summary"] == "Updated concise summary for Step 1"
+    assert last_update["step_number"] == 1
+
+

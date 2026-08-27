@@ -390,20 +390,20 @@ class StepRepository:
 
                 steps.append(step_dict)
 
-            # Fetch step-less tool traces (e.g. planner tools)
+            # Fetch step-less tool traces (e.g. planner tools or turns without recorded step)
             cursor.execute(
                 "SELECT t1.trace_id, t1.parent_trace_id, t1.step_id, t1.type,"
                 " t1.name, t1.timestamp, t1.duration, t1.status, t1.payload,"
                 " t2.name as agent_name FROM traces t1 LEFT JOIN traces t2 ON"
                 " t1.parent_trace_id = t2.trace_id WHERE t1.session_id = ? AND"
-                " (t1.step_id IS NULL OR t1.step_id = '') AND (t1.type = 'tool' OR"
+                " (t1.step_id IS NULL OR t1.step_id = '' OR t1.step_id NOT IN (SELECT step_id FROM steps WHERE session_id = ?)) AND (t1.type = 'tool' OR"
                 " (t1.type = 'llm_call' AND t1.status IN ('failed', 'retrying')) OR (t1.type = 'log'"
                 " AND t1.payload LIKE '%LLM Error:%Pausing execution%' AND NOT EXISTS"
                 " (SELECT 1 FROM traces t3 WHERE t3.session_id = t1.session_id AND"
                 " t3.type = 'llm_call' AND t3.status = 'failed' AND"
                 " ABS(t3.timestamp - t1.timestamp) < 2))) ORDER BY"
                 " t1.timestamp ASC",
-                (session_id,),
+                (session_id, session_id),
             )
             stepless_rows = cursor.fetchall()
             if stepless_rows:

@@ -274,4 +274,132 @@ describe('extractStepReplayFrames', () => {
     expect(frames[0].stepNumber).toBe(1);
     expect(frames[1].stepNumber).toBe(2);
   });
+
+  it('should start from Step 1 even when step_updated events lack step_number (preventing the Step 4 bug)', () => {
+    const logs = [
+      {
+        type: 'step_recorded',
+        data: {
+          step_id: 'step1-uuid',
+          step_number: 1,
+          pre_image_name: 'img1',
+          post_image_name: 'img2',
+          action_taken: { action: 'manage_app', app_name: 'Maps' },
+          timestamp: 100
+        }
+      },
+      {
+        type: 'step_recorded',
+        data: {
+          step_id: 'step2-uuid',
+          step_number: 2,
+          pre_image_name: 'img2',
+          post_image_name: 'img3',
+          action_taken: { action: 'input_text', text: 'Coffee' },
+          timestamp: 200
+        }
+      },
+      {
+        type: 'step_recorded',
+        data: {
+          step_id: 'step3-uuid',
+          step_number: 3,
+          pre_image_name: 'img3',
+          post_image_name: 'img4',
+          action_taken: { action: 'press_key', key: 'ENTER' },
+          timestamp: 300
+        }
+      },
+      // VisualStepSummarizer sends step_updated with only step_id and summary (no step_number)
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'step1-uuid',
+          summary: 'In Step 1, I launched Google Maps'
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'step2-uuid',
+          summary: 'In Step 2, I typed Coffee'
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'step3-uuid',
+          summary: 'In Step 3, I pressed ENTER'
+        }
+      }
+    ];
+
+    const frames = extractStepReplayFrames(logs);
+    expect(frames.length).toBe(3);
+
+    // Frame 1 MUST start at Step 1, NOT Step 4!
+    expect(frames[0].stepNumber).toBe(1);
+    expect(frames[0].index).toBe(0);
+    expect(frames[0].title).toContain('Step 1');
+    expect(frames[0].summary).toBe('In Step 1, I launched Google Maps');
+    expect(frames[0].preImageUrl).toBe('/images/img1');
+
+    // Frame 2 MUST be Step 2
+    expect(frames[1].stepNumber).toBe(2);
+    expect(frames[1].index).toBe(1);
+    expect(frames[1].title).toContain('Step 2');
+    expect(frames[1].summary).toBe('In Step 2, I typed Coffee');
+
+    // Frame 3 MUST be Step 3
+    expect(frames[2].stepNumber).toBe(3);
+    expect(frames[2].index).toBe(2);
+    expect(frames[2].title).toContain('Step 3');
+    expect(frames[2].summary).toBe('In Step 3, I pressed ENTER');
+  });
+
+  it('should filter non-visual steps (like pre-planning step 0) without shifting 1-based replay numbering', () => {
+    const logs = [
+      // Virtual step 0 (pre-planning) with no screenshots
+      {
+        step_id: 'pre-planning',
+        step_number: 0,
+        summary: 'Planning the mission',
+        timestamp: 50,
+        pre_image_name: null,
+        post_image_name: null,
+        generic_tools: [{ name: 'save_note', type: 'tool' }]
+      },
+      // Real step 1 with screenshots
+      {
+        step_id: 'real-step-1',
+        step_number: 1,
+        summary: 'Tapping search bar',
+        action_taken: { action: 'click', coordinates: [100, 200] },
+        pre_image_name: 'shot1',
+        timestamp: 100
+      },
+      // Real step 2 with screenshots
+      {
+        step_id: 'real-step-2',
+        step_number: 2,
+        summary: 'Entering search keywords',
+        action_taken: { action: 'input_text', text: 'latte' },
+        pre_image_name: 'shot2',
+        timestamp: 200
+      }
+    ];
+
+    const frames = extractStepReplayFrames(logs);
+    expect(frames.length).toBe(2);
+
+    // Frame 0 must be labeled Step 1 (not Step 2)
+    expect(frames[0].stepNumber).toBe(1);
+    expect(frames[0].rawStepNumber).toBe(1);
+    expect(frames[0].stepId).toBe('real-step-1');
+
+    // Frame 1 must be labeled Step 2
+    expect(frames[1].stepNumber).toBe(2);
+    expect(frames[1].rawStepNumber).toBe(2);
+    expect(frames[1].stepId).toBe('real-step-2');
+  });
 });
