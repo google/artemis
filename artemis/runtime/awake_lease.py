@@ -153,6 +153,7 @@ class ScreenAwakeLease:
         try:
             result = subprocess.run(
                 ["adb", "-s", self.device_id, *args],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=10,

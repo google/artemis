@@ -135,6 +135,7 @@ def find_server_pids(port: int = 8000) -> list[int]:
         try:
             res = subprocess.run(
                 ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=2.0,
@@ -152,6 +153,7 @@ def find_server_pids(port: int = 8000) -> list[int]:
         try:
             res = subprocess.run(
                 ["fuser", f"{port}/tcp"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=2.0,
@@ -168,6 +170,7 @@ def find_server_pids(port: int = 8000) -> list[int]:
         try:
             res = subprocess.run(
                 ["netstat", "-ano"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=3.0,

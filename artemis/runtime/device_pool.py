@@ -81,6 +81,7 @@ class DevicePool:
         try:
             res = subprocess.run(
                 [adb, "devices", "-l"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=timeout,

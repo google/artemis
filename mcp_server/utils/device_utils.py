@@ -99,6 +99,7 @@ def get_connected_devices(adb_path: str | None = None) -> list[str]:
     try:
         res = subprocess.run(
             [adb, "devices"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=5,
@@ -137,7 +138,7 @@ def ensure_emulator(
     if not emu_exe or not os.path.exists(emu_exe):
         return False
 
-    popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    popen_kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = (
             subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
@@ -158,6 +159,7 @@ def ensure_emulator(
         try:
             res = subprocess.run(
                 [adb, "-s", "emulator-5554", "shell", "getprop", "sys.boot_completed"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=3,

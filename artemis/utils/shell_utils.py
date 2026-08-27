@@ -20,6 +20,7 @@ def run_shell_command_on_host(command: str) -> str:
     try:
         result = subprocess.run(
             command,
+            stdin=subprocess.DEVNULL,
             shell=True,
             check=True,
             capture_output=True,

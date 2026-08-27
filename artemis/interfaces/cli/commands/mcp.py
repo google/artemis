@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import threading
 import tomllib
 from typing import Annotated
 
@@ -724,7 +725,9 @@ def mcp_command(
         console.print(syntax)
         raise typer.Exit(0)
 
-    start_awake_service()
+    threading.Thread(
+        target=start_awake_service, daemon=True, name="artemis-awake-init"
+    ).start()
     try:
         st = server_type.lower()
         if st in ("agent", "mobile", "artemis", "default"):

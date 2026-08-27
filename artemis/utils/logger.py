@@ -168,9 +168,9 @@ class ArtemisLogger:
         colored_separator = f"{Fore.CYAN}{separator}{Style.RESET_ALL}"
         colored_message = f"{Fore.CYAN}{message}{Style.RESET_ALL}"
 
-        print(colored_separator)
-        print(colored_message)
-        print(colored_separator)
+        print(colored_separator, file=sys.stderr)
+        print(colored_message, file=sys.stderr)
+        print(colored_separator, file=sys.stderr)
         self.logger.info(f"\n{separator}\n{message}\n{separator}")
 
 

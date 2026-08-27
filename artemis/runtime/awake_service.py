@@ -48,6 +48,7 @@ def _run_awake_adb_command(
     try:
         result = subprocess.run(
             ["adb", "-s", device_id, *args],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
@@ -185,21 +186,25 @@ class ScreenAwakeService:
         self._heartbeat_threads: dict[str, threading.Thread] = {}
         self._monitor_stop: threading.Event | None = None
         self._monitor_thread: threading.Thread | None = None
+        self._shutdown_requested = False
 
     def start(self, device_ids: Iterable[str] | None = None) -> dict[str, str | None]:
+        if self._shutdown_requested:
+            return {}
         selected = list(device_ids) if device_ids is not None else _discover_connected_device_ids()
-        results = {
-            device_id: self.ensure_device(device_id)
-            for device_id in dict.fromkeys(selected)
-            if device_id
-        }
-        if _awake_enabled() and os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
+        results = {}
+        for device_id in dict.fromkeys(selected):
+            if self._shutdown_requested:
+                break
+            if device_id:
+                results[device_id] = self.ensure_device(device_id)
+        if _awake_enabled() and os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not self._shutdown_requested:
             self._start_device_monitor()
         return results
 
     def ensure_device(self, device_id: str) -> str | None:
         """Configure one device once per process; Android owns unplug behavior."""
-        if not device_id or not _awake_enabled() or os.environ.get("ARTEMIS_CLOUD_MODE") == "1":
+        if not device_id or not _awake_enabled() or os.environ.get("ARTEMIS_CLOUD_MODE") == "1" or self._shutdown_requested:
             return None
         with self._lock:
             existing = self._strategies.get(device_id)
@@ -277,6 +282,7 @@ class ScreenAwakeService:
 
     def shutdown(self) -> None:
         """Stop host work; unplug behavior remains owned by Android's USB policy."""
+        self._shutdown_requested = True
         with self._lock:
             monitor_stop = self._monitor_stop
             monitor_thread = self._monitor_thread

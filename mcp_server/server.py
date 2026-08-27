@@ -59,9 +59,13 @@ import mcp_server.tools  # noqa: F401
 from artemis.runtime import shutdown_awake_service, start_awake_service
 
 
+import threading
+
 def main(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8001):
     """Main entrypoint to run the Artemis Mobile Agent MCP server."""
-    start_awake_service()
+    threading.Thread(
+        target=start_awake_service, daemon=True, name="artemis-awake-init"
+    ).start()
     try:
         if transport.lower() == "sse":
             mcp.run(transport="sse", host=host, port=port)

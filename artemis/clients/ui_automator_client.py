@@ -174,6 +174,7 @@ def _is_package_installed(device_id: str, pkg: str) -> bool:
     try:
         result = subprocess.run(
             ["adb", "-s", device_id, "shell", "pm", "list", "packages"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
@@ -208,6 +209,7 @@ def _uninstall_package(device_id: str, pkg: str) -> bool:
                 "0",
                 pkg,
             ],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=30,
@@ -379,6 +381,7 @@ class UIAutomatorClient:
         try:
             result = subprocess.run(
                 ["adb", "-s", self._device_id, "exec-out", "screencap", "-p"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=10,
                 check=True,
