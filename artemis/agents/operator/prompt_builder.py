@@ -39,12 +39,18 @@ class OperatorPromptBuilder:
     """Builds prompt messages and multimodal contents for the Operator Agent."""
 
     @classmethod
-    def build_system_message(cls, template_name: str = "main_template") -> str:
+    def build_system_message(
+        cls,
+        template_name: str = "main_template",
+        available_tools: frozenset[str] | None = None,
+    ) -> str:
         from artemis.agents.operator.prompts import apply_operator_prompt_contract
 
         prompts = load_operator_prompts()
         try:
-            return apply_operator_prompt_contract(prompts[template_name])
+            return apply_operator_prompt_contract(
+                prompts[template_name], available_tools=available_tools
+            )
         except KeyError as exc:
             raise ValueError(f"Unknown Operator template: {template_name}") from exc
 

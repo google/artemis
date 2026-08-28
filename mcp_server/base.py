@@ -35,5 +35,7 @@ mcp = FastMCP(
     ),
 )
 
-# Import tools so they are registered with the mcp instance upon module load
-import mcp_server.tools  # noqa: E402, F401
+# Tool registration is intentionally NOT done here: mcp_server/__init__.py
+# imports mcp_server.tools (which imports this module), so importing this
+# module from anywhere already registers every tool. Importing tools here as
+# well would create a circular import (base -> tools -> base).

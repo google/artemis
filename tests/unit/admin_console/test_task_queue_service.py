@@ -667,6 +667,10 @@ async def test_queue_worker_notifies_conversation():
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch("mcp_server.notifiers.notify") as mock_notify,
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "artemis.runtime.device_pool.device_pool.list_devices_async",
+            new=AsyncMock(return_value=[]),
+        ),
     ):
         mock_repo.get_running_session_id.return_value = None
 
@@ -849,6 +853,11 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
     with (
         patch("apps.admin_console.services.task_queue_service.session_repo"),
         patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve", return_value="ticket-456"),
+        patch(
+            "artemis.runtime.device_pool.device_pool.list_devices_async",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(TaskQueueService, "ensure_worker_running"),
     ):
         res1 = await task_queue_service.enqueue_tasks(["Rapid duplicate goal"], device_serial="dev-1")
         assert len(state.queue_items) == 1

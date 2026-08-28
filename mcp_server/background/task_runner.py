@@ -366,7 +366,11 @@ if __name__ == "__main__":
     parser.add_argument("--trace-id", required=True, help="Unique trace identifier")
     parser.add_argument("--task-desc", required=True, help="Description of the task to run")
     parser.add_argument("--model", required=True, help="Model to use ('Flash' or 'Pro')")
-    parser.add_argument("--conversation-id", required=True, help="Active conversation ID")
+    parser.add_argument(
+        "--conversation-id",
+        default="",
+        help="Conversation ID for wakeup notification routing (optional; empty disables routing)",
+    )
     parser.add_argument("--locked-app-package", help="Package name of app to lock execution to")
     parser.add_argument("--app-path", help="Path to local APK to install before running task")
     parser.add_argument("--expected-output-desc", help="Expected output description")

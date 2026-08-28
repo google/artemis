@@ -34,31 +34,20 @@ from artemis.utils.visualization import format_minimal_list_with_elements
 async def mobile_get_device_state(view_type: str, device_serial: str | None = None) -> str:
     """Real-time mobile device state observer (for debugging and validation).
 
-    Use this tool to inspect the latest mobile status or to assist in tracking
-    the subagent's task progress.
-
-    Retrieves a real-time screenshot (returns local file URI) or a simplified
-    element tree text list of the target mobile device.
-
-    ### Device Selection Modes:
-    1. **Direct Device Specification**: Provide `device_serial` to observe a specific
-       phone or emulator (e.g. `device_serial="63191FDKX00062"`).
-    2. **Automatic Device Selection**: Omit `device_serial` or leave it `None` to
-       automatically inspect the default/connected device.
-
-    **Diagnostics & User Preference**:
-    - When multiple devices are attached, prioritize letting the user specify or confirm the device.
-    - Run `adb devices` to check connected devices and identify their serial numbers.
+    Retrieves a real-time screenshot or a simplified UI element tree from the
+    target device — useful for inspecting device status or tracking a
+    subagent's progress.
 
     Args:
-        view_type: The observation type. Supported values:
-          - "screenshot": Captures the real-time mobile screen and saves it to the workspace,
-            returning the local URI path of the image file (e.g., "file:///path/to/screenshot.jpg").
-          - "hierarchy": Directly returns the simplified text-labeled element list, which is
-            identical to what the mobile UI automation subagent sees when making decisions.
-        device_serial: Optional Android device serial number (e.g., "63191FDKX00062" or
-          "emulator-5554"). If specified, inspects state from that specific device. If omitted,
-          inspects the default connected device.
+        view_type: Observation type:
+          - "screenshot": captures the screen, saves it to the workspace, and
+            returns the image's local file URI.
+          - "hierarchy": returns the simplified text-labeled element list —
+            exactly what the automation subagent sees when making decisions.
+        device_serial: Optional device serial (e.g. "emulator-5554") to inspect
+          a specific device; omitted → the default connected device. With
+          several devices attached, confirm the target with the user
+          (`adb devices -l` lists serials).
     """
     try:
         controller = _get_controller(device_serial=device_serial)

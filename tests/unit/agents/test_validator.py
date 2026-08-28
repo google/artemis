@@ -12,13 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""ValidatorNode tests over the in-process unified action session.
+
+The Validator no longer spawns a stdio MCP subprocess; it calls a shared
+``ActionSession`` whose device actions return structured ``ActionResult`` objects.
+``FakeActionSession`` below stands in for it: ``action_handler`` decides each
+action's ``(ok, message)``, ``screenshot`` feeds the polling loop, and ``hierarchy``
+feeds the safety-net XML validation.
+"""
+
 import json
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
 from langchain_core.messages import AIMessage
+import pytest
+
 from artemis.agents.validator.failure_analyzer import ValidationErrorCategory
 from artemis.agents.validator.validator import ValidatorNode
 from artemis.context import ArtemisContext
-import pytest
+from artemis.mcp.action_types import ActionCode, ActionResult
 
 
 class DummyState:
@@ -38,6 +50,46 @@ class DummyState:
         return update
 
 
+class FakeActionSession:
+    """Test double for artemis.mcp.action_session.ActionSession."""
+
+    def __init__(self):
+        self.started = True
+        self.calls: list[tuple[str, dict]] = []
+        # (name, args) -> (ok, message)
+        self.action_handler = lambda name, args: (True, "")
+        # str | callable | Exception
+        self.screenshot = "ZHVtbXlfZGF0YQ=="  # b64("dummy_data")
+        self.hierarchy: list | Exception = []
+
+    async def call(self, name, args):
+        self.calls.append((name, args))
+        ok, msg = self.action_handler(name, args)
+        return ActionResult(
+            ok=ok,
+            code=ActionCode.OK if ok else ActionCode.DEVICE_ERROR,
+            action=name,
+            message=msg,
+        )
+
+    async def screenshot_b64(self, timeout=None):
+        shot = self.screenshot
+        if isinstance(shot, Exception):
+            raise shot
+        return shot() if callable(shot) else shot
+
+    async def ui_hierarchy(self, timeout=None):
+        if isinstance(self.hierarchy, Exception):
+            raise self.hierarchy
+        return self.hierarchy
+
+    async def aclose(self):
+        pass
+
+    def calls_for(self, name: str) -> list[dict]:
+        return [args for n, args in self.calls if n == name]
+
+
 @pytest.fixture
 def mock_context(tmp_path):
     ctx = Mock(spec=ArtemisContext)
@@ -45,6 +97,9 @@ def mock_context(tmp_path):
     ctx.data_engine = Mock()
     ctx.data_engine.base_dir = tmp_path
     ctx.data_engine.get_relative_time.return_value = 1.0
+    ctx.device = Mock()
+    ctx.device.device_width = 1080
+    ctx.device.device_height = 2400
     return ctx
 
 
@@ -57,31 +112,18 @@ def temp_screenshot(tmp_path):
 
 @pytest.fixture
 def mock_mcp():
-    with (
-        patch("mcp.client.stdio.stdio_client") as mock_stdio,
-        patch("artemis.agents.validator.validator.ClientSession") as mock_session_cls,
-    ):
-        mock_ctx = AsyncMock()
-        mock_ctx.__aenter__.return_value = (Mock(), Mock())
-        mock_stdio.return_value = mock_ctx
+    fake = FakeActionSession()
 
-        mock_session = AsyncMock()
-        mock_session.initialize = AsyncMock()
-        mock_session_cls.return_value = mock_session
+    async def _get_session(ctx, actuator=None):
+        return fake
 
-        yield mock_session
+    with patch("artemis.agents.validator.validator.get_action_session", _get_session):
+        yield fake
 
 
 @pytest.mark.asyncio
 async def test_validator_success(mock_mcp, mock_context, temp_screenshot):
     """Test that ValidatorNode executes actions successfully."""
-    # Mock MCP calls: screenshot, tap, screenshot
-    mock_mcp.call_tool.side_effect = [
-        Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")]),  # pre-screenshot
-        Mock(content=[Mock(text="Success")]),  # tap action
-        Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")]),  # post-screenshot
-    ]
-
     decisions = json.dumps([{"action": "tap", "coordinates": [105, 205]}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
@@ -95,78 +137,23 @@ async def test_validator_success(mock_mcp, mock_context, temp_screenshot):
     assert len(report["execution"]) == 1
     assert report["execution"][0]["action"] == "tap"
     assert "attempts" not in report["execution"][0]
+    # The Operator's tap verb was translated to the canonical click tool.
+    assert len(mock_mcp.calls_for("click")) == 1
 
 
-@pytest.mark.asyncio
-async def test_failed_mcp_handshake_exits_contexts_and_disables_child_awake_policy():
-    """A handshake failure must not leave AnyIO cancellation scopes behind."""
-    events = []
-
-    class FakeClientContext:
-        async def __aenter__(self):
-            events.append("client_enter")
-            return Mock(), Mock()
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            events.append("client_exit")
-
-    class FakeSession:
-        async def __aenter__(self):
-            events.append("session_enter")
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            events.append("session_exit")
-
-        async def initialize(self):
-            raise TimeoutError("handshake timed out")
-
-    ctx = Mock(spec=ArtemisContext)
-    ctx.mcp_client_ctx = None
-    ctx.mcp_session = None
-    fake_client_ctx = FakeClientContext()
-    fake_session = FakeSession()
-    captured_parameters = []
-
-    def fake_stdio_client(parameters):
-        captured_parameters.append(parameters)
-        return fake_client_ctx
-
-    node = ValidatorNode(ctx)
-    with (
-        patch("artemis.agents.validator.validator.stdio_client", fake_stdio_client),
-        patch("artemis.agents.validator.validator.ClientSession", return_value=fake_session),
-        patch("artemis.agents.validator.validator.AdbClient") as adb_client,
-        patch.object(node, "_kill_mcp_server_instantly") as emergency_kill,
-    ):
-        adb_client.return_value.device_list.return_value = []
-        result = await node._get_mcp_session()
-
-    assert result is None
-    assert events == ["client_enter", "session_enter", "session_exit", "client_exit"]
-    assert ctx.mcp_session is None
-    assert ctx.mcp_client_ctx is None
-    assert captured_parameters[0].env["ARTEMIS_KEEP_DEVICE_AWAKE"] == "false"
-    emergency_kill.assert_not_called()
-
+# NOTE: upstream's test_failed_mcp_handshake_exits_contexts_and_disables_child_awake_policy
+# guarded the stdio-subprocess handshake teardown, machinery this migration removed
+# entirely. Its hazard class (leaked AnyIO cancel scopes) is now pinned by
+# tests/unit/mcp/test_action_session.py against the in-process ActionSession.
 
 @pytest.mark.asyncio
 async def test_validator_failure_analysis(mock_mcp, mock_context, temp_screenshot):
     """Test that ValidatorNode triggers failure analysis on error and handles
     cannot_fix via tool.
     """
-    tap_count = 0
-
-    def mock_call_tool(name, args):
-        nonlocal tap_count
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        if name == "tap":
-            tap_count += 1
-            return Mock(content=[Mock(text="Error: Element not found")])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
+    mock_mcp.action_handler = lambda name, args: (
+        (False, "Error: Element not found") if name == "click" else (True, "")
+    )
 
     decisions = json.dumps([{"action": "tap", "coordinates": [105, 205]}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
@@ -203,18 +190,15 @@ async def test_validator_repair_success(mock_mcp, mock_context, temp_screenshot)
     """
     tap_count = 0
 
-    def mock_call_tool(name, args):
+    def handler(name, args):
         nonlocal tap_count
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        if name == "tap":
+        if name == "click":
             tap_count += 1
-            if tap_count <= 2:  # First tap fails
-                return Mock(content=[Mock(text="Error: Element not found")])
-            return Mock(content=[Mock(text="Success")])
-        return Mock(content=[Mock(text="Success")])
+            if tap_count <= 2:  # First action fails on both validator attempts
+                return False, "Error: Element not found"
+        return True, ""
 
-    mock_mcp.call_tool.side_effect = mock_call_tool
+    mock_mcp.action_handler = handler
 
     # Two actions planned initially
     decisions = json.dumps(
@@ -254,12 +238,6 @@ async def test_validator_repair_success(mock_mcp, mock_context, temp_screenshot)
 @pytest.mark.asyncio
 async def test_validator_wait_for_delay(mock_mcp, mock_context, temp_screenshot):
     """Test that wait_for_delay executes successfully."""
-
-    def mock_call(name, args):
-        return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-
-    mock_mcp.call_tool.side_effect = mock_call
-
     decisions = json.dumps([{"action": "wait_for_delay", "time_in_ms": 10}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
@@ -272,19 +250,13 @@ async def test_validator_wait_for_delay(mock_mcp, mock_context, temp_screenshot)
     assert "execution" in report
     assert len(report["execution"]) == 1
     assert report["execution"][0]["action"] == "wait_for_delay"
+    # wait_for_delay is a pure client-side sleep, never a session call.
+    assert mock_mcp.calls_for("wait_for_delay") == []
 
 
 @pytest.mark.asyncio
 async def test_validator_focus_and_clear_text_no_ui_change(mock_mcp, mock_context, temp_screenshot):
     """Test that focus_and_clear_text executes successfully even if no UI change is detected."""
-
-    def mock_call(name, args):
-        if name == "focus_and_clear_text":
-            return Mock(content=[Mock(text="Success")])
-        return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-
-    mock_mcp.call_tool.side_effect = mock_call
-
     decisions = json.dumps([{"action": "focus_and_clear_text", "coordinates": [400, 500]}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
@@ -297,6 +269,7 @@ async def test_validator_focus_and_clear_text_no_ui_change(mock_mcp, mock_contex
     assert "execution" in report
     assert len(report["execution"]) == 1
     assert report["execution"][0]["action"] == "focus_and_clear_text"
+    assert len(mock_mcp.calls_for("focus_and_clear_text")) == 1
 
 
 @pytest.mark.asyncio
@@ -304,16 +277,6 @@ async def test_validator_silent_failure_treated_as_success(mock_mcp, mock_contex
     """Test that silent failure (exec succeeds but no UI change) is treated as
     success and does not trigger FailureAnalyzer.
     """
-
-    def mock_call_tool(name, args):
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        if name == "tap":
-            return Mock(content=[Mock(text="Success")])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
-
     decisions = json.dumps([{"action": "tap", "coordinates": [105, 205]}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
@@ -344,13 +307,7 @@ async def test_validator_records_skipped_actions_on_cannot_fix(
     mock_mcp, mock_context, temp_screenshot
 ):
     """Test that ValidatorNode marks unexecuted actions as Skipped when repair fails."""
-
-    def mock_call_tool(name, args):
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        return Mock(content=[Mock(text="Error: Connection lost")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
+    mock_mcp.action_handler = lambda name, args: (False, "Error: Connection lost")
 
     # Two actions planned
     decisions = json.dumps(
@@ -399,24 +356,13 @@ async def test_validator_pre_execution_validation_and_repair(
     """Test that pre-execution validation fails when element changes, and is
     repaired by FailureAnalyzer.
     """
-    mock_live_elements = [
+    mock_mcp.hierarchy = [
         {
             "text": "Sign Up",
             "bounds": "[100,200][300,300]",
             "resource-id": "btn_signup",
         }
     ]
-
-    def mock_call_tool(name, args):
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        if name == "get_ui_hierarchy":
-            return Mock(content=[Mock(text=json.dumps(mock_live_elements))])
-        if name == "tap":
-            return Mock(content=[Mock(text="Success")])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
 
     decisions = json.dumps(
         [
@@ -477,28 +423,13 @@ async def test_validator_pre_execution_validation_self_healing(
     mock_mcp, mock_context, temp_screenshot
 ):
     """Test that pre-execution validation succeeds and self-heals when element shifts slightly."""
-    mock_live_elements = [
+    mock_mcp.hierarchy = [
         {
             "text": "Login",
             "bounds": "[100,220][300,320]",
             "resource-id": "btn_login",
         }
     ]
-
-    tapped_coordinates = None
-
-    def mock_call_tool(name, args):
-        nonlocal tapped_coordinates
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        if name == "get_ui_hierarchy":
-            return Mock(content=[Mock(text=json.dumps(mock_live_elements))])
-        if name == "tap":
-            tapped_coordinates = args.get("coordinates")
-            return Mock(content=[Mock(text="Success")])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
 
     decisions = json.dumps(
         [
@@ -518,8 +449,12 @@ async def test_validator_pre_execution_validation_self_healing(
     with patch("artemis.utils.image_diff.check_ui_change", return_value=True):
         await node(state)
 
-    # Center of [100, 220][300, 320] is [200, 270]
-    assert tapped_coordinates == [200, 270]
+    # Center of [100, 220][300, 320] is pixel [200, 270]; the healed coordinates
+    # travel to the canonical click tool normalized to 0-1000 on a 1080x2400 screen:
+    # round(200 * 1000 / 1080) = 185, round(270 * 1000 / 2400) = 112.
+    clicks = mock_mcp.calls_for("click")
+    assert len(clicks) == 1
+    assert clicks[0]["target"] == [185, 112]
 
 
 @pytest.mark.asyncio
@@ -531,7 +466,7 @@ async def test_validator_pre_execution_validation_anonymous_occupant(
     """
     # The live screen contains an anonymous clickable view covering
     # target coordinates [200, 250]
-    mock_live_elements = [
+    mock_mcp.hierarchy = [
         {
             "text": "",
             "bounds": "[150,200][250,300]",
@@ -539,15 +474,6 @@ async def test_validator_pre_execution_validation_anonymous_occupant(
             "resource-id": "",
         }
     ]
-
-    def mock_call_tool(name, args):
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        if name == "get_ui_hierarchy":
-            return Mock(content=[Mock(text=json.dumps(mock_live_elements))])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
 
     decisions = json.dumps(
         [
@@ -596,12 +522,6 @@ async def test_validator_pre_execution_validation_anonymous_occupant(
 @pytest.mark.asyncio
 async def test_validator_pixel_validation_success(mock_mcp, mock_context, temp_screenshot):
     """Test that the pixel safety net succeeds when Gemini reports target is present."""
-    mock_mcp.call_tool.side_effect = [
-        Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")]),  # live screenshot for pixel check
-        Mock(content=[Mock(text="Success")]),  # tap action
-        Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")]),  # post-screenshot
-    ]
-
     decisions = json.dumps([{"action": "tap", "coordinates": [100, 200]}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
@@ -645,14 +565,6 @@ async def test_validator_pixel_validation_failure(mock_mcp, mock_context, temp_s
     """Test that the pixel safety net fails and triggers FailureAnalyzer
     when Gemini reports target is missing.
     """
-
-    def mock_call_tool(name, args):
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
-
     decisions = json.dumps([{"action": "tap", "coordinates": [100, 200]}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
@@ -697,23 +609,15 @@ async def test_validator_pixel_validation_failure(mock_mcp, mock_context, temp_s
 
 
 @pytest.mark.asyncio
-@patch("artemis.agents.validator.validator.find_package")
-@patch("artemis.utils.app_launch_utils.launch_app_with_retries")
-async def test_validator_launch_app_passes_use_fallback_mcp(
-    mock_launch_app, mock_find_package, mock_mcp, mock_context, temp_screenshot
+async def test_validator_launch_app_routes_through_manage_app(
+    mock_mcp, mock_context, temp_screenshot
 ):
-    """Test that ValidatorNode calls find_package with use_fallback=False
-    for launch_app action in MCP mode.
+    """Test that a launch_app action item routes to the canonical manage_app tool.
+
+    Package resolution (find_package with use_fallback=False) now happens inside the
+    actuator's manage_app implementation and is covered by the failure-analyzer tool
+    tests; the Validator's contract is the translation and single dispatch.
     """
-    mock_find_package.return_value = "com.example.app"
-    mock_launch_app.return_value = (True, None)
-
-    # Mock MCP calls: screenshot (pre), screenshot (post)
-    mock_mcp.call_tool.side_effect = [
-        Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")]),  # pre-screenshot
-        Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")]),  # post-screenshot
-    ]
-
     decisions = json.dumps([{"action": "launch_app", "app_name": "My App"}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
@@ -721,27 +625,17 @@ async def test_validator_launch_app_passes_use_fallback_mcp(
         node = ValidatorNode(mock_context)
         result = await node(state)
 
-    mock_find_package.assert_called_once_with(mock_context, "My App", use_fallback=False)
-    mock_launch_app.assert_called_once_with(mock_context, "com.example.app")
+    manage_calls = mock_mcp.calls_for("manage_app")
+    assert manage_calls == [{"action": "launch", "app_name": "My App"}]
     assert "last_execution_result" in result
 
 
 @pytest.mark.asyncio
-@patch("artemis.agents.validator.validator.find_package")
-@patch("artemis.utils.app_launch_utils.launch_app_with_retries")
-async def test_validator_launch_app_failure_no_retry(
-    mock_launch_app, mock_find_package, mock_mcp, mock_context, temp_screenshot
-):
+async def test_validator_launch_app_failure_no_retry(mock_mcp, mock_context, temp_screenshot):
     """Test that ValidatorNode does NOT retry launch_app action on failure."""
-    mock_find_package.return_value = "com.example.app"
-    mock_launch_app.return_value = (False, "Error: Force close")
-
-    def mock_call_tool(name, args):
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
+    mock_mcp.action_handler = lambda name, args: (
+        (False, "Error: Force close") if name == "manage_app" else (True, "")
+    )
 
     decisions = json.dumps([{"action": "launch_app", "app_name": "My App"}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
@@ -760,13 +654,9 @@ async def test_validator_launch_app_failure_no_retry(
         node = ValidatorNode(mock_context)
         result = await node(state)
 
-    # Verify find_package was called only once
-    mock_find_package.assert_called_once_with(mock_context, "My App", use_fallback=False)
-    # Verify launch_app_with_retries was called only once
-    # (no retry by ValidatorNode itself since it relies on launch_app_with_retries)
-    mock_launch_app.assert_called_once_with(mock_context, "com.example.app")
+    # launch_app allows a single attempt -- no validator-level retry.
+    assert len(mock_mcp.calls_for("manage_app")) == 1
 
-    # Verify attempts list has only 1 element
     assert "last_execution_result" in result
     report = result["last_execution_result"]
     assert len(report["execution"]) == 1
@@ -783,22 +673,13 @@ async def test_validator_pre_execution_validation_disappeared_not_shifted(
     """
     # Live hierarchy only contains a giant background/container
     # containing the text "Sign Up"
-    mock_live_elements = [
+    mock_mcp.hierarchy = [
         {
             "text": "Sign Up",
             "bounds": "[0,0][1080,2400]",
             "resource-id": "root_container",
         }
     ]
-
-    def mock_call_tool(name, args):
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        if name == "get_ui_hierarchy":
-            return Mock(content=[Mock(text=json.dumps(mock_live_elements))])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
 
     decisions = json.dumps(
         [
@@ -850,12 +731,6 @@ async def test_validator_pre_execution_validation_ocr_direct_to_pixel(
     """Test that OCR-derived elements bypass XML validation and
     directly use pixel-based validation.
     """
-    mock_mcp.call_tool.side_effect = [
-        Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")]),  # live screenshot for pixel check
-        Mock(content=[Mock(text="Success")]),  # tap action
-        Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")]),  # post-screenshot
-    ]
-
     decisions = json.dumps(
         [
             {
@@ -905,22 +780,13 @@ async def test_validator_pre_execution_xml_failure_not_overridden_when_pixel_byp
     """Test that when XML validation fails AND Pixel validation is bypassed
     (PIXEL_BYPASSED), the XML failure is NOT overridden.
     """
-    mock_live_elements = [
+    mock_mcp.hierarchy = [
         {
             "text": "Sign Up",
             "bounds": "[100,200][300,300]",
             "resource-id": "btn_signup",
         }
     ]
-
-    def mock_call_tool(name, args):
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="ZHVtbXlfZGF0YQ==")])
-        if name == "get_ui_hierarchy":
-            return Mock(content=[Mock(text=json.dumps(mock_live_elements))])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
 
     decisions = json.dumps(
         [
@@ -970,17 +836,13 @@ async def test_validator_pre_execution_xml_failure_not_overridden_when_pixel_byp
 async def test_validator_failure_screenshot_mcp_error_handled_safely(
     mock_mcp, mock_context, temp_screenshot
 ):
-    """Test that when take_screenshot fails on MCP server and returns an error text,
-    the ValidatorNode does not crash with base64 decoding error.
+    """Test that when take_screenshot fails on the session, the ValidatorNode does
+    not crash -- the failure screenshot is simply absent.
     """
-    def mock_call_tool(name, args):
-        if name == "take_screenshot":
-            return Mock(content=[Mock(text="Error: ADB connection lost")])
-        if name == "tap":
-            return Mock(content=[Mock(text="Error: Target not found")])
-        return Mock(content=[Mock(text="Success")])
-
-    mock_mcp.call_tool.side_effect = mock_call_tool
+    mock_mcp.screenshot = RuntimeError("Error: ADB connection lost")
+    mock_mcp.action_handler = lambda name, args: (
+        (False, "Error: Target not found") if name == "click" else (True, "")
+    )
 
     decisions = json.dumps([{"action": "tap", "coordinates": [105, 205]}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
@@ -1002,4 +864,3 @@ async def test_validator_failure_screenshot_mcp_error_handled_safely(
     assert report["status"] == "failed"
     assert len(report["execution"]) == 1
     assert report["execution"][0]["action"] == "tap"
-

@@ -14,6 +14,7 @@
 
 """Unit tests for MCP trace store."""
 
+import os
 import shutil
 import tempfile
 import uuid
@@ -80,6 +81,6 @@ def test_read_nonexistent_status(temp_trace_env):
 def test_trace_paths(temp_trace_env):
     trace_id = "test-paths-id"
     trace_dir = trace_store.get_trace_dir(trace_id)
-    assert trace_store.get_trace_notes_dir(trace_id) == f"{trace_dir}/notes"
-    assert trace_store.get_trace_stdout_log_path(trace_id) == f"{trace_dir}/stdout.log"
-    assert trace_store.get_trace_stderr_log_path(trace_id) == f"{trace_dir}/stderr.log"
+    assert trace_store.get_trace_notes_dir(trace_id) == os.path.join(trace_dir, "notes")
+    assert trace_store.get_trace_stdout_log_path(trace_id) == os.path.join(trace_dir, "stdout.log")
+    assert trace_store.get_trace_stderr_log_path(trace_id) == os.path.join(trace_dir, "stderr.log")

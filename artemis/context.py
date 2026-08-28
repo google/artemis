@@ -176,11 +176,26 @@ class ArtemisContext(BaseModel):
     _mobile_controller: Any | None = PrivateAttr(default=None)
     mcp_client_ctx: Any | None = None
     mcp_session: Any | None = None
+    action_session: Any | None = None
+    """In-process unified action MCP session (artemis.mcp.action_session)."""
+    actuator: Any | None = None
+    """Optional actuator backend override (artemis.mcp.actuators). ``None`` selects
+    the default AdbActuator; installing e.g. a robot-arm backend happens here."""
 
     async def __aenter__(self) -> ArtemisContext:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # Close the in-process action session before draining background tasks so its
+        # owner task exits cleanly rather than being cancelled below.
+        if self.action_session is not None:
+            try:
+                await self.action_session.aclose()
+            except Exception:
+                pass
+            finally:
+                self.action_session = None
+
         if self.background_tasks:
             tasks = list(self.background_tasks)
             pending_tasks = [task for task in tasks if not task.done()]

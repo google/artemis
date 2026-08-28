@@ -147,6 +147,23 @@ async def on_shutdown():
             pass
     state.worker_task = None
 
+    # Cancel in-flight run coroutines and wait for their finalizers (DB status,
+    # session_ended broadcast, trace sync, recording recovery) to run.
+    run_tasks = [t for t in list(task_queue_service._run_tasks) if not t.done()]
+    for run_task in run_tasks:
+        run_task.cancel()
+    if run_tasks:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*run_tasks, return_exceptions=True), timeout=5.0
+            )
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+    for run in list(state.active_runs.values()):
+        run_proc = run.get("process")
+        if run_proc is not None and run_proc.returncode is None:
+            await task_queue_service._terminate_worker_process(run_proc)
+    state.active_runs.clear()
     if state.current_process is not None and state.current_process.returncode is None:
         await task_queue_service._terminate_worker_process(state.current_process)
     for item in state.queue_items:
