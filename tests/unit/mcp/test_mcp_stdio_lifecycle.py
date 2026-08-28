@@ -20,8 +20,10 @@ subprocess stdin isolation against pipe hijacking, and stdout purity.
 import io
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -32,6 +34,31 @@ from artemis.runtime.awake_lease import ScreenAwakeLease
 from artemis.runtime.awake_service import _run_awake_adb_command
 from artemis.utils.logger import get_logger
 from mcp_server.utils import device_utils, env_utils
+
+
+def _readline_with_timeout(pipe, timeout: float) -> str | None:
+    """Read one line from a subprocess pipe with a timeout, portably.
+
+    select.select only supports sockets on Windows, so poll via a reader thread
+    instead of selecting on the pipe handle.
+    """
+    result: queue.Queue = queue.Queue()
+
+    def _reader():
+        try:
+            result.put(pipe.readline())
+        except Exception:
+            result.put(b"")
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+    try:
+        line = result.get(timeout=timeout)
+    except queue.Empty:
+        return None
+    if not line:
+        return None
+    return line.decode("utf-8").strip()
 
 
 def test_mcp_stdio_handshake_immediate_input():
@@ -51,6 +78,24 @@ def test_mcp_stdio_handshake_immediate_input():
             "PYTHONUNBUFFERED": "1",
             "PATH": os.environ.get("PATH", ""),
             "PYTHONPATH": project_root,
+            # Windows: the interpreter's socket stack (Winsock/_overlapped),
+            # Path.home(), and tempfile handling need these system variables.
+            **{
+                key: os.environ[key]
+                for key in (
+                    "SYSTEMROOT",
+                    "SYSTEMDRIVE",
+                    "WINDIR",
+                    "TEMP",
+                    "TMP",
+                    "USERPROFILE",
+                    "HOMEDRIVE",
+                    "HOMEPATH",
+                    "APPDATA",
+                    "LOCALAPPDATA",
+                )
+                if key in os.environ
+            },
         },
         cwd=project_root,
     )
@@ -71,15 +116,7 @@ def test_mcp_stdio_handshake_immediate_input():
         p.stdin.flush()
 
         # Read initialize response with a strict timeout
-        start = time.time()
-        init_resp_line = None
-        while time.time() - start < 6.0:
-            import select
-
-            r, _, _ = select.select([p.stdout], [], [], 0.2)
-            if r:
-                init_resp_line = p.stdout.readline().decode("utf-8").strip()
-                break
+        init_resp_line = _readline_with_timeout(p.stdout, 6.0)
 
         assert init_resp_line is not None, "MCP server failed to respond to initialize request within 6 seconds (deadlock detected)!"
         init_data = json.loads(init_resp_line)
@@ -93,15 +130,7 @@ def test_mcp_stdio_handshake_immediate_input():
         p.stdin.write(json.dumps(tools_req).encode("utf-8") + b"\n")
         p.stdin.flush()
 
-        tools_resp_line = None
-        start = time.time()
-        while time.time() - start < 4.0:
-            import select
-
-            r, _, _ = select.select([p.stdout], [], [], 0.2)
-            if r:
-                tools_resp_line = p.stdout.readline().decode("utf-8").strip()
-                break
+        tools_resp_line = _readline_with_timeout(p.stdout, 4.0)
 
         assert tools_resp_line is not None, "MCP server failed to respond to tools/list request!"
         tools_data = json.loads(tools_resp_line)

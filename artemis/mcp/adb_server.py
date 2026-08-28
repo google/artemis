@@ -17,7 +17,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 import sys
 from typing import Any
 
@@ -43,33 +42,46 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.platform import platform
 from artemis.utils.app_launch_utils import launch_app_with_retries
 
-# Redirect stdio to prevent logs from breaking MCP JSON-RPC protocol and causing deadlocks.
-try:
-    from artemis.config import settings
-
-    log_path = Path(settings.TRACES_PATH) / "mcp_server.log"
-except Exception:
-    log_path = Path("traces") / "mcp_server.log"
-
-log_path.parent.mkdir(parents=True, exist_ok=True)
-
-for name in ["artemis", __name__]:
-    log_instance = logging.getLogger(name)
-    log_instance.setLevel(logging.DEBUG)
-    log_instance.propagate = False
-    # Remove standard streams handlers
-    log_instance.handlers = [
-        h for h in log_instance.handlers if not isinstance(h, logging.StreamHandler)
-    ]
-    fh = logging.FileHandler(log_path, encoding="utf-8")
-    fh.setFormatter(logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s"))
-    log_instance.addHandler(fh)
-
 logger = logging.getLogger(__name__)
-logger.info("MCP Server Python process fully started. Configuring FastMCP service...")
 
-# Avoid concurrent SQLite WAL locks by blocking child processes from connecting to primary DataEngine.
-os.environ["ARTEMIS_IPC_PORT"] = ""
+
+def configure_stdio_mode() -> None:
+    """Applies process-wide settings required when serving MCP over stdio.
+
+    These are destructive to the host process (console logging is removed and the
+    DataEngine IPC port is cleared), so they must only run when this module owns the
+    process -- i.e. from the ``__main__`` block. Importing this module for its tools
+    or for :func:`_get_controller` must leave the caller's logging and environment
+    untouched.
+    """
+    # Redirect stdio to prevent logs from breaking MCP JSON-RPC protocol and causing deadlocks.
+    try:
+        from artemis.config import settings
+
+        log_path = Path(settings.TRACES_PATH) / "mcp_server.log"
+    except Exception:
+        log_path = Path("traces") / "mcp_server.log"
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    for name in ["artemis", __name__]:
+        log_instance = logging.getLogger(name)
+        log_instance.setLevel(logging.DEBUG)
+        log_instance.propagate = False
+        # Remove standard streams handlers
+        log_instance.handlers = [
+            h for h in log_instance.handlers if not isinstance(h, logging.StreamHandler)
+        ]
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s"))
+        log_instance.addHandler(fh)
+
+    logger.info("MCP Server Python process fully started. Configuring FastMCP service...")
+
+    # Avoid concurrent SQLite WAL locks by blocking child processes from connecting
+    # to the primary DataEngine.
+    os.environ["ARTEMIS_IPC_PORT"] = ""
+
 
 # Create minimal MCP server
 mcp = FastMCP("Android_ADB_Controller")
@@ -161,52 +173,13 @@ def _get_controller(device_serial: str | None = None):
     return controller
 
 
-def _find_element_at_coords(elements: list[dict], x: int, y: int) -> dict | None:
-    """Finds the smallest (leaf-most) focusable element containing [x, y]."""
-    matching_element = None
-    min_area = float("inf")
-
-    for elem in elements:
-        is_focusable = (
-            elem.get("focusable") == "true"
-            or elem.get("clickable") == "true"
-            or "EditText" in str(elem.get("class", ""))
-        )
-        if not is_focusable:
-            continue
-
-        bounds_str = elem.get("bounds")
-        if bounds_str and isinstance(bounds_str, str):
-            match = re.match(r"\[(\-?\d+),(\-?\d+)\]\[(\-?\d+),(\-?\d+)\]", bounds_str)
-            if match:
-                x1, y1, x2, y2 = map(int, match.groups())
-                if x1 <= x <= x2 and y1 <= y <= y2:
-                    area = (x2 - x1) * (y2 - y1)
-                    if area < min_area:
-                        min_area = area
-                        matching_element = elem
-
-    return matching_element
-
-
-async def _ensure_focus_at_coords(controller, x: int, y: int) -> str | None:
-    """Ensures the element at [x, y] is focused, tapping only if it is not already focused."""
-    try:
-        elements = await controller.get_ui_elements()
-        elem = _find_element_at_coords(elements, x, y)
-        if elem and elem.get("focused") == "true":
-            logger.info(f"Element under [{x}, {y}] is already focused. Skipping tap.")
-            return None
-    except Exception as e:
-        logger.warning(f"Failed to check focus status: {e}. Falling back to unconditional tap.")
-
-    result = await controller.tap_at(x=x, y=y)
-    if hasattr(result, "error") and result.error:
-        return result.error
-
-    # Wait for the UI to settle and keyboard to pop up after tapping
-    await asyncio.sleep(1.0)
-    return None
+# Shared with the in-process actuator layer; this stdio server keeps its legacy
+# pixel-space contract for external MCP clients, but the element/focus logic has a
+# single implementation in artemis.mcp.actuators.adb.
+from artemis.mcp.actuators.adb import (  # noqa: E402  pylint: disable=wrong-import-position
+    ensure_focus_at_coords as _ensure_focus_at_coords,
+    find_element_at_coords as _find_element_at_coords,
+)
 
 
 @mcp.tool()
@@ -480,6 +453,7 @@ async def get_ui_hierarchy(ctx: Context) -> str:
 if __name__ == "__main__":
     from artemis.runtime import shutdown_awake_service, start_awake_service
 
+    configure_stdio_mode()
     start_awake_service()
     try:
         mcp.run(transport="stdio")

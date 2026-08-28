@@ -19,6 +19,29 @@ from typing import Any
 from artemis.config import PAUSE_FILE
 
 
+def _pid_exists(pid: int) -> bool:
+    """Best-effort liveness probe; returns True when liveness cannot be determined.
+
+    psutil is preferred because on Windows ``os.kill(pid, 0)`` does not report
+    dead pids reliably.
+    """
+    try:
+        import psutil
+
+        return psutil.pid_exists(pid)
+    except Exception:
+        pass
+    try:
+        import os
+
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 class ServerState:
     """Encapsulates all runtime states of the debug server."""
 
@@ -39,6 +62,12 @@ class ServerState:
         self.was_stopped_manually: bool = False
         self.cancelled_session_ids: set[str] = set()
         self.startup_progress: dict[str, list[dict[str, Any]]] = {}
+
+        # Concurrent task executions keyed by session_id. Each value holds
+        # {"process", "device_id", "goal", "profile"}. `current_process` /
+        # `active_session_id` mirror the most recently launched run for
+        # backward compatibility with single-task consumers.
+        self.active_runs: dict[str, dict[str, Any]] = {}
 
         # Unified single source of truth for task queue
         self.queue_items: list[dict[str, Any]] = []
@@ -101,8 +130,37 @@ class ServerState:
     def queue_goals(self, val: list[Any]):
         pass
 
+    def prune_finished_runs(self) -> None:
+        """Drop finished entries from active_runs.
+
+        Besides reaped processes (returncode set), also drops entries whose pid no
+        longer exists: if a run coroutine dies without reaping its child, the entry
+        must not permanently block the scheduler.
+        """
+        for sid, run in list(self.active_runs.items()):
+            proc = run.get("process")
+            if proc is None or proc.returncode is not None:
+                self.active_runs.pop(sid, None)
+                continue
+            pid = getattr(proc, "pid", None)
+            if pid and not _pid_exists(pid):
+                self.active_runs.pop(sid, None)
+
+    @property
+    def busy_device_ids(self) -> set[str]:
+        """Device serials currently owned by an in-flight run."""
+        self.prune_finished_runs()
+        return {
+            str(run["device_id"])
+            for run in self.active_runs.values()
+            if run.get("device_id")
+        }
+
     @property
     def is_running(self) -> bool:
+        self.prune_finished_runs()
+        if self.active_runs:
+            return True
         has_proc = False
         if self.current_process is not None:
             if self.current_process.returncode is not None:

@@ -304,9 +304,11 @@ async def test_input_text_happy_path(mock_context, mock_controller):
         ctx=mock_context,
     )
     assert "Executed typing 'hello'." in outcome
-    mock_controller.tap_at.assert_called_once_with(540, 1200)
+    # Focus goes through ensure_focus_at_coords (keyword-style tap), and typing
+    # never re-clears: the clear already happened via erase_text.
+    mock_controller.tap_at.assert_called_once_with(x=540, y=1200)
     mock_controller.erase_text.assert_called_once()
-    mock_controller.type_text.assert_called_once_with("hello")
+    mock_controller.type_text.assert_called_once_with("hello", clear_existing=False)
 
 
 @pytest.mark.asyncio
@@ -396,8 +398,10 @@ async def test_press_key_input_validation(mock_context, mock_controller):
         controller=mock_controller,
         ctx=mock_context,
     )
-    # The current execution doesn't raise error on unknown keys, just logs error
-    assert "Error executing key press 'INVALID_KEY'." in outcome
+    # Unknown keycodes are forwarded verbatim to the driver (historical adb_server
+    # behavior); the mock driver accepts them, so the press reports success.
+    assert "Executed key press 'INVALID_KEY'." in outcome
+    mock_controller.press_key.assert_called_once_with("INVALID_KEY")
 
 
 # ==========================================
@@ -409,8 +413,10 @@ async def test_press_key_input_validation(mock_context, mock_controller):
 async def test_manage_app_happy_path(mock_context, mock_controller):
     state = DummyState()
     with (
-        patch("artemis.agents.validator.tool_declarations.find_package") as mock_find_package,
-        patch("artemis.agents.validator.tool_declarations.launch_app_with_retries") as mock_launch,
+        # The device-call bodies moved into the actuator layer, which imports these
+        # lazily from their source modules -- patch them at the source.
+        patch("artemis.tools.mobile.launch_app.find_package") as mock_find_package,
+        patch("artemis.utils.app_launch_utils.launch_app_with_retries") as mock_launch,
     ):
         mock_find_package.return_value = "com.google.android.youtube"
         mock_launch.return_value = (True, "")
@@ -430,7 +436,7 @@ async def test_manage_app_happy_path(mock_context, mock_controller):
 @pytest.mark.asyncio
 async def test_manage_app_input_validation(mock_context, mock_controller):
     state = DummyState()
-    with patch("artemis.agents.validator.tool_declarations.find_package") as mock_find_package:
+    with patch("artemis.tools.mobile.launch_app.find_package") as mock_find_package:
         mock_find_package.return_value = None
 
         outcome, _, _, _ = await _exec_manage_app(

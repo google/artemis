@@ -16,134 +16,222 @@
 
 import os
 import subprocess
+import sys
+import threading
+import time
 from typing import Any
 import uuid
 
 from mcp_server.base import mcp
+from mcp_server.notifiers import notify
 from mcp_server.utils import env_utils, trace_store
 from artemis.runtime import DeviceExecutionLock
+
+# Seconds the spawned runner gets to finish its imports and open its log files
+# before the spawn is declared dead. Normal startup creates stdout.log within a
+# few seconds; a runner that produced no logs by this deadline is hung in
+# interpreter/DLL startup and will never recover (observed on Windows when the
+# MCP server process context degrades).
+SPAWN_WATCHDOG_SECONDS = 60
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Terminate a spawned runner and its children (the venv shim re-execs python)."""
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+
+def _watch_spawn(
+    trace_id: str,
+    pid: int,
+    queue_ticket: str,
+    conversation_id: str | None,
+    deadline_seconds: float = SPAWN_WATCHDOG_SECONDS,
+    poll_interval: float = 2.0,
+) -> bool:
+    """Watch a freshly spawned runner; kill and fail the task if it never boots.
+
+    The runner opens stdout.log/stderr.log immediately after module imports, so
+    their absence after the deadline means the process is wedged before running
+    any task code. Without this, a wedged spawn leaves the task in 'running'
+    forever and holds its device-queue ticket.
+
+    Returns True when the runner booted (or was already terminal), False when it
+    was declared hung and killed.
+    """
+    trace_dir = trace_store.get_trace_dir(trace_id)
+    log_paths = (
+        os.path.join(trace_dir, "stdout.log"),
+        os.path.join(trace_dir, "stderr.log"),
+    )
+
+    deadline = time.monotonic() + deadline_seconds
+    while time.monotonic() < deadline:
+        if any(os.path.exists(p) for p in log_paths):
+            return True  # runner booted normally
+        status_data = trace_store.read_status(trace_id)
+        if status_data and status_data.get("status") not in ("running", "pending"):
+            return True  # already terminal (e.g. stopped by the user)
+        time.sleep(poll_interval)
+
+    if any(os.path.exists(p) for p in log_paths):
+        return True
+    status_data = trace_store.read_status(trace_id)
+    if status_data and status_data.get("status") not in ("running", "pending"):
+        return True
+
+    error_text = (
+        f"Background runner (pid {pid}) produced no logs within "
+        f"{deadline_seconds:.0f}s of spawn and was killed: the process hung "
+        "during interpreter startup. Restarting the MCP server usually clears "
+        "this; the task can be resubmitted afterwards."
+    )
+    _kill_process_tree(pid)
+    DeviceExecutionLock.cancel_reservation(queue_ticket)
+    trace_store.update_trace_status(trace_id, "failed", error=error_text)
+    if conversation_id:
+        try:
+            notify(
+                conversation_id=conversation_id,
+                message=f"Artemis task '{trace_id}' failed to start: {error_text}",
+                event_type="failed",
+                payload={"trace_id": trace_id, "error": error_text},
+            )
+        except Exception:
+            pass
+    return False
+
+
+def _start_spawn_watchdog(
+    trace_id: str,
+    pid: int,
+    queue_ticket: str,
+    conversation_id: str | None,
+) -> None:
+    """Run _watch_spawn on a daemon thread so the tool call returns immediately."""
+    threading.Thread(
+        target=_watch_spawn,
+        args=(trace_id, pid, queue_ticket, conversation_id),
+        name=f"spawn-watchdog-{trace_id[:8]}",
+        daemon=True,
+    ).start()
+
+
+def _validate_device_serial(device_serial: str) -> dict[str, Any] | None:
+    """Reject a task whose explicitly requested device is not attached and authorized.
+
+    Returns a failure response dict when the serial must be rejected, or None when
+    the device is usable. If device enumeration itself fails (no adb available),
+    validation is skipped rather than blocking task submission.
+    """
+    try:
+        from artemis.runtime import device_pool
+        from artemis.runtime.device_lock import DeviceExecutionLock
+
+        norm = DeviceExecutionLock._normalize_device_id
+        attached = {norm(d.serial): d.state for d in device_pool.list_devices()}
+    except Exception:
+        return None
+    if not attached:
+        # Enumeration unavailable (no adb / transient failure): let the task
+        # proceed and fail downstream with a clear no-device error instead.
+        return None
+
+    dev_state = attached.get(norm(device_serial))
+    if dev_state == "device":
+        return None
+
+    if dev_state is None:
+        detail = (
+            f"Device '{device_serial}' is not connected. "
+            f"Attached devices: {sorted(attached) if attached else 'none'}."
+        )
+    else:
+        detail = f"Device '{device_serial}' is attached but not ready (state: '{dev_state}')."
+    return {
+        "status": "failed",
+        "error": detail,
+        "message": (
+            f"{detail} Task rejected to prevent execution on an unintended device. "
+            "Run `adb devices -l` to inspect attached hardware, then resubmit with a "
+            "valid serial (or omit device_serial for automatic selection)."
+        ),
+    }
 
 
 @mcp.tool()
 def mobile_run_task(
     task_desc: str,
-    conversation_id: str,
+    conversation_id: str | None = None,
     model: str = "Flash",
     locked_app_package: str | None = None,
     app_path: str | None = None,
     expected_output_desc: str | None = None,
     device_serial: str | None = None,
 ) -> dict[str, Any]:
-    """Starts a specialized mobile UI automation subagent to autonomously plan and execute tasks on a connected Android device.
+    """Starts an autonomous mobile UI automation subagent on a connected Android device.
 
-    With this tool, you can delegate complex mobile workflows and UI
-    interactions to a background agent.
-    This tool supports two execution models: **Flash** (for rapid,
-    straightforward UI scripts) and **Pro** (for complex, exploratory tasks
-    requiring deep reasoning).
+    Delegates a mobile workflow to a background agent. Non-blocking: returns
+    immediately with `trace_id` (for `mobile_manage_task` / `mobile_inspect_trace`),
+    `device_serial`, `stdout_log`/`stderr_log` paths, and `notes_dir` (Pro only).
+    On completion (success or failure) a Reactive Wakeup notifies you — but only
+    when `conversation_id` was provided; without it, rely on your fallback timer.
 
-    ### Device Selection & Multi-Device Support (CRITICAL)
-    ARTEMIS supports multi-device execution and provides two device selection modes:
-    1. **Direct Device Specification**: Specify `device_serial` explicitly
-       (e.g., `device_serial="63191FDKX00062"` or `device_serial="emulator-5554"`).
-       Tasks targeting different devices run concurrently via per-device locking.
-    2. **Automatic Device Selection**: If `device_serial` is omitted or `None`,
-       ARTEMIS will automatically select the connected device or allocate an idle device
-       from the device pool.
+    ### Model selection (routing)
+    - **Flash** (default, preferred): simple, deterministic tasks completable
+      within ~30 UI steps. No log/video analysis, no ADB shell, no persistent
+      plan or notes — unsuitable for exploration, complex error recovery,
+      monitoring/polling, or tasks that must report back large amounts of
+      detail.
+    - **Pro**: complex, exploratory, or multi-branch tasks; continuous
+      monitoring/polling; tasks needing ADB shell, system logs, video analysis,
+      multi-step planning, or detailed written output (via notes and
+      `expected_output_desc`).
 
-    **Device Selection Policy & Diagnostics**:
-    - **Prioritize User Choice**: When multiple devices or emulators are connected (or when
-      user intent is not explicitly specified), **ALWAYS PRIORITIZE ASKING THE USER** to
-      choose or confirm the target device before launching tasks.
-    - **Device Diagnosis with `adb devices`**: Always use `adb devices` (or `adb devices -l`)
-      to inspect connected hardware, verify authorization states (`device` vs `unauthorized`),
-      and retrieve active device serials when diagnosing or before delegating tasks.
+    Timing is not precise: the agent's own inference adds ~5 s per step (Flash)
+    or ~30 s per turn (Pro) on top of any requested waits — account for this
+    when the task involves waiting. For recurring workflows, run once to
+    discover the path, then author a deterministic script instead of
+    re-delegating.
 
-    ### Model Selection Guide (CRITICAL FOR ROUTING)
-    You MUST choose the appropriate `model` based on the task complexity:
-    - **Flash**: Best for simple, deterministic tasks that can be completed
-    within **30 UI steps**. You should prioritize using this model to complete
-    the task.
-      *Limitations*: Flash CANNOT analyze video recordings, query system logs,
-      execute arbitrary ADB shell commands, maintain a structured task plan, or
-      write custom execution notes/reports. Do not use Flash if the task
-      requires exploration, complex error recovery, continuous monitoring/polling
-      (due to step count limits and lack of state persistence), or outputting
-      large amounts of detailed information (as Flash cannot access the
-      notes/scratchpad system to retain extensive details across steps; use
-      **Pro** instead).
-    - **Pro**: Required for complex, non-linear, or exploratory tasks (e.g.,
-    browsing deep lists, troubleshooting app crashes, tasks requiring multi-step
-    planning), continuous monitoring or polling tasks (e.g., periodically checking
-    UI state, polling until specific conditions or events occur, watching progress,
-    or waiting for background changes), OR when you need the subagent to extract,
-    remember, and output large amounts of detailed information. Pro is slower but
-    fully featured.
-      *Capabilities*: Supports full video analysis, system log querying, ADB
-      shell access, robust monitoring/polling execution loops with multi-agent
-      planning, and generating custom text outputs/reports via the expected
-      output agent and structured notes (`notes_dir`).
-
-    Regardless of the model, precise timing for waiting actions cannot be
-    guaranteed due to latency. If you need to implement a wait, please note that
-    the total waiting time comprises both the time required for the Artemis large
-    model to generate output and the actual waiting duration. (For Flash, the
-    interval between output steps is typically 3-7 seconds, whereas Pro requires
-    25-35 seconds.)
-
-    For long-term repetitive tasks, run the workflow once with this tool to
-    discover the path, then author a dedicated automation script instead of
-    repeatedly delegating.
-
-    This tool is non-blocking and will immediately return a dictionary
-    containing:
-    - `trace_id`: The unique session identifier of the task for status tracking
-    and inspection.
-    - `device_serial`: The assigned target device serial (or "auto-select").
-    - `notes_dir`: (Pro Model Only) The directory where the subagent's execution
-    files/notes are located.
-    - `stdout_log`: The path to the execution framework log.
-    - `stderr_log`: The path to the error log containing critical failures and
-    Python tracebacks (essential for debugging).
-
-    Upon task completion (success or failure), the system will trigger a
-    Reactive Wakeup to notify you.
-
-    CRITICAL BEHAVIORAL RULES:
-    1. **Fallback Timer Constraint**: You **MUST** set a background timer to
-    check the task status at least once every 1 minute as a safety fallback.
-    2. **Post-Task Inspection**: After completion, retrieve and inspect the
-    execution logs (`stderr_log`/`stdout_log`) to verify success.
-    3. **Inspecting Notes (Pro Model Only)**: If running with Pro, you can
-    inspect the notes/plans recorded in `notes_dir` to extract critical
-    execution results passed back by the subagent.
+    ### Follow-up protocol (CRITICAL)
+    1. **Fallback timer**: you MUST set a background timer and check the task
+       status via `mobile_manage_task` at least once every 1 minute — mobile
+       tasks can stall silently, so never rely on the completion wakeup alone.
+    2. **Post-task inspection**: after completion, inspect the execution logs
+       to verify success (`stderr_log` carries critical failures and Python
+       tracebacks — essential for debugging).
+    3. **Pro notes**: for Pro runs, read `notes_dir` to extract the results and
+       plans the subagent recorded.
 
     Args:
-        task_desc: A clear, highly detailed, actionable task description for the
-          mobile subagent. Since execution is autonomous and one-shot, provide
-          all necessary context, exact UI actions to take, and clear termination
-          conditions. If `model="Pro"`, you can explicitly instruct the subagent
-          on what specific information it must record in the notes.
-        conversation_id: Your current active Conversation ID. Critical for
-          routing the wakeup notification.
-        model: Must be either `"Flash"` or `"Pro"`. - Choose `"Flash"` for fast,
-          simple UI tasks under 30 steps without log/video analysis or
-          monitoring/polling needs. - Choose `"Pro"` for complex tasks requiring
-          planning, ADB shell commands, logs, video exploration, or continuous
-          monitoring and polling tasks.
-        locked_app_package: Optional package name of the app to lock execution
-          to. The agent will auto-launch and restrict actions to this app.
-        app_path: Optional path to a local APK to install on the device before
-          running the task.
-        expected_output_desc: Optional (Pro Model Only). If provided, a
-          summarization agent will aggregate the interaction history
-          (motivation, actions, videos) into a summary report saved as
-          "output.md" in `notes_dir`. Ignored if `model="Flash"`.
-        device_serial: Optional Android device serial number (e.g. "63191FDKX00062"
-          or "emulator-5554"). If specified, binds execution strictly to that device,
-          allowing multi-device concurrent automation. If omitted, ARTEMIS will
-          automatically select an available device. Prioritize letting the user select
-          the target device if multiple devices are attached.
+        task_desc: Clear, self-contained task description with all context,
+          exact UI actions, and termination conditions (execution is one-shot).
+          For Pro, may also specify what the subagent must record in its notes.
+        conversation_id: Optional conversation ID used to route the completion
+          wakeup notification back to the caller. Omit if unknown.
+        model: `"Flash"` or `"Pro"` — see model selection above.
+        locked_app_package: Optional package name to lock execution to; the
+          agent auto-launches it and restricts actions to that app.
+        app_path: Optional local APK path to install before running.
+        expected_output_desc: Optional, Pro only. If set, a summarization agent
+          writes a report to `output.md` in `notes_dir`. Ignored for Flash.
+        device_serial: Optional device serial (e.g. "emulator-5554") to bind
+          execution to a specific device; distinct devices run concurrently.
+          If omitted, an available device is selected automatically. When
+          several devices are attached, confirm the target with the user first
+          (`adb devices -l` lists serials and authorization states).
     """
     # 0. Validate and normalize model
     if model.lower() not in ("flash", "pro"):
@@ -161,6 +249,16 @@ def mobile_run_task(
         conversation_id=conversation_id,
         device_serial=device_serial,
     )
+
+    # 2b. Strict device binding: an explicitly requested serial must be attached and
+    # authorized. Rejecting here prevents the task from silently running on a
+    # different device than the caller asked for. Runs after init_trace so the
+    # rejection carries a trace_id like every other response of this tool.
+    if device_serial:
+        rejection = _validate_device_serial(device_serial)
+        if rejection:
+            trace_store.update_trace_status(trace_id, "failed", error=rejection["error"])
+            return {"trace_id": trace_id, **rejection}
 
     # 3. Dispatch via unified Artemis Daemon scheduler if available (unless standalone forced)
     if os.environ.get("ARTEMIS_STANDALONE") != "1":
@@ -181,6 +279,15 @@ def mobile_run_task(
                     conversation_id=conversation_id,
                     base_url=base_url,
                 )
+                if resp and resp.get("status") == "rejected":
+                    rejection_error = resp.get("error") or "Task rejected by Artemis Daemon."
+                    trace_store.update_trace_status(trace_id, "failed", error=rejection_error)
+                    return {
+                        "trace_id": trace_id,
+                        "status": "failed",
+                        "error": rejection_error,
+                        "message": f"Task rejected by Artemis Daemon: {rejection_error}",
+                    }
                 if resp and resp.get("tasks"):
                     assigned_sid = resp["tasks"][0].get("session_id", trace_id)
                     trace_store.update_trace_status(
@@ -275,7 +382,7 @@ def mobile_run_task(
             "--model",
             canonical_model,
             "--conversation-id",
-            conversation_id,
+            conversation_id or "",
         ]
         if locked_app_package:
             cmd.extend(["--locked-app-package", locked_app_package])
@@ -329,6 +436,11 @@ def mobile_run_task(
             status_data["pid"] = proc.pid
             status_data["queue_ticket"] = queue_ticket
             trace_store.write_status(trace_id, status_data)
+
+        # 6. Arm a watchdog: a runner that never opens its log files is hung in
+        # interpreter startup and must be killed instead of squatting on the
+        # queue as 'running' forever.
+        _start_spawn_watchdog(trace_id, proc.pid, queue_ticket, conversation_id)
 
         trace_dir = trace_store.get_trace_dir(trace_id)
         stdout_log_path = os.path.join(trace_dir, "stdout.log")

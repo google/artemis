@@ -55,7 +55,9 @@ def test_darwin_platform_paths():
     """Verify macOS platform paths adhere to Apple Library standards."""
     darwin_p = DarwinPlatform()
     assert darwin_p.os_type == OSType.MACOS
-    assert "Library/Application Support" in str(darwin_p.paths.config_dir)
+    # Compare path components so the assertion holds regardless of the host
+    # OS path separator used by str().
+    assert darwin_p.paths.config_dir.parts[-3:] == ("Library", "Application Support", "artemis")
     assert darwin_p.process.path_separator == ":"
 
 

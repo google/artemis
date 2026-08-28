@@ -46,6 +46,10 @@ class TaskQueueService:
     and startup tasks.
     """
 
+    # Strong references to in-flight _execute_task_item tasks (asyncio itself only
+    # keeps weak references to running tasks).
+    _run_tasks: set[asyncio.Task] = set()
+
     @classmethod
     def _broadcast_event(cls, event_type: str, data: Any):
         """Broadcasts an event safely to all registered subscribers."""
@@ -128,39 +132,71 @@ class TaskQueueService:
         A new process group alone is insufficient on Windows: the worker still
         shares the parent's console, so a CTRL_C_EVENT generated anywhere in
         that console can reach the UI server. CREATE_NO_WINDOW removes that
-        shared console boundary. Output is captured and forwarded explicitly
-        so detached workers remain visible in the server terminal.
+        shared console boundary.
+
+        Output is captured on every platform so it can be forwarded to the
+        server terminal and teed into the trace's stdout.log (the daemon itself
+        is often spawned with its stdio discarded, so inheriting would lose the
+        worker's logs entirely).
         """
+        kwargs: dict[str, Any] = {
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.STDOUT,
+        }
         if sys.platform == "win32":
-            return {
-                "creationflags": (
-                    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-                ),
-                "stdout": asyncio.subprocess.PIPE,
-                "stderr": asyncio.subprocess.STDOUT,
-            }
-        return {}
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            )
+        return kwargs
 
     @staticmethod
-    async def _forward_worker_output(stream: asyncio.StreamReader | None) -> None:
-        """Forward a detached Windows worker's combined output without corrupting UTF-8."""
+    async def _forward_worker_output(
+        stream: asyncio.StreamReader | None, log_path: str | None = None
+    ) -> None:
+        """Forward a worker's combined output without corrupting UTF-8.
+
+        When ``log_path`` is given, the output is also teed into that file so
+        the trace's advertised stdout.log actually exists for diagnostics.
+        """
         if stream is None:
             return
 
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        while True:
-            chunk = await stream.read(4096)
-            if not chunk:
-                break
-            text = decoder.decode(chunk)
-            if text:
-                sys.stdout.write(text)
-                sys.stdout.flush()
+        log_file = None
+        if log_path:
+            try:
+                os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                log_file = open(log_path, "w", buffering=1, encoding="utf-8", errors="replace")
+            except Exception as exc:
+                print(f"[QueueWorker] Could not open worker log file '{log_path}': {exc}")
 
-        tail = decoder.decode(b"", final=True)
-        if tail:
-            sys.stdout.write(tail)
+        def _emit(text: str) -> None:
+            sys.stdout.write(text)
             sys.stdout.flush()
+            if log_file is not None:
+                try:
+                    log_file.write(text)
+                except Exception:
+                    pass
+
+        try:
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            while True:
+                chunk = await stream.read(4096)
+                if not chunk:
+                    break
+                text = decoder.decode(chunk)
+                if text:
+                    _emit(text)
+
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                _emit(tail)
+        finally:
+            if log_file is not None:
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
 
     @staticmethod
     async def _finish_output_forwarder(output_task: asyncio.Task[None] | None) -> None:
@@ -232,268 +268,385 @@ class TaskQueueService:
             pass
 
     @classmethod
+    def _concurrency_mode(cls) -> str:
+        """Resolve the scheduler concurrency mode.
+
+        Mirrors DeviceExecutionLock's contract (ARTEMIS_CONCURRENCY_MODE /
+        ARTEMIS_MAX_CONCURRENT_TASKS):
+        - "global": strict serial -- one task at a time across all devices.
+        - "per_device": one task per device -- distinct devices run concurrently.
+        Defaults to per-device concurrency, matching the lock layer's default.
+        """
+        mode = os.environ.get("ARTEMIS_CONCURRENCY_MODE", "").strip().lower()
+        if mode in ("global", "serial", "1"):
+            return "global"
+        if mode in ("per_device", "device", "parallel", "0"):
+            return "per_device"
+        try:
+            if int(os.environ.get("ARTEMIS_MAX_CONCURRENT_TASKS", 0) or 0) == 1:
+                return "global"
+        except (TypeError, ValueError):
+            pass
+        return "per_device"
+
+    @classmethod
     async def queue_worker(cls):
-        """Persistent, self-healing background worker loop processing tasks in FIFO order."""
-        print("[QueueWorker] Background worker loop initialized and running.")
+        """Persistent dispatcher scheduling pending tasks onto devices.
+
+        Scans the queue and launches each eligible task as an independent
+        coroutine. Admission is governed by _concurrency_mode(): "global" admits
+        one task at a time overall, "per_device" admits one task per device so
+        distinct devices execute concurrently. Per-device FIFO ordering and
+        cross-process mutual exclusion remain enforced by DeviceExecutionLock
+        inside each worker process.
+        """
+        print(
+            "[QueueWorker] Dispatcher initialized "
+            f"(concurrency mode: {cls._concurrency_mode()})."
+        )
         try:
             DeviceExecutionLock.cleanup_stale_locks()
         except Exception as exc:
             print(f"[QueueWorker] Initial stale lock cleanup notice: {exc}")
 
-        while True:
-            task_item = None
-            sess_id = None
-            goal = None
-            profile = "flash"
-            output_task: asyncio.Task[None] | None = None
-            try:
-                if state.is_running:
-                    await asyncio.sleep(0.2)
+        try:
+            while True:
+                try:
+                    cls._dispatch_pending_tasks()
+                except Exception as exc:
+                    print(f"[QueueWorker] Dispatch error: {exc}")
+                try:
+                    await asyncio.wait_for(state.wake_event.wait(), timeout=0.3)
+                    state.wake_event.clear()
+                except TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            print("[QueueWorker] Dispatcher received cancellation signal.")
+            for run in list(state.active_runs.values()):
+                run_proc = run.get("process")
+                if run_proc is not None and run_proc.returncode is None:
+                    await cls._terminate_worker_process(run_proc)
+            raise
+
+    @classmethod
+    def _dispatch_pending_tasks(cls) -> None:
+        """Launch every pending task admissible under the current concurrency mode."""
+        mode = cls._concurrency_mode()
+        state.prune_finished_runs()
+        if mode == "global" and state.is_running:
+            return
+
+        # Dispatched-but-not-yet-spawned runs are only visible as queue items in
+        # "running" state, so admission must count those too -- active_runs alone
+        # lags behind by the subprocess startup latency.
+        in_flight = [
+            i
+            for i in state.queue_items
+            if isinstance(i, dict) and i.get("status") == "running"
+        ]
+        busy_devices = state.busy_device_ids | {
+            str(i.get("device_serial")) for i in in_flight if i.get("device_serial")
+        }
+        dispatched_any = False
+        loop = asyncio.get_running_loop()
+        for item in list(state.queue_items):
+            if not (isinstance(item, dict) and item.get("status") == "pending"):
+                continue
+            sess_id = item.get("session_id")
+            if sess_id and str(sess_id) in state.cancelled_session_ids:
+                cls._remove_task(sess_id)
+                continue
+
+            device = item.get("device_serial")
+            if mode == "per_device":
+                # A task without a resolved device may bind to any serial, so it
+                # only launches on an otherwise idle scheduler; the device lock
+                # then allocates freely without contending against active runs.
+                if device is None and (state.active_runs or in_flight or dispatched_any):
+                    continue
+                if device is not None and str(device) in busy_devices:
                     continue
 
-                # 1. Fetch the next pending task
-                task_item = cls._get_next_pending_task()
-                if task_item is None:
-                    await asyncio.sleep(0.3)
-                    continue
+            item["status"] = "running"
+            dispatched_any = True
+            if device is not None:
+                busy_devices.add(str(device))
+            run_task = loop.create_task(cls._execute_task_item(item))
+            # Hold a strong reference: asyncio keeps only weak refs to running
+            # tasks, and a collected run would strand its queue item forever.
+            cls._run_tasks.add(run_task)
+            run_task.add_done_callback(cls._run_tasks.discard)
+            if mode == "global":
+                break
 
-                # 2. Extract and initialize task execution metadata
-                sess_id = task_item.get("session_id")
-                if sess_id and str(sess_id) in getattr(state, "cancelled_session_ids", set()):
-                    cls._remove_task(sess_id)
-                    continue
+    @classmethod
+    async def _execute_task_item(cls, task_item: dict[str, Any]) -> None:
+        """Run one queued task to completion in its own worker subprocess."""
+        sess_id = task_item.get("session_id")
+        run_key = str(sess_id) if sess_id else uuid.uuid4().hex
+        goal = task_item.get("goal")
+        profile = task_item.get("profile", "flash")
+        proc: asyncio.subprocess.Process | None = None
+        output_task: asyncio.Task[None] | None = None
+        try:
+            expected_output = task_item.get("expected_output")
+            enable_outputter = task_item.get("enable_outputter")
+            locked_app = task_item.get("locked_app_package") or task_item.get("locked_app")
+            app_path = task_item.get("app_path")
+            task_item["status"] = "running"
+            task_item["start_time"] = time.time()
 
-                goal = task_item.get("goal")
-                profile = task_item.get("profile", "flash")
-                expected_output = task_item.get("expected_output")
-                enable_outputter = task_item.get("enable_outputter")
-                locked_app = task_item.get("locked_app_package") or task_item.get("locked_app")
-                app_path = task_item.get("app_path")
-                task_item["status"] = "running"
-                task_item["start_time"] = time.time()
+            # A fresh launch clears a stale stop request from a previous task,
+            # matching the historical serial worker's per-task reset. Per-session
+            # stops are tracked in cancelled_session_ids and are unaffected.
+            state.was_stopped_manually = False
+            state.current_goal = goal
+            state.current_profile = profile
+            state.active_session_id = sess_id
 
-                state.current_goal = goal
-                state.current_profile = profile
-                state.active_session_id = sess_id
-                state.was_stopped_manually = False
+            cls._broadcast_startup_progress(
+                sess_id, "launching", "Starting the execution process"
+            )
 
-                cls._broadcast_startup_progress(
-                    sess_id, "launching", "Starting the execution process"
+            # Broadcast session_started so all connected clients know the task has started
+            cls._broadcast_event(
+                "session_started",
+                {
+                    "session_id": sess_id,
+                    "initial_goal": goal,
+                    "profile": profile,
+                    "device_serial": task_item.get("device_serial"),
+                },
+            )
+
+            test_name = f"web_{int(time.time())}_{run_key[:8]}"
+            env = os.environ.copy()
+            pythonpath_parts = [
+                str(WORKSPACE_ROOT),
+                str(WORKSPACE_ROOT / "apps" / "admin_console"),
+                str(WORKSPACE_ROOT / "apps" / "cloud_service"),
+                env.get("PYTHONPATH", ""),
+            ]
+            env["PYTHONPATH"] = os.pathsep.join([p for p in pythonpath_parts if p])
+            env["PYTHONUTF8"] = "1"
+            env["PYTHONUNBUFFERED"] = "1"
+            if state.ipc_port is not None:
+                env["ARTEMIS_IPC_PORT"] = str(state.ipc_port)
+            if sess_id:
+                env["ARTEMIS_SESSION_ID"] = str(sess_id)
+            env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
+            env["ARTEMIS_TASK_WORKER"] = "1"
+            queue_ticket = task_item.get("queue_ticket")
+            if queue_ticket:
+                env[DeviceExecutionLock.QUEUE_TICKET_ENV] = str(queue_ticket)
+
+            cmd = [
+                sys.executable,
+                "-m",
+                "artemis.main",
+                goal,
+                "--profile",
+                profile,
+                "--test-name",
+                test_name,
+            ]
+            if sess_id:
+                cmd.extend(["--session-id", str(sess_id)])
+            if expected_output:
+                cmd.extend(["--output-description", str(expected_output)])
+            if enable_outputter is not None:
+                cmd.append("--enable-outputter" if enable_outputter else "--disable-outputter")
+            if locked_app:
+                cmd.extend(["--locked-app", str(locked_app)])
+            if app_path:
+                cmd.extend(["--app-path", str(app_path)])
+            device_serial = task_item.get("device_serial")
+            if device_serial:
+                cmd.extend(["--device-serial", str(device_serial)])
+                env["ADB_DEVICE_SERIAL"] = str(device_serial)
+
+            print(
+                f"[QueueWorker] Starting task [{sess_id}]: '{goal}' (profile: {profile}, device: {device_serial or 'auto'}, outputter: {bool(expected_output or enable_outputter)})"
+            )
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(WORKSPACE_ROOT),
+                env=env,
+                **cls._subprocess_creation_kwargs(),
+            )
+            state.current_process = proc
+            task_item["pid"] = proc.pid
+            state.active_runs[run_key] = {
+                "process": proc,
+                "device_id": str(device_serial) if device_serial else None,
+                "goal": goal,
+                "profile": profile,
+            }
+            if sess_id:
+                try:
+                    from mcp_server.utils import trace_store
+
+                    st = trace_store.read_status(str(sess_id))
+                    if st:
+                        st["pid"] = proc.pid
+                        trace_store.write_status(str(sess_id), st)
+                except Exception:
+                    pass
+            cls._broadcast_startup_progress(
+                sess_id, "process_ready", "Execution process started"
+            )
+            ingress_type = str(task_item.get("ingress", "frontend"))
+            DeviceExecutionLock.transfer_reservation(
+                str(queue_ticket),
+                proc.pid,
+                description=f"{ingress_type} task: {goal[:120]}",
+                device_id=device_serial or "pending",
+                session_id=str(sess_id) if sess_id else None,
+                ingress=ingress_type,
+            )
+            # Forward the worker's combined output and tee it into the trace's
+            # stdout.log so the log paths advertised by the MCP API exist.
+            log_path = None
+            if sess_id:
+                try:
+                    from mcp_server.utils import trace_store
+
+                    log_path = trace_store.get_trace_stdout_log_path(str(sess_id))
+                except Exception:
+                    log_path = None
+            if isinstance(proc.stdout, asyncio.StreamReader):
+                output_task = asyncio.create_task(
+                    cls._forward_worker_output(proc.stdout, log_path)
                 )
 
-                # Broadcast session_started so all connected clients know the task has started
+            if sess_id and (
+                str(sess_id) in getattr(state, "cancelled_session_ids", set())
+                or state.was_stopped_manually
+            ):
+                print(
+                    f"[QueueWorker] Task [{sess_id}] was cancelled during launch. Terminating."
+                )
+                await cls._terminate_worker_process(proc)
+
+            # 3. Await subprocess completion
+            returncode = await cls._wait_for_worker_process(proc)
+            print(f"[QueueWorker] Task [{sess_id}] exited with returncode {returncode}")
+
+            manual_stop = state.was_stopped_manually or bool(
+                sess_id and str(sess_id) in state.cancelled_session_ids
+            )
+
+            # 4. Perform fallback database status update and notification
+            if sess_id:
+                current_status = session_repo.get_session_status(sess_id)
+                new_status, should_persist = cls._resolve_terminal_status(
+                    current_status,
+                    returncode,
+                    manual_stop,
+                )
+                if should_persist:
+                    session_repo.update_session_status(sess_id, new_status, time.time())
+                    print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
+                else:
+                    print(
+                        f"[QueueWorker] Preserved authoritative session {sess_id} "
+                        f"status '{new_status}'"
+                    )
+                try:
+                    from mcp_server.utils import trace_store
+
+                    if trace_store.read_status(str(sess_id)):
+                        canonical_mcp_status = "completed" if new_status in ("completed", "success") else new_status
+                        trace_store.update_trace_status(
+                            str(sess_id),
+                            canonical_mcp_status,
+                        )
+                except Exception:
+                    pass
+                rec_info = session_repo.get_video_recording_for_session(sess_id)
+                rec_status = (rec_info or {}).get("status")
+                recovered_video_path = None
+                if rec_status != "ready":
+                    try:
+                        video_rec_map = session_repo.get_video_recordings_map()
+                        video_idx = await asyncio.to_thread(media_service.build_video_index)
+                        recovered_url = await asyncio.to_thread(
+                            media_service.resolve_video_url,
+                            {"session_id": sess_id},
+                            video_rec_map,
+                            video_idx,
+                        )
+                        if recovered_url:
+                            session_repo.mark_recording_ready(sess_id, recovered_url)
+                            cls._broadcast_event(
+                                "recording_ready",
+                                {"session_id": sess_id, "video_url": recovered_url},
+                            )
+                            recovered_video_path = recovered_url
+                    except Exception as rec_err:
+                        print(f"[QueueWorker] Error attempting recording recovery: {rec_err}")
+
+                if not recovered_video_path and rec_status != "ready":
+                    recording_error = "Task worker exited before recording finalization completed"
+                    if session_repo.mark_recording_failed_if_pending(sess_id, recording_error):
+                        cls._broadcast_event(
+                            "recording_failed",
+                            {"session_id": sess_id, "error": recording_error},
+                        )
+
+                state.active_connections.pop(sess_id, None)
                 cls._broadcast_event(
-                    "session_started",
+                    "session_ended",
                     {
                         "session_id": sess_id,
-                        "initial_goal": goal,
-                        "profile": profile,
-                        "device_serial": task_item.get("device_serial"),
+                        "status": new_status,
+                        "was_stopped_manually": manual_stop,
                     },
                 )
 
-                test_name = f"web_{int(time.time())}"
-                env = os.environ.copy()
-                pythonpath_parts = [
-                    str(WORKSPACE_ROOT),
-                    str(WORKSPACE_ROOT / "apps" / "admin_console"),
-                    str(WORKSPACE_ROOT / "apps" / "cloud_service"),
-                    env.get("PYTHONPATH", ""),
-                ]
-                env["PYTHONPATH"] = os.pathsep.join([p for p in pythonpath_parts if p])
-                env["PYTHONUTF8"] = "1"
-                env["PYTHONUNBUFFERED"] = "1"
-                if state.ipc_port is not None:
-                    env["ARTEMIS_IPC_PORT"] = str(state.ipc_port)
-                if sess_id:
-                    env["ARTEMIS_SESSION_ID"] = str(sess_id)
-                env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
-                env["ARTEMIS_TASK_WORKER"] = "1"
-                queue_ticket = task_item.get("queue_ticket")
-                if queue_ticket:
-                    env[DeviceExecutionLock.QUEUE_TICKET_ENV] = str(queue_ticket)
-
-                cmd = [
-                    sys.executable,
-                    "-m",
-                    "artemis.main",
-                    goal,
-                    "--profile",
-                    profile,
-                    "--test-name",
-                    test_name,
-                ]
-                if sess_id:
-                    cmd.extend(["--session-id", str(sess_id)])
-                if expected_output:
-                    cmd.extend(["--output-description", str(expected_output)])
-                if enable_outputter is not None:
-                    cmd.append("--enable-outputter" if enable_outputter else "--disable-outputter")
-                if locked_app:
-                    cmd.extend(["--locked-app", str(locked_app)])
-                if app_path:
-                    cmd.extend(["--app-path", str(app_path)])
-                device_serial = task_item.get("device_serial")
-                if device_serial:
-                    cmd.extend(["--device-serial", str(device_serial)])
-                    env["ADB_DEVICE_SERIAL"] = str(device_serial)
-
-                print(
-                    f"[QueueWorker] Starting task [{sess_id}]: '{goal}' (profile: {profile}, device: {device_serial or 'auto'}, outputter: {bool(expected_output or enable_outputter)})"
-                )
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    cwd=str(WORKSPACE_ROOT),
-                    env=env,
-                    **cls._subprocess_creation_kwargs(),
-                )
-                state.current_process = proc
-                task_item["pid"] = proc.pid
-                if sess_id:
+                conversation_id = task_item.get("conversation_id") if task_item else None
+                if conversation_id or task_item.get("ingress") == "mcp":
                     try:
-                        from mcp_server.utils import trace_store
+                        from mcp_server.notifiers import notify
 
-                        st = trace_store.read_status(str(sess_id))
-                        if st:
-                            st["pid"] = proc.pid
-                            trace_store.write_status(str(sess_id), st)
-                    except Exception:
-                        pass
-                cls._broadcast_startup_progress(
-                    sess_id, "process_ready", "Execution process started"
-                )
-                ingress_type = str(task_item.get("ingress", "frontend"))
-                DeviceExecutionLock.transfer_reservation(
-                    str(queue_ticket),
-                    proc.pid,
-                    description=f"{ingress_type} task: {goal[:120]}",
-                    device_id=device_serial or "pending",
-                    session_id=str(sess_id) if sess_id else None,
-                    ingress=ingress_type,
-                )
-                if sys.platform == "win32" and isinstance(proc.stdout, asyncio.StreamReader):
-                    output_task = asyncio.create_task(cls._forward_worker_output(proc.stdout))
-
-                if sess_id and (
-                    str(sess_id) in getattr(state, "cancelled_session_ids", set())
-                    or state.was_stopped_manually
-                ):
-                    print(
-                        f"[QueueWorker] Task [{sess_id}] was cancelled during launch. Terminating."
-                    )
-                    await cls._terminate_worker_process(proc)
-
-                # 3. Await subprocess completion
-                returncode = await cls._wait_for_worker_process(proc)
-                print(f"[QueueWorker] Task [{sess_id}] exited with returncode {returncode}")
-
-                # 4. Perform fallback database status update and notification
-                if sess_id:
-                    current_status = session_repo.get_session_status(sess_id)
-                    new_status, should_persist = cls._resolve_terminal_status(
-                        current_status,
-                        returncode,
-                        state.was_stopped_manually,
-                    )
-                    if should_persist:
-                        session_repo.update_session_status(sess_id, new_status, time.time())
-                        print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
-                    else:
-                        print(
-                            f"[QueueWorker] Preserved authoritative session {sess_id} "
-                            f"status '{new_status}'"
+                        notify(
+                            conversation_id=conversation_id or "",
+                            message=f"Artemis autonomous task '{goal}' finished with status '{new_status}'.\nTrace ID: {sess_id}",
+                            title=f"Task {new_status.capitalize()}: {goal[:40]}",
+                            event_type=new_status,
+                            payload={
+                                "trace_id": sess_id,
+                                "session_id": sess_id,
+                                "status": new_status,
+                                "goal": goal,
+                            },
                         )
-                    try:
-                        from mcp_server.utils import trace_store
+                    except Exception as notif_err:
+                        print(f"[QueueWorker] Notification dispatch notice: {notif_err}")
 
-                        if trace_store.read_status(str(sess_id)):
-                            canonical_mcp_status = "completed" if new_status in ("completed", "success") else new_status
-                            trace_store.update_trace_status(
-                                str(sess_id),
-                                canonical_mcp_status,
-                            )
-                    except Exception:
-                        pass
-                    rec_info = session_repo.get_video_recording_for_session(sess_id)
-                    rec_status = (rec_info or {}).get("status")
-                    recovered_video_path = None
-                    if rec_status != "ready":
-                        try:
-                            video_rec_map = session_repo.get_video_recordings_map()
-                            video_idx = await asyncio.to_thread(media_service.build_video_index)
-                            recovered_url = await asyncio.to_thread(
-                                media_service.resolve_video_url,
-                                {"session_id": sess_id},
-                                video_rec_map,
-                                video_idx,
-                            )
-                            if recovered_url:
-                                session_repo.mark_recording_ready(sess_id, recovered_url)
-                                cls._broadcast_event(
-                                    "recording_ready",
-                                    {"session_id": sess_id, "video_url": recovered_url},
-                                )
-                                recovered_video_path = recovered_url
-                        except Exception as rec_err:
-                            print(f"[QueueWorker] Error attempting recording recovery: {rec_err}")
-
-                    if not recovered_video_path and rec_status != "ready":
-                        recording_error = "Task worker exited before recording finalization completed"
-                        if session_repo.mark_recording_failed_if_pending(sess_id, recording_error):
-                            cls._broadcast_event(
-                                "recording_failed",
-                                {"session_id": sess_id, "error": recording_error},
-                            )
-
-                    state.active_connections.pop(sess_id, None)
-                    cls._broadcast_event(
-                        "session_ended",
-                        {
-                            "session_id": sess_id,
-                            "status": new_status,
-                            "was_stopped_manually": state.was_stopped_manually,
-                        },
-                    )
-
-                    conversation_id = task_item.get("conversation_id") if task_item else None
-                    if conversation_id or task_item.get("ingress") == "mcp":
-                        try:
-                            from mcp_server.notifiers import notify
-
-                            notify(
-                                conversation_id=conversation_id or "",
-                                message=f"Artemis autonomous task '{goal}' finished with status '{new_status}'.\nTrace ID: {sess_id}",
-                                title=f"Task {new_status.capitalize()}: {goal[:40]}",
-                                event_type=new_status,
-                                payload={
-                                    "trace_id": sess_id,
-                                    "session_id": sess_id,
-                                    "status": new_status,
-                                    "goal": goal,
-                                },
-                            )
-                        except Exception as notif_err:
-                            print(f"[QueueWorker] Notification dispatch notice: {notif_err}")
-
-            except asyncio.CancelledError:
-                print("[QueueWorker] Task received cancellation signal.")
-                if state.current_process and state.current_process.returncode is None:
-                    await cls._terminate_worker_process(state.current_process)
-                break
-            except Exception as e:
-                print(f"[QueueWorker] Unexpected error executing task: {e}")
-                await asyncio.sleep(0.5)
-            finally:
-                await cls._finish_output_forwarder(output_task)
-                # 5. Clean up completed task from queue and reset execution state
-                if sess_id:
-                    cls._remove_task(sess_id)
+        except asyncio.CancelledError:
+            print(f"[QueueWorker] Task [{sess_id}] received cancellation signal.")
+            if proc is not None and proc.returncode is None:
+                await cls._terminate_worker_process(proc)
+            raise
+        except Exception as e:
+            print(f"[QueueWorker] Unexpected error executing task [{sess_id}]: {e}")
+        finally:
+            await cls._finish_output_forwarder(output_task)
+            # 5. Clean up the finished task and release this run's scheduling slot
+            if sess_id:
+                cls._remove_task(sess_id)
+                state.cancelled_session_ids.discard(str(sess_id))
+            state.cancelled_session_ids.discard(run_key)
+            state.active_runs.pop(run_key, None)
+            if proc is not None and state.current_process is proc:
                 state.current_process = None
+            if not state.active_runs:
                 state.active_session_id = None
                 state.current_goal = None
                 state.current_profile = None
                 state.was_stopped_manually = False
-                state.wake_event.set()
+            state.wake_event.set()
 
     @classmethod
     async def enqueue_tasks(
@@ -560,6 +713,38 @@ class TaskQueueService:
                 return {
                     "status": "queued",
                     "tasks": [recent_duplicate],
+                    "enqueued_count": 0,
+                    "total_queued": len(state.queue_tasks),
+                }
+
+        # Strict device binding: reject an explicitly requested serial that is not
+        # attached and authorized, instead of silently running on another device.
+        if device_serial:
+            try:
+                from artemis.runtime import device_pool
+
+                norm = DeviceExecutionLock._normalize_device_id
+                attached = {
+                    norm(d.serial): d.state
+                    for d in await device_pool.list_devices_async()
+                }
+            except Exception:
+                attached = None
+            # Empty enumeration (no adb / transient failure) skips validation so the
+            # task can proceed and fail downstream with a clear no-device error,
+            # mirroring mcp_server.tools.task_runner._validate_device_serial.
+            if attached and attached.get(norm(device_serial)) != "device":
+                dev_state = attached.get(norm(device_serial))
+                error_detail = (
+                    f"Device '{device_serial}' is not connected. "
+                    f"Attached devices: {sorted(attached) if attached else 'none'}."
+                    if dev_state is None
+                    else f"Device '{device_serial}' is attached but not ready (state: '{dev_state}')."
+                )
+                return {
+                    "status": "rejected",
+                    "error": error_detail,
+                    "tasks": [],
                     "enqueued_count": 0,
                     "total_queued": len(state.queue_tasks),
                 }
@@ -690,8 +875,22 @@ class TaskQueueService:
                             },
                         )
 
-            if state.current_process:
+            if state.active_runs or state.current_process:
                 state.was_stopped_manually = True
+            for run_key, run in list(state.active_runs.items()):
+                # Track the stop per run so each finalizer resolves its terminal
+                # status as cancelled even if the global flag is reset meanwhile.
+                state.cancelled_session_ids.add(str(run_key))
+                run_proc = run.get("process")
+                if run_proc is not None and run_proc.returncode is None:
+                    try:
+                        run_proc.kill()
+                    except Exception:
+                        pass
+            # active_runs entries are popped by each run's finalizer once the
+            # process exit is observed; clearing them here would free the device
+            # slots before the processes are actually gone.
+            if state.current_process:
                 try:
                     state.current_process.kill()
                 except Exception:
@@ -749,7 +948,25 @@ class TaskQueueService:
             else False
         )
         owner_pid = owner.pid if owner else None
-        local_pid = getattr(state.current_process, "pid", None)
+
+        # Resolve the locally-managed run for this target (concurrent scheduling
+        # keeps one subprocess per run in state.active_runs).
+        local_run = None
+        if target_sid:
+            local_run = state.active_runs.get(target_sid)
+        elif target_device:
+            local_run = next(
+                (
+                    run
+                    for run in state.active_runs.values()
+                    if run.get("device_id") and str(run["device_id"]) == target_device
+                ),
+                None,
+            )
+        elif len(state.active_runs) == 1:
+            local_run = next(iter(state.active_runs.values()))
+        local_proc = (local_run or {}).get("process") or state.current_process
+        local_pid = getattr(local_proc, "pid", None)
         is_local_owner = bool(owner_pid and local_pid and owner_pid == local_pid)
 
         running_item = next(
@@ -795,19 +1012,24 @@ class TaskQueueService:
             # Never fall back to a frontend PID while another process has an
             # owner record that is still being published or cannot be parsed.
             return False
-        elif owner is None and state.current_process and (
-            not target_sid or str(state.active_session_id) == target_sid
+        elif owner is None and local_proc is not None and (
+            local_run is not None
+            or not target_sid
+            or str(state.active_session_id) == target_sid
         ):
-            # The frontend worker can be stopped during its short initialization
-            # window before Agent acquires the global device lease.
-            state.was_stopped_manually = True
+            # The locally-managed worker can be stopped during its short
+            # initialization window before Agent acquires the device lease.
+            if target_sid:
+                state.cancelled_session_ids.add(target_sid)
+            else:
+                state.was_stopped_manually = True
             if local_pid:
                 try:
                     stopped = process_supervisor.terminate_tree(local_pid)
                 except Exception:
                     stopped = False
             try:
-                state.current_process.kill()
+                local_proc.kill()
                 stopped = True
             except Exception:
                 pass
@@ -849,10 +1071,14 @@ class TaskQueueService:
             return False
 
         if is_local_owner:
-            state.was_stopped_manually = True
-            state.current_process = None
             if stopped_session_id:
+                # Per-session cancellation: the run's own finalizer resolves the
+                # terminal status without affecting other concurrent runs.
                 state.cancelled_session_ids.add(str(stopped_session_id))
+            else:
+                state.was_stopped_manually = True
+            if local_proc is not None and state.current_process is local_proc:
+                state.current_process = None
 
         for sid, conn_info in list(state.active_connections.items()):
             if (stopped_session_id and str(sid) == str(stopped_session_id)) or (

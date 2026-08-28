@@ -27,6 +27,161 @@ from mcp_server.notifiers import notify
 from mcp_server.utils import env_utils, trace_store
 from artemis.runtime import DeviceExecutionLock, process_supervisor
 
+_LIVENESS_FAILURE_ERROR = "Task runner process terminated unexpectedly."
+# Grace window covering the spawn race: the launcher pid may already have exited
+# while the real runner has not yet registered its own pid in the DataEngine DB.
+_STARTUP_GRACE_SECONDS = 45.0
+
+
+def _find_data_engine_db() -> str | None:
+    db_path = os.path.join(trace_store.TRACES_DIR, "data_engine.db")
+    if os.path.exists(db_path):
+        return db_path
+    db_path = os.path.join(env_utils.get_project_root(), "traces", "data_engine.db")
+    return db_path if os.path.exists(db_path) else None
+
+
+def _pid_alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        import psutil
+
+        proc = psutil.Process(int(pid))
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except OSError:
+            return False
+
+
+def _session_tracked_by_lock(trace_id: str) -> bool:
+    """True when the device-lock layer still tracks this session (queued or active owner)."""
+    try:
+        for q_item in DeviceExecutionLock.get_queued_tasks():
+            if str(q_item.get("session_id")) == trace_id:
+                return True
+    except Exception:
+        pass
+    try:
+        for owner in DeviceExecutionLock.get_active_owners().values():
+            if owner.session_id and str(owner.session_id) == trace_id:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _reconcile_task_state(
+    trace_id: str, status_data: dict[str, Any]
+) -> tuple[str, int | None, bool]:
+    """Reconcile status.json with the DataEngine DB and real process liveness.
+
+    The DB session row is written by the runner process itself (``os.getpid()``),
+    so its pid and terminal status outrank the pid recorded at spawn time -- on
+    Windows that spawn pid is a short-lived venv launcher, not the runner. A dead
+    or missing pid alone never fails a task that the DB, the device-lock queue,
+    or an active lock owner still reports as alive.
+
+    Returns ``(current_status, pid, is_alive)`` and persists any correction back
+    to status.json (including recovering from a previously misreported failure).
+    """
+    current_status = status_data.get("status", "unknown")
+    pid = status_data.get("pid")
+    dirty = False
+
+    db_status: str | None = None
+    db_pid: int | None = None
+    db_path = _find_data_engine_db()
+    if db_path:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT status, pid FROM sessions WHERE session_id = ? ORDER BY start_time DESC LIMIT 1",
+                (trace_id,),
+            ).fetchone()
+            conn.close()
+            if row:
+                db_status = row["status"]
+                db_pid = row["pid"]
+        except Exception:
+            pass
+
+    if db_pid and db_pid != pid:
+        pid = db_pid
+        status_data["pid"] = pid
+        dirty = True
+
+    # The DB terminal verdict only fills in a status.json that has not reached a
+    # terminal state itself, or corrects a liveness-inferred failure. It never
+    # overrides a completed result or an explicit user cancellation.
+    liveness_failed = (
+        current_status == "failed" and status_data.get("error") == _LIVENESS_FAILURE_ERROR
+    )
+    if db_status in ("completed", "success", "failed", "cancelled") and (
+        current_status in ("running", "pending") or liveness_failed
+    ):
+        canonical = "completed" if db_status in ("completed", "success") else db_status
+        if current_status != canonical:
+            current_status = canonical
+            status_data["status"] = canonical
+            if canonical != "failed" and status_data.get("error") == _LIVENESS_FAILURE_ERROR:
+                status_data["error"] = None
+            if not status_data.get("end_time"):
+                status_data["end_time"] = time.time()
+            dirty = True
+        is_alive = False
+    elif current_status in ("running", "pending"):
+        if not pid:
+            # No pid recorded (daemon dispatch never writes one): liveness cannot be
+            # inferred, so the task is assumed alive -- matching the historical
+            # behavior of only checking liveness when a pid exists.
+            is_alive = True
+        else:
+            is_alive = _pid_alive(pid)
+        if not is_alive:
+            if _session_tracked_by_lock(trace_id):
+                # Still queued for a device or owned by a live lock holder.
+                is_alive = True
+            elif db_status in ("running", "pending") and db_pid:
+                # The runner registered itself and its process is gone: truly dead.
+                current_status = "failed"
+                _mark_liveness_failure(trace_id, status_data)
+            elif (time.time() - (status_data.get("start_time") or 0)) < _STARTUP_GRACE_SECONDS:
+                is_alive = True
+            else:
+                current_status = "failed"
+                _mark_liveness_failure(trace_id, status_data)
+    else:
+        is_alive = False
+
+    if dirty:
+        trace_store.write_status(trace_id, status_data)
+    return current_status, pid, is_alive
+
+
+def _mark_liveness_failure(trace_id: str, status_data: dict[str, Any]) -> None:
+    trace_store.update_trace_status(trace_id, "failed", error=_LIVENESS_FAILURE_ERROR)
+    status_data["status"] = "failed"
+    status_data["error"] = _LIVENESS_FAILURE_ERROR
+    conv_id = status_data.get("conversation_id")
+    if conv_id:
+        try:
+            notify(
+                conversation_id=conv_id,
+                message=(
+                    f"Artemis background task died unexpectedly for trace '{trace_id}'. "
+                    f"Error: {_LIVENESS_FAILURE_ERROR}"
+                ),
+                event_type="failed",
+                payload={"trace_id": trace_id, "error": _LIVENESS_FAILURE_ERROR},
+            )
+        except Exception:
+            pass
+
 
 @mcp.tool()
 def mobile_manage_task(
@@ -34,53 +189,31 @@ def mobile_manage_task(
 ) -> dict[str, Any]:
     """Manages the lifecycle and retrieves the status of a background mobile automation task.
 
-    This is your primary diagnostic and control tool. You MUST use this tool to
-    poll the task status
-    when your 1-minute fallback timer triggers (as requested by
-    `mobile_run_task`). You can also use
-    it to gracefully abort a task or forcefully correct the subagent's behavior
-    mid-flight.
+    This is your primary diagnostic and control tool for tasks started by
+    `mobile_run_task`. You MUST use it to poll the task status when your
+    1-minute fallback timer triggers (as required by `mobile_run_task`). You
+    can also steer a subagent that is stuck or off-track, or abort a task.
 
-    ### Available Actions:
-    - **'status'**: Retrieves execution progress, elapsed time, and metadata.
-    Returns a JSON object containing:
-        * `trace_id`: Unique identifier for the task.
-        * `status`: Task lifecycle state ('running', 'completed', 'failed', 'cancelled').
-        * `device_serial`: The Android device serial number assigned to/running this task
-          (essential in multi-device environments to know which phone this task belongs to).
-        * `task_desc`: The goal/description of the task.
-        * `model`: 'Flash' or 'Pro'.
-        * `elapsed_seconds`: Execution duration in seconds.
-        * `progress`: Live progress data (current turn, latest thoughts and actions for Flash;
-          active task plan for Pro).
-        * **How to use the output**:
-            - For **Pro Model**, check `progress.task_plan` to see if the
-            agent's long-term plan aligns with your goal.
-            - For **Flash Model**, monitor `current_turn`, `latest_action`, and
-            `latest_thought`. If the turn count increases rapidly without
-            progressing, or the thought indicates it is stuck, you should
-            intervene.
-
-    - **'inject_instruction'**: Injects real-time guidance when the subagent
-    makes a mistake, gets stuck, or loops.
-        * **Pro Model**: Applied at the start of the next turn's planning phase.
-        * **Flash Model**: Applied at the start of the next reactive execution
-        loop.
-        * *Note*: You MUST provide the `instruction` argument for this action.
-
-    - **'stop'**: Forcefully terminates the subagent (Pro or Flash), immediately
-    halting device interactions and releasing the device. Use this if the task
-    is complete, irreparably broken, or running out of control.
+    ### Actions
+    - **'status'**: Returns `trace_id`, `status` ('running'/'completed'/'failed'/
+      'cancelled'), `device_serial` (which phone owns this task in multi-device
+      setups), `task_desc`, `model`, `elapsed_seconds`, and `progress` (Flash:
+      current turn, latest thought/action — intervene if turns climb without
+      progress or the thought indicates it is stuck; Pro: the active task plan
+      — check it still aligns with your goal).
+    - **'inject_instruction'**: Injects real-time guidance mid-flight when the
+      subagent errs, stalls, or loops. Applied at the start of the next
+      planning turn (Pro) or the next reactive loop (Flash). Requires
+      `instruction`.
+    - **'stop'**: Forcefully terminates the subagent, immediately halting
+      device interactions and releasing the device. Use when the task is done,
+      irreparably broken, or running out of control.
 
     Args:
-        action: STR. **REQUIRED**. The management action to perform. Must be
-          exactly `"status"`, `"stop"`, or `"inject_instruction"`.
-        trace_id: STR. **REQUIRED**. The unique session identifier of the task
-          (returned by `mobile_run_task`).
-        instruction: STR. **CONDITIONAL**. The real-time correction or guidance
-          string. - You MUST provide this if `action="inject_instruction"`. -
-          You MUST leave this empty or omit it if `action="status"` or
-          `action="stop"`.
+        action: `"status"`, `"inject_instruction"`, or `"stop"`.
+        trace_id: The task's session identifier from `mobile_run_task`.
+        instruction: Guidance string; required for `inject_instruction`, omit
+          otherwise.
     """
     status_data = trace_store.read_status(trace_id)
     if not status_data:
@@ -90,62 +223,7 @@ def mobile_manage_task(
             "message": f"Trace ID '{trace_id}' not found.",
         }
 
-    current_status = status_data.get("status", "unknown")
-    pid = status_data.get("pid")
-    is_alive = False
-
-    project_root = env_utils.get_project_root()
-    db_path = os.path.join(trace_store.TRACES_DIR, "data_engine.db")
-    if not os.path.exists(db_path):
-        db_path = os.path.join(project_root, "traces", "data_engine.db")
-
-    # If status is still running or pending, sync from database if available
-    if current_status in ("running", "pending") and os.path.exists(db_path):
-        try:
-            conn_st = sqlite3.connect(db_path)
-            conn_st.row_factory = sqlite3.Row
-            cur_st = conn_st.cursor()
-            cur_st.execute(
-                "SELECT status, pid FROM sessions WHERE session_id = ? ORDER BY start_time DESC LIMIT 1",
-                (trace_id,),
-            )
-            row_st = cur_st.fetchone()
-            if row_st:
-                db_status = row_st["status"]
-                db_pid = row_st["pid"]
-                if db_pid and not pid:
-                    pid = db_pid
-                    status_data["pid"] = pid
-                    trace_store.write_status(trace_id, status_data)
-                if db_status in ("completed", "success", "failed", "cancelled"):
-                    canonical_status = "completed" if db_status in ("completed", "success") else db_status
-                    current_status = canonical_status
-                    status_data["status"] = canonical_status
-                    trace_store.write_status(trace_id, status_data)
-            conn_st.close()
-        except Exception:
-            pass
-
-    if pid and current_status in ("running", "pending"):
-        try:
-            os.kill(pid, 0)
-            is_alive = True
-        except OSError:
-            current_status = "failed"
-            error_text = "Task runner process terminated unexpectedly."
-            trace_store.update_trace_status(trace_id, "failed", error=error_text)
-            conv_id = status_data.get("conversation_id")
-            if conv_id:
-                try:
-                    notify(
-                        conversation_id=conv_id,
-                        message=f"Artemis background task died unexpectedly for trace '{trace_id}'. Error: {error_text}",
-                        event_type="failed",
-                        payload={"trace_id": trace_id, "error": error_text},
-                    )
-                except Exception:
-                    pass
-            status_data = trace_store.read_status(trace_id) or status_data
+    current_status, pid, is_alive = _reconcile_task_state(trace_id, status_data)
 
     trace_dir = trace_store.get_trace_dir(trace_id)
 

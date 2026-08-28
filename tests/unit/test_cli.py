@@ -222,7 +222,9 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     assert (tmp_path / ".gemini" / "rules" / "artemis.md").exists()
     assert (tmp_path / ".cursorrules").exists()
     assert (tmp_path / ".cursor" / "rules" / "artemis.mdc").exists()
-    assert (tmp_path / ".claude" / "CLAUDE.md").exists()
+    # Claude Code loads both CLAUDE.md and rules/*.md, so rules are installed
+    # only as the standalone rule file to avoid duplicated context.
+    assert not (tmp_path / ".claude" / "CLAUDE.md").exists()
     assert (tmp_path / ".claude" / "rules" / "artemis.md").exists()
     assert (tmp_path / ".codeium" / "windsurf" / "memories" / "global_rules.md").exists()
     assert (tmp_path / ".codeium" / "windsurf" / "rules" / "artemis.md").exists()
@@ -234,6 +236,69 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     assert (tmp_path / ".openclaw" / "OPENCLAW.md").exists()
     assert (tmp_path / ".openclaw" / "rules" / "artemis.md").exists()
     assert (tmp_path / ".codex" / "AGENTS.md").exists()
+
+
+def test_cli_mcp_install_claude_migrates_legacy_claude_md(tmp_path, monkeypatch):
+    """Verify the claude target removes a previously injected CLAUDE.md block while preserving user content."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
+
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir(parents=True)
+    claude_md = claude_dir / "CLAUDE.md"
+    claude_md.write_text(
+        "# My own instructions\n\n"
+        "<!-- BEGIN ARTEMIS MOBILE TESTING RULES -->\nold injected rules\n"
+        "<!-- END ARTEMIS MOBILE TESTING RULES -->\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["mcp", "--install", "claude"])
+    assert result.exit_code == 0
+
+    remaining = claude_md.read_text(encoding="utf-8")
+    assert "My own instructions" in remaining
+    assert "ARTEMIS MOBILE TESTING RULES" not in remaining
+    rule_file = claude_dir / "rules" / "artemis.md"
+    assert rule_file.exists()
+    assert "Mobile Testing Mindset" in rule_file.read_text(encoding="utf-8")
+
+
+def test_cli_mcp_install_claude_deletes_block_only_claude_md(tmp_path, monkeypatch):
+    """Verify a CLAUDE.md consisting solely of the injected block is deleted outright."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
+
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir(parents=True)
+    claude_md = claude_dir / "CLAUDE.md"
+    claude_md.write_text(
+        "<!-- BEGIN ARTEMIS MOBILE TESTING RULES -->\nold injected rules\n"
+        "<!-- END ARTEMIS MOBILE TESTING RULES -->\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["mcp", "--install", "claude"])
+    assert result.exit_code == 0
+    assert not claude_md.exists()
+    assert (claude_dir / "rules" / "artemis.md").exists()
+
+
+def test_cli_mcp_install_claude_refuses_unparseable_claude_json(tmp_path, monkeypatch):
+    """Verify an unparseable ~/.claude.json is left untouched instead of being rewritten."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
+
+    corrupt = "{ this is not json at all"
+    claude_json = tmp_path / ".claude.json"
+    claude_json.write_text(corrupt, encoding="utf-8")
+
+    result = runner.invoke(app, ["mcp", "--install", "claude"])
+    assert result.exit_code == 0
+    assert claude_json.read_text(encoding="utf-8") == corrupt
 
 
 def test_cli_mcp_install_codex_preserves_config_and_is_idempotent(tmp_path, monkeypatch):

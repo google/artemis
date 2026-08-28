@@ -33,21 +33,139 @@ from artemis.utils.task_tree import get_active_subgoal_hashes
 logger = get_logger(__name__)
 
 
-_LEGACY_TOOL_CALLING_RULE = """- **Tool Calling Iron Rule**: Do NOT submit a Turn-Ending Action at the same time (in the same tool-call list) as a Pre-Decision Exploratory Tool. You must first gather information (e.g., finding coordinates or diagnosing a state), manage ADB background tasks, or update memory notes. You can use pre-decision exploratory tools to complete this task. You will be prompted again with the tool's result, at which point you can output your final physical/turn-ending action."""
+from artemis.agents.prompt_assembly import (
+    gate_segment,
+    render_tool_enum,
+    resolve_available,
+)
 
-_TOOL_CALLING_RULE = """- **Tool Calling Contract**: Tools that return information needed for the decision (`ask_explorer`, `ask_diagnoser`, `video_analyzer`, `run_adb_command`, `manage_task`, `analyze_task_output`, `read_note`, `list_notes`, and `save_note`) are result-dependent Pre-Decision Tools. Do not submit them in the same tool-call list as a Turn-Ending Action; inspect their result first. The write-through tools `update_note` and `append_note` may accompany at most one Turn-Ending Action when their content is based entirely on evidence already available before that action. Never write an action's expected outcome as if it had already been observed."""
+_LEGACY_TOOL_CALLING_RULE = """- **Tool Calling Iron Rule**: Do NOT submit a Turn-Ending Action at the same time (in the same tool-call list) as a Pre-Decision Exploratory Tool. You must first gather information (e.g., finding coordinates or diagnosing a state), manage ADB background tasks, or update memory notes. You can use pre-decision exploratory tools to complete this task. You will be prompted again with the tool's result, at which point you can output your final physical/turn-ending action."""
 
 _LEGACY_TOOL_PROTOCOL = """1. **Pre-Decision Exploratory Tools**:
    - *What they are*: Helper/Subagent tools (such as `ask_explorer`, `ask_diagnoser`, `video_analyzer`), ADB command tools (`run_adb_command`, `manage_task`), and memory note tools (`read_note`, `list_notes`, `save_note`, `update_note`, `append_note`).
    - *How they work*: These tools gather details or update/read memory. When you invoke these tools, the framework will immediately execute them and return the results, allowing you to continue thinking and make your final decision.
 2. **Turn-Ending Actions**:"""
 
-_TOOL_PROTOCOL = """1. **Result-Dependent Pre-Decision Tools**:
-   - *What they are*: Helper/Subagent tools (`ask_explorer`, `ask_diagnoser`, `video_analyzer`), ADB/task tools (`run_adb_command`, `manage_task`, `analyze_task_output`), and memory tools whose result must be inspected (`read_note`, `list_notes`, `save_note`).
-   - *How they work*: Invoke these without a Turn-Ending Action, inspect the returned result, and then decide.
-2. **Write-Through Memory Tools**:
-   - `update_note` and `append_note` may run alongside at most one Turn-Ending Action only when recording facts already observed in the current context. If the note content depends on the action's result, wait for the next observation before writing it.
-3. **Turn-Ending Actions**:"""
+# --- Assembled tool references -------------------------------------------------------
+# The orderings below reproduce the historical prompt wording exactly; with the full
+# tool set the rendered output is byte-identical to the previous literals. See
+# artemis/agents/prompt_assembly.py for the assembly rationale.
+
+_PRE_DECISION_HELPER_TOOLS = ("ask_explorer", "ask_diagnoser", "video_analyzer")
+_PRE_DECISION_ADB_TOOLS = ("run_adb_command", "manage_task", "analyze_task_output")
+_PRE_DECISION_MEMORY_TOOLS = ("read_note", "list_notes", "save_note")
+_PRE_DECISION_ALL_TOOLS = (
+    _PRE_DECISION_HELPER_TOOLS + _PRE_DECISION_ADB_TOOLS + _PRE_DECISION_MEMORY_TOOLS
+)
+
+# The two device-action enumeration slots in operator.json (identical in both
+# templates), in their historical orders.
+_PHYSICAL_ACTIONS_ORDER = (
+    "click",
+    "input_text",
+    "swipe",
+    "press_key",
+    "manage_app",
+    "wait_for_delay",
+    "long_press",
+)
+_TURN_ENDING_ORDER = (
+    "click",
+    "swipe",
+    "input_text",
+    "long_press",
+    "press_key",
+    "manage_app",
+    "wait_for_delay",
+)
+
+_PHYSICAL_ACTIONS_SLOT = (
+    "Physical device actions (`click`, `input_text`, `swipe`, `press_key`,"
+    " `manage_app`, `wait_for_delay`, `long_press`)"
+)
+_TURN_ENDING_SLOT = (
+    "Turn-Ending Action (`click`, `swipe`, `input_text`, `long_press`,"
+    " `press_key`, `manage_app`, or `wait_for_delay`)"
+)
+
+# Self-contained instruction segments that teach a single tool. Removed wholesale when
+# the tool is unavailable, so nothing in the prompt dangles.
+_WAIT_FOR_DELAY_TRANSITIONS_SEGMENT = (
+    "- **Loading & Transitions**: When entering page transitions (e.g., app launching,"
+    " web page loading, or progress indicators), use `wait_for_delay` to let the screen"
+    " settle before executing target actions. Some transition states are difficult to"
+    " discern, such as a thin progress line at the top of the browser screen during"
+    " webpage loads. Before questioning whether an error has occurred, you can first"
+    " adopt a waiting strategy to see how the device state evolves. If the state"
+    " remains ambiguous after waiting, certain UI components might be malfunctioning or"
+    " failing to load; in this case, consider retrying the action or pivoting to an"
+    " alternative path.\n"
+)
+_WAIT_FOR_DELAY_INTERVAL_PARENTHETICAL = (
+    " (convert minutes to milliseconds accurately for `wait_for_delay`)"
+)
+_VIDEO_ANALYZER_TRANSIENT_SEGMENT = (
+    "   - *Missed Transient States*: If the current state jumped ahead and you suspect"
+    " you missed an important initial or intermediate screen (e.g., a number or flash"
+    " message that was overwritten by your last action), consider using the"
+    " `video_analyzer` tool to look back at the recent history.\n"
+)
+_VIDEO_ANALYZER_SNAPSHOT_SENTENCE = (
+    " If you have already missed certain critical information and cannot re-view it by"
+    " going back or other operations, you can use the `video_analyzer` to look back at"
+    " historical information."
+)
+# Tail of the "Action Scope & Interaction Precision" bullet: everything past the two
+# generic gesture-scope sentences is swipe/drag teaching.
+_SWIPE_PRECISION_SEGMENT = (
+    " For any task requiring continuous range interactions, sliding, or boundary"
+    " selection, prefer using targeted swipe/drag gestures spanning from the element's"
+    " start bounds [xmin, ymin] to end bounds [xmax, ymax] to ensure the action is"
+    " strictly confined to the target element. For drag-and-drop, list reordering, or"
+    " sliding sliders/SeekBars, set duration >= 1000 (e.g. 1500) and always drag"
+    " slightly PAST the target position to overcome touch slop and reliably trigger the"
+    " drop/snap/value update. When setting a slider to Maximum (100%) or Minimum (0%),"
+    " always swipe fully to the extreme boundary to guarantee reaching the absolute"
+    " limits."
+)
+
+#: Every tool name the operator prompt slots can reference. ``available_tools=None``
+#: resolves to this set, preserving the historical output.
+OPERATOR_PROMPT_TOOLSET: frozenset[str] = frozenset(
+    _PRE_DECISION_ALL_TOOLS + _PHYSICAL_ACTIONS_ORDER
+)
+
+
+def _tool_calling_rule(available: frozenset[str]) -> str:
+    tools = render_tool_enum(_PRE_DECISION_ALL_TOOLS, available, final_sep="and")
+    return (
+        "- **Tool Calling Contract**: Tools that return information needed for the"
+        f" decision ({tools}) are result-dependent Pre-Decision Tools. Do not submit"
+        " them in the same tool-call list as a Turn-Ending Action; inspect their result"
+        " first. The write-through tools `update_note` and `append_note` may accompany"
+        " at most one Turn-Ending Action when their content is based entirely on"
+        " evidence already available before that action. Never write an action's"
+        " expected outcome as if it had already been observed."
+    )
+
+
+def _tool_protocol(available: frozenset[str]) -> str:
+    helper = render_tool_enum(_PRE_DECISION_HELPER_TOOLS, available)
+    adb = render_tool_enum(_PRE_DECISION_ADB_TOOLS, available)
+    memory = render_tool_enum(_PRE_DECISION_MEMORY_TOOLS, available)
+    return (
+        "1. **Result-Dependent Pre-Decision Tools**:\n"
+        f"   - *What they are*: Helper/Subagent tools ({helper}), ADB/task tools"
+        f" ({adb}), and memory tools whose result must be inspected ({memory}).\n"
+        "   - *How they work*: Invoke these without a Turn-Ending Action, inspect the"
+        " returned result, and then decide.\n"
+        "2. **Write-Through Memory Tools**:\n"
+        "   - `update_note` and `append_note` may run alongside at most one Turn-Ending"
+        " Action only when recording facts already observed in the current context. If"
+        " the note content depends on the action's result, wait for the next"
+        " observation before writing it.\n"
+        "3. **Turn-Ending Actions**:"
+    )
 
 _LEGACY_CHECKER_REJECTION_TRIGGER = """   - **Validation/Checker Rejection**: The verification agent (Checker) rejected your subgoal completion (i.e., you are in troubleshooter mode and this is a retry)."""
 
@@ -70,15 +188,28 @@ _LARGE_LIST_STRATEGY = """- **Large List & Long Text Exploration Strategy (Zero-
   4. **Single-Pass Trust & Anti-Oscillation (No Over-Verification)**: Treat recorded notes as verified ground truth. Once a segment is traversed with confirmed anchor continuity and logged, consider it permanently resolved. Do NOT scroll back-and-forth or perform redundant re-scans for "double-checking", even if older execution history has been pruned. Resume from the last recorded anchor and direction. Only the single bounded recovery above, or a refreshed/mutated list, permits limited re-verification; otherwise continue the single pass over new content."""
 
 
-def apply_operator_prompt_contract(prompt_template: str) -> str:
-    """Align prompt-level tool and recovery rules with Operator runtime semantics."""
+def apply_operator_prompt_contract(
+    prompt_template: str,
+    available_tools: frozenset[str] | None = None,
+) -> str:
+    """Align prompt-level tool and recovery rules with Operator runtime semantics.
+
+    Args:
+        prompt_template: One of the raw operator.json templates.
+        available_tools: Tools that actually exist this run. ``None`` renders with the
+            full historical tool set, producing byte-identical output to the
+            pre-assembly contract. Unavailable tools disappear from every enumeration
+            slot, and instruction segments teaching them are removed wholesale.
+    """
+    available = frozenset(resolve_available(available_tools, OPERATOR_PROMPT_TOOLSET))
+
     prompt_template = prompt_template.replace(
         _LEGACY_TOOL_CALLING_RULE,
-        _TOOL_CALLING_RULE,
+        _tool_calling_rule(available),
     )
     prompt_template = prompt_template.replace(
         _LEGACY_TOOL_PROTOCOL,
-        _TOOL_PROTOCOL,
+        _tool_protocol(available),
     )
     prompt_template = prompt_template.replace(
         _LEGACY_CHECKER_REJECTION_TRIGGER,
@@ -91,6 +222,44 @@ def apply_operator_prompt_contract(prompt_template: str) -> str:
     prompt_template = prompt_template.replace(
         _LEGACY_LARGE_LIST_STRATEGY,
         _LARGE_LIST_STRATEGY,
+    )
+
+    # Device-action enumeration slots (identical in both templates).
+    prompt_template = prompt_template.replace(
+        _PHYSICAL_ACTIONS_SLOT,
+        "Physical device actions ("
+        + render_tool_enum(_PHYSICAL_ACTIONS_ORDER, available)
+        + ")",
+    )
+    prompt_template = prompt_template.replace(
+        _TURN_ENDING_SLOT,
+        "Turn-Ending Action ("
+        + render_tool_enum(_TURN_ENDING_ORDER, available, final_sep="or")
+        + ")",
+    )
+
+    # Instruction segments that teach a single tool.
+    prompt_template = prompt_template.replace(
+        _WAIT_FOR_DELAY_TRANSITIONS_SEGMENT,
+        gate_segment(_WAIT_FOR_DELAY_TRANSITIONS_SEGMENT, available, "wait_for_delay"),
+    )
+    prompt_template = prompt_template.replace(
+        _WAIT_FOR_DELAY_INTERVAL_PARENTHETICAL,
+        gate_segment(
+            _WAIT_FOR_DELAY_INTERVAL_PARENTHETICAL, available, "wait_for_delay"
+        ),
+    )
+    prompt_template = prompt_template.replace(
+        _VIDEO_ANALYZER_TRANSIENT_SEGMENT,
+        gate_segment(_VIDEO_ANALYZER_TRANSIENT_SEGMENT, available, "video_analyzer"),
+    )
+    prompt_template = prompt_template.replace(
+        _VIDEO_ANALYZER_SNAPSHOT_SENTENCE,
+        gate_segment(_VIDEO_ANALYZER_SNAPSHOT_SENTENCE, available, "video_analyzer"),
+    )
+    prompt_template = prompt_template.replace(
+        _SWIPE_PRECISION_SEGMENT,
+        gate_segment(_SWIPE_PRECISION_SEGMENT, available, "swipe"),
     )
     return prompt_template
 
@@ -143,7 +312,31 @@ class TemplatePromptComponent(PromptComponent):
                 "Failed to format prompt, template not found in operator prompts config."
             )
 
-        prompt_template = apply_operator_prompt_contract(prompt_template)
+        # video_analyzer is bound conditionally (graph.py gates it on
+        # video_recording_tools_enabled); the prompt must not advertise it when the
+        # tool is not actually available this run.
+        available = set(OPERATOR_PROMPT_TOOLSET)
+        setup = getattr(ctx, "execution_setup", None)
+        if not (setup and getattr(setup, "video_recording_tools_enabled", False)):
+            available.discard("video_analyzer")
+
+        # Device actions the installed actuator backend does not implement disappear
+        # from the prompt in lockstep with their tool declarations.
+        actuator = getattr(ctx, "actuator", None)
+        if actuator is not None and callable(getattr(actuator, "capabilities", None)):
+            try:
+                from artemis.mcp.action_manifest import (
+                    DEVICE_ACTIONS,
+                    available_device_actions,
+                )
+
+                available -= DEVICE_ACTIONS - available_device_actions(actuator)
+            except Exception as e:
+                logger.warning(f"Failed to assemble prompt against actuator: {e}")
+
+        prompt_template = apply_operator_prompt_contract(
+            prompt_template, available_tools=frozenset(available)
+        )
 
         plan_and_history = kwargs.get("plan_and_history", "No plan or history yet.")
 

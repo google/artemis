@@ -185,7 +185,7 @@ To ensure your AI coding assistant acts with the rigor of a senior mobile test e
 
 You can mount or copy [`mcp_server/rules.md`](./mcp_server/rules.md) into your AI IDE's rule configuration:
 * **Antigravity**: Add the contents of `rules.md` to your Workspace Rules, Global Rules settings, or agent instructions.
-* **Claude Code**: Copy or include the contents of `rules.md` in your project's `CLAUDE.md` file.
+* **Claude Code**: Run `artemis mcp --install claude` to install the rules to `~/.claude/rules/artemis.md` (install to exactly one location — Claude Code loads both `~/.claude/CLAUDE.md` and `~/.claude/rules/*.md`, so duplicating the rules wastes context).
 * **Cursor**: Copy the contents into `.cursorrules` or create a rule file at `.cursor/rules/artemis.mdc`.
 * **Codex**: Add the contents to `~/.codex/AGENTS.md` (or the active `AGENTS.override.md`).
 * **Windsurf / OpenClaw**: Add the rules to your workspace rules or global system prompts.

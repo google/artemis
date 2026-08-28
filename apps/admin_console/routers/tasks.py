@@ -103,10 +103,15 @@ async def run_task(request: RunRequest):
 
     if device_probe and device_probe.metadata.get("active_device"):
         verified_serial = device_probe.metadata["active_device"].get("serial")
-        if verified_serial:
+        # Only auto-selected targets may be re-bound to the probed device. An
+        # explicitly requested serial is never silently replaced -- if it is
+        # invalid, enqueue_tasks rejects the submission with a clear error.
+        if verified_serial and not request.device_serial:
             target_serial = verified_serial
-            if readiness_engine.get_active_device_serial() != verified_serial:
-                readiness_engine.set_active_device_serial(verified_serial)
+        # The probe verified a live device either way: keep the global active
+        # serial in sync even when the caller pinned the target explicitly.
+        if verified_serial and readiness_engine.get_active_device_serial() != verified_serial:
+            readiness_engine.set_active_device_serial(verified_serial)
 
     return await task_queue_service.enqueue_tasks(
         incoming_goals,

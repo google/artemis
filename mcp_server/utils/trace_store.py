@@ -57,7 +57,7 @@ def init_trace(
     trace_id: str,
     task_desc: str,
     model: str,
-    conversation_id: str,
+    conversation_id: str | None = None,
     device_serial: str | None = None,
 ) -> dict[str, Any]:
     """Initializes the trace directory and creates the initial status.json file."""

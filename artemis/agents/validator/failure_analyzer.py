@@ -36,7 +36,7 @@ from langchain_core.messages import (
 from artemis.agents.validator.tool_declarations import (
     ASK_EXPLORER_TOOL,
     CLICK_SEQUENCE_TOOL,
-    MobileActionExecutor,
+    MobileActionExecutor,  # Legacy shims below; the loop itself uses McpActionExecutor.
     ToolDeclaration,
     VALIDATOR_TOOLS_DECLARATION,
     capture_screenshot_and_parse_ui,
@@ -46,6 +46,7 @@ from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
+from artemis.mcp.action_executor import McpActionExecutor
 from artemis.services.llm import get_llm
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
@@ -230,6 +231,16 @@ class FailureAnalysisStrategy:
     def get_tools(self) -> list:
         return VALIDATOR_TOOLS_DECLARATION
 
+    def required_tools(self) -> frozenset[str]:
+        """Tools this strategy's prompt depends on structurally.
+
+        A strategy whose prompt is built around a tool (rather than merely listing it)
+        must declare it here; strategy selection falls back to the base strategy when
+        the current backend does not provide every required tool, so the dependent
+        prompt is never rendered against a backend that cannot satisfy it.
+        """
+        return frozenset()
+
     def get_user_message_suffix(self, pre_screenshot: bool, post_screenshot: bool) -> str:
         suffix = (
             "Your objective is:\n"
@@ -268,6 +279,11 @@ class TargetDisappearedStrategy(FailureAnalysisStrategy):
         tools.append(ASK_EXPLORER_TOOL)
         return tools
 
+    def required_tools(self) -> frozenset[str]:
+        # The whole prompt is built around atomic chained execution to defeat turn
+        # latency, which *is* click_sequence.
+        return frozenset({"click_sequence"})
+
     def get_user_message_suffix(self, pre_screenshot: bool, post_screenshot: bool) -> str:
         return ""
 
@@ -284,6 +300,9 @@ class PixelTargetDisappearedStrategy(FailureAnalysisStrategy):
         tools.append(ASK_EXPLORER_TOOL)
         return tools
 
+    def required_tools(self) -> frozenset[str]:
+        return frozenset({"click_sequence"})
+
     def get_user_message_suffix(self, pre_screenshot: bool, post_screenshot: bool) -> str:
         return ""
 
@@ -295,15 +314,33 @@ class FailureAnalyzer:
         self.ctx = ctx
         self.max_iterations = 15
 
-    def _select_strategy(self, error_category: ValidationErrorCategory) -> FailureAnalysisStrategy:
+    def _select_strategy(
+        self,
+        error_category: ValidationErrorCategory,
+        available_tools: frozenset[str] | None = None,
+    ) -> FailureAnalysisStrategy:
         if error_category == ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED:
             logger.info("Routing failure analysis to specialized PixelTargetDisappearedStrategy.")
-            return PixelTargetDisappearedStrategy()
-        if error_category == ValidationErrorCategory.TARGET_DISAPPEARED:
+            strategy: FailureAnalysisStrategy = PixelTargetDisappearedStrategy()
+        elif error_category == ValidationErrorCategory.TARGET_DISAPPEARED:
             logger.info("Routing failure analysis to specialized TargetDisappearedStrategy.")
-            return TargetDisappearedStrategy()
-        logger.info("Routing failure analysis to DefaultAnalysisStrategy.")
-        return FailureAnalysisStrategy()
+            strategy = TargetDisappearedStrategy()
+        else:
+            logger.info("Routing failure analysis to DefaultAnalysisStrategy.")
+            strategy = FailureAnalysisStrategy()
+
+        # Capability gating: a strategy and its prompt are one unit. If the backend
+        # cannot satisfy the tools the prompt is built around, fall back to the base
+        # strategy so the dependent prompt is never rendered. `None` = no gating.
+        if available_tools is not None:
+            missing = strategy.required_tools() - available_tools
+            if missing:
+                logger.warning(
+                    f"Strategy {type(strategy).__name__} requires unavailable tool(s)"
+                    f" {sorted(missing)}; falling back to base FailureAnalysisStrategy."
+                )
+                return FailureAnalysisStrategy()
+        return strategy
 
     def _get_active_subgoal_hash(self) -> str:
         if not self.ctx.data_engine:
@@ -363,7 +400,12 @@ class FailureAnalyzer:
         if not pre_screenshot:
             raise ValueError("Failure analysis requires valid screenshots.")
 
-        strategy = self._select_strategy(error_category)
+        controller = UnifiedMobileController(self.ctx)
+        executor = McpActionExecutor(self.ctx, controller)
+
+        strategy = self._select_strategy(
+            error_category, available_tools=frozenset(executor.action_tool_names)
+        )
         prompt_template_name = strategy.get_prompt_template_name()
         tools_declaration = strategy.get_tools()
 
@@ -371,9 +413,6 @@ class FailureAnalyzer:
             llm = get_llm(self.ctx, name="validator_failure_analyzer")
         except Exception:
             llm = get_llm(self.ctx, name="validator")
-
-        controller = UnifiedMobileController(self.ctx)
-        executor = MobileActionExecutor(self.ctx, controller)
 
         # Pre-Action and Post-Action XML formatting
         pre_xml_list_str = "Not available."

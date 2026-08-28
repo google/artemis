@@ -74,54 +74,30 @@ def _draw_action_overlay(bg_image_path: str, action_obj: dict, output_path: str)
 
 @mcp.tool()
 async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | None = None) -> Any:
-    """A specialized trace data retrieval tool designed to extract execution details of mobile automation tasks.
+    """Retrieves execution details of a mobile automation task (running or finished).
 
-    Use this tool DURING a running task or AFTER it has finished (or failed) to
-    monitor progress, verify answers, diagnose agent errors, and debug.
-    It provides comprehensive runtime information (including the assigned
-    `device_serial`), raw agent outputs, and visual screenshots for both
-    **Flash** and **Pro** tasks.
+    Use it to monitor progress, verify answers, and diagnose agent errors for
+    both Flash and Pro tasks. Every result includes the assigned `device_serial`.
 
-    ### Available Actions:
-    - **'view_summary'**: Retrieves a high-level execution summary across all
-    steps, including the target `device_serial`.
-        * **Pro Model**: Displays a hierarchical task plan summary, showing the
-        status, device serial, and descriptions of all completed, active, and pending steps.
-        * **Flash Model**: Displays an all-in-one execution chain containing the
-        complete reasoning (thoughts/motivation), device serial, and action taken (`click`,
-        `input_text`, etc.) for every single step.
-
-    - **'view_step_screenshots'**: Retrieves local file paths of screenshots for
-    a specific step (supports both Flash and Pro), along with `device_serial`. Returns:
-        1. `before_screenshot`: The original device screenshot observed by the
-        agent right before taking the action.
-        2. `after_screenshot`: A post-action screenshot capturing the failure or
-        mismatch state (if the action failed or was intercepted). Note: This is
-        conditional/optional and will be `None` (`null`) for normal/successful
-        steps where no extra post-action screenshot was captured.
-        3. `action_overlay_screenshot`: The `before_screenshot` with the agent's
-        action visually marked (e.g., red circle for taps, red arrow for
-        swipes). CRITICAL for verifying if the agent tapped the correct UI
-        element.
-        4. `device_serial`: The serial of the device on which this step was executed.
-
-    - **'view_step_details'**: Retrieves deep runtime logs, raw VLM thoughts,
-    and exact actions for a specific step, along with `device_serial`.
-        * **Pro Model**: Fully supported. Returns detailed per-step diagnostic
-        data.
-        * **Flash Model**: DO NOT USE. (Flash reasoning and actions are already
-        fully included in 'view_summary', making this action redundant).
+    ### Actions
+    - **'view_summary'**: High-level execution summary across all steps.
+      Pro: hierarchical task plan with per-step status; Flash: full execution
+      chain with each step's reasoning and action.
+    - **'view_step_screenshots'**: Local file paths of one step's screenshots:
+      `before_screenshot` (what the agent saw), `after_screenshot` (only set
+      when the action failed/was intercepted, else null), and
+      `action_overlay_screenshot` (the action visually marked — e.g. red circle
+      for taps — key for verifying the agent tapped the right element).
+    - **'view_step_details'**: Deep per-step diagnostics (raw VLM thoughts,
+      exact actions). Pro only — DO NOT use for Flash tasks ('view_summary'
+      already carries their full execution chain).
 
     Args:
-        action: STR. **REQUIRED**. The retrieval action to perform
-          (`"view_summary"`, `"view_step_screenshots"`, or
-          `"view_step_details"`).
-        trace_id: STR. **REQUIRED**. The unique session identifier of the task
-          (returned by `mobile_run_task`).
-        step_number: INT. **CONDITIONAL**. The 1-indexed step number to query. -
-          You MUST provide this if `action="view_step_screenshots"` or
-          `action="view_step_details"`. - You MUST omit or leave this empty if
-          `action="view_summary"`.
+        action: `"view_summary"`, `"view_step_screenshots"`, or
+          `"view_step_details"`.
+        trace_id: The task's session identifier from `mobile_run_task`.
+        step_number: 1-indexed step to query; required for the two per-step
+          actions, omit for `view_summary`.
     """
     project_root = env_utils.get_project_root()
     db_path = os.path.join(trace_store.TRACES_DIR, "data_engine.db")
