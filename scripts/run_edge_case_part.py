@@ -163,14 +163,14 @@ async def run_part_3():
     async def task_3a():
         print(f"🚀 [Task 3A - Phone] Global mode starting: Executing on {PHONE_SERIAL}...")
         res = await client_phone_g.run("Use manage_app to launch Settings app and report task status completed", profile="flash")
-        print(f"✅ [Task 3A - Phone] Finished")
+        print("✅ [Task 3A - Phone] Finished")
         return res
 
     async def task_3b():
         await asyncio.sleep(0.4)
         print(f"🚀 [Task 3B - Emulator] Global mode starting: Targeting {EMULATOR_SERIAL} (should queue due to global limit)...")
         res = await client_emu_g.run("Use manage_app to launch Settings app and report task status completed", profile="flash")
-        print(f"✅ [Task 3B - Emulator] Finished")
+        print("✅ [Task 3B - Emulator] Finished")
         return res
 
     t3a = asyncio.create_task(task_3a())
@@ -199,16 +199,16 @@ async def run_part_4():
     client_emu = ArtemisClient(device_serial=EMULATOR_SERIAL, concurrency_mode="per_device")
 
     async def task_4a():
-        print(f"🚀 [Task 4A - Phone] Started...")
+        print("🚀 [Task 4A - Phone] Started...")
         return await client_phone.run("Use manage_app to launch Settings app and report task status completed", profile="flash")
 
     async def task_4b():
         await asyncio.sleep(0.4)
-        print(f"🚀 [Task 4B - Phone] Started (Queued behind 4A)...")
+        print("🚀 [Task 4B - Phone] Started (Queued behind 4A)...")
         return await client_phone.run("Use manage_app to launch Clock app and report task status completed", profile="flash")
 
     async def task_4c():
-        print(f"🚀 [Task 4C - Emulator] Started concurrently with 4A...")
+        print("🚀 [Task 4C - Emulator] Started concurrently with 4A...")
         return await client_emu.run("Use manage_app to launch Settings app and report task status completed", profile="flash")
 
     t4a = asyncio.create_task(task_4a())

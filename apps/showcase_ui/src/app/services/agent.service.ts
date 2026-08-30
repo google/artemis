@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Injectable, signal, inject, computed } from '@angular/core';
+import { Injectable, signal, inject, computed, DestroyRef, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 
@@ -63,6 +63,7 @@ interface SessionVideoResponse {
 })
 export class AgentService {
   private http = inject(HttpClient);
+  private zone = inject(NgZone);
   private activePauseCardKey: string | null = null;
 
   // Signals to expose state to components
@@ -81,21 +82,25 @@ export class AgentService {
     const activeList = this.activeTasks();
 
     const sessionMap = new Map<string, Session>();
+    // Lookup maps keep the per-session merge O(1) instead of scanning the
+    // pending/active lists multiple times for every raw session.
+    const pendingById = new Map(pending.map((p) => [p.session_id, p]));
+    const activeById = new Map(activeList.map((at) => [at.session_id, at]));
 
     // 1. First add raw sessions from DB
     raw.forEach((s) => {
+      const activeMatch = activeById.get(s.session_id);
+      const pendingMatch = pendingById.get(s.session_id);
       const isCurrentActive = ((status === 'running' || status === 'paused') && runId === s.session_id)
-        || activeList.some(at => at.session_id === s.session_id);
+        || !!activeMatch;
       const isTerminal = s.status === 'completed' || s.status === 'success' || s.status === 'failed' || s.status === 'cancelled';
       let sStatus = s.status;
       if (!isTerminal) {
-        const isPending = this.pendingQueue().some(p => p.session_id === s.session_id) && !isCurrentActive;
+        const isPending = !!pendingMatch && !isCurrentActive;
         sStatus = isCurrentActive ? (status === 'paused' ? 'paused' : 'running') : (isPending ? 'pending' : s.status);
       } else {
         sStatus = (s.status === 'success') ? 'completed' : s.status;
       }
-      const activeMatch = activeList.find(at => at.session_id === s.session_id);
-      const pendingMatch = this.pendingQueue().find(p => p.session_id === s.session_id);
       let serial = s.device_serial || s.device_id || activeMatch?.device_id || pendingMatch?.device_serial || null;
       if (!serial && s.device_info) {
         try {
@@ -122,9 +127,9 @@ export class AgentService {
     // 2. Add pending queue sessions if not yet in raw sessions
     pending.forEach((p) => {
       if (!sessionMap.has(p.session_id)) {
+        const activeMatch = activeById.get(p.session_id);
         const isCurrentRunning = ((status === 'running' || status === 'paused') && runId === p.session_id)
-          || activeList.some(at => at.session_id === p.session_id);
-        const activeMatch = activeList.find(at => at.session_id === p.session_id);
+          || !!activeMatch;
         const finalPending: Session = {
           ...p,
           status: isCurrentRunning ? (status === 'paused' ? 'paused' : 'running') : (p.status || 'pending'),
@@ -242,10 +247,22 @@ export class AgentService {
   private videoWaitStartedAt = 0;
 
   /**
+   * Step logs only. Streaming text chunks cannot change replay frames, so the
+   * custom equality keeps downstream frame extraction from re-running on every
+   * llm_stream update of the sessionLogs signal.
+   */
+  private stepLogsForReplay = computed<any[]>(
+    () => this.sessionLogs().filter(
+      (log) => log && (log.type === 'step_updated' || log.type === 'step_recorded')
+    ),
+    { equal: (a, b) => a.length === b.length && a.every((log, i) => log === b[i]) }
+  );
+
+  /**
    * Computed step replay frames from current session logs
    */
   public currentSessionStepFrames = computed<StepReplayFrame[]>(() => {
-    return extractStepReplayFrames(this.sessionLogs());
+    return extractStepReplayFrames(this.stepLogsForReplay());
   });
 
   public hasCurrentSessionStepFrames = computed<boolean>(() => {
@@ -328,11 +345,29 @@ export class AgentService {
   private sessionSnapshotAppliedId = 0;
   private pendingSnapshotRequests = new Set<number>();
 
+  // Streaming chunks are coalesced into one signal update per short window so a
+  // chatty LLM stream cannot force a full recompute pass per SSE chunk.
+  private pendingStreamChunks = new Map<string, { execId: any; stepId: any; streamType: string; chunk: string }>();
+  private streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastQueueSignature: string | null = null;
+  private lastActiveTasksSignature: string | null = null;
+  private lastPersistedSessionsJson: string | null = null;
+  private onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && !document.hidden) {
+      this.fetchStatus();
+      this.fetchSessions();
+    }
+  };
+
   constructor() {
     this.restoreSessionsCache();
     this.fetchSessions();
     this.startStatusPolling();
     this.ensureLiveStream();
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+    }
+    inject(DestroyRef).onDestroy(() => this.destroy());
   }
 
   /**
@@ -451,20 +486,25 @@ export class AgentService {
     this.isPaused.set(false);
     this.pausedError.set(null);
     this.isRetrying.set(false);
+    this.invalidateStatusSignatures();
     if (effectiveStopAll) {
       this.pendingQueue.set([]);
     }
 
     // Mark active streaming / pending logs as finished if viewing target session
     if (!targetSessionId || this.currentSessionId() === targetSessionId) {
-      this.sessionLogs.update((logs) =>
-        logs.map((l) => {
+      this.flushStreamChunks();
+      this.sessionLogs.update((logs) => {
+        if (!logs.some((l) => l.type === 'llm_stream' && !l.data?.isCompleted)) {
+          return logs;
+        }
+        return logs.map((l) => {
           if (l.type === 'llm_stream' && !l.data?.isCompleted) {
             return { ...l, data: { ...l.data, isCompleted: true } };
           }
           return l;
-        })
-      );
+        });
+      });
     }
 
     // Optimistically remove from activeTasks
@@ -545,6 +585,7 @@ export class AgentService {
    */
   public deleteSession(sessionId: string): Observable<any> {
     // 1. Optimistically update local session state immediately
+    this.invalidateStatusSignatures();
     this.rawSessions.update((list) => list.filter((s) => s.session_id !== sessionId));
     this.persistSessionsCache(this.rawSessions());
     this.pendingQueue.update((list) => list.filter((s) => s.session_id !== sessionId));
@@ -588,6 +629,7 @@ export class AgentService {
    */
   public clearAllHistory(): Observable<any> {
     // 1. Optimistically clear all local session state immediately
+    this.invalidateStatusSignatures();
     this.userPinnedSessionId.set(null);
     this.rawSessions.set([]);
     this.clearSessionsCache();
@@ -637,6 +679,7 @@ export class AgentService {
     if (!sessionId) {
       this.sessionLoadGeneration++;
       this.pendingSnapshotRequests.clear();
+      this.discardPendingStreamChunks();
       this.isSessionContentLoading.set(false);
       this.currentSessionId.set(null);
       this.sessionLogs.set([]);
@@ -650,6 +693,7 @@ export class AgentService {
 
     const loadGeneration = ++this.sessionLoadGeneration;
     this.pendingSnapshotRequests.clear();
+    this.discardPendingStreamChunks();
     this.sessionSnapshotAppliedId = 0;
     this.isSessionContentLoading.set(true);
     this.currentSessionId.set(sessionId);
@@ -681,6 +725,10 @@ export class AgentService {
     }
 
     console.log('Establishing persistent unified live stream via /api/stream');
+    // The stream is registered outside the Angular zone: high-frequency SSE
+    // callbacks must not schedule a change-detection pass each. Signal writes
+    // still notify the render scheduler, so the UI stays live.
+    this.zone.runOutsideAngular(() => {
     this.eventSource = new EventSource('/api/stream');
 
     this.eventSource.addEventListener('info', () => {
@@ -716,6 +764,12 @@ export class AgentService {
         try {
           const parsedData = JSON.parse(event.data);
           const evtSessionId = parsedData?.session_id;
+
+          // Preserve ordering: buffered stream text must land before any
+          // non-stream event is appended to the session logs.
+          if (eventType !== 'llm_stream') {
+            this.flushStreamChunks();
+          }
 
           if (eventType === 'recording_ready' || eventType === 'recording_failed') {
             if (
@@ -765,6 +819,7 @@ export class AgentService {
             const endedId = evtSessionId || this.runningSessionId();
             if (endedId) {
               this.applySessionEndedStatus(endedId, parsedData);
+              this.invalidateStatusSignatures();
               this.activeTasks.update(list => list.filter(at => at.session_id !== endedId));
             }
             const remaining = this.activeTasks();
@@ -874,62 +929,15 @@ export class AgentService {
           }
 
           if (eventType === 'llm_stream') {
-            const execId = parsedData.execution_id;
-            const stepId = parsedData.step_id;
-            const chunk = parsedData.chunk;
-            const streamType = parsedData.stream_type || 'text';
-
-            this.sessionLogs.update((logs) => {
-              const existingIndex = logs.findIndex(
-                (l) => l.type === 'llm_stream' && 
-                       l.data.execution_id === execId && 
-                       (l.data.stream_type || 'text') === streamType
-              );
-
-              if (existingIndex > -1) {
-                const updatedLogs = [...logs];
-                const existingLog = updatedLogs[existingIndex];
-                updatedLogs[existingIndex] = {
-                  ...existingLog,
-                  data: {
-                    ...existingLog.data,
-                    text: existingLog.data.text + chunk,
-                    step_id: stepId || existingLog.data.step_id
-                  }
-                };
-                return updatedLogs;
-              } else {
-                const updatedLogs = logs.map((l) => {
-                  if (l.type === 'llm_stream' && 
-                      (l.data.stream_type || 'text') === streamType && 
-                      !l.data.isCompleted) {
-                    return {
-                      ...l,
-                      data: { ...l.data, isCompleted: true }
-                    };
-                  }
-                  return l;
-                });
-
-                return [
-                  ...updatedLogs,
-                  {
-                    type: 'llm_stream',
-                    timestamp: new Date().toISOString(),
-                    data: {
-                      execution_id: execId,
-                      step_id: stepId,
-                      text: chunk,
-                      stream_type: streamType,
-                      isCompleted: false
-                    }
-                  }
-                ];
-              }
-            });
+            this.queueStreamChunk(parsedData);
           } else {
             this.sessionLogs.update((logs) => {
-              const updatedLogs = logs.map((l) => {
+              // Copying every log object on every event is wasted work when no
+              // stream is open; only rewrite entries that actually change.
+              const hasOpenStream = logs.some(
+                (l) => l.type === 'llm_stream' && !l.data.isCompleted
+              );
+              const updatedLogs = !hasOpenStream ? [...logs] : logs.map((l) => {
                 if (l.type === 'llm_stream' && !l.data.isCompleted) {
                   return {
                     ...l,
@@ -991,6 +999,92 @@ export class AgentService {
     this.eventSource.onerror = (err) => {
       console.warn('Persistent live stream issue, browser will auto-reconnect:', err);
     };
+    });
+  }
+
+  /**
+   * Buffer one llm_stream chunk; the buffer is flushed into sessionLogs at most
+   * once per short window (and immediately before any non-stream event so the
+   * relative ordering of stream text and step events is preserved).
+   */
+  private queueStreamChunk(parsedData: any): void {
+    const execId = parsedData.execution_id;
+    const stepId = parsedData.step_id;
+    const streamType = parsedData.stream_type || 'text';
+    const key = `${execId}|${streamType}`;
+    const pending = this.pendingStreamChunks.get(key);
+    if (pending) {
+      pending.chunk += parsedData.chunk;
+      if (stepId) pending.stepId = stepId;
+    } else {
+      this.pendingStreamChunks.set(key, { execId, stepId, streamType, chunk: parsedData.chunk });
+    }
+    if (!this.streamFlushTimer) {
+      const delay = typeof document !== 'undefined' && document.hidden ? 500 : 80;
+      this.streamFlushTimer = setTimeout(() => this.flushStreamChunks(), delay);
+    }
+  }
+
+  private discardPendingStreamChunks(): void {
+    this.pendingStreamChunks?.clear();
+    if (this.streamFlushTimer) {
+      clearTimeout(this.streamFlushTimer);
+      this.streamFlushTimer = null;
+    }
+  }
+
+  private flushStreamChunks(): void {
+    if (this.streamFlushTimer) {
+      clearTimeout(this.streamFlushTimer);
+      this.streamFlushTimer = null;
+    }
+    if (!this.pendingStreamChunks?.size) return;
+    const batches = Array.from(this.pendingStreamChunks.values());
+    this.pendingStreamChunks.clear();
+
+    this.sessionLogs.update((logs) => {
+      let next = [...logs];
+      for (const batch of batches) {
+        const existingIndex = next.findIndex(
+          (l) => l.type === 'llm_stream' &&
+                 l.data.execution_id === batch.execId &&
+                 (l.data.stream_type || 'text') === batch.streamType
+        );
+
+        if (existingIndex > -1) {
+          const existingLog = next[existingIndex];
+          next[existingIndex] = {
+            ...existingLog,
+            data: {
+              ...existingLog.data,
+              text: existingLog.data.text + batch.chunk,
+              step_id: batch.stepId || existingLog.data.step_id
+            }
+          };
+        } else {
+          next = next.map((l) => {
+            if (l.type === 'llm_stream' &&
+                (l.data.stream_type || 'text') === batch.streamType &&
+                !l.data.isCompleted) {
+              return { ...l, data: { ...l.data, isCompleted: true } };
+            }
+            return l;
+          });
+          next.push({
+            type: 'llm_stream',
+            timestamp: new Date().toISOString(),
+            data: {
+              execution_id: batch.execId,
+              step_id: batch.stepId,
+              text: batch.chunk,
+              stream_type: batch.streamType,
+              isCompleted: false
+            }
+          });
+        }
+      }
+      return next;
+    });
   }
 
   /**
@@ -1065,6 +1159,7 @@ export class AgentService {
       if (!cached) return;
       const sessions = JSON.parse(cached);
       if (Array.isArray(sessions)) {
+        this.lastPersistedSessionsJson = cached;
         this.rawSessions.set(sessions);
       }
     } catch {
@@ -1074,13 +1169,17 @@ export class AgentService {
 
   private persistSessionsCache(sessions: Session[]): void {
     try {
-      localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(sessions));
+      const serialized = JSON.stringify(sessions);
+      if (serialized === this.lastPersistedSessionsJson) return;
+      this.lastPersistedSessionsJson = serialized;
+      localStorage.setItem(SESSION_CACHE_KEY, serialized);
     } catch {
       // Storage can be unavailable in private browsing or embedded contexts.
     }
   }
 
   private clearSessionsCache(): void {
+    this.lastPersistedSessionsJson = null;
     try {
       localStorage.removeItem(SESSION_CACHE_KEY);
     } catch {
@@ -1217,6 +1316,7 @@ export class AgentService {
   private setSessionStatus(sessionId: string | null, status: Session['status']): void {
     if (!sessionId) return;
 
+    this.invalidateStatusSignatures();
     this.rawSessions.update((sessions) => sessions.map((session) =>
       session.session_id === sessionId ? { ...session, status } : session
     ));
@@ -1240,6 +1340,7 @@ export class AgentService {
     if (status) {
       this.activeSessionTracking.delete(String(sessionId));
       this.setSessionStatus(String(sessionId), status);
+      this.invalidateStatusSignatures();
       this.activeTasks.update((list) => list.filter((at) => at.session_id !== String(sessionId)));
     }
   }
@@ -1249,14 +1350,30 @@ export class AgentService {
    */
   private startStatusPolling(): void {
     this.fetchStatus();
-    this.statusInterval = setInterval(() => {
-      this.fetchStatus();
-      this.pollCounter++;
-      // Periodically refresh sessions every 6 seconds (every 3 polling intervals of 2s) to stay in sync with external DB modifications
-      if (this.pollCounter % 3 === 0) {
-        this.fetchSessions();
-      }
-    }, 2000);
+    // The interval runs outside the Angular zone so a poll tick alone never
+    // schedules change detection; only actual signal updates do.
+    this.zone.runOutsideAngular(() => {
+      this.statusInterval = setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) {
+          return; // Paused while the tab is in the background; resumed by visibilitychange.
+        }
+        this.fetchStatus();
+        this.pollCounter++;
+        // Periodically refresh sessions every 6 seconds (every 3 polling intervals of 2s) to stay in sync with external DB modifications
+        if (this.pollCounter % 3 === 0) {
+          this.fetchSessions();
+        }
+      }, 2000);
+    });
+  }
+
+  /**
+   * Optimistic local mutations of queue/active state must force the next poll
+   * to re-apply backend data even when its payload has not changed.
+   */
+  private invalidateStatusSignatures(): void {
+    this.lastQueueSignature = null;
+    this.lastActiveTasksSignature = null;
   }
 
   /**
@@ -1291,26 +1408,37 @@ export class AgentService {
             this.activePauseCardKey = null;
           }
 
-          // Map backend pending queue to real Session / TaskQueueItem objects
-          const pending: Session[] = (data.queue || []).map((item: any, index: number) => {
-            if (typeof item === 'object' && item !== null) {
+          // Skip signal updates when backend payloads did not change: setting a
+          // fresh array reference every 2s poll would force the whole sessions
+          // computed chain to re-derive for identical data.
+          const queueSignature = JSON.stringify(data.queue || []);
+          if (queueSignature !== this.lastQueueSignature) {
+            this.lastQueueSignature = queueSignature;
+            // Map backend pending queue to real Session / TaskQueueItem objects
+            const pending: Session[] = (data.queue || []).map((item: any, index: number) => {
+              if (typeof item === 'object' && item !== null) {
+                return {
+                  session_id: item.session_id || `pending-task-${index}`,
+                  initial_goal: item.goal || '',
+                  start_time: item.start_time || item.created_at || (Date.now() / 1000 + index),
+                  status: item.status || 'pending',
+                  device_serial: item.device_serial || item.device_id || null
+                };
+              }
               return {
-                session_id: item.session_id || `pending-task-${index}`,
-                initial_goal: item.goal || '',
-                start_time: item.start_time || item.created_at || (Date.now() / 1000 + index),
-                status: item.status || 'pending',
-                device_serial: item.device_serial || item.device_id || null
+                session_id: `task-queued-${index}`,
+                initial_goal: String(item),
+                start_time: (Date.now() / 1000) + index,
+                status: 'pending'
               };
-            }
-            return {
-              session_id: `task-queued-${index}`,
-              initial_goal: String(item),
-              start_time: (Date.now() / 1000) + index,
-              status: 'pending'
-            };
-          });
-          this.pendingQueue.set(pending);
-          this.activeTasks.set(data.active_tasks || []);
+            });
+            this.pendingQueue.set(pending);
+          }
+          const activeTasksSignature = JSON.stringify(data.active_tasks || []);
+          if (activeTasksSignature !== this.lastActiveTasksSignature) {
+            this.lastActiveTasksSignature = activeTasksSignature;
+            this.activeTasks.set(data.active_tasks || []);
+          }
           
           if (oldStatus !== data.status || oldRunningSessionId !== data.session_id) {
             this.fetchSessions();
@@ -1367,9 +1495,15 @@ export class AgentService {
   public destroy(): void {
     if (this.statusInterval) {
       clearInterval(this.statusInterval);
+      this.statusInterval = null;
     }
     if (this.eventSource) {
       this.eventSource.close();
+      this.eventSource = null;
+    }
+    this.discardPendingStreamChunks();
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
     }
     this.cancelVideoRetry();
   }

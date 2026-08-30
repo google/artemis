@@ -50,6 +50,7 @@ class DeviceLockOwner:
     acquired_at: str
     session_id: str | None = None
     ingress: str | None = None
+    lock_scope: str | None = None
 
     @classmethod
     def from_dict(cls, value: dict) -> DeviceLockOwner:
@@ -66,6 +67,11 @@ class DeviceLockOwner:
                 else None
             ),
             ingress=(str(value["ingress"]) if value.get("ingress") is not None else None),
+            lock_scope=(
+                str(value["lock_scope"])
+                if value.get("lock_scope") is not None
+                else None
+            ),
         )
 
 
@@ -84,6 +90,7 @@ class DeviceExecutionLock:
     _MALFORMED_LOCK_GRACE_SECONDS = 5.0
     _DEFAULT_POLL_INTERVAL_SECONDS = 0.1
     QUEUE_TICKET_ENV = "ARTEMIS_DEVICE_QUEUE_TICKET"
+    LOCK_SCOPE_ENV = "ARTEMIS_ADB_ENDPOINT_ID"
 
     @staticmethod
     def _normalize_device_id(device_id: str | None) -> str:
@@ -96,6 +103,16 @@ class DeviceExecutionLock:
         clean = re.sub(r"[^a-zA-Z0-9_-]", "_", raw)
         return clean or "default"
 
+    @classmethod
+    def _normalize_lock_id(
+        cls,
+        device_id: str | None,
+        lock_scope: str | None = None,
+    ) -> str:
+        clean_device = cls._normalize_device_id(device_id)
+        clean_scope = cls._normalize_device_id(lock_scope) if lock_scope else None
+        return f"{clean_scope}__{clean_device}" if clean_scope else clean_device
+
     def __init__(
         self,
         device_id: str = "default",
@@ -105,9 +122,11 @@ class DeviceExecutionLock:
         concurrency_mode: str | None = None,
         session_id: str | None = None,
         ingress: str | None = None,
+        lock_scope: str | None = None,
     ):
         self.device_id = device_id or "default"
-        self.clean_device_id = self._normalize_device_id(self.device_id)
+        self.lock_scope = lock_scope or os.getenv(self.LOCK_SCOPE_ENV) or None
+        self.clean_device_id = self._normalize_lock_id(self.device_id, self.lock_scope)
         self.description = description
         self.max_concurrency = max_concurrency
         self.concurrency_mode = (
@@ -130,8 +149,15 @@ class DeviceExecutionLock:
         self._acquired = False
 
     @classmethod
-    def _device_lock_path(cls, device_id: str | None) -> Path:
-        clean_id = cls._normalize_device_id(device_id)
+    def _device_lock_path(
+        cls,
+        device_id: str | None,
+        lock_scope: str | None = None,
+    ) -> Path:
+        clean_id = cls._normalize_lock_id(
+            device_id,
+            lock_scope or os.getenv(cls.LOCK_SCOPE_ENV) or None,
+        )
         return get_temp_dir("device-locks") / f"artemis-device-{clean_id}.lock"
 
     @classmethod
@@ -224,6 +250,7 @@ class DeviceExecutionLock:
         *,
         session_id: str | None = None,
         ingress: str | None = None,
+        lock_scope: str | None = None,
     ) -> dict:
         payload = {
             "pid": os.getpid(),
@@ -237,6 +264,8 @@ class DeviceExecutionLock:
             payload["session_id"] = str(session_id)
         if ingress:
             payload["ingress"] = str(ingress)
+        if lock_scope:
+            payload["lock_scope"] = str(lock_scope)
         return payload
 
     @classmethod
@@ -247,6 +276,7 @@ class DeviceExecutionLock:
         *,
         session_id: str | None = None,
         ingress: str | None = None,
+        lock_scope: str | None = None,
     ) -> str:
         """Reserve a FIFO position in the global queue before a worker process is spawned."""
         token = uuid.uuid4().hex
@@ -258,6 +288,7 @@ class DeviceExecutionLock:
             description,
             session_id=session_id,
             ingress=ingress,
+            lock_scope=lock_scope or os.getenv(cls.LOCK_SCOPE_ENV) or None,
         )
         for _ in range(8):
             path = queue_dir / f"{time.time_ns():020d}-{token}.wait"
@@ -299,6 +330,7 @@ class DeviceExecutionLock:
         device_id: str = "pending",
         session_id: str | None = None,
         ingress: str | None = None,
+        lock_scope: str | None = None,
     ) -> bool:
         """Transfer a submission ticket to its worker process."""
         queue_dir = get_temp_dir("device-locks") / "artemis-global-device.queue"
@@ -326,6 +358,9 @@ class DeviceExecutionLock:
             payload["session_id"] = str(session_id)
         if ingress:
             payload["ingress"] = str(ingress)
+        effective_scope = lock_scope or os.getenv(cls.LOCK_SCOPE_ENV) or None
+        if effective_scope:
+            payload["lock_scope"] = str(effective_scope)
         try:
             path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except OSError:
@@ -352,6 +387,7 @@ class DeviceExecutionLock:
                 self.description,
                 session_id=self.session_id,
                 ingress=self.ingress,
+                lock_scope=self.lock_scope,
             )
             path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             return path
@@ -361,6 +397,7 @@ class DeviceExecutionLock:
             self.device_id,
             session_id=self.session_id,
             ingress=self.ingress,
+            lock_scope=self.lock_scope,
         )
         path = self._find_reserved_ticket()
         if path is None:
@@ -397,6 +434,7 @@ class DeviceExecutionLock:
             self.description,
             session_id=self.session_id,
             ingress=self.ingress,
+            lock_scope=self.lock_scope,
         )
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -474,7 +512,11 @@ class DeviceExecutionLock:
                         o
                         for o in active_owners.values()
                         if not (
-                            (o.pid == os.getpid() and ((self.session_id and o.session_id == self.session_id) or o.token == self.token))
+                            o.pid == os.getpid()
+                            and (
+                                (self.session_id and o.session_id == self.session_id)
+                                or o.token == self.token
+                            )
                         )
                     ]
                     if len(active_other_owners) >= effective_concurrency:
@@ -513,7 +555,18 @@ class DeviceExecutionLock:
                         if ticket_owner is None:
                             continue
                         ticket_dev = self._normalize_device_id(ticket_owner.device_id)
-                        if ticket_dev == target_dev or ticket_dev in ("pending", "any"):
+                        ticket_lock_id = self._normalize_lock_id(
+                            ticket_owner.device_id,
+                            ticket_owner.lock_scope,
+                        )
+                        same_scope = (
+                            not ticket_owner.lock_scope
+                            or not self.lock_scope
+                            or ticket_owner.lock_scope == self.lock_scope
+                        )
+                        if ticket_lock_id == target_dev or (
+                            ticket_dev in ("pending", "any") and same_scope
+                        ):
                             device_queue.append(wait_path)
                     is_eligible = bool(device_queue and device_queue[0] == self._queue_path)
 
@@ -585,14 +638,13 @@ class DeviceExecutionLock:
         lock_dir = get_temp_dir("device-locks")
         if not lock_dir.exists():
             return {}
-        active_map: dict[str, DeviceLockOwner] = {}
-        seen_tokens = set()
+        owners: list[DeviceLockOwner] = []
+        seen_tokens: set[str] = set()
 
         for lock_path in sorted(lock_dir.glob("artemis-device-*.lock")):
             owner = cls._get_active_owner_for_path(lock_path)
             if owner is not None and owner.token not in seen_tokens:
-                dev_key = cls._normalize_device_id(owner.device_id)
-                active_map[dev_key] = owner
+                owners.append(owner)
                 seen_tokens.add(owner.token)
 
         # Also check legacy global lock if still present
@@ -600,22 +652,45 @@ class DeviceExecutionLock:
         if global_lock.exists():
             owner = cls._get_active_owner_for_path(global_lock)
             if owner is not None and owner.token not in seen_tokens:
-                dev_key = cls._normalize_device_id(owner.device_id)
-                active_map[dev_key] = owner
+                owners.append(owner)
                 seen_tokens.add(owner.token)
 
+        active_map: dict[str, DeviceLockOwner] = {}
+        owners_by_device: dict[str, list[DeviceLockOwner]] = {}
+        for owner in owners:
+            key = cls._normalize_device_id(owner.device_id)
+            owners_by_device.setdefault(key, []).append(owner)
+        for device_key, device_owners in owners_by_device.items():
+            if len(device_owners) == 1:
+                active_map[device_key] = device_owners[0]
+                continue
+            for owner in device_owners:
+                scoped_key = cls._normalize_lock_id(owner.device_id, owner.lock_scope)
+                active_map[scoped_key] = owner
         return active_map
 
     @classmethod
-    def get_active_owner(cls, device_id: str | None = None) -> DeviceLockOwner | None:
+    def get_active_owner(
+        cls,
+        device_id: str | None = None,
+        lock_scope: str | None = None,
+    ) -> DeviceLockOwner | None:
         """Return the live process owning the lock for a specific device, or any device if None."""
         lock_dir = get_temp_dir("device-locks")
         if device_id is not None:
-            clean_id = cls._normalize_device_id(device_id)
+            effective_scope = lock_scope or os.getenv(cls.LOCK_SCOPE_ENV) or None
+            clean_id = cls._normalize_lock_id(device_id, effective_scope)
             dev_path = lock_dir / f"artemis-device-{clean_id}.lock"
             owner = cls._get_active_owner_for_path(dev_path)
             if owner is not None:
                 return owner
+            if effective_scope:
+                legacy_path = lock_dir / (
+                    f"artemis-device-{cls._normalize_device_id(device_id)}.lock"
+                )
+                owner = cls._get_active_owner_for_path(legacy_path)
+                if owner is not None:
+                    return owner
             # Check legacy global lock as fallback
             global_path = lock_dir / "artemis-global-device.lock"
             if global_path.exists():
@@ -636,7 +711,10 @@ class DeviceExecutionLock:
         if not queue_dir.exists():
             return []
 
-        clean_target = cls._normalize_device_id(device_id) if device_id else None
+        target_scope = os.getenv(cls.LOCK_SCOPE_ENV) or None
+        clean_target = (
+            cls._normalize_lock_id(device_id, target_scope) if device_id else None
+        )
         active_tokens = {o.token for o in cls.get_active_owners().values()}
         queued: list[dict[str, Any]] = []
 
@@ -652,7 +730,15 @@ class DeviceExecutionLock:
                 continue
 
             target_dev = cls._normalize_device_id(owner.device_id)
-            if clean_target is not None and target_dev not in (clean_target, "pending", "any"):
+            target_lock_id = cls._normalize_lock_id(owner.device_id, owner.lock_scope)
+            same_scope = (
+                not target_scope
+                or not owner.lock_scope
+                or owner.lock_scope == target_scope
+            )
+            if clean_target is not None and target_lock_id != clean_target and not (
+                target_dev in ("pending", "any") and same_scope
+            ):
                 continue
 
             try:
@@ -665,6 +751,7 @@ class DeviceExecutionLock:
                 "goal": owner.description,
                 "device_id": owner.device_id,
                 "device_serial": owner.device_id,
+                "adb_endpoint_id": owner.lock_scope,
                 "pid": owner.pid,
                 "token": owner.token,
                 "ingress": owner.ingress or "unknown",
@@ -681,7 +768,10 @@ class DeviceExecutionLock:
         if not lock_dir.exists():
             return False
         if device_id is not None:
-            clean_id = cls._normalize_device_id(device_id)
+            clean_id = cls._normalize_lock_id(
+                device_id,
+                os.getenv(cls.LOCK_SCOPE_ENV) or None,
+            )
             return (
                 lock_dir / f"artemis-device-{clean_id}.lock"
             ).exists() or (lock_dir / "artemis-global-device.lock").exists()
@@ -694,7 +784,7 @@ class DeviceExecutionLock:
         """Revalidate a previously read owner before performing a destructive action."""
         target_dev = device_id or expected.device_id
         lock_dir = get_temp_dir("device-locks")
-        clean_id = cls._normalize_device_id(target_dev)
+        clean_id = cls._normalize_lock_id(target_dev, expected.lock_scope)
         path = lock_dir / f"artemis-device-{clean_id}.lock"
         if not path.exists():
             path = lock_dir / "artemis-global-device.lock"

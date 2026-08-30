@@ -51,7 +51,7 @@ class ServerState:
         self.ipc_serve_task: asyncio.Task | None = None
         self.ipc_port: int | None = None
         self.port: int = 8000
-        self.host: str = "0.0.0.0"
+        self.host: str = "127.0.0.1"
         self.is_shutting_down: bool = False
 
         self.current_process: asyncio.subprocess.Process | None = None
@@ -151,7 +151,7 @@ class ServerState:
         """Device serials currently owned by an in-flight run."""
         self.prune_finished_runs()
         return {
-            str(run["device_id"])
+            str(run.get("lock_key") or run["device_id"])
             for run in self.active_runs.values()
             if run.get("device_id")
         }

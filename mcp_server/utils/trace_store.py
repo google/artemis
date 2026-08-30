@@ -113,6 +113,11 @@ def update_trace_status(
     if not data:
         return None
 
+    # "success" is a legacy alias for the canonical "completed" terminal
+    # status and must never be persisted into status.json.
+    if status == "success":
+        status = "completed"
+
     data["status"] = status
     if status in ("completed", "failed", "cancelled"):
         data["end_time"] = time.time()

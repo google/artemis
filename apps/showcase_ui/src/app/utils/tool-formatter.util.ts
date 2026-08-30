@@ -18,11 +18,27 @@ import { ActionParam } from '../core/models/stream.model';
 import { isAndroidAction, isReportStatusAction } from './action-formatter.util';
 import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequenceCoordinates } from './image-overlay.util';
 
+// Tool objects are replaced (not mutated) when a trace is updated, so a
+// WeakMap keyed on the tool is a safe memo for the parsed-args lookup that
+// templates would otherwise re-run (including JSON.parse) on every render.
+const toolArgsCache = new WeakMap<object, any>();
+
 /**
  * Extract arguments from tool payload or direct args field
  */
 export function getToolArgs(tool: any): any {
   if (!tool) return {};
+  if (typeof tool === 'object') {
+    const cached = toolArgsCache.get(tool);
+    if (cached !== undefined) return cached;
+    const args = computeToolArgs(tool);
+    toolArgsCache.set(tool, args);
+    return args;
+  }
+  return computeToolArgs(tool);
+}
+
+function computeToolArgs(tool: any): any {
   if (tool.payload) {
     let payloadObj = tool.payload;
     if (typeof payloadObj === 'string') {

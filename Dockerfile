@@ -41,4 +41,8 @@ ENV PORT=8080
 
 EXPOSE 8080
 
+# The console has no user authentication: publish the port to loopback only,
+# e.g. `docker run -p 127.0.0.1:8080:8080 ...`, and reach it remotely through
+# a Tailscale/SSH tunnel. (0.0.0.0 here is container-internal and required
+# for the port mapping to work.)
 CMD ["uvicorn", "apps.admin_console.server:app", "--host", "0.0.0.0", "--port", "8080"]

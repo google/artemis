@@ -119,6 +119,12 @@ def test_mobile_run_task_with_device_serial(temp_trace_env):
         ) as reserve,
         patch("mcp_server.tools.task_runner.DeviceExecutionLock.transfer_reservation") as transfer,
         patch("mcp_server.tools.task_runner.subprocess.Popen", return_value=process) as popen,
+        # Hermetic device validation: the requested serial reports as ready
+        # regardless of what is attached to the host running the tests.
+        patch(
+            "artemis.runtime.device_pool.device_pool.try_list_devices",
+            return_value=[SimpleNamespace(serial="pixel-11-pro-001", state="device")],
+        ),
     ):
         result = mobile_run_task(
             task_desc="Open Settings on target phone",
@@ -204,7 +210,6 @@ def test_mobile_manage_task_status_and_stop(temp_trace_env):
 
 def test_mobile_manage_task_status_backfills_device_serial_from_db(temp_trace_env):
     import sqlite3
-    import json
     import os
 
     trace_id = str(uuid.uuid4())

@@ -53,13 +53,27 @@ def test_is_daemon_running_failure():
         assert is_daemon_running() is False
 
 
-def test_spawn_daemon():
+def test_spawn_daemon(tmp_path):
+    import sys
+
     mock_proc = MagicMock()
     mock_proc.pid = 54321
-    with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
-        proc = spawn_daemon(host="127.0.0.1", port=8000)
+    with (
+        patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        patch(
+            "artemis.runtime.daemon_client.daemon_log_path",
+            return_value=tmp_path / "daemon-8000.log",
+        ),
+    ):
+        proc = spawn_daemon(host="127.0.0.1", port=9123)
         assert proc is mock_proc
         assert mock_popen.called
+        # The daemon must launch via `python -m`, never through the console-script
+        # shim (a resident artemis.exe would block uv sync reinstalls on Windows).
+        cmd = mock_popen.call_args.args[0]
+        assert cmd[0] == sys.executable
+        assert cmd[1:3] == ["-m", "apps.admin_console.server"]
+        assert cmd[3:] == ["--host", "127.0.0.1", "--port", "9123"]
 
 
 def test_ensure_daemon_running_when_already_active():

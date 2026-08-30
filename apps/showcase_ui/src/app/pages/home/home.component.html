@@ -674,15 +674,24 @@
               <div class="step-title-row">
                 <h3 class="step-title">Android Device & Emulator Connection</h3>
               </div>
-              <p class="step-desc">Physical Android phone or local Android Virtual Device (AVD)</p>
+              <p class="step-desc">Local emulator, attached phone, wireless device, or another ADB server</p>
             </div>
+
+            <button
+              type="button"
+              class="btn-restart-adb btn-connection-options"
+              (click)="toggleConnectionMethods()"
+            >
+              <span class="material-symbols-outlined">swap_horiz</span>
+              <span>{{ showConnectionMethods() ? 'Hide Options' : 'Change Connection' }}</span>
+            </button>
 
             <button
               type="button"
               class="btn-restart-adb"
               [disabled]="isRestartingAdb()"
               (click)="restartAdbServer()"
-              title="Restart local ADB daemon"
+              [title]="isRemoteAdbServer() ? 'Refresh devices without stopping the remote ADB server' : 'Restart local ADB daemon'"
             >
               @if (isRestartingAdb()) {
               <span class="material-symbols-outlined spinning">sync</span>
@@ -692,7 +701,7 @@
               <span class="feedback-text">{{ adbRestartFeedback() }}</span>
               } @else {
               <span class="material-symbols-outlined">sync</span>
-              <span>Restart ADB</span>
+              <span>{{ isRemoteAdbServer() ? 'Refresh Devices' : 'Restart ADB' }}</span>
               }
             </button>
           </div>
@@ -725,6 +734,12 @@
                       @if (activeDevice()?.android_version) {
                         <span class="meta-dot">·</span>
                         <span>Android {{ activeDevice()?.android_version }}</span>
+                      }
+                      @if (isRemoteAdbServer()) {
+                        <span class="meta-dot">·</span>
+                        <span class="remote-endpoint-label">
+                          Remote via {{ adbServerStatus()?.endpoint?.host }}:{{ adbServerStatus()?.endpoint?.port }}
+                        </span>
                       }
                     </div>
                   </div>
@@ -919,7 +934,7 @@
 
                   <div class="failed-actions-bar">
                     @if (emulatorLaunchState()?.avd_name) {
-                      <button type="button" class="btn-retry-launch" (click)="launchAvdEmulator(emulatorLaunchState()!.avd_name!)">
+                      <button type="button" class="btn-retry-launch" [disabled]="isRemoteAdbServer()" (click)="launchAvdEmulator(emulatorLaunchState()!.avd_name!)">
                         <span class="material-symbols-outlined">refresh</span>
                         <span>Retry Launch ({{ emulatorLaunchState()?.avd_name }})</span>
                       </button>
@@ -937,7 +952,7 @@
             }
 
             <!-- STATE B-3: NO DEVICE DETECTED / READY TO CONNECT GUIDE -->
-            @if (!isDeviceReady() && !isEmulatorLaunching() && adbProbe()?.summary !== 'Device Booting' && adbProbe()?.summary !== 'Device Unauthorized' && adbProbe()?.summary !== 'Device Locked' && adbProbe()?.summary !== 'Lock State Unknown' && adbProbe()?.status !== 'fail' && emulatorLaunchState()?.status !== 'failed') {
+            @if (showConnectionMethods() || (!isDeviceReady() && !isEmulatorLaunching() && adbProbe()?.summary !== 'Device Booting' && adbProbe()?.summary !== 'Device Unauthorized' && adbProbe()?.summary !== 'Device Locked' && adbProbe()?.summary !== 'Lock State Unknown' && adbProbe()?.status !== 'fail' && emulatorLaunchState()?.status !== 'failed')) {
               <div class="foolproof-guide-container">
                 <!-- Method Selection Nav Cards -->
                 <div class="connection-methods-nav">
@@ -954,13 +969,14 @@
                       <div class="method-info">
                         <div class="method-title-row">
                           <span class="method-title">Android Emulator</span>
-                          @if (installedAvds().length > 0) {
-                          <span class="method-badge-pill detected">{{ installedAvds().length }} DETECTED</span>
-                          } @else {
-                          <span class="method-badge-pill recommended">RECOMMENDED</span>
-                          }
                         </div>
-                        <span class="method-desc">Launch local Android Virtual Device</span>
+                        <span class="method-desc">
+                          @if (installedAvds().length > 0) {
+                            {{ installedAvds().length }} local virtual device{{ installedAvds().length > 1 ? 's' : '' }} available
+                          } @else {
+                            Launch a local Android Virtual Device
+                          }
+                        </span>
                       </div>
                     </div>
                     <div class="method-card-right">
@@ -981,7 +997,6 @@
                       <div class="method-info">
                         <div class="method-title-row">
                           <span class="method-title">USB Cable</span>
-                          <span class="method-badge-pill neutral">4 STEPS</span>
                         </div>
                         <span class="method-desc">Connect physical phone via USB</span>
                       </div>
@@ -1004,7 +1019,6 @@
                       <div class="method-info">
                         <div class="method-title-row">
                           <span class="method-title">Wireless ADB</span>
-                          <span class="method-badge-pill info">WI-FI</span>
                         </div>
                         <span class="method-desc">Connect over local Wi-Fi</span>
                       </div>
@@ -1013,7 +1027,51 @@
                         <span class="radio-indicator" [class.checked]="activeAdbGuideTab() === 'wifi'"></span>
                       </div>
                   </button>
+
+                  <button
+                    type="button"
+                    class="method-nav-card"
+                    [class.active]="activeAdbGuideTab() === 'remote'"
+                    (click)="setAdbGuideTab('remote')"
+                  >
+                    <div class="method-card-left">
+                      <div class="method-icon-box">
+                        <span class="material-symbols-outlined">devices</span>
+                      </div>
+                      <div class="method-info">
+                        <div class="method-title-row">
+                          <span class="method-title">Remote Computer</span>
+                        </div>
+                        <span class="method-desc">Phone connected to another computer</span>
+                      </div>
+                    </div>
+                    <div class="method-card-right">
+                      <span class="radio-indicator" [class.checked]="activeAdbGuideTab() === 'remote'"></span>
+                    </div>
+                  </button>
                 </div>
+
+                @if (activeAdbGuideTab() !== 'remote' && isRemoteAdbServer()) {
+                  <div class="active-remote-notice">
+                    <div class="active-remote-copy">
+                      <span class="material-symbols-outlined">hub</span>
+                      <span>
+                        Artemis is currently using
+                        <strong>{{ adbServerStatus()?.endpoint?.host }}:{{ adbServerStatus()?.endpoint?.port }}</strong>.
+                        Switch to local ADB before using a local emulator, USB cable, or Wireless ADB.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      class="btn-use-local-adb"
+                      [disabled]="isSwitchingToLocalAdb()"
+                      (click)="switchToLocalAdbServer()"
+                    >
+                      <span class="material-symbols-outlined" [class.spinning]="isSwitchingToLocalAdb()">sync</span>
+                      <span>{{ isSwitchingToLocalAdb() ? 'Switching...' : 'Use Local ADB' }}</span>
+                    </button>
+                  </div>
+                }
 
                 <!-- Method 1: Emulator -->
                 @if (activeAdbGuideTab() === 'emulator') {
@@ -1049,7 +1107,7 @@
                                   type="button"
                                   class="btn-avd-launch"
                                   [class.launching]="launchingAvd() === avd || (isEmulatorLaunching() && emulatorLaunchState()?.avd_name === avd)"
-                                  [disabled]="isEmulatorLaunching()"
+                                  [disabled]="isEmulatorLaunching() || isRemoteAdbServer()"
                                   (click)="launchAvdEmulator(avd)"
                                   [title]="isEmulatorLaunching() ? 'An emulator is currently launching...' : 'Launch ' + avd"
                                 >
@@ -1319,7 +1377,7 @@
                         </div>
                   
                         <div class="wifi-btn-col">
-                          <button type="button" class="btn-wifi-connect" [disabled]="isConnectingWifi() || !wifiHost().trim()"
+                          <button type="button" class="btn-wifi-connect" [disabled]="isConnectingWifi() || isRemoteAdbServer() || !wifiHost().trim()"
                             (click)="connectWifiDevice()">
                             @if (isConnectingWifi()) {
                             <span class="material-symbols-outlined spinning">sync</span>
@@ -1351,6 +1409,132 @@
                       Find IP & port in phone <strong>Settings > Developer Options > Wireless Debugging</strong>.
                       </div>
                     </div>
+                  </div>
+                }
+
+                <!-- Method 4: ADB server on another computer -->
+                @if (activeAdbGuideTab() === 'remote') {
+                  <div class="method-details-panel remote-adb-panel">
+                    <div class="remote-guide-intro">
+                      <span class="material-symbols-outlined intro-icon">hub</span>
+                      <span>Enter the host and port of an ADB server endpoint that this computer can access, so Artemis can discover and control a phone physically connected to another computer.</span>
+                    </div>
+
+                    <div class="remote-adb-interactive-box">
+                      <div class="remote-adb-form-row">
+                        <div class="remote-adb-input-col host-col">
+                          <label class="remote-adb-label" for="remote-adb-host">ADB Server Host</label>
+                          <div class="remote-adb-input-wrap">
+                            <span class="material-symbols-outlined wrap-icon">dns</span>
+                            <input
+                              id="remote-adb-host"
+                              type="text"
+                              class="remote-adb-input"
+                              [ngModel]="remoteAdbHost()"
+                              (ngModelChange)="updateRemoteAdbHost($event)"
+                              placeholder="127.0.0.1"
+                              autocomplete="off"
+                              spellcheck="false"
+                            />
+                          </div>
+                        </div>
+
+                        <div class="remote-adb-input-col port-col">
+                          <label class="remote-adb-label" for="remote-adb-port">ADB Server Port</label>
+                          <div class="remote-adb-input-wrap">
+                            <span class="material-symbols-outlined wrap-icon">tag</span>
+                            <input
+                              id="remote-adb-port"
+                              type="text"
+                              inputmode="numeric"
+                              class="remote-adb-input"
+                              [ngModel]="remoteAdbPort()"
+                              (ngModelChange)="updateRemoteAdbPort($event)"
+                              placeholder="5038"
+                              autocomplete="off"
+                              spellcheck="false"
+                            />
+                          </div>
+                        </div>
+
+                        <div class="remote-adb-btn-col">
+                          <button
+                            type="button"
+                            class="btn-remote-adb-connect"
+                            [disabled]="isConnectingRemoteAdb() || isActivatingRemoteAdb() || !remoteAdbHost().trim()"
+                            (click)="connectRemoteAdbServer()"
+                          >
+                            @if (isConnectingRemoteAdb()) {
+                              <span class="material-symbols-outlined spinning">sync</span>
+                              <span>Checking...</span>
+                            } @else {
+                              <span class="material-symbols-outlined">bolt</span>
+                              <span>Test Connection</span>
+                            }
+                          </button>
+                        </div>
+                      </div>
+
+                      <label class="remember-remote-adb">
+                        <input
+                          type="checkbox"
+                          [ngModel]="rememberRemoteAdb()"
+                          (ngModelChange)="rememberRemoteAdb.set($event)"
+                        />
+                        <span>Remember this endpoint for future Artemis launches</span>
+                      </label>
+
+                      @if (remoteAdbMessage()) {
+                        <div class="remote-adb-status-alert success">
+                          <span class="material-symbols-outlined">check_circle</span>
+                          <span>{{ remoteAdbMessage() }}</span>
+                        </div>
+                      }
+                      @if (remoteAdbError()) {
+                        <div class="remote-adb-status-alert error" role="alert">
+                          <span class="material-symbols-outlined">error</span>
+                          <span>{{ remoteAdbError() }}</span>
+                        </div>
+                      }
+
+                      @if (remoteAdbDevices().length > 0) {
+                        <div class="remote-device-results">
+                          @for (device of remoteAdbDevices(); track device.serial) {
+                            <div class="remote-device-row">
+                              <span class="material-symbols-outlined">phone_android</span>
+                              <div class="remote-device-copy">
+                                <strong>{{ device.model || device.serial }}</strong>
+                                <span>{{ device.serial }}</span>
+                              </div>
+                              <span class="remote-device-state" [class.ready]="device.state === 'device'">
+                                {{ device.state === 'device' ? 'Ready' : device.state }}
+                              </span>
+                            </div>
+                          }
+                        </div>
+                      }
+
+                      @if (remoteAdbProbeResult()?.success && !isProbedRemoteAdbActive()) {
+                        <button
+                          type="button"
+                          class="btn-remote-adb-connect btn-use-tested-endpoint"
+                          [disabled]="isActivatingRemoteAdb()"
+                          (click)="activateRemoteAdbServer()"
+                        >
+                          @if (isActivatingRemoteAdb()) {
+                            <span class="material-symbols-outlined spinning">sync</span>
+                            <span>Connecting...</span>
+                          } @else {
+                            <span class="material-symbols-outlined">check</span>
+                            <span>{{ remoteAdbHasReadyDevice() ? 'Use Connection' : 'Use Anyway' }}</span>
+                          }
+                        </button>
+                      }
+                    </div>
+
+                    <p class="remote-adb-explanation">
+                      Artemis sends all ADB commands to this server instead of the default local server. Any phone visible to that server becomes available to Artemis.
+                    </p>
                   </div>
                 }
 
@@ -1416,7 +1600,7 @@
                   </div>
                   <button type="button" class="btn-retry-auth" (click)="restartAdbServer()">
                     <span class="material-symbols-outlined">refresh</span>
-                    <span>Restart ADB & Check</span>
+                    <span>{{ isRemoteAdbServer() ? 'Refresh Devices' : 'Restart ADB & Check' }}</span>
                   </button>
                 </div>
               </div>

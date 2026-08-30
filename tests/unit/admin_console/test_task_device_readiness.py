@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from fastapi import HTTPException
@@ -111,4 +112,132 @@ async def test_run_task_switches_to_unlocked_device_and_syncs_engine(monkeypatch
     _, kwargs = enqueue_tasks.call_args
     assert kwargs.get("device_serial") == "emulator-5556"
     set_active_mock.assert_called_once_with("emulator-5556")
+
+
+@pytest.mark.asyncio
+async def test_idempotent_retry_skips_device_probe_for_active_session(monkeypatch):
+    run_probe = AsyncMock()
+    monkeypatch.setattr(
+        tasks.readiness_engine, "run_device_submission_probe", run_probe
+    )
+    monkeypatch.setattr(tasks.state, "active_session_id", "sdk-task-1")
+    monkeypatch.setattr(tasks.state, "active_connections", {})
+    monkeypatch.setattr(
+        tasks.session_repo,
+        "get_session_by_id",
+        lambda session_id: None,
+    )
+
+    result = await tasks.run_task(
+        RunRequest(
+            goal="Open Settings",
+            session_id="sdk-task-1",
+            device_serial="pixel-10",
+            ingress="python_sdk",
+        )
+    )
+
+    assert result["status"] == "running"
+    assert result["enqueued_count"] == 0
+    assert result["tasks"][0]["session_id"] == "sdk-task-1"
+    run_probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unknown_explicit_device_is_rejected_before_readiness_probe(monkeypatch):
+    run_probe = AsyncMock()
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
+    monkeypatch.setattr(tasks.state, "active_session_id", None)
+    monkeypatch.setattr(tasks.state, "active_connections", {})
+    monkeypatch.setattr(tasks.state, "queue_items", [])
+    monkeypatch.setattr(tasks.session_repo, "get_session_by_id", lambda session_id: None)
+    monkeypatch.setattr(
+        tasks.device_pool,
+        "try_list_devices_async",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(serial="pixel-10", state="device"),
+            ]
+        ),
+    )
+
+    result = await tasks.run_task(
+        RunRequest(
+            goal="Must not run",
+            device_serial="missing-device",
+            session_id="00000000-0000-4000-8000-000000000099",
+        )
+    )
+
+    assert result["status"] == "rejected"
+    assert result["tasks"] == []
+    assert "not connected" in result["error"]
+    run_probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_explicit_device_is_rejected_when_attached_but_not_ready(monkeypatch):
+    run_probe = AsyncMock()
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
+    monkeypatch.setattr(tasks.state, "active_session_id", None)
+    monkeypatch.setattr(tasks.state, "active_connections", {})
+    monkeypatch.setattr(tasks.state, "queue_items", [])
+    monkeypatch.setattr(tasks.session_repo, "get_session_by_id", lambda session_id: None)
+    monkeypatch.setattr(
+        tasks.device_pool,
+        "try_list_devices_async",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(serial="pixel-10", state="unauthorized"),
+            ]
+        ),
+    )
+
+    result = await tasks.run_task(
+        RunRequest(
+            goal="Must not run",
+            device_serial="pixel-10",
+            session_id="00000000-0000-4000-8000-000000000100",
+        )
+    )
+
+    assert result["status"] == "rejected"
+    assert "unauthorized" in result["error"]
+    run_probe.assert_not_awaited()
+
+
+@pytest.mark.parametrize("enumeration", [None, []])
+@pytest.mark.asyncio
+async def test_explicit_device_proceeds_when_enumeration_is_indeterminate(
+    monkeypatch, enumeration
+):
+    """A failed (None) or empty enumeration must never hard-reject an explicit
+    serial: the submission queues and fails downstream if the device is truly
+    absent. This is the startup-storm regression guard."""
+    run_probe = AsyncMock(return_value=None)
+    enqueue_tasks = AsyncMock(return_value={"status": "queued", "tasks": []})
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
+    monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue_tasks)
+    monkeypatch.setattr(tasks.state, "active_session_id", None)
+    monkeypatch.setattr(tasks.state, "active_connections", {})
+    monkeypatch.setattr(tasks.state, "queue_items", [])
+    monkeypatch.setattr(tasks.session_repo, "get_session_by_id", lambda session_id: None)
+    monkeypatch.setattr(
+        tasks.device_pool,
+        "try_list_devices_async",
+        AsyncMock(return_value=enumeration),
+    )
+
+    result = await tasks.run_task(
+        RunRequest(
+            goal="Queue through the startup storm",
+            device_serial="pixel-10",
+            session_id="00000000-0000-4000-8000-000000000101",
+        )
+    )
+
+    assert result["status"] == "queued"
+    enqueue_tasks.assert_awaited_once()
+    _, kwargs = enqueue_tasks.call_args
+    assert kwargs.get("device_serial") == "pixel-10"
 

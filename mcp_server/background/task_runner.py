@@ -146,6 +146,7 @@ async def run_task(
     target_serial = device_serial
 
     try:
+        from artemis.config import settings
         from artemis.sdk import Agent
         from artemis.sdk.builders import Builders
         from artemis.sdk.types import AgentProfile

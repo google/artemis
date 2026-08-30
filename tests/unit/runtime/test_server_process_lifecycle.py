@@ -14,6 +14,7 @@
 
 """Unit tests for Artemis Server Lifecycle Management and API Endpoints."""
 
+import asyncio
 import json
 import os
 from unittest.mock import MagicMock, patch
@@ -21,13 +22,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from apps.admin_console.server import app
+from apps.admin_console import server as server_module
+from apps.admin_console.server import LIFECYCLE_TOKEN, app
 from artemis.runtime.server_lifecycle import (
     clear_server_info,
     find_server_pids,
     get_server_status,
     is_port_in_use,
     read_server_info,
+    request_graceful_shutdown,
     stop_server,
     write_server_info,
 )
@@ -56,8 +59,12 @@ def test_write_read_clear_server_info(tmp_path, monkeypatch):
     assert info["host"] == "127.0.0.1"
     assert "started_at" in info
 
-    # Clear info
-    clear_server_info()
+    # A stop targeting another port must not erase this server's metadata.
+    clear_server_info(port=9999)
+    assert fake_info_file.exists()
+
+    # Clear matching info
+    clear_server_info(port=8888)
     assert not fake_info_file.exists()
     assert read_server_info() is None
 
@@ -121,6 +128,55 @@ def test_stop_server_when_not_running(monkeypatch):
     assert "No active server" in msg
 
 
+def test_server_main_parses_non_default_bind_address(monkeypatch):
+    run_server = MagicMock()
+    monkeypatch.setattr(server_module, "run_ui_server", run_server)
+
+    server_module.main(["--host", "127.0.0.1", "--port", "9123"])
+
+    run_server.assert_called_once_with(host="127.0.0.1", port=9123)
+
+
+def test_request_graceful_shutdown_uses_metadata_token(monkeypatch):
+    response = MagicMock(status=202)
+    response.__enter__.return_value = response
+    monkeypatch.setattr(
+        "artemis.runtime.server_lifecycle.read_server_info",
+        lambda: {"port": 9123, "lifecycle_token": "local-secret"},
+    )
+    urlopen = MagicMock(return_value=response)
+    monkeypatch.setattr("artemis.runtime.server_lifecycle.urllib.request.urlopen", urlopen)
+
+    assert request_graceful_shutdown(9123) is True
+    request = urlopen.call_args.args[0]
+    assert request.full_url == "http://127.0.0.1:9123/api/system/shutdown"
+    assert request.get_header("X-artemis-lifecycle-token") == "local-secret"
+
+
+def test_stop_server_prefers_graceful_shutdown(monkeypatch):
+    monkeypatch.setattr("artemis.runtime.server_lifecycle.find_server_pids", lambda port: [12345])
+    monkeypatch.setattr(
+        "artemis.runtime.server_lifecycle.request_graceful_shutdown", lambda port, timeout: True
+    )
+    monkeypatch.setattr("artemis.runtime.server_lifecycle.is_port_in_use", lambda port: False)
+    monkeypatch.setattr("artemis.runtime.server_lifecycle._any_pid_alive", lambda pids: False)
+    terminate = MagicMock()
+    monkeypatch.setattr(
+        "artemis.runtime.server_lifecycle.ProcessSupervisor.terminate_tree", terminate
+    )
+    monkeypatch.setattr(
+        "artemis.runtime.server_lifecycle.DeviceExecutionLock.cleanup_stale_locks", lambda: 0
+    )
+    monkeypatch.setattr("artemis.runtime.server_lifecycle.clear_server_info", lambda **kwargs: None)
+
+    success, msg, stopped = stop_server(9123)
+
+    assert success is True
+    assert stopped == [12345]
+    assert "gracefully" in msg
+    terminate.assert_not_called()
+
+
 def test_stop_server_terminates_tree(monkeypatch):
     """Verify stop_server calls ProcessSupervisor.terminate_tree and returns stopped pids."""
     terminated_pids = []
@@ -135,6 +191,9 @@ def test_stop_server_terminates_tree(monkeypatch):
 
     monkeypatch.setattr("artemis.runtime.server_lifecycle.is_port_in_use", mock_in_use)
     monkeypatch.setattr(
+        "artemis.runtime.server_lifecycle.request_graceful_shutdown", lambda port, timeout: False
+    )
+    monkeypatch.setattr(
         "artemis.runtime.supervisor.ProcessSupervisor.terminate_tree",
         lambda pid, timeout_seconds=4.0: terminated_pids.append(pid),
     )
@@ -142,19 +201,25 @@ def test_stop_server_terminates_tree(monkeypatch):
         "artemis.runtime.device_lock.DeviceExecutionLock.cleanup_stale_locks",
         lambda: 1,
     )
+    reconcile = MagicMock(return_value=1)
+    monkeypatch.setattr(
+        "artemis.runtime.server_lifecycle._reconcile_orphaned_sessions", reconcile
+    )
 
     success, msg, stopped = stop_server(8000)
     assert success is True
     assert stopped == [12345]
     assert 12345 in terminated_pids
     assert "stopped" in msg.lower()
+    assert "Reconciled 1 interrupted session" in msg
+    reconcile.assert_called_once_with()
 
 
 @pytest.mark.asyncio
 async def test_api_server_status():
     """Verify GET /api/system/server-status returns server runtime metadata."""
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
+        transport=ASGITransport(app=app), base_url="http://localhost"
     ) as client:
         response = await client.get("/api/system/server-status")
         assert response.status_code == 200
@@ -172,7 +237,7 @@ async def test_api_restart_endpoint():
         mock_thread.return_value = mock_instance
 
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://testserver"
+            transport=ASGITransport(app=app), base_url="http://localhost"
         ) as client:
             response = await client.post("/api/system/restart")
             assert response.status_code == 200
@@ -185,17 +250,23 @@ async def test_api_restart_endpoint():
 
 @pytest.mark.asyncio
 async def test_api_shutdown_endpoint():
-    """Verify POST /api/system/shutdown accepts request and schedules shutdown."""
-    with patch("threading.Thread") as mock_thread:
-        mock_instance = MagicMock()
-        mock_thread.return_value = mock_instance
+    """Verify shutdown is authenticated and drives Uvicorn's graceful exit flag."""
+    fake_server = MagicMock(should_exit=False)
+    app.state.uvicorn_server = fake_server
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://testserver"
-        ) as client:
-            response = await client.post("/api/system/shutdown")
-            assert response.status_code == 200
-            data = response.json()
-            assert data["status"] == "shutting_down"
-            mock_thread.assert_called_once()
-            mock_instance.start.assert_called_once()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://localhost"
+    ) as client:
+        denied = await client.post("/api/system/shutdown")
+        assert denied.status_code == 403
+
+        response = await client.post(
+            "/api/system/shutdown",
+            headers={"X-Artemis-Lifecycle-Token": LIFECYCLE_TOKEN},
+        )
+        assert response.status_code == 202
+        assert response.json()["status"] == "shutting_down"
+        await asyncio.sleep(0.1)
+
+    assert fake_server.should_exit is True
+    app.state.uvicorn_server = None

@@ -188,6 +188,16 @@ class ModelFactory:
 
     @classmethod
     def create_model(cls, endpoint: ModelEndpoint) -> BaseChatModel:
+        if os.environ.get("ARTEMIS_FAKE_LLM") == "1":
+            from artemis.llm.fake_model import FakeChatModel
+
+            delay = float(os.environ.get("ARTEMIS_FAKE_LLM_DELAY_S", "0") or 0)
+            logger.warning(
+                f"ARTEMIS_FAKE_LLM=1 — returning FakeChatModel (delay={delay}s) "
+                f"instead of {endpoint.provider}/{endpoint.model_name}"
+            )
+            return FakeChatModel(delay_s=delay)
+
         provider = ModelProvider.from_string(endpoint.provider)
 
         if provider == ModelProvider.GOOGLE:

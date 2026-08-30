@@ -204,32 +204,31 @@ In Codex, Antigravity, or Claude Code, simply prompt:
 
 <br>
 
-Embed the mobile automation engine into your Python workflows in just a few lines:
+Install the zero-runtime-dependency client on the development machine. ADB,
+agents, models, and image processing remain on the device host:
+
+```powershell
+uv add "artemis-client @ git+https://github.com/google/artemis.git#subdirectory=packages/artemis-client"
+```
 
 ```python
 import asyncio
-from artemis import ArtemisClient, ConcurrencyMode
+from artemis_client import ArtemisClient
 
 
 async def main():
-    # 1. Initialize client with optional device targeting and concurrency strategy:
-    # - concurrency_mode="per_device" (default): 1 task per device, allows multi-device parallel execution
-    # - concurrency_mode="global": 1 task globally across all devices
     client = ArtemisClient(
+        "http://artemis-host:8000",
         device_serial="emulator-5554",  # optional: target specific device serial
         default_profile="flash",        # "flash" (fast reactive) or "pro" (deep reasoning)
-        concurrency_mode="per_device",  # or ConcurrencyMode.GLOBAL
     )
 
-    # 2. Execute natural language end-to-end test case (can also override device per-run)
     result = await client.run(
         "Open System Settings, go to 'Battery', verify battery percentage is displayed, and check for any crash dialogs.",
-        device_serial="emulator-5554",  # optional: override target device for this specific run
     )
 
-    # 3. Structured assertions & execution tracing
-    assert result.status == "SUCCESS", f"Test failed: {result.error}"
-    print(f"✅ Test Passed! Device: {result.device_id} | Turns: {result.turns} | Trace ID: {result.trace_id}")
+    assert result.succeeded, f"Test failed: {result.error or result.status}"
+    print(f"✅ Test Passed! Device: {result.device_serial} | Trace ID: {result.trace_id}")
 
 
 if __name__ == "__main__":

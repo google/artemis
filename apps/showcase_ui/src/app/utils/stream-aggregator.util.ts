@@ -284,6 +284,39 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
 }
 
 /**
+ * Cache for the token-estimate fallback. Tool payloads can carry multi-megabyte
+ * base64 screenshots; serializing them on every recompute would block the main
+ * thread, so each payload object is measured exactly once.
+ */
+const payloadSizeCache = new WeakMap<object, { isImage: boolean; length: number }>();
+
+function estimatePayloadSize(payload: any): { isImage: boolean; length: number } {
+  if (typeof payload === 'string') {
+    return {
+      isImage: payload.includes('data:image/') || payload.includes('base64,'),
+      length: payload.length
+    };
+  }
+  if (payload === null || typeof payload !== 'object') {
+    return { isImage: false, length: String(payload).length };
+  }
+  const cached = payloadSizeCache.get(payload);
+  if (cached) return cached;
+  let payloadStr = '';
+  try {
+    payloadStr = JSON.stringify(payload) || '';
+  } catch {
+    payloadStr = String(payload);
+  }
+  const result = {
+    isImage: payloadStr.includes('data:image/') || payloadStr.includes('base64,'),
+    length: payloadStr.length
+  };
+  payloadSizeCache.set(payload, result);
+  return result;
+}
+
+/**
  * Safely extract and aggregate token usage for a step block
  */
 export function extractBlockTokens(block: StepBlock): { total: number; prompt: number; completion: number } {
@@ -345,11 +378,11 @@ export function extractBlockTokens(block: StepBlock): { total: number; prompt: n
   if (data.generic_tools && Array.isArray(data.generic_tools)) {
     data.generic_tools.forEach((t: any) => {
       if (t.payload) {
-        const payloadStr = typeof t.payload === 'string' ? t.payload : JSON.stringify(t.payload);
-        if (payloadStr.includes('data:image/') || payloadStr.includes('base64,')) {
+        const estimate = estimatePayloadSize(t.payload);
+        if (estimate.isImage) {
           numImages += 1;
         } else {
-          textLen += payloadStr.length;
+          textLen += estimate.length;
         }
       }
     });

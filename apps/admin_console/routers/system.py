@@ -14,13 +14,82 @@
 
 """System Readiness & Diagnostics Router for Artemis Admin Console."""
 
-from fastapi import APIRouter, HTTPException
+import ipaddress
+import os
+import secrets
+from urllib.parse import urlsplit
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from artemis.core.diagnostics import readiness_engine
+from artemis.core.diagnostics.adb_server_connection import (
+    InvalidAdbServerEndpoint,
+    adb_server_connection,
+)
 from artemis.core.diagnostics.schema import SystemReadinessReport
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+def _require_local_admin_request(request: Request) -> None:
+    """Keep endpoint probing and mutation on the local administration boundary."""
+    client_host = request.client.host if request.client else None
+    allow_remote = os.getenv("ARTEMIS_ALLOW_REMOTE_ADB_CONFIGURATION", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if client_host and not allow_remote:
+        try:
+            is_loopback = ipaddress.ip_address(client_host).is_loopback
+        except ValueError:
+            is_loopback = client_host.lower() == "localhost"
+        if not is_loopback:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "ADB server settings are local-only. Set "
+                    "ARTEMIS_ALLOW_REMOTE_ADB_CONFIGURATION=true to manage them from another "
+                    "computer."
+                ),
+            )
+
+    origin = request.headers.get("origin")
+    host = request.headers.get("host")
+    if not origin or not host:
+        return
+    origin_host = urlsplit(origin).netloc.lower()
+    if origin_host != host.lower():
+        raise HTTPException(
+            status_code=403,
+            detail="ADB server settings can only be changed from the Artemis console.",
+        )
+
+
+def _require_loopback_request(request: Request, detail: str) -> None:
+    """Reject requests whose TCP peer is not the local machine."""
+    client_host = request.client.host if request.client else None
+    try:
+        is_loopback = bool(client_host and ipaddress.ip_address(client_host).is_loopback)
+    except ValueError:
+        is_loopback = bool(client_host and client_host.lower() == "localhost")
+    if not is_loopback:
+        raise HTTPException(status_code=403, detail=detail)
+
+
+def _require_local_lifecycle_request(request: Request) -> None:
+    """Authorize a process-lifecycle request from the local CLI only."""
+    _require_loopback_request(request, "Server lifecycle controls are local-only.")
+
+    expected = getattr(request.app.state, "lifecycle_token", None)
+    supplied = request.headers.get("x-artemis-lifecycle-token")
+    if not (
+        isinstance(expected, str)
+        and isinstance(supplied, str)
+        and secrets.compare_digest(expected, supplied)
+    ):
+        raise HTTPException(status_code=403, detail="Invalid server lifecycle token.")
 
 
 class SelectDeviceRequest(BaseModel):
@@ -94,6 +163,66 @@ async def connect_wireless_adb(request: ConnectAdbRequest):
     }
 
 
+class ConnectAdbServerRequest(BaseModel):
+    """Payload to select an ADB server endpoint accessible from this computer."""
+
+    host: str = Field(description="Host name or IP address of the ADB server")
+    port: int = Field(default=5037, ge=1, le=65535, description="ADB server port")
+    persist: bool = Field(default=True, description="Persist the endpoint for future launches")
+
+
+@router.get("/adb/server")
+async def get_adb_server_status():
+    """Return the process-wide ADB server endpoint currently used by Artemis."""
+    return adb_server_connection.status()
+
+
+@router.post("/adb/server/connect")
+async def connect_adb_server(payload: ConnectAdbServerRequest, request: Request):
+    """Validate and activate an ADB server endpoint."""
+    _require_local_admin_request(request)
+    try:
+        connection_result = await adb_server_connection.connect(
+            payload.host,
+            payload.port,
+            persist=payload.persist,
+        )
+    except InvalidAdbServerEndpoint as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    response: dict[str, object] = {"connection_result": connection_result}
+    if connection_result["success"]:
+        readiness_engine.set_active_device_serial(None)
+        readiness_engine.invalidate_cache()
+        response["report"] = await readiness_engine.run_all(force_refresh=True)
+    return response
+
+
+@router.post("/adb/server/probe")
+async def probe_adb_server(payload: ConnectAdbServerRequest, request: Request):
+    """Test an ADB server endpoint without changing the active endpoint."""
+    _require_local_admin_request(request)
+    try:
+        connection_result = await adb_server_connection.probe(payload.host, payload.port)
+    except InvalidAdbServerEndpoint as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"connection_result": connection_result}
+
+
+@router.post("/adb/server/local")
+async def use_local_adb_server(request: Request, persist: bool = True):
+    """Restore the standard local ADB server without touching a remote daemon."""
+    _require_local_admin_request(request)
+    connection_result = await adb_server_connection.use_local_server(persist=persist)
+    readiness_engine.set_active_device_serial(None)
+    readiness_engine.invalidate_cache()
+    updated_report = await readiness_engine.run_all(force_refresh=True)
+    return {
+        "connection_result": connection_result,
+        "report": updated_report,
+    }
+
+
 class LaunchEmulatorRequest(BaseModel):
     """Payload to launch a local Android Virtual Device (AVD)."""
 
@@ -157,22 +286,18 @@ class ValidateCredentialsRequest(BaseModel):
 
 @router.get("/credentials")
 async def get_credentials():
-    """Retrieve current configured API keys for management."""
+    """Report which providers have an API key configured.
+
+    Secret values never leave the process: this endpoint intentionally returns
+    presence booleans only. Keys are written via POST /credentials and used
+    server-side.
+    """
     from artemis.config import settings
 
-    gemini_k = settings.get_api_key("google")
-    openai_k = settings.get_api_key("openai")
-    anthropic_k = settings.get_api_key("anthropic")
-    openrouter_k = settings.get_api_key("openrouter")
-    ocr_k = settings.get_api_key("ocr")
-    return {
-        "google": gemini_k.get_secret_value() if gemini_k else None,
-        "gemini": gemini_k.get_secret_value() if gemini_k else None,
-        "openai": openai_k.get_secret_value() if openai_k else None,
-        "anthropic": anthropic_k.get_secret_value() if anthropic_k else None,
-        "openrouter": openrouter_k.get_secret_value() if openrouter_k else None,
-        "ocr": ocr_k.get_secret_value() if ocr_k else None,
-    }
+    providers = ("google", "openai", "anthropic", "openrouter", "ocr")
+    status = {name: bool(settings.get_api_key(name)) for name in providers}
+    status["gemini"] = status["google"]
+    return {"providers": [{"name": name, "configured": configured} for name, configured in status.items()]}
 
 
 @router.post("/credentials/test")
@@ -278,11 +403,13 @@ async def get_model_config_and_env():
         return None
 
     def mask_key(k: str | None) -> str | None:
+        # Expose only enough to recognize which key is active, never a usable
+        # fragment of the secret itself.
         if not k:
             return None
         if len(k) <= 8:
             return "****"
-        return f"{k[:4]}...{k[-4:]}"
+        return f"****{k[-4:]}"
 
     gemini_real = get_real_env_value("GEMINI_API_KEY", "google") or get_real_env_value(
         "GOOGLE_API_KEY", "google"
@@ -375,17 +502,29 @@ async def get_server_runtime_status():
 
     port = getattr(state, "port", 8000)
     status = get_server_status(port=port)
-    status["current_pid"] = os.getpid()
-    return status
+    # Explicit DTO: the raw metadata file additionally holds the lifecycle
+    # token, cmdline, and filesystem paths, none of which belong on the wire.
+    return {
+        "running": status["running"],
+        "port": status["port"],
+        "pids": status["pids"],
+        "active_pid": status["active_pid"],
+        "uptime_seconds": status["uptime_seconds"],
+        "url": status["url"],
+        "admin_url": status["admin_url"],
+        "current_pid": os.getpid(),
+    }
 
 
 @router.post("/restart")
-async def restart_server_endpoint():
+async def restart_server_endpoint(request: Request):
     """Request a graceful restart of the Artemis server from thin clients/UI."""
     import asyncio
     import os
     import sys
     import threading
+
+    _require_loopback_request(request, "Server lifecycle controls are local-only.")
 
     try:
         from apps.admin_console.core.state import state
@@ -423,33 +562,33 @@ async def restart_server_endpoint():
     }
 
 
-@router.post("/shutdown")
-async def shutdown_server_endpoint():
+@router.post("/shutdown", status_code=202)
+async def shutdown_server_endpoint(request: Request):
     """Request a graceful shutdown of the Artemis server."""
-    import os
-    import signal
-    import threading
+    import asyncio
 
     try:
         from apps.admin_console.core.state import state
     except ImportError:
         from admin_console.core.state import state
 
-    current_pid = os.getpid()
+    _require_local_lifecycle_request(request)
+    server = getattr(request.app.state, "uvicorn_server", None)
+    if server is None:
+        raise HTTPException(status_code=503, detail="Server lifecycle controller is unavailable.")
 
-    def _shutdown_worker():
-        import time
+    async def _shutdown_after_response() -> None:
+        # Let Starlette flush the accepted response before Uvicorn leaves its
+        # main loop and invokes the FastAPI shutdown lifecycle.
+        await asyncio.sleep(0.05)
+        state.is_shutting_down = True
+        state.shutdown_event.set()
+        server.should_exit = True
 
-        time.sleep(0.5)
-        try:
-            os.kill(current_pid, signal.SIGTERM)
-        except Exception:
-            os._exit(0)
-
-    threading.Thread(target=_shutdown_worker, daemon=True).start()
+    asyncio.create_task(_shutdown_after_response())
 
     return {
         "status": "shutting_down",
         "message": "Artemis server is shutting down.",
-        "pid": current_pid,
+        "pid": os.getpid(),
     }

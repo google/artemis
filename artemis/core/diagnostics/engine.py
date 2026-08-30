@@ -15,11 +15,11 @@
 """System Readiness & Diagnostic Orchestration Engine."""
 
 import asyncio
-import shutil
 import subprocess
 import time
 from typing import Any
 
+from artemis.core.diagnostics.adb_server_connection import adb_server_connection
 from artemis.core.diagnostics.probes.adb_probe import AdbDeviceProbe
 from artemis.core.diagnostics.probes.base import BaseProbe
 from artemis.core.diagnostics.probes.credentials_probe import (
@@ -38,8 +38,8 @@ from artemis.core.diagnostics.schema import (
     ProbeStatus,
     SystemReadinessReport,
 )
-from artemis.platform import platform
 from artemis.toolchain import toolchain
+from artemis.platform import platform
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -106,9 +106,7 @@ class ReadinessEngine:
             return None
         return await probe.probe()
 
-    async def run_device_submission_probe(
-        self, target_serial: str | None = None
-    ) -> ProbeResult:
+    async def run_device_submission_probe(self, target_serial: str | None = None) -> ProbeResult:
         """Run the bounded device gate used by task submission."""
         return await self._adb_probe.probe_submission_readiness(target_serial=target_serial)
 
@@ -226,7 +224,19 @@ class ReadinessEngine:
         """Execute adb kill-server && adb start-server to recover connectivity, auto-healing corrupted keys if needed."""
         from artemis.core.diagnostics.adb_keys import heal_adb_keys, inspect_adb_keys
 
-        adb_path = shutil.which("adb") or "adb"
+        endpoint = adb_server_connection.current_endpoint()
+        if not endpoint.is_local_default:
+            return {
+                "success": True,
+                "skipped": True,
+                "message": (
+                    "Remote ADB is active. Artemis refreshed device discovery without stopping "
+                    "the active ADB server endpoint."
+                ),
+                "endpoint": endpoint.to_dict(),
+            }
+
+        adb_path = toolchain.resolve("adb") or "adb"
 
         def _restart_sync():
             # If keys are corrupted, heal them first
@@ -269,6 +279,20 @@ class ReadinessEngine:
 
     async def launch_emulator(self, avd_name: str) -> dict[str, Any]:
         """Launch an Android emulator by AVD name in the background and track its lifecycle."""
+        if not adb_server_connection.current_endpoint().is_local_default:
+            return {
+                "avd_name": avd_name,
+                "status": "failed",
+                "pid": None,
+                "serial": None,
+                "error": "Switch to local ADB before launching a local emulator.",
+                "stage_message": "Local ADB is not active",
+                "progress_percent": 0,
+                "started_at": None,
+                "elapsed_seconds": 0,
+                "logs": [],
+                "can_retry": True,
+            }
         from artemis.core.diagnostics.emulator_manager import emulator_manager
 
         state = await emulator_manager.launch(avd_name)
@@ -294,11 +318,16 @@ class ReadinessEngine:
 
     async def connect_wireless_adb(self, host: str, port: int = 5555) -> dict[str, Any]:
         """Connect to an Android device over Wi-Fi via adb connect."""
+        if not adb_server_connection.current_endpoint().is_local_default:
+            return {
+                "success": False,
+                "message": "Switch to local ADB before connecting a Wireless ADB device.",
+            }
         clean_host = host.strip()
         if not clean_host:
             return {"success": False, "message": "Host IP address cannot be empty"}
         target = f"{clean_host}:{port}"
-        adb_path = shutil.which("adb") or "adb"
+        adb_path = toolchain.resolve("adb") or "adb"
 
         def _connect_sync():
             try:

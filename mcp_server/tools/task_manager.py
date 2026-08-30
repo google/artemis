@@ -92,6 +92,13 @@ def _reconcile_task_state(
     pid = status_data.get("pid")
     dirty = False
 
+    # "success" is a legacy alias for the canonical "completed" terminal
+    # status; consumers of this reconcile must only ever see "completed".
+    if current_status == "success":
+        current_status = "completed"
+        status_data["status"] = "completed"
+        dirty = True
+
     db_status: str | None = None
     db_pid: int | None = None
     db_path = _find_data_engine_db()

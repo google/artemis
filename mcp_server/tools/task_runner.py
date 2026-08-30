@@ -137,28 +137,14 @@ def _validate_device_serial(device_serial: str) -> dict[str, Any] | None:
     """
     try:
         from artemis.runtime import device_pool
-        from artemis.runtime.device_lock import DeviceExecutionLock
 
-        norm = DeviceExecutionLock._normalize_device_id
-        attached = {norm(d.serial): d.state for d in device_pool.list_devices()}
+        # The shared validator fails open on an indeterminate/empty enumeration:
+        # the task proceeds and fails downstream with a clear no-device error.
+        detail = device_pool.validate_explicit_serial(device_serial)
     except Exception:
         return None
-    if not attached:
-        # Enumeration unavailable (no adb / transient failure): let the task
-        # proceed and fail downstream with a clear no-device error instead.
+    if detail is None:
         return None
-
-    dev_state = attached.get(norm(device_serial))
-    if dev_state == "device":
-        return None
-
-    if dev_state is None:
-        detail = (
-            f"Device '{device_serial}' is not connected. "
-            f"Attached devices: {sorted(attached) if attached else 'none'}."
-        )
-    else:
-        detail = f"Device '{device_serial}' is attached but not ready (state: '{dev_state}')."
     return {
         "status": "failed",
         "error": detail,

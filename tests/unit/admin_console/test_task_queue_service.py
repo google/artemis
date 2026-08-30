@@ -25,12 +25,22 @@ from apps.admin_console.core.state import state
 from apps.admin_console.routers.tasks import get_status
 from apps.admin_console.services.task_queue_service import TaskQueueService, task_queue_service
 from artemis.runtime.device_lock import DeviceLockOwner
+from artemis.runtime.adb_endpoint import AdbEndpoint
 
 
 @pytest.fixture(autouse=True)
 def clean_state(tmp_path, monkeypatch):
     """Reset global state between tests."""
     isolated_pause_file = tmp_path / ".artemis_paused"
+    # Redirect DeviceExecutionLock's lock/queue directory into tmp_path so that
+    # enqueue reservations never touch the real %TEMP%/artemis/device-locks dir
+    # (a live daemon merges those tickets into its /api/status queue view).
+    isolated_lock_dir = tmp_path / "device-locks"
+    isolated_lock_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "artemis.runtime.device_lock.get_temp_dir",
+        lambda _subfolder=None: isolated_lock_dir,
+    )
     state_module = importlib.import_module("apps.admin_console.core.state")
     queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
     monkeypatch.setattr(state_module, "PAUSE_FILE", isolated_pause_file)
@@ -62,16 +72,6 @@ def clean_state(tmp_path, monkeypatch):
     if state.worker_task and not state.worker_task.done():
         state.worker_task.cancel()
     state.worker_task = None
-    from artemis.config.paths import get_temp_dir
-    from artemis.runtime.device_lock import DeviceExecutionLock
-    DeviceExecutionLock.cleanup_stale_locks()
-    queue_dir = get_temp_dir("device-locks") / "artemis-global-device.queue"
-    if queue_dir.exists():
-        for p in queue_dir.glob("*.wait"):
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def test_paused_error_reads_persisted_reason(tmp_path):
@@ -92,6 +92,37 @@ async def test_get_next_pending_task():
     next_task = TaskQueueService._get_next_pending_task()
     assert next_task is not None
     assert next_task["goal"] == "Goal A"
+
+
+@pytest.mark.asyncio
+async def test_enqueued_task_keeps_its_adb_endpoint_snapshot():
+    original = AdbEndpoint.create("127.0.0.1", 5038)
+    changed = AdbEndpoint.local()
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch(
+            "apps.admin_console.services.task_queue_service.current_adb_endpoint",
+            return_value=original,
+        ),
+        patch(
+            "artemis.runtime.device_pool.device_pool.select_device",
+            return_value="emulator-5554",
+        ),
+    ):
+        result = await TaskQueueService.enqueue_tasks(["Keep endpoint"])
+
+    task_item = result["tasks"][0]
+    assert task_item["adb_endpoint"]["identity"] == original.identity
+
+    with patch(
+        "apps.admin_console.services.task_queue_service.current_adb_endpoint",
+        return_value=changed,
+    ):
+        target = TaskQueueService._task_target(task_item)
+
+    assert target.endpoint == original
+    assert target.serial == "emulator-5554"
+    assert target.lock_key == f"{original.identity}/emulator-5554"
 
 
 @pytest.mark.parametrize(
@@ -190,8 +221,18 @@ async def test_queue_worker_execution_lifecycle():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch("apps.admin_console.services.task_queue_service.media_service"),
+        patch(
+            "artemis.core.diagnostics.readiness_engine.get_active_device_serial",
+            return_value=None,
+        ),
+        patch(
+            "artemis.runtime.device_pool.device_pool.select_device",
+            return_value="emulator-5554",
+        ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
         # Enqueue two tasks
         res = await task_queue_service.enqueue_tasks(["First Task", "Second Task"])
         assert res["enqueued_count"] == 2
@@ -230,8 +271,18 @@ async def test_queue_worker_cmd_construction():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch("apps.admin_console.services.task_queue_service.media_service"),
+        patch(
+            "artemis.core.diagnostics.readiness_engine.get_active_device_serial",
+            return_value=None,
+        ),
+        patch(
+            "artemis.runtime.device_pool.device_pool.select_device",
+            return_value="emulator-5554",
+        ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
 
         enqueue_result = await task_queue_service.enqueue_tasks(
             ["Test Goal with Outputter"],
@@ -262,6 +313,11 @@ async def test_queue_worker_cmd_construction():
             executed_kwargs[0]["env"]["ARTEMIS_DEVICE_QUEUE_TICKET"]
             == (enqueue_result["tasks"][0]["queue_ticket"])
         )
+        endpoint = enqueue_result["tasks"][0]["adb_endpoint"]
+        assert executed_kwargs[0]["env"]["ADB_HOST"] == endpoint["host"]
+        assert executed_kwargs[0]["env"]["ADB_PORT"] == str(endpoint["port"])
+        assert executed_kwargs[0]["env"]["ADB_SERVER_SOCKET"] == endpoint["socket"]
+        assert executed_kwargs[0]["env"]["ARTEMIS_ADB_ENDPOINT_ID"] == endpoint["identity"]
         if sys.platform == "win32":
             assert executed_kwargs[0]["creationflags"] == (
                 subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -491,8 +547,18 @@ async def test_cancel_task_triggers_next_pending_task():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch("apps.admin_console.services.task_queue_service.media_service"),
+        patch(
+            "artemis.core.diagnostics.readiness_engine.get_active_device_serial",
+            return_value=None,
+        ),
+        patch(
+            "artemis.runtime.device_pool.device_pool.select_device",
+            return_value="emulator-5554",
+        ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
         await task_queue_service.enqueue_tasks(["Task 1", "Task 2"])
 
         for _ in range(40):
@@ -536,8 +602,18 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch("apps.admin_console.services.task_queue_service.media_service"),
+        patch(
+            "artemis.core.diagnostics.readiness_engine.get_active_device_serial",
+            return_value=None,
+        ),
+        patch(
+            "artemis.runtime.device_pool.device_pool.select_device",
+            return_value="emulator-5554",
+        ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
 
         # Enqueue Task 1
         res1 = await task_queue_service.enqueue_tasks(["Task 1"])
@@ -668,7 +744,7 @@ async def test_queue_worker_notifies_conversation():
         patch("mcp_server.notifiers.notify") as mock_notify,
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
         patch(
-            "artemis.runtime.device_pool.device_pool.list_devices_async",
+            "artemis.runtime.device_pool.device_pool.try_list_devices_async",
             new=AsyncMock(return_value=[]),
         ),
     ):
@@ -854,7 +930,7 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
         patch("apps.admin_console.services.task_queue_service.session_repo"),
         patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve", return_value="ticket-456"),
         patch(
-            "artemis.runtime.device_pool.device_pool.list_devices_async",
+            "artemis.runtime.device_pool.device_pool.try_list_devices_async",
             new=AsyncMock(return_value=[]),
         ),
         patch.object(TaskQueueService, "ensure_worker_running"),

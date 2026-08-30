@@ -476,7 +476,42 @@ def test_cli_stop_command(monkeypatch):
 
 
 def test_cli_restart_command(monkeypatch):
-    """Verify 'artemis restart' stops previous server and invokes ui_command."""
+    """Verify 'artemis restart' stops previous server and spawns a detached daemon by default."""
+    from unittest.mock import MagicMock
+
+    from artemis.interfaces.cli.commands import server_lifecycle as sl_cmd
+    from artemis.runtime import server_lifecycle
+
+    stopped = {}
+    spawned = {}
+
+    def mock_stop(port, timeout=4.0, force=False):
+        stopped["port"] = port
+        return True, "Stopped server", [12345]
+
+    def mock_spawn(host, port):
+        spawned["host"] = host
+        spawned["port"] = port
+        proc = MagicMock()
+        proc.pid = 54321
+        proc.poll.return_value = None
+        return proc
+
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [12345])
+    monkeypatch.setattr(sl_cmd, "stop_server", mock_stop)
+    monkeypatch.setattr(sl_cmd, "spawn_daemon", mock_spawn)
+    monkeypatch.setattr(sl_cmd, "is_daemon_running", lambda **kwargs: True)
+    monkeypatch.setattr(sl_cmd, "ensure_showcase_built", lambda console: None)
+
+    result = runner.invoke(app, ["restart", "--port", "8888", "--no-open"])
+    assert result.exit_code == 0
+    assert stopped["port"] == 8888
+    assert spawned["port"] == 8888
+    assert "PID: 54321" in result.output
+
+
+def test_cli_restart_foreground_command(monkeypatch):
+    """Verify 'artemis restart --foreground' runs the server attached via ui_command."""
     from artemis.interfaces.cli.commands import server_lifecycle as sl_cmd
     from artemis.runtime import server_lifecycle
 
@@ -496,7 +531,7 @@ def test_cli_restart_command(monkeypatch):
     monkeypatch.setattr(sl_cmd, "stop_server", mock_stop)
     monkeypatch.setattr(sl_cmd, "ui_command", mock_ui)
 
-    result = runner.invoke(app, ["restart", "--port", "8888", "--no-open"])
+    result = runner.invoke(app, ["restart", "--port", "8888", "--no-open", "--foreground"])
     assert result.exit_code == 0
     assert stopped["port"] == 8888
     assert ui_called["port"] == 8888

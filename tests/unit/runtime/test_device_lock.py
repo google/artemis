@@ -67,6 +67,33 @@ def test_device_lock_recovers_stale_owner(monkeypatch):
     assert not lock.path.exists()
 
 
+def test_same_serial_on_different_adb_endpoints_has_independent_locks():
+    first = DeviceExecutionLock(
+        "emulator-5554",
+        "first endpoint",
+        lock_scope="tcp:127.0.0.1:5037",
+    )
+    second = DeviceExecutionLock(
+        "emulator-5554",
+        "second endpoint",
+        lock_scope="tcp:127.0.0.1:5038",
+    )
+
+    first.acquire()
+    second.acquire()
+    try:
+        assert first.path != second.path
+        owners = DeviceExecutionLock.get_active_owners()
+        assert len(owners) == 2
+        assert {owner.lock_scope for owner in owners.values()} == {
+            "tcp:127.0.0.1:5037",
+            "tcp:127.0.0.1:5038",
+        }
+    finally:
+        second.release()
+        first.release()
+
+
 def test_device_lock_release_does_not_remove_replacement_owner():
     lock = DeviceExecutionLock("emulator-5554", "original task")
     lock.acquire()

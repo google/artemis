@@ -13,18 +13,27 @@
 # limitations under the License.
 
 import json
+import time
 from typing import Any
 
 
 class ModelService:
     """Service handling agent architecture profile detection and metadata formatting."""
 
-    @staticmethod
-    def get_active_model_info(profile: str | None = None) -> dict[str, str]:
-        """Return active architecture and underlying LLM model configuration."""
-        # 1. Determine underlying LLM model and provider from config
-        model_id = "gemini-3.7-flash"
+    # parse_llm_config re-reads and re-validates the config file on every call;
+    # /api/sessions calls this once per session row, so cache (provider, model_id)
+    # for a short TTL. Config edits take effect within _LLM_INFO_TTL seconds.
+    _LLM_INFO_TTL = 10.0
+    _llm_info_cache: tuple[float, str, str] | None = None
+
+    @classmethod
+    def _get_llm_provider_and_model(cls) -> tuple[str, str]:
+        cached = cls._llm_info_cache
+        now = time.monotonic()
+        if cached and now - cached[0] < cls._LLM_INFO_TTL:
+            return cached[1], cached[2]
         provider = "google"
+        model_id = "gemini-3.7-flash"
         try:
             from artemis.config import parse_llm_config
 
@@ -37,6 +46,14 @@ class ModelService:
                 model_id = str(llm_cfg.default.model)
         except Exception:
             pass
+        cls._llm_info_cache = (now, provider, model_id)
+        return provider, model_id
+
+    @classmethod
+    def get_active_model_info(cls, profile: str | None = None) -> dict[str, str]:
+        """Return active architecture and underlying LLM model configuration."""
+        # 1. Determine underlying LLM model and provider from config (cached)
+        provider, model_id = cls._get_llm_provider_and_model()
 
         # 2. Determine agent architecture name (Flash vs Pro)
         arch_name = "Flash"

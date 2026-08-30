@@ -80,6 +80,62 @@ async def run_task(request: RunRequest):
             detail="Either 'goal' or 'goals' list must be provided.",
         )
 
+    # Idempotent SDK retries must never re-run device readiness checks. A task
+    # can hold the device while its admission response is lost in transit; in
+    # that state, probing the same device again may fail or block even though
+    # the original task was accepted successfully.
+    if request.session_id and len(incoming_goals) == 1:
+        requested_sid = str(request.session_id)
+        existing_item = next(
+            (
+                item
+                for item in state.queue_items
+                if isinstance(item, dict)
+                and str(item.get("session_id")) == requested_sid
+            ),
+            None,
+        )
+        persisted_session = session_repo.get_session_by_id(requested_sid)
+        is_active = (
+            str(state.active_session_id) == requested_sid
+            or requested_sid in state.active_connections
+        )
+        if existing_item or persisted_session or is_active:
+            task_payload = dict(existing_item or persisted_session or {})
+            task_payload.setdefault("session_id", requested_sid)
+            task_payload.setdefault("goal", incoming_goals[0])
+            task_payload.setdefault("profile", request.profile or "flash")
+            task_payload.setdefault("device_serial", request.device_serial)
+            task_payload.setdefault("status", "running" if is_active else "queued")
+            return {
+                "status": task_payload["status"],
+                "tasks": [task_payload],
+                "enqueued_count": 0,
+                "total_queued": len(state.queue_tasks),
+            }
+
+    # Reject an explicit unknown/offline target before running the more
+    # expensive readiness probe. Besides producing a stable SDK response,
+    # this avoids probing the currently active device for a serial that can
+    # never be selected. Only a successful, non-empty enumeration may reject:
+    # an indeterminate one (adb blip, startup) lets the submission queue and
+    # fail downstream with a clear error instead.
+    if request.device_serial:
+        try:
+            rejection = await device_pool.validate_explicit_serial_async(
+                request.device_serial
+            )
+        except Exception:
+            rejection = None
+        if rejection:
+            return {
+                "status": "rejected",
+                "error": rejection,
+                "tasks": [],
+                "enqueued_count": 0,
+                "total_queued": len(state.queue_tasks),
+            }
+
     # Re-check immediately before enqueueing so a device locked between UI
     # polling intervals cannot start through a stale Ready state. Use the
     # bounded submission probe: the full diagnostics path also scans packages,

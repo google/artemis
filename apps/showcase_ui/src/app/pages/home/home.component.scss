@@ -110,12 +110,16 @@ $text-light: #94a3b8;
 
 @mixin glass-primary-btn {
   background: linear-gradient(135deg, rgba(26, 115, 232, 0.92) 0%, rgba(37, 99, 235, 0.85) 100%);
-  backdrop-filter: blur(16px) saturate(180%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  backdrop-filter: blur(10px) saturate(180%);
+  -webkit-backdrop-filter: blur(10px) saturate(180%);
   border: 1px solid rgba(255, 255, 255, 0.28);
   box-shadow: 0 4px 14px rgba(26, 115, 232, 0.32), inset 0 1px 1px rgba(255, 255, 255, 0.45);
   color: #ffffff !important;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 
   span, .material-symbols-outlined, .run-icon, .action-icon {
     color: #ffffff !important;
@@ -146,12 +150,17 @@ $text-light: #94a3b8;
 
 @mixin glass-secondary-btn {
   background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(14px) saturate(180%);
-  -webkit-backdrop-filter: blur(14px) saturate(180%);
+  backdrop-filter: blur(10px) saturate(180%);
+  -webkit-backdrop-filter: blur(10px) saturate(180%);
   border: 1px solid rgba(226, 232, 240, 0.88);
   box-shadow: 0 2px 8px -1px rgba(15, 23, 42, 0.05), inset 0 1px 1px rgba(255, 255, 255, 0.95);
   color: $text-secondary;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 
   &:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.92);
@@ -213,10 +222,13 @@ $text-light: #94a3b8;
     opacity: 0.9;
     transition: opacity 0.8s ease;
 
+    /* The glow orbs are pre-softened radial gradients. A `filter: blur(90px+)`
+       on top of them looked nearly identical but forced the GPU to re-blur
+       half-megapixel layers on every frame of the float animations — the
+       gradients below bake the same softness in for free. */
     .glow {
       position: absolute;
       border-radius: 50%;
-      filter: blur(90px);
       transform: translate3d(0, 0, 0);
       will-change: transform, opacity;
       pointer-events: none;
@@ -227,7 +239,7 @@ $text-light: #94a3b8;
       left: 10%;
       width: 520px;
       height: 520px;
-      background: radial-gradient(circle, rgba(59, 130, 246, 0.12) 0%, rgba(99, 102, 241, 0.04) 55%, transparent 75%);
+      background: radial-gradient(circle, rgba(59, 130, 246, 0.12) 0%, rgba(99, 102, 241, 0.04) 45%, transparent 82%);
       animation: floatGlow1 22s ease-in-out infinite alternate;
     }
 
@@ -236,7 +248,7 @@ $text-light: #94a3b8;
       right: 12%;
       width: 560px;
       height: 560px;
-      background: radial-gradient(circle, rgba(147, 51, 234, 0.08) 0%, rgba(219, 39, 119, 0.03) 55%, transparent 75%);
+      background: radial-gradient(circle, rgba(147, 51, 234, 0.08) 0%, rgba(219, 39, 119, 0.03) 45%, transparent 82%);
       animation: floatGlow2 26s ease-in-out infinite alternate;
     }
 
@@ -245,7 +257,7 @@ $text-light: #94a3b8;
       left: 30%;
       width: 460px;
       height: 460px;
-      background: radial-gradient(circle, rgba(6, 182, 212, 0.08) 0%, rgba(59, 130, 246, 0.03) 55%, transparent 75%);
+      background: radial-gradient(circle, rgba(6, 182, 212, 0.08) 0%, rgba(59, 130, 246, 0.03) 45%, transparent 82%);
       animation: floatGlow3 20s ease-in-out infinite alternate;
     }
 
@@ -256,9 +268,8 @@ $text-light: #94a3b8;
       margin: 0 auto;
       width: 720px;
       height: 520px;
-      background: radial-gradient(circle, rgba(245, 158, 11, 0.09) 0%, rgba(217, 119, 6, 0.035) 45%, transparent 75%);
+      background: radial-gradient(circle, rgba(245, 158, 11, 0.09) 0%, rgba(217, 119, 6, 0.035) 38%, transparent 82%);
       opacity: 0;
-      filter: blur(100px);
       transition: opacity 0.8s cubic-bezier(0.4, 0, 0.2, 1);
       animation: readyPulseGlow 9s ease-in-out infinite alternate;
       pointer-events: none;
@@ -271,9 +282,8 @@ $text-light: #94a3b8;
       margin: 0 auto;
       width: 700px;
       height: 520px;
-      background: radial-gradient(circle, rgba(16, 185, 129, 0.14) 0%, rgba(6, 182, 212, 0.08) 45%, transparent 75%);
+      background: radial-gradient(circle, rgba(16, 185, 129, 0.14) 0%, rgba(6, 182, 212, 0.08) 38%, transparent 82%);
       opacity: 0;
-      filter: blur(100px);
       transition: opacity 1s cubic-bezier(0.4, 0, 0.2, 1);
       animation: readyPulseGlow 7s ease-in-out infinite alternate;
       pointer-events: none;
@@ -286,9 +296,8 @@ $text-light: #94a3b8;
       margin: 0 auto;
       width: 680px;
       height: 520px;
-      background: radial-gradient(circle, rgba(99, 102, 241, 0.18) 0%, rgba(147, 51, 234, 0.08) 45%, transparent 75%);
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.18) 0%, rgba(147, 51, 234, 0.08) 38%, transparent 82%);
       opacity: 0;
-      filter: blur(95px);
       transition: opacity 0.8s cubic-bezier(0.4, 0, 0.2, 1);
       pointer-events: none;
     }
@@ -383,8 +392,8 @@ $text-light: #94a3b8;
         max-width: 520px;
         box-sizing: border-box;
         background: rgba(255, 255, 255, 0.72);
-        backdrop-filter: blur(16px) saturate(180%);
-        -webkit-backdrop-filter: blur(16px) saturate(180%);
+        backdrop-filter: blur(12px) saturate(180%);
+        -webkit-backdrop-filter: blur(12px) saturate(180%);
         padding: 3px;
         border-radius: 9999px;
         border: 1px solid rgba(226, 232, 240, 0.85);
@@ -392,7 +401,9 @@ $text-light: #94a3b8;
         box-shadow: 0 2px 8px -1px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(0, 0, 0, 0.02), inset 0 1px 1px rgba(255, 255, 255, 0.9);
         user-select: none;
         font-family: 'Google Sans', 'Google Sans Text', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: background 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                    box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                    border-color 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 
         &:hover {
           background: rgba(255, 255, 255, 0.85);
@@ -1717,6 +1728,12 @@ $text-light: #94a3b8;
               .meta-dot {
                 color: $text-light;
               }
+
+              .remote-endpoint-label {
+                color: $primary;
+                font-family: $font-mono;
+                font-size: 11px;
+              }
             }
           }
 
@@ -1739,6 +1756,7 @@ $text-light: #94a3b8;
               animation: statusDotPulse 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
             }
           }
+
         }
 
         .multi-device-switcher {
@@ -2365,10 +2383,14 @@ $text-light: #94a3b8;
 
         .connection-methods-nav {
           display: grid;
-          grid-template-columns: repeat(3, 1fr);
+          grid-template-columns: repeat(4, minmax(0, 1fr));
           gap: 10px;
 
-          @media (max-width: 860px) {
+          @media (max-width: 1100px) {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
+          @media (max-width: 620px) {
             grid-template-columns: 1fr;
           }
 
@@ -2421,36 +2443,11 @@ $text-light: #94a3b8;
                 .method-title-row {
                   display: flex;
                   align-items: center;
-                  gap: 6px;
-                  flex-wrap: wrap;
 
                   .method-title {
                     font-size: 13px;
                     font-weight: 600;
                     color: $text-main;
-                  }
-
-                  .method-badge-pill {
-                    font-size: 9.5px;
-                    font-weight: 700;
-                    padding: 1px 5px;
-                    border-radius: 4px;
-                    text-transform: uppercase;
-
-                    &.detected, &.info {
-                      background: $primary-light;
-                      color: $primary;
-                    }
-
-                    &.recommended {
-                      background: $emerald-light;
-                      color: $emerald;
-                    }
-
-                    &.neutral {
-                      background: #f1f5f9;
-                      color: $text-muted;
-                    }
                   }
                 }
 
@@ -2509,6 +2506,68 @@ $text-light: #94a3b8;
               border-color: $card-border-hover;
             }
           }
+        }
+
+        .active-remote-notice {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 10px 12px;
+          background: #fffbeb;
+          border: 1px solid $amber-border;
+          border-radius: 8px;
+
+          .active-remote-copy {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            color: #78350f;
+            font-size: 11.5px;
+            line-height: 1.45;
+
+            .material-symbols-outlined {
+              color: $amber;
+              font-size: 17px;
+              flex-shrink: 0;
+            }
+
+            strong {
+              font-family: $font-mono;
+              font-weight: 600;
+            }
+          }
+
+          .btn-use-local-adb {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            min-height: 32px;
+            padding: 0 12px;
+            @include glass-secondary-btn;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 11.5px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+
+            .material-symbols-outlined {
+              font-size: 15px;
+            }
+          }
+
+          @media (max-width: 700px) {
+            align-items: stretch;
+            flex-direction: column;
+
+            .btn-use-local-adb {
+              width: 100%;
+            }
+          }
+
         }
 
         .method-details-panel {
@@ -2852,7 +2911,8 @@ $text-light: #94a3b8;
           }
 
           .usb-guide-intro,
-          .wifi-guide-intro {
+          .wifi-guide-intro,
+          .remote-guide-intro {
             display: flex;
             align-items: center;
             gap: 8px;
@@ -3084,6 +3144,258 @@ $text-light: #94a3b8;
               color: $primary;
               flex-shrink: 0;
               margin-top: 1px;
+            }
+          }
+
+          &.remote-adb-panel {
+            .remote-adb-interactive-box {
+              display: flex;
+              flex-direction: column;
+              gap: 10px;
+              padding: 12px 14px;
+              background: #f8fafc;
+              border: 1px solid $card-border;
+              border-radius: 8px;
+
+              .remote-adb-form-row {
+                display: flex;
+                align-items: flex-end;
+                gap: 8px;
+                flex-wrap: wrap;
+
+                .remote-adb-input-col {
+                  display: flex;
+                  flex-direction: column;
+                  gap: 3px;
+                  min-width: 0;
+
+                  &.host-col {
+                    flex: 1 1 220px;
+                  }
+
+                  &.port-col {
+                    flex: 0 1 120px;
+                  }
+
+                  .remote-adb-label {
+                    color: $text-muted;
+                    font-size: 11px;
+                    font-weight: 600;
+                  }
+
+                  .remote-adb-input-wrap {
+                    display: flex;
+                    align-items: center;
+                    height: 36px;
+                    padding: 0 9px;
+                    background: #ffffff;
+                    border: 1px solid $card-border;
+                    border-radius: 6px;
+                    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+
+                    &:focus-within {
+                      border-color: $primary;
+                      box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.1);
+                    }
+
+                    .wrap-icon {
+                      margin-right: 6px;
+                      color: $text-light;
+                      font-size: 15px;
+                      flex-shrink: 0;
+                    }
+
+                    .remote-adb-input {
+                      flex: 1;
+                      min-width: 0;
+                      border: 0;
+                      outline: 0;
+                      background: transparent;
+                      color: $text-main;
+                      font-family: $font-mono;
+                      font-size: 12px;
+
+                      &::placeholder {
+                        color: $text-light;
+                      }
+                    }
+                  }
+                }
+
+                .remote-adb-btn-col {
+                  flex-shrink: 0;
+
+                  .btn-remote-adb-connect {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 5px;
+                    height: 36px;
+                    padding: 0 16px;
+                    @include glass-primary-btn;
+                    border-radius: 6px;
+                    font-family: inherit;
+                    font-size: 12px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    white-space: nowrap;
+
+                    .material-symbols-outlined {
+                      font-size: 16px;
+                    }
+                  }
+                }
+
+                @media (max-width: 640px) {
+                  align-items: stretch;
+                  flex-direction: column;
+
+                  .remote-adb-input-col,
+                  .remote-adb-input-col.host-col,
+                  .remote-adb-input-col.port-col,
+                  .remote-adb-btn-col {
+                    flex: 1 1 auto;
+                    width: 100%;
+                  }
+
+                  .remote-adb-btn-col .btn-remote-adb-connect {
+                    width: 100%;
+                  }
+                }
+              }
+
+              .remember-remote-adb {
+                display: inline-flex;
+                align-items: center;
+                align-self: flex-start;
+                gap: 7px;
+                color: $text-secondary;
+                font-size: 11.5px;
+                cursor: pointer;
+
+                input {
+                  width: 15px;
+                  height: 15px;
+                  margin: 0;
+                  accent-color: $primary;
+                }
+              }
+
+              .btn-use-tested-endpoint {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                align-self: flex-end;
+                gap: 5px;
+                min-width: 150px;
+                height: 36px;
+                padding: 0 16px;
+                @include glass-primary-btn;
+                border-radius: 6px;
+                font-family: inherit;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+
+                .material-symbols-outlined {
+                  font-size: 16px;
+                }
+              }
+
+              .remote-adb-status-alert {
+                display: flex;
+                align-items: flex-start;
+                gap: 6px;
+                padding: 7px 10px;
+                border-radius: 6px;
+                font-size: 11.5px;
+                font-weight: 600;
+                line-height: 1.4;
+
+                .material-symbols-outlined {
+                  font-size: 15px;
+                  flex-shrink: 0;
+                }
+
+                &.success {
+                  color: $emerald-dark;
+                  background: $emerald-light;
+                  border: 1px solid $emerald-border;
+                }
+
+                &.error {
+                  color: $rose-dark;
+                  background: $rose-light;
+                  border: 1px solid $rose-border;
+                }
+              }
+
+              .remote-device-results {
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+                background: #ffffff;
+                border: 1px solid $card-border;
+                border-radius: 7px;
+
+                .remote-device-row {
+                  display: flex;
+                  align-items: center;
+                  gap: 9px;
+                  min-width: 0;
+                  padding: 8px 10px;
+                  border-bottom: 1px solid #f1f5f9;
+
+                  &:last-child {
+                    border-bottom: 0;
+                  }
+
+                  > .material-symbols-outlined {
+                    color: $primary;
+                    font-size: 17px;
+                  }
+
+                  .remote-device-copy {
+                    display: flex;
+                    flex: 1;
+                    flex-direction: column;
+                    min-width: 0;
+
+                    strong {
+                      color: $text-main;
+                      font-size: 12px;
+                      font-weight: 600;
+                    }
+
+                    span {
+                      overflow: hidden;
+                      color: $text-muted;
+                      font-family: $font-mono;
+                      font-size: 10.5px;
+                      text-overflow: ellipsis;
+                      white-space: nowrap;
+                    }
+                  }
+
+                  .remote-device-state {
+                    color: $amber-dark;
+                    font-size: 10.5px;
+                    font-weight: 600;
+                    text-transform: capitalize;
+
+                    &.ready {
+                      color: $emerald-dark;
+                    }
+                  }
+                }
+              }
+            }
+
+            .remote-adb-explanation {
+              margin: 0;
+              color: $text-muted;
+              font-size: 11.5px;
+              line-height: 1.5;
             }
           }
         }
@@ -3496,13 +3808,15 @@ $text-light: #94a3b8;
       /* Unified Sculptured Composer (Linear / Claude / ChatGPT Grade) */
       .composer-card {
         background: rgba(255, 255, 255, 0.88);
-        backdrop-filter: blur(28px) saturate(190%);
-        -webkit-backdrop-filter: blur(28px) saturate(190%);
+        backdrop-filter: blur(16px) saturate(190%);
+        -webkit-backdrop-filter: blur(16px) saturate(190%);
         border: 1px solid rgba(255, 255, 255, 0.95);
         box-shadow: 0 20px 50px -12px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(0, 0, 0, 0.02), inset 0 1px 1px rgba(255, 255, 255, 0.95);
         border-radius: 20px;
         padding: 18px 20px 14px;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                    box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                    background 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         position: relative;
 
         &.is-pro-active {
@@ -4125,12 +4439,15 @@ $text-light: #94a3b8;
             padding: 14px 16px;
             border-radius: 16px;
             background: rgba(255, 255, 255, 0.72);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            backdrop-filter: blur(10px) saturate(180%);
+            -webkit-backdrop-filter: blur(10px) saturate(180%);
             border: 1px solid rgba(226, 232, 240, 0.85);
             box-shadow: 0 2px 8px -1px rgba(15, 23, 42, 0.04), inset 0 1px 1px rgba(255, 255, 255, 0.95);
             cursor: pointer;
-            transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: background 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+                        transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+                        box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+                        border-color 0.22s cubic-bezier(0.4, 0, 0.2, 1);
             user-select: none;
             position: relative;
             overflow: hidden;
@@ -4367,18 +4684,17 @@ $text-light: #94a3b8;
   }
 }
 
+/* Transform-only: animating opacity here overrode the .glow-pending/.glow-ready
+   fade transitions and kept both state glows permanently visible. */
 @keyframes readyPulseGlow {
   0% {
     transform: scale(0.97);
-    opacity: 0.7;
   }
   50% {
     transform: scale(1.06);
-    opacity: 1;
   }
   100% {
     transform: scale(0.98);
-    opacity: 0.75;
   }
 }
 
@@ -4409,5 +4725,15 @@ $text-light: #94a3b8;
   100% {
     transform: scale(0.92) rotate(0deg);
     opacity: 0.8;
+  }
+}
+
+/* Respect the user's motion preference: freeze the purely decorative ambient
+   animations (aurora drift, pulses, sparkles). Functional spinners keep going. */
+@media (prefers-reduced-motion: reduce) {
+  .home-container .aurora-background .glow,
+  .sparkle-icon,
+  .status-dot {
+    animation: none !important;
   }
 }

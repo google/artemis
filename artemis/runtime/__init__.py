@@ -19,6 +19,14 @@ from artemis.runtime.device_lock import (
     DeviceBusyError,
     DeviceExecutionLock,
 )
+from artemis.runtime.adb_endpoint import (
+    ADB_ENDPOINT_ID_ENV,
+    AdbEndpoint,
+    AdbSession,
+    AdbTarget,
+    InvalidAdbEndpoint,
+    current_adb_endpoint,
+)
 from artemis.runtime.device_pool import DevicePool, DeviceStatus, device_pool
 from artemis.runtime.daemon_client import (
     ensure_daemon_running,
@@ -49,12 +57,18 @@ from artemis.runtime.server_lifecycle import (
 from artemis.runtime.supervisor import ProcessSupervisor, process_supervisor
 
 __all__ = [
+    "ADB_ENDPOINT_ID_ENV",
+    "AdbEndpoint",
+    "AdbSession",
+    "AdbTarget",
     "ConcurrencyMode",
     "DeviceBusyError",
     "DeviceExecutionLock",
     "DevicePool",
     "DeviceStatus",
+    "InvalidAdbEndpoint",
     "clear_server_info",
+    "current_adb_endpoint",
     "device_pool",
     "ensure_daemon_running",
     "ensure_device_awake",

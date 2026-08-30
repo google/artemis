@@ -96,6 +96,27 @@ def test_db_never_overrides_user_cancellation(use_db):
     assert current_status == "cancelled"
 
 
+def test_legacy_success_status_is_normalized_to_completed(no_persistence):
+    status_data = {"status": "success", "result": "the answer", "pid": 111}
+
+    current_status, _pid, is_alive = _reconcile_task_state("t7", status_data)
+
+    assert current_status == "completed"
+    assert status_data["status"] == "completed"
+    assert status_data["result"] == "the answer"
+    assert is_alive is False
+
+
+def test_db_success_verdict_surfaces_as_completed(use_db):
+    use_db("t8", "success")
+    status_data = {"status": "running", "pid": 111}
+
+    current_status, _pid, _is_alive = _reconcile_task_state("t8", status_data)
+
+    assert current_status == "completed"
+    assert status_data["status"] == "completed"
+
+
 def test_pidless_running_task_is_assumed_alive(no_persistence):
     # Daemon dispatch writes no pid into status.json; liveness must not be
     # inferred even long past the startup grace window.

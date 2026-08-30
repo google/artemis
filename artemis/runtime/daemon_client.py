@@ -62,11 +62,24 @@ def is_daemon_running(
             return False
 
 
+def daemon_log_path(port: int = DEFAULT_DAEMON_PORT) -> Path:
+    """Return the log file path used by a background-spawned Daemon on the given port."""
+    from artemis.config.paths import get_app_dir
+
+    return get_app_dir() / "logs" / f"daemon-{port}.log"
+
+
 def spawn_daemon(
     host: str = DEFAULT_DAEMON_HOST,
     port: int = DEFAULT_DAEMON_PORT,
 ) -> subprocess.Popen | None:
-    """Silently spawn the Artemis Daemon server in the background as a detached process."""
+    """Silently spawn the Artemis Daemon server in the background as a detached process.
+
+    The server is always launched via ``sys.executable -m`` (never through the
+    ``artemis``/``artemis-admin`` console-script shims) so the long-lived process
+    chain never holds a lock on ``Scripts/artemis.exe`` — on Windows, a resident
+    shim blocks ``uv sync``/reinstalls with "os error 32" until it exits.
+    """
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONUTF8"] = "1"
@@ -81,11 +94,21 @@ def spawn_daemon(
         str(port),
     ]
 
+    # Persist daemon output for post-mortem debugging (daemon mode is the
+    # default for `artemis restart`, so silent DEVNULL would hide crashes).
+    log_handle: Any = subprocess.DEVNULL
+    try:
+        log_file = daemon_log_path(port)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = open(log_file, "ab")
+    except Exception:
+        log_handle = subprocess.DEVNULL
+
     kwargs: dict[str, Any] = {
         "cwd": str(ROOT_DIR),
         "env": env,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
+        "stdout": log_handle,
+        "stderr": subprocess.STDOUT if log_handle is not subprocess.DEVNULL else subprocess.DEVNULL,
         "stdin": subprocess.DEVNULL,
     }
 
@@ -105,6 +128,13 @@ def spawn_daemon(
     except Exception as exc:
         logger.warning(f"Could not auto-spawn Artemis Daemon: {exc}")
         return None
+    finally:
+        # The child inherited the handle; the parent's copy is no longer needed.
+        if log_handle is not subprocess.DEVNULL:
+            try:
+                log_handle.close()
+            except Exception:
+                pass
 
 
 def ensure_daemon_running(

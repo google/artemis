@@ -16,6 +16,7 @@ import asyncio
 import codecs
 from datetime import datetime
 import os
+import psutil
 import shutil
 import subprocess
 import sys
@@ -38,7 +39,13 @@ from artemis.config import (
     TEST_OUTPUTS_DIR,
     WORKSPACE_ROOT,
 )
-from artemis.runtime import DeviceExecutionLock, process_supervisor
+from artemis.runtime import (
+    AdbEndpoint,
+    AdbTarget,
+    DeviceExecutionLock,
+    current_adb_endpoint,
+    process_supervisor,
+)
 
 
 class TaskQueueService:
@@ -49,6 +56,17 @@ class TaskQueueService:
     # Strong references to in-flight _execute_task_item tasks (asyncio itself only
     # keeps weak references to running tasks).
     _run_tasks: set[asyncio.Task] = set()
+
+    @staticmethod
+    def _task_target(task_item: dict[str, Any]) -> AdbTarget:
+        endpoint_data = task_item.get("adb_endpoint")
+        endpoint = (
+            AdbEndpoint.from_mapping(endpoint_data)
+            if isinstance(endpoint_data, dict)
+            else current_adb_endpoint()
+        )
+        serial = task_item.get("device_serial")
+        return AdbTarget(endpoint=endpoint, serial=str(serial) if serial else None)
 
     @classmethod
     def _broadcast_event(cls, event_type: str, data: Any):
@@ -241,8 +259,6 @@ class TaskQueueService:
                 pid = getattr(proc, "pid", None)
                 if pid:
                     try:
-                        import psutil
-
                         p = psutil.Process(pid)
                         if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
                             return proc.returncode if proc.returncode is not None else -15
@@ -345,7 +361,7 @@ class TaskQueueService:
             if isinstance(i, dict) and i.get("status") == "running"
         ]
         busy_devices = state.busy_device_ids | {
-            str(i.get("device_serial")) for i in in_flight if i.get("device_serial")
+            cls._task_target(i).lock_key for i in in_flight if i.get("device_serial")
         }
         dispatched_any = False
         loop = asyncio.get_running_loop()
@@ -358,19 +374,20 @@ class TaskQueueService:
                 continue
 
             device = item.get("device_serial")
+            target = cls._task_target(item)
             if mode == "per_device":
                 # A task without a resolved device may bind to any serial, so it
                 # only launches on an otherwise idle scheduler; the device lock
                 # then allocates freely without contending against active runs.
                 if device is None and (state.active_runs or in_flight or dispatched_any):
                     continue
-                if device is not None and str(device) in busy_devices:
+                if device is not None and target.lock_key in busy_devices:
                     continue
 
             item["status"] = "running"
             dispatched_any = True
             if device is not None:
-                busy_devices.add(str(device))
+                busy_devices.add(target.lock_key)
             run_task = loop.create_task(cls._execute_task_item(item))
             # Hold a strong reference: asyncio keeps only weak refs to running
             # tasks, and a collected run would strand its queue item forever.
@@ -389,6 +406,8 @@ class TaskQueueService:
         proc: asyncio.subprocess.Process | None = None
         output_task: asyncio.Task[None] | None = None
         try:
+            if not isinstance(goal, str) or not goal.strip():
+                raise ValueError("Queued task must contain a non-empty string goal.")
             expected_output = task_item.get("expected_output")
             enable_outputter = task_item.get("enable_outputter")
             locked_app = task_item.get("locked_app_package") or task_item.get("locked_app")
@@ -436,6 +455,9 @@ class TaskQueueService:
                 env["ARTEMIS_SESSION_ID"] = str(sess_id)
             env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
             env["ARTEMIS_TASK_WORKER"] = "1"
+            target = cls._task_target(task_item)
+            target.endpoint.apply_to_environment(env)
+            env[DeviceExecutionLock.LOCK_SCOPE_ENV] = target.lock_scope
             queue_ticket = task_item.get("queue_ticket")
             if queue_ticket:
                 env[DeviceExecutionLock.QUEUE_TICKET_ENV] = str(queue_ticket)
@@ -479,6 +501,8 @@ class TaskQueueService:
             state.active_runs[run_key] = {
                 "process": proc,
                 "device_id": str(device_serial) if device_serial else None,
+                "lock_key": target.lock_key if device_serial else None,
+                "adb_endpoint": target.endpoint.to_dict(),
                 "goal": goal,
                 "profile": profile,
             }
@@ -503,6 +527,7 @@ class TaskQueueService:
                 device_id=device_serial or "pending",
                 session_id=str(sess_id) if sess_id else None,
                 ingress=ingress_type,
+                lock_scope=target.lock_scope,
             )
             # Forward the worker's combined output and tee it into the trace's
             # stdout.log so the log paths advertised by the MCP API exist.
@@ -667,6 +692,7 @@ class TaskQueueService:
 
         enqueued_tasks = []
         now = time.time()
+        endpoint = current_adb_endpoint()
 
         # 1. Deduplication by session_id: if session_id is already running or queued, do not re-enqueue
         if session_id and len(goals) == 1:
@@ -705,6 +731,7 @@ class TaskQueueService:
                     and item.get("status") == "pending"
                     and item.get("goal") == first_goal
                     and (not device_serial or item.get("device_serial") == device_serial)
+                    and item.get("adb_endpoint", {}).get("identity") == endpoint.identity
                     and (now - float(item.get("created_at", 0))) < 1.0
                 ),
                 None,
@@ -719,31 +746,19 @@ class TaskQueueService:
 
         # Strict device binding: reject an explicitly requested serial that is not
         # attached and authorized, instead of silently running on another device.
+        # The shared validator fails open on an indeterminate/empty enumeration so
+        # the task can proceed and fail downstream with a clear no-device error.
         if device_serial:
             try:
                 from artemis.runtime import device_pool
 
-                norm = DeviceExecutionLock._normalize_device_id
-                attached = {
-                    norm(d.serial): d.state
-                    for d in await device_pool.list_devices_async()
-                }
+                rejection = await device_pool.validate_explicit_serial_async(device_serial)
             except Exception:
-                attached = None
-            # Empty enumeration (no adb / transient failure) skips validation so the
-            # task can proceed and fail downstream with a clear no-device error,
-            # mirroring mcp_server.tools.task_runner._validate_device_serial.
-            if attached and attached.get(norm(device_serial)) != "device":
-                dev_state = attached.get(norm(device_serial))
-                error_detail = (
-                    f"Device '{device_serial}' is not connected. "
-                    f"Attached devices: {sorted(attached) if attached else 'none'}."
-                    if dev_state is None
-                    else f"Device '{device_serial}' is attached but not ready (state: '{dev_state}')."
-                )
+                rejection = None
+            if rejection:
                 return {
                     "status": "rejected",
-                    "error": error_detail,
+                    "error": rejection,
                     "tasks": [],
                     "enqueued_count": 0,
                     "total_queued": len(state.queue_tasks),
@@ -772,6 +787,7 @@ class TaskQueueService:
                 device_id=assigned_serial or "pending",
                 session_id=sess_id,
                 ingress=ingress,
+                lock_scope=endpoint.identity,
             )
             task_item = {
                 "session_id": sess_id,
@@ -782,6 +798,7 @@ class TaskQueueService:
                 "locked_app_package": locked_app_package,
                 "app_path": app_path,
                 "device_serial": assigned_serial,
+                "adb_endpoint": endpoint.to_dict(),
                 "ingress": ingress,
                 "conversation_id": conversation_id,
                 "status": "pending",

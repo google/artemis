@@ -17,7 +17,8 @@
 __version__ = "0.2.0"
 
 from artemis.interfaces.sdk.client import ArtemisClient, ConcurrencyMode
-from artemis.interfaces.sdk.task import StreamEvent, StreamEventType, Task, TaskResult
+from artemis.interfaces.sdk.task import StreamEvent, StreamEventType, Task
+from artemis_client import Capabilities, Device, TaskHandle, TaskResult
 from artemis.sdk.agent import Agent
 from artemis.sdk.builders import Builders
 from artemis.agents.base import BaseAgent, AgentRegistry
@@ -27,12 +28,15 @@ from artemis.tools.base import artemis_tool, ToolRegistry
 __all__ = [
     "__version__",
     "ArtemisClient",
+    "Capabilities",
     "ConcurrencyMode",
+    "Device",
     "StreamEvent",
     "StreamEventType",
     "Agent",
     "Builders",
     "Task",
+    "TaskHandle",
     "TaskResult",
     "BaseAgent",
     "AgentRegistry",

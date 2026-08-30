@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-import { Component } from '@angular/core';
-import { CommonModule } from '@angular/common';
+import { Component, ChangeDetectionStrategy } from '@angular/core';
+
 import { RouterLink, RouterLinkActive } from '@angular/router';
 
 @Component({
   selector: 'app-nav-switcher',
   standalone: true,
-  imports: [CommonModule, RouterLink, RouterLinkActive],
+  imports: [RouterLink, RouterLinkActive],
   template: `
     <nav class="floating-nav-switcher" aria-label="Main Navigation">
       <a 
@@ -45,6 +45,7 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
       </a>
     </nav>
   `,
+  changeDetection: ChangeDetectionStrategy.Eager,
   styleUrls: ['./nav-switcher.component.scss']
 })
 export class NavSwitcherComponent {}

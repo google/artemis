@@ -262,7 +262,7 @@
             <button class="refresh-btn" style="flex: 1; margin-bottom: 0; background-color: #e53e3e;" onclick="cleanupHistory()">Clean History</button>
         </div>
         <div style="margin-bottom: 15px;">
-            <input type="text" id="session-search-input" oninput="filterSessionsList()" placeholder="🔍 Filter by Session ID or Goal..." style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid #cbd5e0; font-size: 0.85rem; box-sizing: border-box; outline: none; background-color: #fff; color: #1e293b; transition: all 0.2s;" onfocus="this.style.borderColor='#3182ce'; this.style.boxShadow='0 0 0 2px rgba(49,130,206,0.2)';" onblur="this.style.borderColor='#cbd5e0'; this.style.boxShadow='none';"/>
+            <input type="text" id="session-search-input" oninput="filterSessionsList()" placeholder="🔍 Filter by Session ID or Goal..." style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid #cbd5e0; font-size: 0.85rem; box-sizing: border-box; outline: none; background-color: #fff; color: #1e293b; transition: border-color 0.2s, box-shadow 0.2s;" onfocus="this.style.borderColor='#3182ce'; this.style.boxShadow='0 0 0 2px rgba(49,130,206,0.2)';" onblur="this.style.borderColor='#cbd5e0'; this.style.boxShadow='none';"/>
         </div>
         <div id="session-list">Loading sessions...</div>
     </div>
@@ -279,9 +279,9 @@
         
         <!-- Tab Navigation Bar -->
         <div id="session-tabs-bar" style="display: none; gap: 8px; border-bottom: 2px solid #edf2f7; padding-bottom: 8px; margin-bottom: 15px; align-items: center;">
-            <button class="tab-btn active" onclick="switchTab('steps')" style="padding: 8px 16px; border: none; background: none; font-weight: bold; font-size: 0.95rem; cursor: pointer; border-bottom: 2px solid #3182ce; color: #3182ce; transition: all 0.2s; outline: none;">👣 Steps Timeline</button>
-            <button class="tab-btn" onclick="switchTab('traces')" style="padding: 8px 16px; border: none; background: none; font-weight: bold; font-size: 0.95rem; cursor: pointer; color: #718096; transition: all 0.2s; outline: none;">🌳 Traces Tree</button>
-            <button class="tab-btn" onclick="switchTab('replay')" style="padding: 8px 16px; border: none; background: none; font-weight: bold; font-size: 0.95rem; cursor: pointer; color: #718096; transition: all 0.2s; outline: none;">🔄 Step Replay</button>
+            <button class="tab-btn active" onclick="switchTab('steps')" style="padding: 8px 16px; border: none; background: none; font-weight: bold; font-size: 0.95rem; cursor: pointer; border-bottom: 2px solid #3182ce; color: #3182ce; transition: color 0.2s, border-color 0.2s; outline: none;">👣 Steps Timeline</button>
+            <button class="tab-btn" onclick="switchTab('traces')" style="padding: 8px 16px; border: none; background: none; font-weight: bold; font-size: 0.95rem; cursor: pointer; color: #718096; transition: color 0.2s, border-color 0.2s; outline: none;">🌳 Traces Tree</button>
+            <button class="tab-btn" onclick="switchTab('replay')" style="padding: 8px 16px; border: none; background: none; font-weight: bold; font-size: 0.95rem; cursor: pointer; color: #718096; transition: color 0.2s, border-color 0.2s; outline: none;">🔄 Step Replay</button>
             
             <div style="margin-left: auto; display: flex; gap: 8px;">
                 <button class="refresh-btn" style="margin-bottom: 0; background-color: #38bdf8; color: #0f172a; font-weight: bold;" onclick="openNotesModal()">📚 View All Notes</button>
@@ -317,7 +317,7 @@
             </div>
 
             <!-- Horizontal Steps Navigation Bar (Sticky/Pinned) -->
-            <div id="replay-steps-nav" style="display: none; gap: 12px; overflow-x: auto; padding: 12px 10px; margin-bottom: 20px; scroll-behavior: smooth; -webkit-overflow-scrolling: touch; border-bottom: 1px solid #e2e8f0; position: sticky; top: 0; background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 50; box-shadow: 0 4px 6px -4px rgba(0,0,0,0.05);">
+            <div id="replay-steps-nav" style="display: none; gap: 12px; overflow-x: auto; padding: 12px 10px; margin-bottom: 20px; scroll-behavior: smooth; -webkit-overflow-scrolling: touch; border-bottom: 1px solid #e2e8f0; position: sticky; top: 0; background: rgba(255, 255, 255, 0.97); z-index: 50; box-shadow: 0 4px 6px -4px rgba(0,0,0,0.05);">
                 <!-- Step nav items will be dynamically populated here -->
             </div>
 
@@ -371,7 +371,7 @@
         }
 
         // Coordinate visualization helpers
-        function createPointMarker(x, y, actionType, overlay, isNormalized) {
+        function createPointMarker(x, y, actionType, overlay, isNormalized, sequenceIndex, totalSequence) {
             let pctX = x / 10;
             let pctY = y / 10;
             
@@ -419,7 +419,7 @@
             pulse.style.height = `${pulseSize}px`;
             pulse.style.borderRadius = '50%';
             pulse.style.border = '2px solid #ef4444';
-            pulse.style.animation = 'pulse-animation 1.5s infinite ease-out';
+            pulse.style.animation = 'pulse-animation 1.5s ease-out 3 forwards';
             pulse.style.pointerEvents = 'none';
             
             marker.appendChild(pulse);
@@ -791,9 +791,9 @@
             const container = document.getElementById('global-task-container');
             const content = document.getElementById('content');
             if (container && container.style.display !== 'none') {
-                setTimeout(() => {
+                requestAnimationFrame(() => {
                     content.style.paddingBottom = (container.offsetHeight + 40) + 'px';
-                }, 10);
+                });
             } else {
                 content.style.paddingBottom = '30px';
             }
@@ -814,22 +814,27 @@
             adjustContentPadding();
         }
 
+        function formatBgStreamDisplayText(streamData) {
+            if (!streamData) return '';
+            if (typeof streamData === 'string') return streamData;
+            const text = streamData.text || '';
+            const thinking = streamData.thinking || '';
+            return thinking ? `[Thinking]\n${thinking}\n\n[Output]\n${text}` : text;
+        }
+
         function updateBackgroundTaskStreamDisplay(targetId) {
-            const elements = document.querySelectorAll('[id^="bg-stream-"]');
-            elements.forEach(pre => {
-                const id = pre.id.replace('bg-stream-', '');
+            // Only the streaming trace and the session aggregate change per chunk,
+            // so address their <pre> elements directly instead of scanning the document.
+            const candidateIds = new Set();
+            if (targetId) candidateIds.add(targetId);
+            if (currentSessionId) candidateIds.add(currentSessionId);
+            candidateIds.forEach(id => {
+                const pre = document.getElementById(`bg-stream-${id}`);
+                if (!pre) return;
                 const streamData = nodeStreams[id] || (id === currentSessionId ? nodeStreams[targetId] : null);
                 if (streamData) {
-                    let displayText = '';
-                    if (typeof streamData === 'string') {
-                        displayText = streamData;
-                    } else {
-                        const text = streamData.text || '';
-                        const thinking = streamData.thinking || '';
-                        displayText = thinking ? `[Thinking]\n${thinking}\n\n[Output]\n${text}` : text;
-                    }
-                    pre.innerText = displayText;
-                    pre.scrollTop = pre.scrollHeight;
+                    updateStreamPreContent(pre, formatBgStreamDisplayText(streamData));
+                    scheduleStreamAutoScroll(pre);
                 }
             });
         }
@@ -862,20 +867,23 @@
             
             if (isBackgroundTaskPanelOpen) {
                 const list = document.getElementById('background-tasks-list');
-                list.innerHTML = '';
-                
-                tasks.forEach(task => {
-                    const item = document.createElement('div');
-                    item.style.backgroundColor = '#1f2937';
-                    item.style.border = '1px solid #374151';
-                    item.style.borderRadius = '6px';
-                    item.style.padding = '12px';
-                    
+                const existingItems = {};
+                Array.from(list.children).forEach(child => {
+                    if (child.dataset && child.dataset.taskKey) {
+                        existingItems[child.dataset.taskKey] = child;
+                    }
+                });
+                const seenKeys = new Set();
+
+                tasks.forEach((task, index) => {
+                    const taskKey = String(task.trace_id || task.task_id || task.id || `idx-${index}`);
+                    seenKeys.add(taskKey);
+
                     let statusColor = '#94a3b8';
                     let statusLabel = task.status;
                     if (task.status === 'running') { statusColor = '#d69e2e'; statusLabel = 'Running'; }
                     else if (task.status === 'completed') { statusColor = '#10b981'; statusLabel = 'Completed'; }
-                    
+
                     let durationStr = '';
                     let timeStr = '';
                     if (task.start_time) {
@@ -883,66 +891,103 @@
                         durationStr = `${(end - task.start_time).toFixed(1)}s`;
                         timeStr = formatRelativeTime(task.start_time);
                     }
-                    
+
+                    const existing = existingItems[taskKey];
+                    if (existing) {
+                        // Diff update: only touch changed text/status to preserve DOM and scroll state
+                        const summaryEl = existing.querySelector('.bg-task-summary');
+                        if (summaryEl && summaryEl.innerText !== task.summary) summaryEl.innerText = task.summary;
+                        const timeEl = existing.querySelector('.bg-task-time');
+                        if (timeEl && timeEl.innerText !== timeStr) timeEl.innerText = timeStr;
+                        const statusEl = existing.querySelector('.bg-task-status');
+                        if (statusEl) {
+                            const statusText = `● ${statusLabel}`;
+                            if (statusEl.innerText !== statusText) statusEl.innerText = statusText;
+                            statusEl.style.color = statusColor;
+                        }
+                        const durationEl = existing.querySelector('.bg-task-duration');
+                        if (durationEl) {
+                            const durationText = durationStr ? `(${durationStr})` : '';
+                            if (durationEl.innerText !== durationText) durationEl.innerText = durationText;
+                        }
+                        if (task.trace_id) {
+                            const pre = document.getElementById(`bg-stream-${task.trace_id}`);
+                            if (!pre) {
+                                existing.appendChild(createBgTaskStreamContainer(task));
+                            } else {
+                                const displayText = formatBgStreamDisplayText(nodeStreams[task.trace_id]) || task.logs || 'Waiting for stream output...';
+                                updateStreamPreContent(pre, displayText);
+                            }
+                        }
+                        return;
+                    }
+
+                    const item = document.createElement('div');
+                    item.dataset.taskKey = taskKey;
+                    item.style.backgroundColor = '#1f2937';
+                    item.style.border = '1px solid #374151';
+                    item.style.borderRadius = '6px';
+                    item.style.padding = '12px';
+
                     item.innerHTML = `
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <span style="color: #f3f4f6; font-weight: 600; font-size: 0.9rem;">${task.summary}</span>
+                            <span class="bg-task-summary" style="color: #f3f4f6; font-weight: 600; font-size: 0.9rem;">${escapeHtml(task.summary)}</span>
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="color: #6b7280; font-size: 0.75rem;">${timeStr}</span>
-                                <span style="color: ${statusColor}; font-size: 0.8rem; font-weight: bold;">● ${statusLabel}</span>
-                                ${durationStr ? `<span style="color: #6b7280; font-size: 0.75rem;">(${durationStr})</span>` : ''}
+                                <span class="bg-task-time" style="color: #6b7280; font-size: 0.75rem;">${timeStr}</span>
+                                <span class="bg-task-status" style="color: ${statusColor}; font-size: 0.8rem; font-weight: bold;">● ${escapeHtml(statusLabel)}</span>
+                                <span class="bg-task-duration" style="color: #6b7280; font-size: 0.75rem;">${durationStr ? `(${durationStr})` : ''}</span>
                             </div>
                         </div>
                     `;
-                    
+
                     if (task.trace_id) {
-                        const streamContainer = document.createElement('div');
-                        streamContainer.style.marginTop = '8px';
-                        streamContainer.style.backgroundColor = '#111827';
-                        streamContainer.style.borderRadius = '4px';
-                        streamContainer.style.padding = '8px';
-                        streamContainer.style.borderLeft = '2px solid #3b82f6';
-                        
-                        const label = document.createElement('div');
-                        label.style.fontSize = '0.7rem';
-                        label.style.color = '#6b7280';
-                        label.style.marginBottom = '4px';
-                        label.innerText = 'Live LLM Stream:';
-                        
-                        const pre = document.createElement('pre');
-                        pre.id = `bg-stream-${task.trace_id}`;
-                        pre.style.margin = '0';
-                        pre.style.padding = '0';
-                        pre.style.backgroundColor = 'transparent';
-                        pre.style.color = '#d1d5db';
-                        pre.style.fontSize = '0.8rem';
-                        pre.style.maxHeight = '120px';
-                        pre.style.overflowY = 'auto';
-                        pre.style.whiteSpace = 'pre-wrap';
-                        let displayText = '';
-                        if (nodeStreams[task.trace_id]) {
-                            const streamData = nodeStreams[task.trace_id];
-                            if (typeof streamData === 'string') {
-                                displayText = streamData;
-                            } else {
-                                const text = streamData.text || '';
-                                const thinking = streamData.thinking || '';
-                                displayText = thinking ? `[Thinking]\n${thinking}\n\n[Output]\n${text}` : text;
-                            }
-                        }
-                        pre.innerText = displayText || task.logs || 'Waiting for stream output...';
-                        
-                        streamContainer.appendChild(label);
-                        streamContainer.appendChild(pre);
-                        item.appendChild(streamContainer);
-                        
-                        setTimeout(() => { pre.scrollTop = pre.scrollHeight; }, 0);
+                        item.appendChild(createBgTaskStreamContainer(task));
                     }
-                    
+
                     list.appendChild(item);
+                });
+
+                // Remove items for tasks that no longer exist
+                Array.from(list.children).forEach(child => {
+                    const key = child.dataset ? child.dataset.taskKey : null;
+                    if (key && !seenKeys.has(key)) child.remove();
                 });
             }
             adjustContentPadding();
+        }
+
+        function createBgTaskStreamContainer(task) {
+            const streamContainer = document.createElement('div');
+            streamContainer.style.marginTop = '8px';
+            streamContainer.style.backgroundColor = '#111827';
+            streamContainer.style.borderRadius = '4px';
+            streamContainer.style.padding = '8px';
+            streamContainer.style.borderLeft = '2px solid #3b82f6';
+
+            const label = document.createElement('div');
+            label.style.fontSize = '0.7rem';
+            label.style.color = '#6b7280';
+            label.style.marginBottom = '4px';
+            label.innerText = 'Live LLM Stream:';
+
+            const pre = document.createElement('pre');
+            pre.id = `bg-stream-${task.trace_id}`;
+            pre.style.margin = '0';
+            pre.style.padding = '0';
+            pre.style.backgroundColor = 'transparent';
+            pre.style.color = '#d1d5db';
+            pre.style.fontSize = '0.8rem';
+            pre.style.maxHeight = '120px';
+            pre.style.overflowY = 'auto';
+            pre.style.whiteSpace = 'pre-wrap';
+            const displayText = formatBgStreamDisplayText(nodeStreams[task.trace_id]);
+            updateStreamPreContent(pre, displayText || task.logs || 'Waiting for stream output...');
+
+            streamContainer.appendChild(label);
+            streamContainer.appendChild(pre);
+
+            scheduleStreamAutoScroll(pre);
+            return streamContainer;
         }
 
         let activeNodeId = null;
@@ -951,6 +996,41 @@
         let activeNodeDetails = null;
         let traceMap = {};
         let nodeStreams = {};
+
+        // Cap for session-level aggregated stream text; keep only the tail beyond this size
+        const SESSION_STREAM_TEXT_CAP = 200000;
+        let nodeStreamsPersistTimer = null;
+
+        function trimStreamEntry(entry) {
+            if (!entry || typeof entry !== 'object') return;
+            if (entry.text && entry.text.length > SESSION_STREAM_TEXT_CAP) {
+                entry.text = entry.text.slice(-SESSION_STREAM_TEXT_CAP);
+            }
+            if (entry.thinking && entry.thinking.length > SESSION_STREAM_TEXT_CAP) {
+                entry.thinking = entry.thinking.slice(-SESSION_STREAM_TEXT_CAP);
+            }
+        }
+
+        function flushNodeStreamsPersist() {
+            if (nodeStreamsPersistTimer) {
+                clearTimeout(nodeStreamsPersistTimer);
+                nodeStreamsPersistTimer = null;
+            }
+            if (!currentSessionId) return;
+            try {
+                sessionStorage.setItem('nodeStreams_' + currentSessionId, JSON.stringify(nodeStreams));
+            } catch (e) {
+                // Ignore quota/serialization errors; persistence is best-effort
+            }
+        }
+
+        function scheduleNodeStreamsPersist() {
+            if (nodeStreamsPersistTimer) return;
+            nodeStreamsPersistTimer = setTimeout(() => {
+                nodeStreamsPersistTimer = null;
+                flushNodeStreamsPersist();
+            }, 2000);
+        }
 
         async function fetchTaskPlan() {
             if (!currentSessionId) return;
@@ -992,7 +1072,7 @@
                     contentDiv.innerHTML = '<div style="color: #e2e8f0; font-family: monospace;">No notes found for this session.</div>';
                 }
             } catch (err) {
-                contentDiv.innerHTML = `<div style="color: #ef4444; font-family: monospace;">Error fetching notes: ${err.message}</div>`;
+                contentDiv.innerHTML = `<div style="color: #ef4444; font-family: monospace;">Error fetching notes: ${escapeHtml(err.message)}</div>`;
             }
         }
 
@@ -1015,10 +1095,10 @@
                     document.getElementById('resume-btn').style.display = 'none';
                 } else {
                     const data = await res.json();
-                    statusDiv.innerHTML = `<span style="color: #e53e3e;">Failed to resume: ${data.detail || 'Unknown error'}</span>`;
+                    statusDiv.innerHTML = `<span style="color: #e53e3e;">Failed to resume: ${escapeHtml(data.detail || 'Unknown error')}</span>`;
                 }
             } catch (err) {
-                statusDiv.innerHTML = `<span style="color: #e53e3e;">Error: ${err.message}</span>`;
+                statusDiv.innerHTML = `<span style="color: #e53e3e;">Error: ${escapeHtml(err.message)}</span>`;
             }
         }
 
@@ -1032,10 +1112,10 @@
                     statusDiv.innerHTML = `<span style="color: #38a169;">Task stopped!</span>`;
                     setTimeout(loadSessions, 2000);
                 } else {
-                    statusDiv.innerHTML = `<span style="color: #e53e3e;">Failed to stop: ${data.detail || 'Unknown error'}</span>`;
+                    statusDiv.innerHTML = `<span style="color: #e53e3e;">Failed to stop: ${escapeHtml(data.detail || 'Unknown error')}</span>`;
                 }
             } catch (err) {
-                statusDiv.innerHTML = `<span style="color: #e53e3e;">Error: ${err.message}</span>`;
+                statusDiv.innerHTML = `<span style="color: #e53e3e;">Error: ${escapeHtml(err.message)}</span>`;
             }
         }
 
@@ -1063,10 +1143,10 @@
                     document.getElementById('task-goal').value = '';
                     setTimeout(loadSessions, 2000);
                 } else {
-                    statusDiv.innerHTML = `<span style="color: #e53e3e;">Failed: ${data.detail || 'Unknown error'}</span>`;
+                    statusDiv.innerHTML = `<span style="color: #e53e3e;">Failed: ${escapeHtml(data.detail || 'Unknown error')}</span>`;
                 }
             } catch (err) {
-                statusDiv.innerHTML = `<span style="color: #e53e3e;">Error: ${err.message}</span>`;
+                statusDiv.innerHTML = `<span style="color: #e53e3e;">Error: ${escapeHtml(err.message)}</span>`;
             }
         }
 
@@ -1154,11 +1234,11 @@
                 div.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                         <div style="flex: 1; min-width: 0;">
-                            <h3 style="font-size: 0.95rem; margin-bottom: 3px; margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${titleText}">${titleText}</h3>
-                            <div style="font-size: 0.75rem; font-family: monospace; opacity: 0.85; margin-bottom: 3px; word-break: break-all; color: ${session.session_id === currentSessionId ? '#edf2f7' : '#4a5568'};">ID: ${sidDisplay}</div>
+                            <h3 style="font-size: 0.95rem; margin-bottom: 3px; margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(titleText)}">${escapeHtml(titleText)}</h3>
+                            <div style="font-size: 0.75rem; font-family: monospace; opacity: 0.85; margin-bottom: 3px; word-break: break-all; color: ${session.session_id === currentSessionId ? '#edf2f7' : '#4a5568'};">ID: ${escapeHtml(sidDisplay)}</div>
                             <small style="color: ${session.session_id === currentSessionId ? '#e2e8f0' : '#718096'}; font-size: 0.75rem;">${devicePrefix}${time}</small>
                         </div>
-                        <button onclick="deleteSession(event, '${session.session_id}')" style="background: none; border: none; color: ${session.session_id === currentSessionId ? '#fff' : '#e53e3e'}; cursor: pointer; font-size: 1.1rem; padding: 0 0 0 8px; line-height: 1; flex-shrink: 0;" title="Delete Session">🗑️</button>
+                        <button onclick="deleteSession(event, '${escapeHtml(session.session_id)}')" style="background: none; border: none; color: ${session.session_id === currentSessionId ? '#fff' : '#e53e3e'}; cursor: pointer; font-size: 1.1rem; padding: 0 0 0 8px; line-height: 1; flex-shrink: 0;" title="Delete Session">🗑️</button>
                     </div>
                 `;
                 list.appendChild(div);
@@ -1220,12 +1300,14 @@
         }
 
         function selectSession(sessionId, goal, startTime) {
+            // Flush any pending stream persistence for the previous session before switching
+            flushNodeStreamsPersist();
             currentSessionId = sessionId;
             sessionStartTime = startTime;
             userExpandedStepIds.clear();
             stepTracesCache = {};
             stepFilterMap = {};
-            document.getElementById('session-header').innerHTML = `<h1>${goal || 'Session Details'}</h1><p><small>ID: ${sessionId}</small></p>`;
+            document.getElementById('session-header').innerHTML = `<h1>${escapeHtml(goal || 'Session Details')}</h1><p><small>ID: ${escapeHtml(sessionId)}</small></p>`;
             
 
             
@@ -1300,10 +1382,11 @@
                     } else {
                         nodeStreams[sessionId].text += data.chunk;
                     }
+                    trimStreamEntry(nodeStreams[sessionId]);
                 }
-                
-                sessionStorage.setItem('nodeStreams_' + currentSessionId, JSON.stringify(nodeStreams));
-                
+
+                scheduleNodeStreamsPersist();
+
                 updateStreamDisplay(traceId);
                 updateBackgroundTaskStreamDisplay(traceId);
             });
@@ -1357,6 +1440,7 @@
         let replayConfig = [];
         let activeReplayNodeId = null;
         let activeReplayNodeDetails = null;
+        const replayInProgressSteps = new Set();
 
         async function fetchDevices() {
             try {
@@ -1469,7 +1553,7 @@
                     form.appendChild(group);
                 });
             } catch (err) {
-                form.innerHTML = `<div style="grid-column: span 2; color: #dc2626; font-size: 0.8rem;">Failed to load parameters: ${err.message}</div>`;
+                form.innerHTML = `<div style="grid-column: span 2; color: #dc2626; font-size: 0.8rem;">Failed to load parameters: ${escapeHtml(err.message)}</div>`;
             }
             
             // Reload cached replay traces for the selected tool
@@ -1535,7 +1619,7 @@
                         
                         const navBorderColor = step.is_replayed ? '#a7f3d0' : '#e2e8f0';
                         const navBgColor = step.is_replayed ? '#f0fdf4' : 'white';
-                        navCard.style.cssText = `flex: 0 0 auto; min-width: 140px; max-width: 200px; background: ${navBgColor}; border: 1.5px solid ${navBorderColor}; border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.02); user-select: none;`;
+                        navCard.style.cssText = `flex: 0 0 auto; min-width: 140px; max-width: 200px; background: ${navBgColor}; border: 1.5px solid ${navBorderColor}; border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; cursor: pointer; transition: border-color 0.2s, background-color 0.2s, box-shadow 0.2s, transform 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.02); user-select: none;`;
                         
                         if (activeStepNum === stepNum) {
                             navCard.classList.add('active');
@@ -1626,9 +1710,9 @@
                             contentHtml += `
                                 <div style="text-align: center;">
                                     <span style="font-size: 0.75rem; font-weight: 600; color: #64748b; display: block; margin-bottom: 6px;">${hasPost ? 'Pre-Action (Before)' : 'Screenshot'}</span>
-                                    <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; cursor: zoom-in; max-height: 250px; overflow: hidden; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 3px rgba(0,0,0,0.03);" onclick="zoomImage('${step.pre_screenshot}')">
+                                    <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; cursor: zoom-in; max-height: 250px; overflow: hidden; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 3px rgba(0,0,0,0.03);" onclick="zoomImage('${escapeHtml(step.pre_screenshot)}')">
                                         <div style="position: relative; display: inline-block; max-width: 100%;">
-                                            <img id="replay-img-${stepNum}" src="${preSrc}" style="max-height: 240px; max-width: 100%; object-fit: contain; display: block; margin: 0 auto;"/>
+                                            <img id="replay-img-${stepNum}" src="${escapeHtml(preSrc)}" style="max-height: 240px; max-width: 100%; object-fit: contain; display: block; margin: 0 auto;"/>
                                             <div id="replay-overlay-${stepNum}" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none;"></div>
                                         </div>
                                     </div>
@@ -1641,7 +1725,7 @@
                                 <div style="text-align: center;">
                                     <span style="font-size: 0.75rem; font-weight: 600; color: #64748b; display: block; margin-bottom: 6px;">Post-Action (After)</span>
                                     <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; cursor: zoom-in; max-height: 250px; overflow: hidden; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
-                                        <img src="${postSrc}" style="max-height: 240px; max-width: 100%; object-fit: contain;" onclick="zoomImage('${step.post_screenshot}')"/>
+                                        <img src="${escapeHtml(postSrc)}" style="max-height: 240px; max-width: 100%; object-fit: contain;" onclick="zoomImage('${escapeHtml(step.post_screenshot)}')"/>
                                     </div>
                                 </div>
                             `;
@@ -1734,7 +1818,7 @@
                     }, 50);
                 }
             } catch (err) {
-                container.innerHTML = `<div style="color: #e53e3e; padding: 20px; text-align: center; font-weight: bold;">Error: ${err.message}</div>`;
+                container.innerHTML = `<div style="color: #e53e3e; padding: 20px; text-align: center; font-weight: bold;">Error: ${escapeHtml(err.message)}</div>`;
             }
         }
 
@@ -1759,7 +1843,7 @@
                 const treeData = await res.json();
                 renderOriginalReplayTreeForStep(stepNum, treeData);
             } catch (err) {
-                container.innerHTML = `<div style="color: #e53e3e; padding: 10px; font-size: 0.85rem;">Failed to load original traces: ${err.message}</div>`;
+                container.innerHTML = `<div style="color: #e53e3e; padding: 10px; font-size: 0.85rem;">Failed to load original traces: ${escapeHtml(err.message)}</div>`;
             }
         }
 
@@ -1869,7 +1953,7 @@
                                 </h4>
                                 <div style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: #718096;">
                                     <span>${formatRelativeTime(node.timestamp)}</span>
-                                    <span class="status-${node.status}">${node.status}</span>
+                                    <span class="status-${escapeHtml(node.status)}">${escapeHtml(node.status)}</span>
                                 </div>
                             </div>
                             <div style="white-space: pre-wrap; font-size: 0.88rem; color: #1e293b; line-height: 1.6; font-family: inherit;">${escapeHtml(thoughtText || '(No thinking content)')}</div>
@@ -1885,9 +1969,9 @@
                 nodeRow.style.borderRadius = '6px';
                 nodeRow.style.boxShadow = '0 1px 2px rgba(0,0,0,0.01)';
                 
-                const typePill = `<span class="pill type-${node.type}" style="font-size: 0.7rem; padding: 2px 6px; margin-right: 8px; border-radius: 4px; font-weight: bold; display: inline-block;">${node.type}</span>`;
+                const typePill = `<span class="pill type-${escapeHtml(node.type)}" style="font-size: 0.7rem; padding: 2px 6px; margin-right: 8px; border-radius: 4px; font-weight: bold; display: inline-block;">${escapeHtml(node.type)}</span>`;
                 const statusColor = node.status === 'success' || node.status === 'SUCCESS' ? '#16a34a' : (node.status === 'failed' || node.status === 'FAILED' ? '#dc2626' : '#d97706');
-                const statusDot = `<span style="color: ${statusColor}; font-weight: bold; margin-right: 8px; font-size: 0.78rem;">● ${node.status}</span>`;
+                const statusDot = `<span style="color: ${statusColor}; font-weight: bold; margin-right: 8px; font-size: 0.78rem;">● ${escapeHtml(node.status)}</span>`;
                 
                 const header = document.createElement('div');
                 header.style.display = 'flex';
@@ -1970,7 +2054,7 @@
                                 }
                             }
                         } catch (err) {
-                            detailsContainer.innerHTML = `<div style="font-size: 0.8rem; color: #dc2626;">Error loading details: ${err.message}</div>`;
+                            detailsContainer.innerHTML = `<div style="font-size: 0.8rem; color: #dc2626;">Error loading details: ${escapeHtml(err.message)}</div>`;
                         }
                     } else {
                         detailsContainer.style.display = 'none';
@@ -2025,6 +2109,7 @@
             const liveContainer = document.getElementById(`replay-live-tree-${stepNum}`);
 
             // Set loading state
+            replayInProgressSteps.add(stepNum);
             runBtn.disabled = true;
             inputsToDisable.forEach(input => { input.disabled = true; });
             // deviceSelect removed
@@ -2087,6 +2172,7 @@
                 liveContainer.innerHTML = `<div style="color: #dc2626; text-align: center; padding: 30px 10px; font-weight: bold;">Replay Execution Error:<br/><pre style="background-color: #fef2f2; color: #991b1b; border: 1px solid #fee2e2; margin-top: 15px; text-align: left; max-height: 200px; overflow-y: auto;">${escapeHtml(err.message)}</pre></div>`;
             } finally {
                 // Restore controls
+                replayInProgressSteps.delete(stepNum);
                 runBtn.disabled = false;
                 inputsToDisable.forEach(input => { input.disabled = false; });
                 // deviceSelect removed
@@ -2103,8 +2189,13 @@
                 } else if (activeTab === 'traces') {
                     loadTree();
                 } else if (activeTab === 'replay') {
-                    if (replaySteps && replaySteps.length > 0) {
-                        replaySteps.forEach(s => loadCachedReplayForStep(s.step_number));
+                    // Periodic refresh only targets steps with a replay currently in progress
+                    if (replaySteps && replaySteps.length > 0 && replayInProgressSteps.size > 0) {
+                        replaySteps.forEach(s => {
+                            if (replayInProgressSteps.has(s.step_number)) {
+                                loadCachedReplayForStep(s.step_number);
+                            }
+                        });
                     }
                 }
             }, 400); // Smooth 400ms presentation buffer interlock
@@ -2152,34 +2243,40 @@
             return `+${diff.toFixed(1)}s`;
         }
 
+        // Memoized per node object: fresh tree fetches produce fresh objects, so stale
+        // entries are dropped automatically by the WeakMap without explicit clearing.
+        const descendantDurationCache = new WeakMap();
+
         function getDescendantDurations(node) {
+            const cached = descendantDurationCache.get(node);
+            if (cached) return cached;
             let stats = {
                 llm: 0,
                 tool: 0,
                 action: 0,
                 agent: 0
             };
-            if (!node.children) return stats;
-            
-            function traverse(n) {
-                if (n.children) {
-                    n.children.forEach(child => {
-                        if (child.duration) {
-                            if (child.type === 'llm_call') {
-                                stats.llm += child.duration;
-                            } else if (child.type === 'tool') {
-                                stats.tool += child.duration;
-                            } else if (child.type === 'action') {
-                                stats.action += child.duration;
-                            } else if (child.type === 'agent') {
-                                stats.agent += child.duration;
-                            }
+            if (node.children) {
+                node.children.forEach(child => {
+                    if (child.duration) {
+                        if (child.type === 'llm_call') {
+                            stats.llm += child.duration;
+                        } else if (child.type === 'tool') {
+                            stats.tool += child.duration;
+                        } else if (child.type === 'action') {
+                            stats.action += child.duration;
+                        } else if (child.type === 'agent') {
+                            stats.agent += child.duration;
                         }
-                        traverse(child);
-                    });
-                }
+                    }
+                    const childStats = getDescendantDurations(child);
+                    stats.llm += childStats.llm;
+                    stats.tool += childStats.tool;
+                    stats.action += childStats.action;
+                    stats.agent += childStats.agent;
+                });
             }
-            traverse(node);
+            descendantDurationCache.set(node, stats);
             return stats;
         }
 
@@ -2213,6 +2310,49 @@
 
         function closeZoomModal() {
             document.getElementById('zoom-modal').style.display = 'none';
+        }
+
+        // Delegated zoom click handler: avoids inlining large data URIs into onclick attributes.
+        // Elements marked with data-zoom-img zoom the contained (or own) img's current src.
+        document.addEventListener('click', function(e) {
+            const zoomTarget = e.target && e.target.closest ? e.target.closest('[data-zoom-img]') : null;
+            if (!zoomTarget) return;
+            const img = zoomTarget.tagName === 'IMG' ? zoomTarget : zoomTarget.querySelector('img');
+            if (img && img.src) {
+                zoomImage(img.src);
+            }
+        });
+
+        // Lazily-rendered Raw JSON payload blocks: stringify + fill only on first expand.
+        const rawJsonPayloadStore = new Map();
+        let rawJsonPayloadSeq = 0;
+
+        function registerRawJsonPayload(payload) {
+            rawJsonPayloadSeq += 1;
+            rawJsonPayloadStore.set(String(rawJsonPayloadSeq), payload);
+            // Bound memory: drop entries whose <details> block left the DOM
+            // (skip the most recent few, which may not be attached yet)
+            if (rawJsonPayloadStore.size > 50) {
+                rawJsonPayloadStore.forEach((_, key) => {
+                    if (Number(key) <= rawJsonPayloadSeq - 10 &&
+                        !document.querySelector(`details[data-raw-json-id="${key}"]`)) {
+                        rawJsonPayloadStore.delete(key);
+                    }
+                });
+            }
+            return rawJsonPayloadSeq;
+        }
+
+        function onRawJsonToggle(detailsEl) {
+            if (!detailsEl || !detailsEl.open) return;
+            if (detailsEl.getAttribute('data-raw-loaded') === 'true') return;
+            detailsEl.setAttribute('data-raw-loaded', 'true');
+            const id = detailsEl.getAttribute('data-raw-json-id');
+            const pre = detailsEl.querySelector('pre');
+            if (pre && rawJsonPayloadStore.has(id)) {
+                pre.textContent = JSON.stringify(rawJsonPayloadStore.get(id), null, 2);
+                rawJsonPayloadStore.delete(id);
+            }
         }
 
         function extractThinkingText(payload) {
@@ -2308,8 +2448,8 @@
                                     contentHtml += `<div style="white-space: pre-wrap; font-family: inherit; font-size: 0.88rem; line-height: 1.5; color: #1e293b;">${escapeHtml(block.text)}</div>`;
                                 } else if (block.type === 'image_url' && block.image_url && block.image_url.url) {
                                     contentHtml += `
-                                        <div class="media-container" style="max-width: 280px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; background-color: #f8fafc; cursor: zoom-in;" onclick="zoomImage('${block.image_url.url}')">
-                                            <img src="${block.image_url.url}" style="width: 100%; display: block;"/>
+                                        <div class="media-container" style="max-width: 280px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; background-color: #f8fafc; cursor: zoom-in;" data-zoom-img>
+                                            <img src="${escapeHtml(block.image_url.url)}" style="width: 100%; display: block;"/>
                                         </div>
                                     `;
                                 } else {
@@ -2398,14 +2538,14 @@
                 html += `<div style="margin-top: 15px;">${mediaHtml}</div>`;
             }
 
-            // 6. Collapsible Raw JSON block at the bottom
+            // 6. Collapsible Raw JSON block at the bottom (lazily filled on first expand)
             html += `
-                <details style="margin-top: 25px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
+                <details style="margin-top: 25px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;" data-raw-json-id="${registerRawJsonPayload(payload)}" ontoggle="onRawJsonToggle(this)">
                     <summary style="padding: 8px 12px; font-weight: bold; font-size: 0.8rem; color: #64748b; cursor: pointer; background-color: #f8fafc; outline: none; user-select: none;">
                         ⚙️ View Raw JSON Payload
                     </summary>
                     <div style="padding: 15px; border-top: 1px solid #e2e8f0; background-color: #0f172a; overflow-x: auto;">
-                        <pre style="margin: 0; font-size: 0.8rem; color: #f8fafc; font-family: monospace; white-space: pre-wrap; max-height: 350px; overflow-y: auto;">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+                        <pre style="margin: 0; font-size: 0.8rem; color: #f8fafc; font-family: monospace; white-space: pre-wrap; max-height: 350px; overflow-y: auto;"></pre>
                     </div>
                 </details>
             `;
@@ -2450,14 +2590,14 @@
                 html += `<div style="margin-top: 15px;">${mediaHtml}</div>`;
             }
             
-            // Collapsible Raw JSON block at the bottom
+            // Collapsible Raw JSON block at the bottom (lazily filled on first expand)
             html += `
-                <details style="margin-top: 15px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
+                <details style="margin-top: 15px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;" data-raw-json-id="${registerRawJsonPayload(payload)}" ontoggle="onRawJsonToggle(this)">
                     <summary style="padding: 6px 10px; font-weight: bold; font-size: 0.75rem; color: #64748b; cursor: pointer; background-color: #f8fafc; outline: none; user-select: none;">
                         ⚙️ View Raw JSON Payload
                     </summary>
                     <div style="padding: 10px; border-top: 1px solid #e2e8f0; background-color: #0f172a; overflow-x: auto;">
-                        <pre style="margin: 0; font-size: 0.8rem; color: #f8fafc; font-family: monospace; white-space: pre-wrap; max-height: 250px; overflow-y: auto;">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+                        <pre style="margin: 0; font-size: 0.8rem; color: #f8fafc; font-family: monospace; white-space: pre-wrap; max-height: 250px; overflow-y: auto;"></pre>
                     </div>
                 </details>
             `;
@@ -2590,10 +2730,10 @@
                             contentHtml += `
                                 <div style="flex: 1; text-align: center; display: flex; flex-direction: column; gap: 6px; max-width: ${hasPostImage ? '100%' : '360px'}; margin: 0 auto;">
                                     <span style="font-size: 0.75rem; font-weight: 600; color: #64748b;">${hasPostImage ? 'Pre-Action (Before)' : 'Screenshot'}</span>
-                                    <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; background-color: #f8fafc; cursor: zoom-in; box-shadow: 0 1px 3px rgba(0,0,0,0.05); display: flex; align-items: center; justify-content: center;" onclick="zoomImage('${preSrc}')">
+                                    <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; background-color: #f8fafc; cursor: zoom-in; box-shadow: 0 1px 3px rgba(0,0,0,0.05); display: flex; align-items: center; justify-content: center;" onclick="zoomImage('${escapeHtml(preSrc)}')">
                                         <div style="position: relative; display: inline-block; max-width: 100%;">
-                                            <img id="step-img-${step.step_id}" src="${preSrc}" style="max-width: 100%; max-height: 340px; object-fit: contain; display: block; margin: 0 auto; transition: transform 0.2s;"/>
-                                            <div id="step-overlay-${step.step_id}" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none;"></div>
+                                            <img id="step-img-${escapeHtml(step.step_id)}" src="${escapeHtml(preSrc)}" style="max-width: 100%; max-height: 340px; object-fit: contain; display: block; margin: 0 auto; transition: transform 0.2s;"/>
+                                            <div id="step-overlay-${escapeHtml(step.step_id)}" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none;"></div>
                                         </div>
                                     </div>
                                 </div>
@@ -2607,8 +2747,8 @@
                             contentHtml += `
                                 <div style="flex: 1; text-align: center; display: flex; flex-direction: column; gap: 6px; max-width: ${hasPreImage ? '100%' : '360px'}; margin: 0 auto;">
                                     <span style="font-size: 0.75rem; font-weight: 600; color: #64748b;">Post-Action (After)</span>
-                                    <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; background-color: #f8fafc; cursor: zoom-in; box-shadow: 0 1px 3px rgba(0,0,0,0.05);" onclick="zoomImage('${postSrc}')">
-                                        <img src="${postSrc}" style="max-width: 100%; max-height: 340px; object-fit: contain; display: block; margin: 0 auto; transition: transform 0.2s;"/>
+                                    <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; background-color: #f8fafc; cursor: zoom-in; box-shadow: 0 1px 3px rgba(0,0,0,0.05);" onclick="zoomImage('${escapeHtml(postSrc)}')">
+                                        <img src="${escapeHtml(postSrc)}" style="max-width: 100%; max-height: 340px; object-fit: contain; display: block; margin: 0 auto; transition: transform 0.2s;"/>
                                     </div>
                                 </div>
                             `;
@@ -2626,19 +2766,19 @@
                     
                     contentHtml += `
                         <div class="step-traces-expander" style="border-top: 1px solid #f1f5f9; padding-top: 15px; margin-top: 5px;">
-                            <details ${isOpen ? 'open' : ''} ontoggle="onStepDetailsToggle(this, '${step.step_id}')">
+                            <details ${isOpen ? 'open' : ''} ontoggle="onStepDetailsToggle(this, '${escapeHtml(step.step_id)}')">
                                 <summary style="font-size: 0.82rem; font-weight: 600; color: #475569; cursor: pointer; display: flex; align-items: center; justify-content: space-between; user-select: none; outline: none; padding-right: 5px;">
                                     <div style="display: flex; align-items: center; gap: 6px;">
                                         🔍 Click to inspect Step Details & Sub-Traces
                                     </div>
                                     <div onclick="event.stopPropagation();" style="display: flex; align-items: center; gap: 6px; font-weight: normal;">
-                                        <label for="trace-filter-${step.step_id}" style="font-size: 0.75rem; color: #64748b;">Trace Type:</label>
-                                        <select id="trace-filter-${step.step_id}" onchange="filterStepTraces('${step.step_id}', this.value)" onclick="event.stopPropagation();" style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; border: 1px solid #cbd5e1; background: white; color: #334155; cursor: pointer; outline: none; font-weight: 500;">
+                                        <label for="trace-filter-${escapeHtml(step.step_id)}" style="font-size: 0.75rem; color: #64748b;">Trace Type:</label>
+                                        <select id="trace-filter-${escapeHtml(step.step_id)}" onchange="filterStepTraces('${escapeHtml(step.step_id)}', this.value)" onclick="event.stopPropagation();" style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; border: 1px solid #cbd5e1; background: white; color: #334155; cursor: pointer; outline: none; font-weight: 500;">
                                             <option value="all">All</option>
                                         </select>
                                     </div>
                                 </summary>
-                                <div class="step-child-traces-list" id="step-traces-${step.step_id}" ${isLoaded ? 'data-loaded="true"' : ''} style="margin-top: 12px; padding: 12px 15px; border-left: 2px dashed #cbd5e1; background-color: #f8fafc; border-radius: 0 6px 6px 0; display: flex; flex-direction: column; gap: 8px;">
+                                <div class="step-child-traces-list" id="step-traces-${escapeHtml(step.step_id)}" ${isLoaded ? 'data-loaded="true"' : ''} style="margin-top: 12px; padding: 12px 15px; border-left: 2px dashed #cbd5e1; background-color: #f8fafc; border-radius: 0 6px 6px 0; display: flex; flex-direction: column; gap: 8px;">
                                     <div style="font-size: 0.8rem; color: #64748b;">Loading step child traces...</div>
                                 </div>
                             </details>
@@ -2661,7 +2801,7 @@
                     }
                 });
             } catch (err) {
-                container.innerHTML = `<div style="padding: 20px; color: #dc2626; text-align: center; font-weight: bold;">Error loading steps timeline: ${err.message}</div>`;
+                container.innerHTML = `<div style="padding: 20px; color: #dc2626; text-align: center; font-weight: bold;">Error loading steps timeline: ${escapeHtml(err.message)}</div>`;
             }
         }
 
@@ -2757,7 +2897,7 @@
                     updateStreamDisplay(traceId);
                 }
             } catch (err) {
-                targetDiv.innerHTML = `<div style="font-size: 0.8rem; color: #dc2626;">Failed to load traces: ${err.message}</div>`;
+                targetDiv.innerHTML = `<div style="font-size: 0.8rem; color: #dc2626;">Failed to load traces: ${escapeHtml(err.message)}</div>`;
                 populateTraceTypeDropdown(stepId, []);
             }
         }
@@ -2801,7 +2941,7 @@
                                 </h4>
                                 <div style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: #718096;">
                                     <span>${formatRelativeTime(node.timestamp)}</span>
-                                    <span class="status-${node.status}">${node.status}</span>
+                                    <span class="status-${escapeHtml(node.status)}">${escapeHtml(node.status)}</span>
                                 </div>
                             </div>
                             <div style="white-space: pre-wrap; font-size: 0.85rem; color: #1e293b; line-height: 1.6; font-family: inherit;">${escapeHtml(thoughtText || '(No thinking content)')}</div>
@@ -2822,9 +2962,9 @@
                 nodeRow.style.borderRadius = '6px';
                 nodeRow.style.boxShadow = '0 1px 2px rgba(0,0,0,0.01)';
                 
-                const typePill = `<span class="pill type-${node.type}" style="font-size: 0.7rem; padding: 2px 6px; margin-right: 8px; border-radius: 4px; font-weight: bold; display: inline-block;">${node.type}</span>`;
+                const typePill = `<span class="pill type-${escapeHtml(node.type)}" style="font-size: 0.7rem; padding: 2px 6px; margin-right: 8px; border-radius: 4px; font-weight: bold; display: inline-block;">${escapeHtml(node.type)}</span>`;
                 const statusColor = node.status === 'success' ? '#16a34a' : (node.status === 'failed' ? '#dc2626' : '#d97706');
-                const statusDot = `<span style="color: ${statusColor}; font-weight: bold; margin-right: 8px; font-size: 0.78rem;">● ${node.status}</span>`;
+                const statusDot = `<span style="color: ${statusColor}; font-weight: bold; margin-right: 8px; font-size: 0.78rem;">● ${escapeHtml(node.status)}</span>`;
                 
                 const header = document.createElement('div');
                 header.style.display = 'flex';
@@ -2872,7 +3012,7 @@
                                     `;
                                 }
                             } catch (err) {
-                                detailsContainer.innerHTML = `<div style="font-size: 0.8rem; color: #dc2626;">Error: ${err.message}</div>`;
+                                detailsContainer.innerHTML = `<div style="font-size: 0.8rem; color: #dc2626;">Error: ${escapeHtml(err.message)}</div>`;
                             }
                         } else {
                             detailsContainer.style.display = 'block';
@@ -2895,6 +3035,34 @@
         }
 
 
+        // Incrementally render growing stream text: append only the new tail when the
+        // target text extends what is already rendered; otherwise rewrite in full.
+        function updateStreamPreContent(pre, fullText) {
+            const renderedLen = pre._streamRenderedLen || 0;
+            const tail = pre._streamTail || '';
+            const canAppend = renderedLen > 0 && fullText.length >= renderedLen &&
+                fullText.substring(renderedLen - tail.length, renderedLen) === tail;
+            if (canAppend) {
+                if (fullText.length > renderedLen) {
+                    pre.appendChild(document.createTextNode(fullText.substring(renderedLen)));
+                }
+            } else {
+                pre.textContent = fullText;
+            }
+            pre._streamRenderedLen = fullText.length;
+            pre._streamTail = fullText.substring(Math.max(0, fullText.length - 64));
+        }
+
+        // Coalesce auto-scroll to at most once per animation frame per element
+        function scheduleStreamAutoScroll(pre) {
+            if (pre._streamScrollScheduled) return;
+            pre._streamScrollScheduled = true;
+            requestAnimationFrame(() => {
+                pre._streamScrollScheduled = false;
+                pre.scrollTop = pre.scrollHeight;
+            });
+        }
+
         function updateStreamDisplay(traceId) {
             if (!nodeStreams || !nodeStreams[traceId]) return;
             if (traceId === currentSessionId || traceId === 'session') return;
@@ -2905,13 +3073,14 @@
             if (!targetDiv && streamData && streamData.parentTraceId) {
                 const parentDiv = document.getElementById(`node-div-${streamData.parentTraceId}`);
                 if (parentDiv) {
-                    const runningLLMs = parentDiv.querySelectorAll('.node-type-llm_call:has(> .node-header .status-running), .node-type-llm_call:has(.status-running)');
+                    const runningLLMs = parentDiv.querySelectorAll('.node-type-llm_call[data-status="running"]');
                     if (runningLLMs.length > 0) {
                         targetDiv = runningLLMs[runningLLMs.length - 1];
                     } else {
                         targetDiv = document.createElement('div');
                         targetDiv.className = 'tree-node node-type-llm_call placeholder-llm-call';
                         targetDiv.id = `node-div-${traceId}`;
+                        targetDiv.setAttribute('data-status', 'running');
                         targetDiv.innerHTML = `
                             <div class="node-header type-llm_call">
                                 <div class="node-title">
@@ -2930,7 +3099,7 @@
             
             if (!targetDiv || !targetDiv.classList.contains('node-type-llm_call')) return;
 
-            const targetIsRunning = Boolean(targetDiv.querySelector('> .node-header .status-running') || targetDiv.querySelector('.status-running'));
+            const targetIsRunning = targetDiv.getAttribute('data-status') === 'running' || Boolean(targetDiv.querySelector('.status-running'));
             if (!targetIsRunning) {
                 const existing = targetDiv.querySelector('.node-stream-container');
                 if (existing) existing.remove();
@@ -3046,7 +3215,7 @@
             if (thinking) {
                 labelThinking.style.display = 'block';
                 preThinking.style.display = 'block';
-                preThinking.innerText = thinking;
+                updateStreamPreContent(preThinking, thinking);
             } else {
                 labelThinking.style.display = 'none';
                 preThinking.style.display = 'none';
@@ -3058,22 +3227,37 @@
                 } else {
                     labelText.style.display = 'none';
                 }
-                preText.innerText = text;
+                updateStreamPreContent(preText, text);
             } else {
                 labelText.style.display = 'none';
-                preText.innerText = '';
+                updateStreamPreContent(preText, '');
             }
 
             const visiblePre = preText.style.display !== 'none' ? preText : preThinking;
-            setTimeout(() => { visiblePre.scrollTop = visiblePre.scrollHeight; }, 0);
+            scheduleStreamAutoScroll(visiblePre);
             
             streamContainer.classList.add('streaming-active');
             clearTimeout(streamContainer.streamTimeout);
             streamContainer.streamTimeout = setTimeout(() => streamContainer.classList.remove('streaming-active'), 500);
         }
 
+        let treeLoadInFlight = false;
+        let treeLoadPending = false;
+        let treeReloadWhenVisible = false;
+
         async function loadTree() {
             if (!currentSessionId) return;
+            if (document.hidden) {
+                // Skip rebuilding while the page is hidden; refresh once on visibilitychange
+                treeReloadWhenVisible = true;
+                return;
+            }
+            if (treeLoadInFlight) {
+                // Coalesce concurrent requests: run one more pass after the current load finishes
+                treeLoadPending = true;
+                return;
+            }
+            treeLoadInFlight = true;
             try {
                 if (activeNodeId) {
                     try {
@@ -3101,8 +3285,8 @@
                 container.innerHTML = '';
                 renderTree(data, container);
                 
-                // Remove any leftover stream containers from completed nodes
-                document.querySelectorAll('.tree-node:not(:has(> .node-header .status-running)) .node-stream-container, .node-type-tool .node-stream-container').forEach(el => el.remove());
+                // Remove any leftover stream containers from completed nodes (scoped to the tree container)
+                container.querySelectorAll('.tree-node:not([data-status="running"]) .node-stream-container, .node-type-tool .node-stream-container').forEach(el => el.remove());
 
                 for (let traceId in nodeStreams) {
                     if (traceId === currentSessionId || traceId === 'session') continue;
@@ -3116,6 +3300,12 @@
                 } catch (e) {}
             } catch (err) {
                 console.error('Failed to load tree', err);
+            } finally {
+                treeLoadInFlight = false;
+                if (treeLoadPending) {
+                    treeLoadPending = false;
+                    loadTree();
+                }
             }
         }
 
@@ -3162,6 +3352,8 @@
             }
             
             // Render groups based on actual temporal clustering
+            const nodeIndexMap = new Map();
+            visibleNodes.forEach((n, i) => nodeIndexMap.set(n, i));
             temporalGroups.forEach(group => {
                 let targetContainer = container;
                 if (group.length > 1) {
@@ -3173,12 +3365,13 @@
                 
                 group.forEach(node => {
                     // Find its absolute position in visibleNodes to support global ReAct stream consolidation
-                    const absIndex = visibleNodes.indexOf(node);
+                    const absIndex = nodeIndexMap.get(node);
                     const isReActContinuation = node.type === 'llm_call' && absIndex > 0 && visibleNodes[absIndex - 1].type === 'tool';
                     
                     const nodeDiv = document.createElement('div');
                     nodeDiv.className = `tree-node node-type-${node.type}`;
                     nodeDiv.id = `node-div-${node.trace_id}`;
+                    nodeDiv.setAttribute('data-status', node.status || '');
                     
                     if (node.type === 'raw_thinking' || node.type === 'thinking') {
                         const thoughtText = extractThinkingText(node.payload);
@@ -3196,7 +3389,7 @@
                                     </h4>
                                     <div style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: #718096;">
                                         <span>${formatRelativeTime(node.timestamp)}</span>
-                                        <span class="status-${node.status}">${node.status}</span>
+                                        <span class="status-${escapeHtml(node.status)}">${escapeHtml(node.status)}</span>
                                     </div>
                                 </div>
                                 <div style="white-space: pre-wrap; font-size: 0.88rem; color: #1e293b; line-height: 1.6; font-family: inherit;">${escapeHtml(thoughtText || '(No thinking content)')}</div>
@@ -3222,17 +3415,17 @@
                             selectNode(node.trace_id);
                         };
                         
-                        const typePill = `<span class="pill type-${node.type}">${node.type}</span>`;
+                        const typePill = `<span class="pill type-${escapeHtml(node.type)}">${escapeHtml(node.type)}</span>`;
                         const statusClass = `status-${node.status}`;
-                        
+
                         header.innerHTML = `
                             <div class="node-title">
                                 ${typePill}
-                                <span><strong>${node.name}</strong></span>
+                                <span><strong>${escapeHtml(node.name)}</strong></span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span style="color: #718096; font-size: 0.75rem;">${formatRelativeTime(node.timestamp)}</span>
-                                <span class="${statusClass}">${node.status}</span>
+                                <span class="${escapeHtml(statusClass)}">${escapeHtml(node.status)}</span>
                                 ${node.duration ? `<small style="color: #718096;">${formatNodeDurationBreakdown(node)}</small>` : ''}
                             </div>
                         `;
@@ -3247,17 +3440,17 @@
                             selectNode(node.trace_id);
                         };
                         
-                        const typePill = `<span class="pill type-${node.type}">↳ continuation</span>`;
+                        const typePill = `<span class="pill type-${escapeHtml(node.type)}">↳ continuation</span>`;
                         const statusClass = `status-${node.status}`;
-                        
+
                         header.innerHTML = `
                             <div class="node-title">
                                 ${typePill}
-                                <span style="font-style: italic; color: #718096;"><strong>${node.name}</strong></span>
+                                <span style="font-style: italic; color: #718096;"><strong>${escapeHtml(node.name)}</strong></span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span style="color: #718096; font-size: 0.75rem;">${formatRelativeTime(node.timestamp)}</span>
-                                <span class="${statusClass}">${node.status}</span>
+                                <span class="${escapeHtml(statusClass)}">${escapeHtml(node.status)}</span>
                                 ${node.duration ? `<small style="color: #718096;">${formatNodeDurationBreakdown(node)}</small>` : ''}
                             </div>
                         `;
@@ -3272,7 +3465,7 @@
                         detailsDiv.innerHTML = `
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                                 <h3 style="margin: 0;">Details</h3>
-                                <a href="/api/traces/${node.trace_id}/download" target="_blank" style="font-size: 0.85rem; background-color: #2d3748; color: #fff; padding: 4px 8px; border-radius: 4px; text-decoration: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#4a5568'" onmouseout="this.style.backgroundColor='#2d3748'">📥 Download Raw Payload</a>
+                                <a href="/api/traces/${escapeHtml(node.trace_id)}/download" target="_blank" style="font-size: 0.85rem; background-color: #2d3748; color: #fff; padding: 4px 8px; border-radius: 4px; text-decoration: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#4a5568'" onmouseout="this.style.backgroundColor='#2d3748'">📥 Download Raw Payload</a>
                             </div>
                         `;
                         
@@ -3347,7 +3540,7 @@
                             <div class="media-container" style="margin-top: 10px; text-align: center;">
                                 <span class="media-label" style="display: block; font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px;">🖼️ Base64 Image</span>
                                 <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; cursor: zoom-in; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; max-height: 400px; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
-                                    <img src="${obj}" alt="Base64 Image" style="max-height: 380px; max-width: 100%; object-fit: contain;" onclick="zoomImage('${obj}')"/>
+                                    <img src="${escapeHtml(obj)}" alt="Base64 Image" style="max-height: 380px; max-width: 100%; object-fit: contain;" data-zoom-img/>
                                 </div>
                             </div>`;
                     }
@@ -3357,7 +3550,7 @@
                             <div class="media-container" style="margin-top: 10px; text-align: center;">
                                 <span class="media-label" style="display: block; font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px;">🖼️ Tool Output Screenshot</span>
                                 <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; cursor: zoom-in; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; max-height: 400px; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
-                                    <img src="${getSafeLocalUrl(obj)}" alt="Local Media" style="max-height: 380px; max-width: 100%; object-fit: contain;" onclick="zoomImage('${escapeHtml(obj)}')"/>
+                                    <img src="${escapeHtml(getSafeLocalUrl(obj))}" alt="Local Media" style="max-height: 380px; max-width: 100%; object-fit: contain;" onclick="zoomImage('${escapeHtml(obj)}')"/>
                                 </div>
                             </div>`;
                     }
@@ -3367,9 +3560,9 @@
                         const imgUrl = `/images/${imageName}`;
                         html += `
                             <div class="media-container" style="margin-top: 10px; text-align: center;">
-                                <span class="media-label" style="display: block; font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px;">🖼️ Image Reference: ${imageName}</span>
+                                <span class="media-label" style="display: block; font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px;">🖼️ Image Reference: ${escapeHtml(imageName)}</span>
                                 <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; cursor: zoom-in; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; max-height: 400px; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
-                                    <img src="${imgUrl}" alt="Referenced Image" style="max-height: 380px; max-width: 100%; object-fit: contain;" onclick="zoomImage('${imgUrl}')" onerror="this.onerror=null; this.src=''; this.parentNode.style.display='none'; this.after('Image not found on server');"/>
+                                    <img src="${escapeHtml(imgUrl)}" alt="Referenced Image" style="max-height: 380px; max-width: 100%; object-fit: contain;" onclick="zoomImage('${escapeHtml(imgUrl)}')" onerror="this.onerror=null; this.src=''; this.parentNode.style.display='none'; this.after('Image not found on server');"/>
                                 </div>
                             </div>`;
                     }
@@ -3382,7 +3575,7 @@
                                 if (ext === 'mp4') {
                                     html += `
                                         <div class="media-container">
-                                            <span class="media-label">Video: ${matchPath}</span>
+                                            <span class="media-label">Video: ${escapeHtml(matchPath)}</span>
                                             <video controls>
                                                 <source src="/videos/${encodeURIComponent(matchPath)}" type="video/mp4">
                                                 Your browser does not support the video tag.
@@ -3396,9 +3589,9 @@
                                     }
                                     html += `
                                         <div class="media-container" style="margin-top: 10px; text-align: center;">
-                                            <span class="media-label" style="display: block; font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px;">🖼️ Image Reference: ${imageName}</span>
+                                            <span class="media-label" style="display: block; font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px;">🖼️ Image Reference: ${escapeHtml(imageName)}</span>
                                             <div class="image-wrapper" style="border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; cursor: zoom-in; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; max-height: 400px; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
-                                                <img src="${imageUrl}" alt="Referenced Image" style="max-height: 380px; max-width: 100%; object-fit: contain;" onclick="zoomImage('${imageUrl}')" onerror="this.onerror=null; this.src=''; this.parentNode.style.display='none';"/>
+                                                <img src="${escapeHtml(imageUrl)}" alt="Referenced Image" style="max-height: 380px; max-width: 100%; object-fit: contain;" onclick="zoomImage('${escapeHtml(imageUrl)}')" onerror="this.onerror=null; this.src=''; this.parentNode.style.display='none';"/>
                                             </div>
                                         </div>`;
                                 }
@@ -3417,22 +3610,26 @@
         }
 
         let _latestKnownSessionId = null;
+        let taskStatusCheckInFlight = false;
         async function checkTaskStatus() {
+            // Skip when a previous poll is still pending, or while the page is hidden
+            if (taskStatusCheckInFlight || document.hidden) return;
+            taskStatusCheckInFlight = true;
             try {
                 const res = await fetch('/api/status');
                 const data = await res.json();
                 const statusDiv = document.getElementById('run-status');
                 if (data.status === 'running') {
-                    statusDiv.innerHTML = `<span style="color: #3182ce; font-weight: 600;">⚡ Active Task:</span> <span style="color: #2d3748;">${data.goal}</span> <small style="color: #a0aec0;">(PID: ${data.pid})</small>`;
+                    statusDiv.innerHTML = `<span style="color: #3182ce; font-weight: 600;">⚡ Active Task:</span> <span style="color: #2d3748;">${escapeHtml(data.goal)}</span> <small style="color: #a0aec0;">(PID: ${escapeHtml(data.pid)})</small>`;
                     document.getElementById('resume-btn').style.display = 'none';
                 } else if (data.status === 'completed') {
                     const color = data.returncode === 0 ? '#38a169' : '#e53e3e';
-                    const text = data.returncode === 0 ? 'Successfully Completed' : `Failed (Exit ${data.returncode})`;
-                    statusDiv.innerHTML = `<span style="color: ${color}; font-weight: 600;">✓ Task ${text}:</span> <span style="color: #2d3748;">${data.goal}</span>`;
+                    const text = data.returncode === 0 ? 'Successfully Completed' : `Failed (Exit ${escapeHtml(data.returncode)})`;
+                    statusDiv.innerHTML = `<span style="color: ${color}; font-weight: 600;">✓ Task ${text}:</span> <span style="color: #2d3748;">${escapeHtml(data.goal)}</span>`;
                     document.getElementById('resume-btn').style.display = 'none';
                 } else if (data.status === 'paused') {
                     if (!statusDiv.innerText.includes('Task Paused')) {
-                         statusDiv.innerHTML = `<span style="color: #e53e3e; font-weight: 600;">⏸️ Task Paused:</span> <span style="color: #2d3748;">${data.goal}</span>`;
+                         statusDiv.innerHTML = `<span style="color: #e53e3e; font-weight: 600;">⏸️ Task Paused:</span> <span style="color: #2d3748;">${escapeHtml(data.goal)}</span>`;
                     }
                     document.getElementById('resume-btn').style.display = 'block';
                 } else {
@@ -3460,10 +3657,29 @@
                 }
             } catch (e) {
                 // ignore connection errors
+            } finally {
+                taskStatusCheckInFlight = false;
             }
         }
         setInterval(checkTaskStatus, 2000);
         checkTaskStatus();
+
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                // Persist any pending stream data immediately when the page is hidden
+                flushNodeStreamsPersist();
+            } else {
+                if (treeReloadWhenVisible) {
+                    treeReloadWhenVisible = false;
+                    if (activeTab === 'traces' && currentSessionId) {
+                        loadTree();
+                    }
+                }
+                // Resume polling immediately upon returning to the page
+                checkTaskStatus();
+            }
+        });
+        window.addEventListener('beforeunload', flushNodeStreamsPersist);
 
         async function cleanupHistory() {
             if (!confirm("Are you sure you want to clean up all database history, images, and trace files? This action cannot be undone.")) {

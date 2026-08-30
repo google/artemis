@@ -327,6 +327,23 @@ def test_resumed_session_monotonic_step_numbering(tmp_path):
     assert [s.step_number for s in steps] == [1, 2, 3]
 
 
+def test_end_session_normalizes_legacy_success_status(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    engine = DataEngine(mock_ctx)
+    sid = engine.start_session("Terminal status normalization test")
+    engine.end_session("success")
+
+    session = engine.storage.get_session(sid)
+    assert session is not None
+    assert session.status == "completed"
+    assert session.end_time is not None
+
+
 def test_update_step_summary_includes_step_number_in_sse(tmp_path):
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_execution_setup = MagicMock()

@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import { Component, HostListener, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
-import { CommonModule } from '@angular/common';
+import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
+
 import { FormsModule } from '@angular/forms';
 import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
@@ -26,26 +26,35 @@ import { AgentService } from '../../services/agent.service';
   selector: 'app-workspace',
   standalone: true,
   imports: [
-    CommonModule,
     FormsModule,
     AgentStreamComponent,
     ChatInterfaceComponent,
     FloatingVideoPlayerComponent
-  ],
+],
   templateUrl: './workspace.component.html',
-  styleUrl: './workspace.component.scss'
+  styleUrl: './workspace.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class WorkspaceComponent implements OnInit {
   public agentService = inject(AgentService);
+  private zone = inject(NgZone);
+  private destroyRef = inject(DestroyRef);
 
   // Default right panel width to 1/3 of the screen (or 450px as fallback)
-  public rightPanelWidth = typeof window !== 'undefined' ? Math.round(window.innerWidth / 3) : 450;
-  public isDragging = false;
+  public rightPanelWidth = signal<number>(
+    typeof window !== 'undefined' ? Math.round(window.innerWidth / 3) : 450
+  );
+  public isDragging = signal<boolean>(false);
+  private dragWidthRafId: number | null = null;
+  private pendingDragWidth = 0;
 
-  // Floating Command Bar State
-  public taskInput: string = '';
-  public isSubmitting: boolean = false;
-  public errorMessage: string | null = null;
+  // Floating Command Bar State. taskInput is backed by a signal so computed
+  // expressions (isBarExpanded) genuinely track it under OnPush.
+  private taskInputSignal = signal<string>('');
+  public get taskInput(): string { return this.taskInputSignal(); }
+  public set taskInput(value: string) { this.taskInputSignal.set(value); }
+  public isSubmitting = signal<boolean>(false);
+  public errorMessage = signal<string | null>(null);
   public selectedProfile = signal<'flash' | 'pro'>('flash');
 
   // Expand States (Signals for 0-latency reactivity)
@@ -61,6 +70,16 @@ export class WorkspaceComponent implements OnInit {
         this.selectedProfile.set(saved);
       }
     }
+
+    // The global ⌘K/Ctrl+K shortcut is registered outside the Angular zone so
+    // ordinary typing never schedules an extra change-detection pass.
+    this.zone.runOutsideAngular(() => {
+      window.addEventListener('keydown', this.onGlobalKeyDown);
+    });
+    this.destroyRef.onDestroy(() => {
+      window.removeEventListener('keydown', this.onGlobalKeyDown);
+      this.detachDragListeners();
+    });
   }
 
   /**
@@ -179,13 +198,12 @@ export class WorkspaceComponent implements OnInit {
   /**
    * Global keyboard shortcut (⌘K or Ctrl+K) to focus input bar from anywhere
    */
-  @HostListener('window:keydown', ['$event'])
-  public onGlobalKeyDown(event: KeyboardEvent): void {
+  private onGlobalKeyDown = (event: KeyboardEvent): void => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
       this.focusInput();
     }
-  }
+  };
 
   /**
    * Handle enter key in floating dock textarea
@@ -202,12 +220,12 @@ export class WorkspaceComponent implements OnInit {
    */
   public submitTask(): void {
     const goal = this.taskInput.trim();
-    if (!goal || this.isSubmitting) {
+    if (!goal || this.isSubmitting()) {
       return;
     }
 
-    this.isSubmitting = true;
-    this.errorMessage = null;
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
 
     if (this.dockInputRef?.nativeElement) {
       this.dockInputRef.nativeElement.blur();
@@ -220,15 +238,15 @@ export class WorkspaceComponent implements OnInit {
         if (this.dockInputRef?.nativeElement) {
           this.dockInputRef.nativeElement.style.height = 'auto';
         }
-        this.isSubmitting = false;
+        this.isSubmitting.set(false);
         this.agentService.fetchStatus();
       },
       error: (err) => {
         console.error('Failed to submit task:', err);
-        this.isSubmitting = false;
-        this.errorMessage = err.error?.detail || 'The runner is busy. Please wait for current task to finish.';
+        this.isSubmitting.set(false);
+        this.errorMessage.set(err.error?.detail || 'The runner is busy. Please wait for current task to finish.');
         setTimeout(() => {
-          this.errorMessage = null;
+          this.errorMessage.set(null);
         }, 5000);
       }
     });
@@ -245,28 +263,31 @@ export class WorkspaceComponent implements OnInit {
       return;
     }
     const targetSessionId = this.agentService.currentSessionId();
-    this.isSubmitting = true;
-    this.errorMessage = null;
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
     this.agentService.stopTask(targetSessionId, false);
     setTimeout(() => {
-      this.isSubmitting = false;
+      this.isSubmitting.set(false);
     }, 400);
   }
 
   /**
-   * Handle mouse down on resizer bar to start dragging
+   * Handle mouse down on resizer bar to start dragging. The move/up listeners
+   * are attached only for the duration of the drag and run outside the Angular
+   * zone: idle mouse movement over the workspace never triggers change
+   * detection, and drag updates are coalesced to one per animation frame.
    */
   public onDragStart(event: MouseEvent): void {
-    this.isDragging = true;
+    this.isDragging.set(true);
     event.preventDefault();
+    this.zone.runOutsideAngular(() => {
+      document.addEventListener('mousemove', this.onMouseMove);
+      document.addEventListener('mouseup', this.onMouseUp);
+    });
   }
 
-  /**
-   * Listen to global mousemove events to adjust the width dynamically
-   */
-  @HostListener('document:mousemove', ['$event'])
-  public onMouseMove(event: MouseEvent): void {
-    if (!this.isDragging) {
+  private onMouseMove = (event: MouseEvent): void => {
+    if (!this.isDragging()) {
       return;
     }
 
@@ -276,15 +297,27 @@ export class WorkspaceComponent implements OnInit {
 
     // Apply boundary limits to prevent panels from shrinking too much
     if (newWidth >= minWidth && newWidth <= maxWidth) {
-      this.rightPanelWidth = newWidth;
+      this.pendingDragWidth = newWidth;
+      if (this.dragWidthRafId === null) {
+        this.dragWidthRafId = requestAnimationFrame(() => {
+          this.dragWidthRafId = null;
+          this.rightPanelWidth.set(this.pendingDragWidth);
+        });
+      }
     }
-  }
+  };
 
-  /**
-   * Listen to global mouseup events to stop resizing
-   */
-  @HostListener('document:mouseup')
-  public onMouseUp(): void {
-    this.isDragging = false;
+  private onMouseUp = (): void => {
+    this.isDragging.set(false);
+    this.detachDragListeners();
+  };
+
+  private detachDragListeners(): void {
+    document.removeEventListener('mousemove', this.onMouseMove);
+    document.removeEventListener('mouseup', this.onMouseUp);
+    if (this.dragWidthRafId !== null) {
+      cancelAnimationFrame(this.dragWidthRafId);
+      this.dragWidthRafId = null;
+    }
   }
 }

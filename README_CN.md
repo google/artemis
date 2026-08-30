@@ -206,32 +206,30 @@ PYTHONPATH = "/path/to/artemis"
 
 <br>
 
-只需几行代码，将移动端自动化智能体无缝嵌入你的 Python 脚本与 CI/CD 流水线中：
+开发电脑只需安装零运行时依赖的薄客户端；ADB、Agent、模型与图像处理全部留在设备主机：
+
+```powershell
+uv add "artemis-client @ git+https://github.com/google/artemis.git#subdirectory=packages/artemis-client"
+```
 
 ```python
 import asyncio
-from artemis import ArtemisClient, ConcurrencyMode
+from artemis_client import ArtemisClient
 
 
 async def main():
-    # 1. 初始化测试客户端（支持指定设备序列号与并发策略）：
-    # - concurrency_mode="per_device"（默认）：单设备排队，跨设备支持多任务并发执行
-    # - concurrency_mode="global"：全局单一并发，整个集群跨所有设备同一时刻只执行一个任务
     client = ArtemisClient(
+        "http://artemis-host:8000",
         device_serial="emulator-5554",  # 可选：指定目标设备序列号（不传则自动选择空闲设备）
         default_profile="flash",        # "flash" 极速校验 或 "pro" 深度推理自愈
-        concurrency_mode="per_device",  # 或 ConcurrencyMode.GLOBAL
     )
 
-    # 2. 执行端到端任务（也可在调用时动态覆盖指定设备与并发模式）
     result = await client.run(
         "打开系统设置，进入『电池』页面，验证是否正常显示电量百分比，确认页面无异常报错弹窗。",
-        device_serial="emulator-5554",  # 可选：覆盖当前调用的目标设备
     )
 
-    # 3. 结构化断言与执行追溯
-    assert result.status == "SUCCESS", f"测试执行失败: {result.error}"
-    print(f"✅ 测试通过！设备: {result.device_id} | 步数: {result.turns} | Trace ID: {result.trace_id}")
+    assert result.succeeded, f"测试执行失败: {result.error or result.status}"
+    print(f"✅ 测试通过！设备: {result.device_serial} | Trace ID: {result.trace_id}")
 
 
 if __name__ == "__main__":

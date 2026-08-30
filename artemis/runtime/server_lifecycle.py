@@ -30,6 +30,8 @@ import subprocess
 import sys
 import time
 from typing import Any
+import urllib.error
+import urllib.request
 
 from artemis.config.paths import ROOT_DIR, get_server_info_file
 from artemis.runtime.device_lock import DeviceExecutionLock
@@ -51,8 +53,9 @@ def is_port_in_use(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> 
 
 def write_server_info(
     port: int,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     pid: int | None = None,
+    lifecycle_token: str | None = None,
 ) -> Path:
     """Persist current Artemis server runtime metadata to well-known path."""
     info_file = get_server_info_file()
@@ -67,6 +70,8 @@ def write_server_info(
             "sys_executable": sys.executable,
             "cmdline": sys.argv,
         }
+        if lifecycle_token:
+            data["lifecycle_token"] = lifecycle_token
         info_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
         logger.debug(f"Saved Artemis server info (PID: {data['pid']}, port: {port}) to {info_file}")
     except Exception as e:
@@ -91,15 +96,103 @@ def read_server_info() -> dict[str, Any] | None:
     return None
 
 
-def clear_server_info() -> None:
-    """Remove the persisted server metadata file if it exists."""
+def clear_server_info(
+    *,
+    port: int | None = None,
+    lifecycle_token: str | None = None,
+) -> None:
+    """Remove persisted metadata, optionally only for the matching server.
+
+    Scoped removal keeps ``artemis stop --port <unused>`` and a late shutdown
+    finalizer from deleting metadata written by a different server instance.
+    """
     info_file = get_server_info_file()
     try:
         if info_file.exists():
+            if port is not None or lifecycle_token is not None:
+                info = read_server_info()
+                if not info:
+                    return
+                if port is not None and info.get("port") != port:
+                    return
+                if lifecycle_token is not None and info.get("lifecycle_token") != lifecycle_token:
+                    return
             info_file.unlink()
             logger.debug(f"Cleared server info file at {info_file}")
     except Exception as e:
         logger.debug(f"Error clearing server info file {info_file}: {e}")
+
+
+def request_graceful_shutdown(port: int, timeout: float = 1.5) -> bool:
+    """Ask a locally managed Artemis server to run its shutdown lifecycle.
+
+    The per-process token in the server metadata prevents this control request
+    from being accepted remotely or accidentally sent to an unrelated service
+    using the same port. A missing/stale token simply makes the caller fall back
+    to process termination.
+    """
+    info = read_server_info()
+    if not info or info.get("port") != port:
+        return False
+    token = info.get("lifecycle_token")
+    if not isinstance(token, str) or not token:
+        return False
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/system/shutdown",
+        method="POST",
+        headers={
+            "User-Agent": "Artemis-Lifecycle-Client/1.0",
+            "X-Artemis-Lifecycle-Token": token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status in (200, 202)
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError):
+        return False
+    except Exception:
+        return False
+
+
+def _reconcile_orphaned_sessions() -> int:
+    """Immediately mark sessions whose worker PIDs died during forced stop."""
+    try:
+        from apps.admin_console.database.repositories.session_repository import session_repo
+
+        return session_repo.reconcile_orphaned_sessions()
+    except Exception as exc:
+        logger.debug(f"Could not reconcile orphaned sessions after server stop: {exc}")
+        return 0
+
+
+def _any_pid_alive(pids: list[int]) -> bool:
+    """Return whether any target process is still running (zombies excluded)."""
+    if not pids:
+        return False
+    try:
+        import psutil
+
+        for pid in pids:
+            try:
+                process = psutil.Process(pid)
+                if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                    return True
+            except psutil.NoSuchProcess:
+                continue
+            except psutil.AccessDenied:
+                return True
+        return False
+    except Exception:
+        return any(_pid_exists_portably(pid) for pid in pids)
+
+
+def _pid_exists_portably(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def find_server_pids(port: int = 8000) -> list[int]:
@@ -243,15 +336,15 @@ def get_server_status(port: int = 8000) -> dict[str, Any]:
 
 def stop_server(
     port: int = 8000,
-    timeout: float = 4.0,
+    timeout: float = 12.0,
     force: bool = False,
 ) -> tuple[bool, str, list[int]]:
     """Gracefully terminate any running Artemis server on `port`.
 
     Args:
         port: TCP port to inspect and terminate.
-        timeout: Maximum seconds to wait for graceful process exit.
-        force: If True, immediately send SIGKILL without waiting.
+        timeout: Maximum seconds to wait for the server shutdown lifecycle.
+        force: If True, skip the shutdown API and terminate the process tree.
 
     Returns:
         tuple (success, message, affected_pids)
@@ -259,7 +352,7 @@ def stop_server(
     pids = find_server_pids(port)
 
     if not pids and not is_port_in_use(port):
-        clear_server_info()
+        clear_server_info(port=port)
         DeviceExecutionLock.cleanup_stale_locks()
         return True, f"No active server detected on port {port}.", []
 
@@ -271,15 +364,46 @@ def stop_server(
     stopped_pids: list[int] = []
     current_pid = os.getpid()
 
+    # A normal stop is an application lifecycle request, not an OS signal.
+    # This matters on Windows where taskkill /F and os.kill(..., SIGTERM) both
+    # bypass FastAPI's shutdown hook. Give Uvicorn enough time to cancel task
+    # workers, persist terminal session state, and release IPC/device resources.
+    graceful_requested = False
+    if not force:
+        graceful_requested = request_graceful_shutdown(
+            port,
+            timeout=min(2.0, max(0.25, timeout)),
+        )
+        if graceful_requested:
+            deadline = time.time() + max(0.25, timeout)
+            while time.time() < deadline:
+                if not is_port_in_use(port) and not _any_pid_alive(pids):
+                    break
+                time.sleep(0.1)
+
+            if not is_port_in_use(port) and not _any_pid_alive(pids):
+                cleaned_locks = DeviceExecutionLock.cleanup_stale_locks()
+                clear_server_info(port=port)
+                pid_str = f" (PID: {', '.join(map(str, pids))})" if pids else ""
+                msg = f"Artemis server stopped gracefully{pid_str}. Port {port} is released."
+                if cleaned_locks:
+                    msg += f" Cleaned up {cleaned_locks} device lock(s)."
+                return True, msg, pids
+
+            logger.warning(
+                f"Artemis server on port {port} did not exit within {timeout}s; "
+                "falling back to process-tree termination."
+            )
+
     for pid in pids:
         if pid == current_pid:
             # Don't terminate self during stop_server call
             continue
         try:
-            if force:
-                ProcessSupervisor.terminate_tree(pid, timeout_seconds=0.5)
-            else:
-                ProcessSupervisor.terminate_tree(pid, timeout_seconds=timeout)
+            ProcessSupervisor.terminate_tree(
+                pid,
+                timeout_seconds=0.5 if force or graceful_requested else timeout,
+            )
             stopped_pids.append(pid)
         except Exception as e:
             logger.warning(f"Failed to terminate process {pid}: {e}")
@@ -304,7 +428,8 @@ def stop_server(
 
     # Cleanup stale device execution locks left by terminated server
     cleaned_locks = DeviceExecutionLock.cleanup_stale_locks()
-    clear_server_info()
+    reconciled_sessions = _reconcile_orphaned_sessions()
+    clear_server_info(port=port)
 
     port_free = not is_port_in_use(port)
     if port_free:
@@ -312,6 +437,8 @@ def stop_server(
         msg = f"Artemis server stopped{pid_str}. Port {port} is released."
         if cleaned_locks:
             msg += f" Cleaned up {cleaned_locks} device lock(s)."
+        if reconciled_sessions:
+            msg += f" Reconciled {reconciled_sessions} interrupted session(s)."
         return True, msg, stopped_pids
     else:
         return (

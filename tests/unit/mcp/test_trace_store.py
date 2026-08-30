@@ -73,6 +73,19 @@ def test_update_trace_status(temp_trace_env):
     assert failed["error"] == "App crashed"
 
 
+def test_update_trace_status_normalizes_success_alias(temp_trace_env):
+    trace_id = str(uuid.uuid4())
+    trace_store.init_trace(trace_id, "Test task", "Flash", "conv-789")
+
+    updated = trace_store.update_trace_status(trace_id=trace_id, status="success")
+    assert updated is not None
+    assert updated["status"] == "completed"
+    assert updated["end_time"] is not None
+
+    persisted = trace_store.read_status(trace_id)
+    assert persisted["status"] == "completed"
+
+
 def test_read_nonexistent_status(temp_trace_env):
     non_existent = str(uuid.uuid4())
     assert trace_store.read_status(non_existent) is None

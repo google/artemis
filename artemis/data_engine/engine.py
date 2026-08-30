@@ -302,6 +302,12 @@ class DataEngine:
         if not self.current_session_id:
             return
 
+        # Session-level terminal statuses are canonically "completed" /
+        # "failed" / "cancelled"; "success" is a legacy alias some callers
+        # still pass and must never reach the sessions table.
+        if status == "success":
+            status = "completed"
+
         # Clear pause file if it exists
         pause_file = PAUSE_FILE
         if pause_file.exists():

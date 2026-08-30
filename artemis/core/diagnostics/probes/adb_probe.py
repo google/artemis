@@ -351,8 +351,13 @@ class AdbDeviceProbe(BaseProbe):
             return states
         except TimeoutError:
             if proc is not None:
-                proc.kill()
-                await proc.communicate()
+                # The process may have exited between the timeout and the
+                # kill (frequent under concurrent submissions on Windows).
+                try:
+                    proc.kill()
+                    await proc.communicate()
+                except (ProcessLookupError, OSError):
+                    pass
             return None
         except Exception as exc:
             logger.debug(f"Failed submission-time ADB device check: {exc}")

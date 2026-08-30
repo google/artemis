@@ -367,9 +367,9 @@ def run_command(
                     def on_status(sess_info):
                         st = sess_info.get("status")
                         if st == "queued":
-                            console.print(f"[yellow]⏳ Task queued in scheduler, waiting for device...[/yellow]")
+                            console.print("[yellow]⏳ Task queued in scheduler, waiting for device...[/yellow]")
                         elif st == "running":
-                            console.print(f"[green]▶ Task executing on mobile device...[/green]")
+                            console.print("[green]▶ Task executing on mobile device...[/green]")
 
                     try:
                         final_res = wait_for_daemon_task(
@@ -380,7 +380,7 @@ def run_command(
                         )
                         final_st = final_res.get("status")
                         if final_st in ("completed", "success"):
-                            console.print(f"\n[bold green]✅ Task completed successfully![/bold green]")
+                            console.print("\n[bold green]✅ Task completed successfully![/bold green]")
                             return
                         else:
                             err = final_res.get("error") or final_res.get("explanation") or ""

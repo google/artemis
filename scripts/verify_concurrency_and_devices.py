@@ -152,7 +152,7 @@ async def run_experiment_2_multi_device_parallel(real_serial: str, emu_serial: s
 async def run_experiment_3_global_concurrency_serialization(real_serial: str, emu_serial: str):
     """Experiment 3: Global concurrency serialization across devices."""
     print_header("[Experiment 3] Global Concurrency Mode Test")
-    print(f"Mode description: concurrency_mode='global', entire system allows only 1 task across all devices.")
+    print("Mode description: concurrency_mode='global', entire system allows only 1 task across all devices.")
 
     client_a = ArtemisClient(device_serial=real_serial, default_profile="flash", concurrency_mode="global")
     client_b = ArtemisClient(device_serial=emu_serial, default_profile="flash", concurrency_mode="global")

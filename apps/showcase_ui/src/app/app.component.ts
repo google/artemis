@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component } from '@angular/core';
+import { Component, ChangeDetectionStrategy } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { NavSwitcherComponent } from './components/nav-switcher/nav-switcher.component';
 
@@ -22,6 +22,7 @@ import { NavSwitcherComponent } from './components/nav-switcher/nav-switcher.com
   selector: 'app-root',
   imports: [RouterOutlet, NavSwitcherComponent],
   templateUrl: './app.component.html',
+  changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './app.component.scss'
 })
 export class AppComponent {

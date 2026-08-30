@@ -310,7 +310,7 @@ def build_action_server(actuator: Actuator, name: str = "artemis_actions") -> Fa
                     coro = asyncio.wait_for(coro, timeout=timeout_ms / 1000.0)
                 b64 = await coro
                 payload: dict[str, Any] = {"ok": True, "image_b64": b64}
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 payload = {"ok": False, "error": f"screenshot timed out after {timeout_ms}ms"}
             except Exception as e:
                 payload = {"ok": False, "error": str(e)}
@@ -331,7 +331,7 @@ def build_action_server(actuator: Actuator, name: str = "artemis_actions") -> Fa
                     coro = asyncio.wait_for(coro, timeout=timeout_ms / 1000.0)
                 elements = await coro
                 payload: dict[str, Any] = {"ok": True, "elements": elements}
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 payload = {"ok": False, "error": f"ui hierarchy fetch timed out after {timeout_ms}ms"}
             except Exception as e:
                 payload = {"ok": False, "error": str(e)}

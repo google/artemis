@@ -21,6 +21,18 @@ except ImportError:
     from apps.admin_console.database.connection import db_session
 
 
+def _canonicalize_status(row: dict[str, Any]) -> dict[str, Any]:
+    """Map the legacy "success" terminal status to the canonical "completed".
+
+    Rows written before the vocabulary was unified may still carry "success";
+    API consumers must only ever see "completed". get_session_status is left
+    raw on purpose so the queue reconcile can detect and persist the rewrite.
+    """
+    if row.get("status") == "success":
+        row["status"] = "completed"
+    return row
+
+
 class SessionRepository:
     """Repository handling all database queries and updates for Sessions."""
 
@@ -42,7 +54,7 @@ class SessionRepository:
         with db_session(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM sessions ORDER BY start_time DESC")
-            return [dict(r) for r in cursor.fetchall()]
+            return [_canonicalize_status(dict(r)) for r in cursor.fetchall()]
 
     def get_video_recordings_map(self) -> dict[str, str]:
         with db_session(self.db_path) as conn:
@@ -240,7 +252,7 @@ class SessionRepository:
                     (str(session_id),),
                 )
                 row = cursor.fetchone()
-                return dict(row) if row else None
+                return _canonicalize_status(dict(row)) if row else None
         except Exception:
             return None
 
@@ -267,7 +279,13 @@ class SessionRepository:
             conn.commit()
             return count
 
-    def cleanup_orphans_on_startup(self) -> int:
+    def reconcile_orphaned_sessions(self) -> int:
+        """Mark running sessions with no live worker process as failed.
+
+        This is safe to call both during startup and immediately after a
+        forced server stop: live workers, including workers owned by another
+        server instance, are left untouched.
+        """
         try:
             with db_session(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -301,6 +319,10 @@ class SessionRepository:
         except Exception:
             return 0
 
+    def cleanup_orphans_on_startup(self) -> int:
+        """Backward-compatible startup entrypoint for orphan reconciliation."""
+        return self.reconcile_orphaned_sessions()
+
     def get_latest_session(self) -> dict[str, Any] | None:
         try:
             with db_session(self.db_path) as conn:
@@ -309,7 +331,7 @@ class SessionRepository:
                     "SELECT session_id, status FROM sessions ORDER BY start_time DESC LIMIT 1"
                 )
                 row = cursor.fetchone()
-                return dict(row) if row else None
+                return _canonicalize_status(dict(row)) if row else None
         except Exception:
             return None
 

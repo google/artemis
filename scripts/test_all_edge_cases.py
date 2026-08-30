@@ -156,14 +156,14 @@ async def stage_3_global_concurrency_mode():
     async def task_phone_g():
         print(f"📱 [Task 3A - Phone] Acquiring global lock on {PHONE_SERIAL}...")
         res = await client_phone_global.run("Press HOME key and open Settings", profile="flash")
-        print(f"✅ [Task 3A - Phone] Finished.")
+        print("✅ [Task 3A - Phone] Finished.")
         return res
 
     async def task_emu_g():
         await asyncio.sleep(0.4)
         print(f"💻 [Task 3B - Emulator] Requesting run on {EMULATOR_SERIAL} under global mode (Should queue!)...")
         res = await client_emu_global.run("Press HOME key and open Settings", profile="flash")
-        print(f"✅ [Task 3B - Emulator] Finished.")
+        print("✅ [Task 3B - Emulator] Finished.")
         return res
 
     p_task = asyncio.create_task(task_phone_g())
@@ -189,16 +189,16 @@ async def stage_4_mixed_queue_and_parallel():
     client_emu = ArtemisClient(device_serial=EMULATOR_SERIAL, concurrency_mode="per_device")
 
     async def task_4a():
-        print(f"📱 [Task 4A - Phone] Running...")
+        print("📱 [Task 4A - Phone] Running...")
         return await client_phone.run("Press HOME key and open Settings", profile="flash")
 
     async def task_4b():
         await asyncio.sleep(0.4)
-        print(f"📱 [Task 4B - Phone] Queued behind 4A...")
+        print("📱 [Task 4B - Phone] Queued behind 4A...")
         return await client_phone.run("Press HOME key and open Clock", profile="flash")
 
     async def task_4c():
-        print(f"💻 [Task 4C - Emulator] Running in parallel with 4A...")
+        print("💻 [Task 4C - Emulator] Running in parallel with 4A...")
         return await client_emu.run("Press HOME key and open Settings", profile="flash")
 
     t4a = asyncio.create_task(task_4a())

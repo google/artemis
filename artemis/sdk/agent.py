@@ -234,6 +234,10 @@ class Agent:
 
     async def _prewarm_llm_connections(self, api_key: str | None = None):
         """Pre-warms the HTTP2/gRPC connection pools for both Native GenAI and LangChain clients in the background."""
+        if os.environ.get("ARTEMIS_FAKE_LLM") == "1":
+            logger.info("ARTEMIS_FAKE_LLM=1 — skipping real LLM connection pre-warming.")
+            publish_startup_progress("model_ready", "Model connection is ready (fake LLM)", session_id=self._session_id)
+            return
         publish_startup_progress("model_warmup", "Warming the model connection", session_id=self._session_id)
         logger.info("Starting background pre-warming of Gemini API connection pools...")
         try:
@@ -646,7 +650,7 @@ class Agent:
                                 logger.info(f"✅ Automation '{task_name}' is success ✅")
                                 await task.finalize(content=output, state=last_state_snapshot)
                                 if context.data_engine:
-                                    context.data_engine.end_session("success")
+                                    context.data_engine.end_session("completed")
                             else:
                                 err = (
                                     f"[{task_name}] FlashRunner failed:"
@@ -714,7 +718,7 @@ class Agent:
                             logger.info(f"✅ Automation '{task_name}' is success ✅")
                             await task.finalize(content=output, state=last_state_snapshot)
                             if context.data_engine:
-                                context.data_engine.end_session("success")
+                                context.data_engine.end_session("completed")
 
                             return output
                     finally:

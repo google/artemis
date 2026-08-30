@@ -16,6 +16,8 @@
 
 import {
   Component,
+  ChangeDetectionStrategy,
+  NgZone,
   inject,
   signal,
   computed,
@@ -25,7 +27,7 @@ import {
   effect,
   OnDestroy
 } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { FormsModule } from '@angular/forms';
 import { AgentService } from '../../services/agent.service';
 import { StepReplayFrame } from '../../core/models/stream.model';
@@ -35,12 +37,14 @@ import { getActionIcon } from '../../utils/action-formatter.util';
 @Component({
   selector: 'app-floating-video-player',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [FormsModule],
   templateUrl: './floating-video-player.component.html',
-  styleUrl: './floating-video-player.component.scss'
+  styleUrl: './floating-video-player.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class FloatingVideoPlayerComponent implements OnDestroy {
   public agentService = inject(AgentService);
+  private zone = inject(NgZone);
 
   @ViewChild('videoRef') videoRef?: ElementRef<HTMLVideoElement>;
   @ViewChild('stepImgRef') stepImgRef?: ElementRef<HTMLImageElement>;
@@ -217,7 +221,9 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   });
 
   /**
-   * Start dragging the window from header
+   * Start dragging the window from header. The move/up listeners are attached
+   * only for the duration of the drag and live outside the Angular zone, so
+   * ordinary mouse movement over the page never touches change detection.
    */
   public startDrag(event: MouseEvent): void {
     if (this.isTheaterMode()) return;
@@ -227,10 +233,14 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     this.initialPosX = this.posX();
     this.initialPosY = this.posY();
     event.preventDefault();
+
+    this.zone.runOutsideAngular(() => {
+      document.addEventListener('mousemove', this.onDrag);
+      document.addEventListener('mouseup', this.stopDrag);
+    });
   }
 
-  @HostListener('window:mousemove', ['$event'])
-  public onDrag(event: MouseEvent): void {
+  private onDrag = (event: MouseEvent): void => {
     if (!this.isDragging) return;
     const deltaX = event.clientX - this.dragStartX;
     const deltaY = event.clientY - this.dragStartY;
@@ -245,12 +255,13 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
 
     this.posX.set(targetX);
     this.posY.set(targetY);
-  }
+  };
 
-  @HostListener('window:mouseup')
-  public stopDrag(): void {
+  private stopDrag = (): void => {
     this.isDragging = false;
-  }
+    document.removeEventListener('mousemove', this.onDrag);
+    document.removeEventListener('mouseup', this.stopDrag);
+  };
 
   @HostListener('window:resize')
   public onResize(): void {
@@ -593,10 +604,16 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     }
   }
 
+  public trackStepFrame(index: number, frame: StepReplayFrame): string {
+    return frame.stepId || String(index);
+  }
+
   public ngOnDestroy(): void {
     if (this.stepTimer) {
       clearTimeout(this.stepTimer);
       this.stepTimer = null;
     }
+    document.removeEventListener('mousemove', this.onDrag);
+    document.removeEventListener('mouseup', this.stopDrag);
   }
 }

@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import threading
 from typing import Any
 import urllib.parse
 from fastapi import HTTPException
@@ -27,6 +28,12 @@ from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
 
 class MediaService:
     """Service handling media indexing, local file security, payload unwrapping and notes/plans."""
+
+    # Conversion results keyed by source path -> (mtime, size, resolved path).
+    # Failed conversions are cached too (resolved path == source path) so a broken
+    # file doesn't re-run ffmpeg (up to 45s) on every /api/sessions poll.
+    _playable_cache: dict[str, tuple[float, int, str]] = {}
+    _playable_cache_lock = threading.Lock()
 
     @classmethod
     def ensure_browser_playable_video(cls, p: Path) -> Path:
@@ -41,57 +48,86 @@ class MediaService:
             if suffix == ".mp4":
                 return p
             if suffix in (".mkv", ".webm"):
+                src_stat = p.stat()
+                cache_key = str(p)
+                cached = cls._playable_cache.get(cache_key)
+                if cached and cached[0] == src_stat.st_mtime and cached[1] == src_stat.st_size:
+                    return Path(cached[2])
                 mp4_cand = p.with_suffix(".mp4")
                 if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
-                    return mp4_cand
-                from artemis.utils.video import get_ffmpeg_path
-                ffmpeg = get_ffmpeg_path()
-                # 1. Attempt fast copy remux
-                subprocess.run(
-                    [
-                        ffmpeg,
-                        "-y",
-                        "-fflags",
-                        "+genpts",
-                        "-i",
-                        str(p),
-                        "-c",
-                        "copy",
-                        "-movflags",
-                        "+faststart",
+                    cls._playable_cache[cache_key] = (
+                        src_stat.st_mtime,
+                        src_stat.st_size,
                         str(mp4_cand),
-                    ],
-                    capture_output=True,
-                    timeout=15,
-                )
-                if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+                    )
                     return mp4_cand
-                # 2. If copy remux failed, fallback to ultrafast re-encode
-                subprocess.run(
-                    [
-                        ffmpeg,
-                        "-y",
-                        "-fflags",
-                        "+genpts+discardcorrupt",
-                        "-i",
-                        str(p),
-                        "-c:v",
-                        "libx264",
-                        "-preset",
-                        "ultrafast",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-movflags",
-                        "+faststart",
-                        str(mp4_cand),
-                    ],
-                    capture_output=True,
-                    timeout=30,
-                )
-                if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
-                    return mp4_cand
+                with cls._playable_cache_lock:
+                    # Another thread may have converted this file while we waited.
+                    cached = cls._playable_cache.get(cache_key)
+                    if cached and cached[0] == src_stat.st_mtime and cached[1] == src_stat.st_size:
+                        return Path(cached[2])
+                    try:
+                        result = cls._convert_to_mp4(p, mp4_cand)
+                    except Exception:
+                        result = p
+                    cls._playable_cache[cache_key] = (
+                        src_stat.st_mtime,
+                        src_stat.st_size,
+                        str(result),
+                    )
+                    return result
         except Exception:
             pass
+        return p
+
+    @staticmethod
+    def _convert_to_mp4(p: Path, mp4_cand: Path) -> Path:
+        from artemis.utils.video import get_ffmpeg_path
+        ffmpeg = get_ffmpeg_path()
+        # 1. Attempt fast copy remux
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-fflags",
+                "+genpts",
+                "-i",
+                str(p),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(mp4_cand),
+            ],
+            capture_output=True,
+            timeout=15,
+        )
+        if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+            return mp4_cand
+        # 2. If copy remux failed, fallback to ultrafast re-encode
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-fflags",
+                "+genpts+discardcorrupt",
+                "-i",
+                str(p),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(mp4_cand),
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+            return mp4_cand
         return p
 
     @staticmethod
@@ -287,30 +323,51 @@ class MediaService:
             return [MediaService.unwrap_payload(x) for x in obj]
         return obj
 
-    @staticmethod
-    def get_safe_local_file(path_str: str) -> tuple[Path, str]:
+    _LOCAL_FILE_MEDIA_TYPES = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".mkv": "video/x-matroska",
+    }
+
+    @classmethod
+    def get_safe_local_file(cls, path_str: str) -> tuple[Path, str]:
+        """Serve trace media only: resolved path must sit inside the workspace
+        or traces tree AND carry a media extension, so this endpoint can never
+        hand out .env, databases, or source files."""
         decoded_path = urllib.parse.unquote(path_str)
         if decoded_path.startswith("file://"):
             decoded_path = decoded_path[len("file://") :]
-        p = Path(decoded_path).resolve()
+        try:
+            p = Path(decoded_path).resolve(strict=True)
+        except (OSError, ValueError):
+            raise HTTPException(status_code=404, detail="File not found")
 
         if not p.is_file():
             raise HTTPException(status_code=404, detail="File not found")
 
-        if not str(p).startswith(str(WORKSPACE_ROOT)):
+        allowed_roots = []
+        for root in (WORKSPACE_ROOT, TRACES_PATH):
+            try:
+                allowed_roots.append(Path(root).resolve())
+            except OSError:
+                continue
+        if not any(p.is_relative_to(root) for root in allowed_roots):
             raise HTTPException(
                 status_code=403,
                 detail="Access denied. Path is outside workspace root.",
             )
 
-        ext = p.suffix.lower()
-        media_type = "application/octet-stream"
-        if ext in (".jpg", ".jpeg"):
-            media_type = "image/jpeg"
-        elif ext == ".png":
-            media_type = "image/png"
-        elif ext == ".mp4":
-            media_type = "video/mp4"
+        media_type = cls._LOCAL_FILE_MEDIA_TYPES.get(p.suffix.lower())
+        if media_type is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied. Only media files are served.",
+            )
 
         return p, media_type
 

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, signal, computed, effect, inject, untracked, DestroyRef, AfterViewInit } from '@angular/core';
+import { Component, ChangeDetectionStrategy, NgZone, signal, computed, effect, inject, untracked, DestroyRef, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -202,16 +202,28 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
   standalone: true,
   imports: [CommonModule, FormsModule],
   templateUrl: './agent-stream.component.html',
-  styleUrl: './agent-stream.component.scss'
+  styleUrl: './agent-stream.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AgentStreamComponent implements AfterViewInit {
   public agentService = inject(AgentService);
   private http = inject(HttpClient);
   private destroyRef = inject(DestroyRef);
+  private zone = inject(NgZone);
 
   // Auto-scroll state tracking
   public isUserAtBottom = true;
   private resizeObserver: ResizeObserver | null = null;
+  private streamLogsContainer: HTMLElement | null = null;
+  private autoScrollTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoScrollStreamBoxes = false;
+  private onContainerScroll = () => {
+    const container = this.streamLogsContainer;
+    if (!container) return;
+    const threshold = 150;
+    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    this.isUserAtBottom = distanceToBottom <= threshold;
+  };
 
   // Dynamic Planning Loader Game-style Phrases
   public currentPlanningText = signal<string>(PLANNING_LOADER_PHRASES[0]);
@@ -230,9 +242,29 @@ export class AgentStreamComponent implements AfterViewInit {
   public collapsedStreams = signal<Set<string>>(new Set<string>());
   private scheduledCollapses = new Set<string>();
 
-  // Signals and maps for typewriter effect simulation
+  // Signals and maps for typewriter effect simulation. All active typewriters
+  // are driven by ONE requestAnimationFrame loop (run outside the Angular
+  // zone) that batches every text advance into a single signal update.
   public typedTextsSignal = signal<Record<string, string>>({});
-  private typingTimers = new Map<string, any>();
+  private typingTargets = new Map<string, {
+    blockId: string;
+    isThinking: boolean;
+    execId?: string;
+    fallbackText: string;
+  }>();
+  private typingRafId: number | null = null;
+  private lastTypingTimestamp = 0;
+  // ≈ legacy pace of 8 characters every 12ms interval tick.
+  private static readonly TYPING_CHARS_PER_SECOND = 667;
+  private static readonly TYPING_MIN_FRAME_MS = 28;
+
+  // Rendered-markdown memo per template slot: returning the identical string
+  // instance for unchanged text lets the [innerHTML] binding skip re-sanitizing
+  // and re-parsing the whole fragment on every change-detection pass.
+  private markdownHtmlCache = new Map<string, { source: string; html: string }>();
+  // Thinking-text extraction memo (includes the JSON-detection heuristics).
+  private thinkingTextCache = new WeakMap<any, { native: string | null; raw: string | null }>();
+  private deviceSerialCache = new WeakMap<Session, string | null>();
 
   // Set to track expanded and collapsed state of action cards
   public expandedActionCards = signal<Set<string>>(new Set<string>());
@@ -283,6 +315,13 @@ export class AgentStreamComponent implements AfterViewInit {
   public outputterReport = computed(() => {
     const notes = this.agentService.currentNotes();
     return notes['output.md'] || null;
+  });
+
+  // Memoized so the Task Report card is not re-parsed (and its DOM rebuilt)
+  // on every change-detection pass while streams are typing.
+  public parsedOutputReport = computed<ParsedNote | null>(() => {
+    const report = this.outputterReport();
+    return report ? parseNote(report) : null;
   });
 
   public parsedNote = computed<ParsedNote>(() => {
@@ -399,21 +438,24 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   constructor() {
-    const retryClockInterval = setInterval(() => this.retryClock.set(Date.now()), 1000);
-    this.destroyRef.onDestroy(() => clearInterval(retryClockInterval));
+    // The retry clock only needs to tick while something on screen is timing
+    // (startup progress, LLM retry countdowns). An idle page stays quiet.
+    this.zone.runOutsideAngular(() => {
+      const retryClockInterval = setInterval(() => {
+        const status = this.agentService.agentStatus();
+        if (status === 'running' || status === 'paused' || this.agentService.isRetrying()) {
+          this.retryClock.set(Date.now());
+        }
+      }, 1000);
+      this.destroyRef.onDestroy(() => clearInterval(retryClockInterval));
+    });
 
     // Auto scroll stream box during active text streaming
     effect(() => {
       const logs = this.filteredLogs();
       const activeStream = logs.find(log => log.type === 'llm_stream' && !log.data?.isCompleted);
       if (activeStream) {
-        setTimeout(() => {
-          const elements = document.getElementsByClassName('stream-box');
-          for (let i = 0; i < elements.length; i++) {
-            const el = elements[i] as HTMLElement;
-            el.scrollTop = el.scrollHeight;
-          }
-        }, 30);
+        this.scheduleAutoScroll(true);
       }
     });
 
@@ -421,13 +463,7 @@ export class AgentStreamComponent implements AfterViewInit {
     effect(() => {
       this.consolidatedBlocks();
       this.typedTextsSignal();
-
-      setTimeout(() => {
-        const container = document.querySelector('.stream-logs-content');
-        if (container && this.isUserAtBottom) {
-          container.scrollTop = container.scrollHeight;
-        }
-      }, 50);
+      this.scheduleAutoScroll(false);
     });
 
     // Typewriter drive logic: triggers typing when block appears or expands
@@ -451,7 +487,7 @@ export class AgentStreamComponent implements AfterViewInit {
               }
             } else {
               const currentVal = currentRecord[blockId] || '';
-              if (currentVal.length < rawText.length && !this.typingTimers.has(blockId)) {
+              if (currentVal.length < rawText.length && !this.typingTargets.has(blockId)) {
                 if (block.data?.isCompleted) {
                   this.typedTextsSignal.update(r => ({ ...r, [blockId]: rawText }));
                 } else {
@@ -479,7 +515,7 @@ export class AgentStreamComponent implements AfterViewInit {
               }
             } else {
               const currentVal = currentRecord[nativeKey] || '';
-              if (currentVal.length < nativeText.length && !this.typingTimers.has(nativeKey)) {
+              if (currentVal.length < nativeText.length && !this.typingTargets.has(nativeKey)) {
                 if (block.data?.isCompleted) {
                   this.typedTextsSignal.update(r => ({ ...r, [nativeKey]: nativeText }));
                   this.collapsedStreams.update(set => {
@@ -501,9 +537,9 @@ export class AgentStreamComponent implements AfterViewInit {
     effect(() => {
       this.agentService.currentSessionId();
       untracked(() => {
-        this.typingTimers.forEach((timer) => clearInterval(timer));
-        this.typingTimers.clear();
+        this.stopTypingLoop();
         this.typedTextsSignal.set({});
+        this.markdownHtmlCache.clear();
         this.scheduledCollapses.clear();
         this.collapsedStreams.set(new Set<string>());
         this.isUserAtBottom = true;
@@ -547,27 +583,65 @@ export class AgentStreamComponent implements AfterViewInit {
         this.resizeObserver.disconnect();
         this.resizeObserver = null;
       }
+      this.stopTypingLoop();
+      if (this.autoScrollTimer) {
+        clearTimeout(this.autoScrollTimer);
+        this.autoScrollTimer = null;
+      }
+      if (this.streamLogsContainer) {
+        this.streamLogsContainer.removeEventListener('scroll', this.onContainerScroll);
+        this.streamLogsContainer = null;
+      }
     });
   }
 
   public ngAfterViewInit(): void {
-    const container = document.querySelector('.stream-logs-content');
-    if (container && typeof ResizeObserver !== 'undefined') {
+    const container = document.querySelector('.stream-logs-content') as HTMLElement | null;
+    this.streamLogsContainer = container;
+    if (!container) return;
+
+    // The scroll listener lives outside the Angular zone: tracking the
+    // user's scroll position must not trigger change detection per frame.
+    this.zone.runOutsideAngular(() => {
+      container.addEventListener('scroll', this.onContainerScroll, { passive: true });
+    });
+
+    if (typeof ResizeObserver !== 'undefined') {
       this.resizeObserver = new ResizeObserver(() => {
         if (this.isUserAtBottom) {
-          container.scrollTop = container.scrollHeight;
+          this.scheduleAutoScroll(false);
         }
       });
       this.resizeObserver.observe(container);
     }
   }
 
-  public onStreamScroll(event: Event): void {
-    const container = event.target as HTMLElement;
-    if (!container) return;
-    const threshold = 150;
-    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    this.isUserAtBottom = distanceToBottom <= threshold;
+  /**
+   * Coalesce every auto-scroll request into one deferred pass that batches all
+   * DOM reads before all writes, instead of thrashing layout per update.
+   */
+  private scheduleAutoScroll(includeStreamBoxes: boolean): void {
+    this.autoScrollStreamBoxes = this.autoScrollStreamBoxes || includeStreamBoxes;
+    if (this.autoScrollTimer) return;
+    this.zone.runOutsideAngular(() => {
+      this.autoScrollTimer = setTimeout(() => {
+        this.autoScrollTimer = null;
+        const includeBoxes = this.autoScrollStreamBoxes;
+        this.autoScrollStreamBoxes = false;
+
+        const boxes = includeBoxes
+          ? (Array.from(document.getElementsByClassName('stream-box')) as HTMLElement[])
+          : [];
+        const boxTargets = boxes.map((el) => el.scrollHeight);
+        const container = this.streamLogsContainer;
+        const containerTarget = container && this.isUserAtBottom ? container.scrollHeight : null;
+
+        boxes.forEach((el, i) => { el.scrollTop = boxTargets[i]; });
+        if (container && containerTarget !== null) {
+          container.scrollTop = containerTarget;
+        }
+      }, 50);
+    });
   }
 
   // Top Nav Action Methods
@@ -619,22 +693,26 @@ export class AgentStreamComponent implements AfterViewInit {
    * Determine the device serial number for the session
    */
   public getDeviceSerial(session: Session): string | null {
+    if (this.deviceSerialCache.has(session)) {
+      return this.deviceSerialCache.get(session) ?? null;
+    }
+    let resolved: string | null = null;
     const serial = session.device_serial || session.device_id;
     if (serial && serial !== 'pending' && serial !== 'null' && serial !== 'undefined') {
-      return serial;
-    }
-    if (session.device_info) {
+      resolved = serial;
+    } else if (session.device_info) {
       try {
         const info = typeof session.device_info === 'string' ? JSON.parse(session.device_info) : session.device_info;
         const s = info?.device_id || info?.device_serial;
         if (s && s !== 'pending' && s !== 'null' && s !== 'undefined') {
-          return s;
+          resolved = s;
         }
       } catch {
         // ignore
       }
     }
-    return null;
+    this.deviceSerialCache.set(session, resolved);
+    return resolved;
   }
 
   public selectTask(sessionId: string, event?: Event): void {
@@ -675,40 +753,75 @@ export class AgentStreamComponent implements AfterViewInit {
 
   // Typewriter & Delayed Collapse
   private startTyping(key: string, targetText: string, isThinking: boolean = false, execId?: string) {
-    if (this.typingTimers.has(key)) {
-      clearInterval(this.typingTimers.get(key));
-    }
+    const blockId = key.endsWith('-native') ? key.replace('-native', '') : key;
+    this.typingTargets.set(key, { blockId, isThinking, execId, fallbackText: targetText });
+    this.ensureTypingLoop();
+  }
 
-    const interval = 12;
-    const timer = setInterval(() => {
-      const currentRecord = this.typedTextsSignal();
-      const current = currentRecord[key] || '';
-      
-      const blocks = this.consolidatedBlocks();
-      const blockId = key.endsWith('-native') ? key.replace('-native', '') : key;
-      const block = blocks.find(b => b.id === blockId);
-      let target = targetText;
+  private ensureTypingLoop(): void {
+    if (this.typingRafId !== null) return;
+    this.lastTypingTimestamp = performance.now();
+    this.zone.runOutsideAngular(() => {
+      const step = (now: number) => {
+        this.typingRafId = null;
+        const elapsed = now - this.lastTypingTimestamp;
+        if (elapsed >= AgentStreamComponent.TYPING_MIN_FRAME_MS) {
+          this.lastTypingTimestamp = now;
+          this.advanceTyping(elapsed);
+        }
+        if (this.typingTargets.size > 0) {
+          this.typingRafId = requestAnimationFrame(step);
+        }
+      };
+      this.typingRafId = requestAnimationFrame(step);
+    });
+  }
+
+  private stopTypingLoop(): void {
+    this.typingTargets.clear();
+    if (this.typingRafId !== null) {
+      cancelAnimationFrame(this.typingRafId);
+      this.typingRafId = null;
+    }
+  }
+
+  /**
+   * Advance every active typewriter by the elapsed wall time and publish all
+   * changes as one signal update (one render pass per animation frame at most).
+   */
+  private advanceTyping(elapsedMs: number): void {
+    const blocks = untracked(() => this.consolidatedBlocks());
+    const currentRecord = untracked(() => this.typedTextsSignal());
+    const chars = Math.max(
+      1,
+      Math.round(AgentStreamComponent.TYPING_CHARS_PER_SECOND * elapsedMs / 1000)
+    );
+    const updates: Record<string, string> = {};
+    let hasUpdates = false;
+
+    for (const [key, typing] of this.typingTargets) {
+      const block = blocks.find((b) => b.id === typing.blockId);
+      let target = typing.fallbackText;
       if (block) {
-        target = isThinking ? (this.getNativeThinking(block) || targetText) : (this.getRawThinking(block) || targetText);
+        target = (typing.isThinking ? this.getNativeThinking(block) : this.getRawThinking(block))
+          || typing.fallbackText;
       }
 
+      const current = currentRecord[key] || '';
       if (current.length < target.length) {
-        const nextLength = Math.min(current.length + 8, target.length);
-        const newText = target.slice(0, nextLength);
-        this.typedTextsSignal.update(r => ({ ...r, [key]: newText }));
-      } else {
-        if (block?.data?.isCompleted) {
-          clearInterval(timer);
-          this.typingTimers.delete(key);
-          
-          if (isThinking && execId) {
-            this.triggerDelayedCollapse(execId);
-          }
+        updates[key] = target.slice(0, Math.min(current.length + chars, target.length));
+        hasUpdates = true;
+      } else if (block?.data?.isCompleted) {
+        this.typingTargets.delete(key);
+        if (typing.isThinking && typing.execId) {
+          this.triggerDelayedCollapse(typing.execId);
         }
       }
-    }, interval);
+    }
 
-    this.typingTimers.set(key, timer);
+    if (hasUpdates) {
+      this.typedTextsSignal.update((r) => ({ ...r, ...updates }));
+    }
   }
 
   private triggerDelayedCollapse(execId: string) {
@@ -886,6 +999,28 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   // Generic Tool Delegation Methods
+
+  /**
+   * First save_note call per note key, derived once per blocks change instead
+   * of re-scanning every block for every rendered tool row.
+   */
+  private firstSaveNoteByKey = computed<Map<string, any>>(() => {
+    const firstByKey = new Map<string, any>();
+    for (const block of this.consolidatedBlocks()) {
+      if (block.type === 'step' && block.data.generic_tools) {
+        for (const t of this.getUniqueGenericTools(block.data.generic_tools)) {
+          if (t.name && t.name.toLowerCase() === 'save_note') {
+            const key = this.getToolKey(t);
+            if (key && !firstByKey.has(key)) {
+              firstByKey.set(key, t);
+            }
+          }
+        }
+      }
+    }
+    return firstByKey;
+  });
+
   public isFirstSaveNoteForKey(tool: any): boolean {
     if (!tool || !tool.name || tool.name.toLowerCase() !== 'save_note') {
       return false;
@@ -893,26 +1028,11 @@ export class AgentStreamComponent implements AfterViewInit {
     const key = this.getToolKey(tool);
     if (!key) return true;
 
-    const blocks = this.consolidatedBlocks();
-    const saveNoteCalls: any[] = [];
-    for (const block of blocks) {
-      if (block.type === 'step' && block.data.generic_tools) {
-        const uniqTools = this.getUniqueGenericTools(block.data.generic_tools);
-        for (const t of uniqTools) {
-          if (t.name && t.name.toLowerCase() === 'save_note' && this.getToolKey(t) === key) {
-            saveNoteCalls.push(t);
-          }
-        }
-      }
-    }
-
-    if (saveNoteCalls.length > 0) {
-      const firstCall = saveNoteCalls[0];
-      return (tool.trace_id && firstCall.trace_id)
-        ? tool.trace_id === firstCall.trace_id
-        : tool === firstCall;
-    }
-    return true;
+    const firstCall = this.firstSaveNoteByKey().get(key);
+    if (!firstCall) return true;
+    return (tool.trace_id && firstCall.trace_id)
+      ? tool.trace_id === firstCall.trace_id
+      : tool === firstCall;
   }
 
   public getToolDisplayLabel(tool: any): string {
@@ -1013,17 +1133,33 @@ export class AgentStreamComponent implements AfterViewInit {
     return getSortedStepEvents(stepData, this.sortedEventsCache);
   }
 
+  /**
+   * Memoized per block-data object: templates call these many times per
+   * change-detection pass, and the raw-thinking path runs JSON-detection
+   * heuristics over the full text.
+   */
+  private getThinkingTexts(data: any): { native: string | null; raw: string | null } {
+    let entry = this.thinkingTextCache.get(data);
+    if (!entry) {
+      const nativeText = data.operator_native_thinking || (data.stream_type === 'thinking' ? data.text : null);
+      const rawText = data.operator_raw_thinking || (data.stream_type === 'text' ? data.text : null);
+      entry = {
+        native: nativeText && nativeText.trim() ? nativeText : null,
+        raw: rawText && rawText.trim() && this.isHumanThinking(rawText) ? rawText : null
+      };
+      this.thinkingTextCache.set(data, entry);
+    }
+    return entry;
+  }
+
   public getNativeThinking(block: any): string | null {
     if (!block || !block.data) return null;
-    const text = block.data.operator_native_thinking || (block.data.stream_type === 'thinking' ? block.data.text : null);
-    return text && text.trim() ? text : null;
+    return this.getThinkingTexts(block.data).native;
   }
 
   public getRawThinking(block: any): string | null {
     if (!block || !block.data) return null;
-    const text = block.data.operator_raw_thinking || (block.data.stream_type === 'text' ? block.data.text : null);
-    if (!text || !text.trim() || !this.isHumanThinking(text)) return null;
-    return text;
+    return this.getThinkingTexts(block.data).raw;
   }
 
   public hasVisibleContent(block: any): boolean {
@@ -1272,8 +1408,23 @@ export class AgentStreamComponent implements AfterViewInit {
     }
   }
 
-  public renderMarkdown(text: string): string {
-    return renderMarkdownToHtml(text);
+  /**
+   * Render markdown with a per-slot memo. Returning the identical cached
+   * string instance for unchanged text means the [innerHTML] binding sees the
+   * same reference and skips DOM/sanitizer work entirely.
+   */
+  public renderMarkdown(text: string, cacheKey?: string): string {
+    if (!text) return '';
+    if (!cacheKey) {
+      return renderMarkdownToHtml(text);
+    }
+    const cached = this.markdownHtmlCache.get(cacheKey);
+    if (cached && cached.source === text) {
+      return cached.html;
+    }
+    const html = renderMarkdownToHtml(text);
+    this.markdownHtmlCache.set(cacheKey, { source: text, html });
+    return html;
   }
 
   public onToolKeyClick(key: string): void {
@@ -1314,9 +1465,17 @@ export class AgentStreamComponent implements AfterViewInit {
     return tool.trace_id || index.toString();
   }
 
-  public trackStepEvent(index: number, item: { type: string; data: any }): string {
+  public trackStepEvent(index: number, item: { type: string; data: any; timestamp?: number }): string {
     if (!item || !item.data) return index.toString();
-    return item.type + '-' + (item.data.timestamp || item.data.start_time || item.data.created_at || item.data.id || item.data.action || item.data.name || item.data.text?.length || index);
+    // A step has at most one thinking and one text event; keying them by type
+    // alone keeps their DOM stable while the streamed text grows (keying by
+    // text length would tear down and rebuild the node on every chunk).
+    if (item.type === 'thinking' || item.type === 'text') {
+      return item.type;
+    }
+    return item.type + '-' + (item.data.trace_id
+      || item.data.timestamp || item.data.start_time || item.data.created_at || item.data.id
+      || ((item.data.action || item.data.name || '') + '-' + index));
   }
 
   public trackParam(index: number, param: { key: string; value: string }): string {
