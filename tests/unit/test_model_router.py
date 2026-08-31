@@ -52,13 +52,13 @@ def test_model_router_fallbacks():
     """Verify fallback endpoint configuration."""
     router = ModelRouter()
     fallbacks = [
-        ModelEndpoint(provider=ModelProvider.GEMINI, model_name="gemini-2.5-flash"),
+        ModelEndpoint(provider=ModelProvider.GEMINI, model_name="gemini-3.7-flash"),
         ModelEndpoint(provider=ModelProvider.OPENAI, model_name="gpt-4o-mini"),
     ]
-    router.set_role_route("custom_worker", "gemini-2.5-pro", fallbacks=fallbacks)
+    router.set_role_route("custom_worker", "gemini-3.7-pro", fallbacks=fallbacks)
     fb = router.get_fallbacks("custom_worker")
     assert len(fb) == 2
-    assert fb[0].model_name == "gemini-2.5-flash"
+    assert fb[0].model_name == "gemini-3.7-flash"
     assert fb[1].model_name == "gpt-4o-mini"
 
 
@@ -113,7 +113,7 @@ def test_robust_chat_model_wrapper_grounding_google():
     # Case 1: enable_grounding=True automatically attaches google_search and tool_config
     ep_google = ModelEndpoint(
         provider=ModelProvider.GOOGLE,
-        model_name="gemini-2.5-flash",
+        model_name="gemini-3.7-flash",
         enable_grounding=True,
     )
     wrapper = RobustChatModelWrapper(MockGeminiModel(), endpoint=ep_google)
@@ -127,7 +127,7 @@ def test_robust_chat_model_wrapper_grounding_google():
     # Case 2: Explicit google_search in tools automatically ensures tool_config
     ep_google_no_ground = ModelEndpoint(
         provider=ModelProvider.GOOGLE,
-        model_name="gemini-2.5-flash",
+        model_name="gemini-3.7-flash",
         enable_grounding=False,
     )
     wrapper_explicit = RobustChatModelWrapper(MockGeminiModel(), endpoint=ep_google_no_ground)
@@ -187,7 +187,7 @@ def test_chat_google_generative_ai_process_tool_config_patch():
         return query
 
     # Trigger patching via Google model creation
-    ep = ModelEndpoint(provider=ModelProvider.GOOGLE, model_name="gemini-2.5-flash", api_key="fake")
+    ep = ModelEndpoint(provider=ModelProvider.GOOGLE, model_name="gemini-3.7-flash", api_key="fake")
     model = ModelFactory.create_model(ep)
     assert isinstance(model, ChatGoogleGenerativeAI)
 

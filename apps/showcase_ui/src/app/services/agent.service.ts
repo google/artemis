@@ -49,7 +49,7 @@ export class AgentService {
       let sStatus = isCurrentActive ? status : (isPending ? 'pending' : s.status);
       if ((sStatus === 'running' || sStatus === 'paused') && !isCurrentActive) {
         const activeRun = raw.find(r => r.session_id === runId);
-        sStatus = (activeRun && (s.start_time || 0) > (activeRun.start_time || 0)) ? 'pending' : 'completed';
+        sStatus = (activeRun && (s.start_time || 0) > (activeRun.start_time || 0)) ? 'pending' : 'cancelled';
       }
       sessionMap.set(s.session_id, {
         ...s,
@@ -203,18 +203,42 @@ export class AgentService {
    * Stop the currently running task (and optionally clear queue)
    */
   public stopTask(stopAll: boolean = false): void {
+    const currentRunningId = this.runningSessionId();
+    const curSessionId = this.currentSessionId();
+    const targetSessionId = currentRunningId || curSessionId;
+
+    // Immediately mark stopped session(s) as cancelled in rawSessions optimistically
+    this.rawSessions.update((sessions) =>
+      sessions.map((s) => {
+        if (
+          s.session_id === targetSessionId ||
+          (stopAll && (s.status === 'running' || s.status === 'paused' || s.status === 'pending'))
+        ) {
+          return { ...s, status: 'cancelled' as const };
+        }
+        return s;
+      })
+    );
+
     // Apply optimistic updates: only set idle if stopAll is true or pending queue is empty
-    if (stopAll || this.pendingQueue().length === 0) {
+    if (stopAll) {
+      this.pendingQueue.set([]);
       this.agentStatus.set('idle');
       this.runningSessionId.set(null);
       this.runningGoal.set(null);
+    } else {
+      if (targetSessionId) {
+        this.pendingQueue.update((q) => q.filter((p) => p.session_id !== targetSessionId));
+      }
+      if (this.pendingQueue().length === 0) {
+        this.agentStatus.set('idle');
+        this.runningSessionId.set(null);
+        this.runningGoal.set(null);
+      }
     }
     this.isPaused.set(false);
     this.pausedError.set(null);
     this.isRetrying.set(false);
-    if (stopAll) {
-      this.pendingQueue.set([]);
-    }
 
     // Mark active streaming / pending logs in current session as finished
     this.sessionLogs.update((logs) =>
@@ -505,6 +529,20 @@ export class AgentService {
           }
 
           if (eventType === 'session_ended') {
+            const endedStatus = parsedData?.status || 'cancelled';
+            const endedSessionId = parsedData?.session_id || sessionId;
+
+            this.rawSessions.update((sessions) =>
+              sessions.map((s) => {
+                if (s.session_id === endedSessionId) {
+                  return { ...s, status: endedStatus as any };
+                }
+                return s;
+              })
+            );
+
+            this.pendingQueue.update((queue) => queue.filter((p) => p.session_id !== endedSessionId));
+
             this.agentStatus.set('idle');
             this.runningSessionId.set(null);
             this.runningGoal.set(null);

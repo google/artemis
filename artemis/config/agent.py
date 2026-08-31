@@ -178,7 +178,7 @@ class StepSummarizerConfig(BaseModel):
         description="Whether to asynchronously summarize historical steps to replace pruned images.",
     )
     model: str = Field(
-        default="gemini-2.5-flash-lite",
+        default="gemini-3.5-flash-lite",
         description="Lightweight model used for background step state summarization.",
     )
     prune_history_xml: bool = Field(

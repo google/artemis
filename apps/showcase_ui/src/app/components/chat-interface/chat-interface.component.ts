@@ -179,7 +179,7 @@ export class ChatInterfaceComponent {
         return s as any;
       }
     }
-    return 'completed';
+    return (session.status as any) || 'cancelled';
   }
 
   /**
