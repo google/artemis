@@ -43,7 +43,7 @@ def test_emulator_uses_windows_console_isolation():
 async def test_system_emulator_status_endpoint():
     """Verify GET /api/system/emulator/status returns valid schema."""
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(transport=transport, base_url="http://localhost") as ac:
         res = await ac.get("/api/system/emulator/status")
         assert res.status_code == 200
         data = res.json()
@@ -57,7 +57,7 @@ async def test_system_emulator_status_endpoint():
 async def test_system_emulator_dismiss_endpoint():
     """Verify POST /api/system/emulator/dismiss resets tracker state."""
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(transport=transport, base_url="http://localhost") as ac:
         res = await ac.post("/api/system/emulator/dismiss")
         assert res.status_code == 200
         data = res.json()
@@ -68,6 +68,34 @@ async def test_system_emulator_dismiss_endpoint():
 async def test_system_emulator_launch_empty_validation():
     """Verify POST /api/system/emulator/launch validates empty avd_name."""
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(transport=transport, base_url="http://localhost") as ac:
         res = await ac.post("/api/system/emulator/launch", json={"avd_name": "   "})
         assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_adb_endpoint_mutation_rejects_cross_origin_browser_requests():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://localhost") as ac:
+        res = await ac.post(
+            "/api/system/adb/server/probe",
+            json={"host": "127.0.0.1", "port": 5038, "persist": False},
+            headers={"Origin": "https://untrusted.example"},
+        )
+
+    assert res.status_code == 403
+    assert "Artemis console" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_adb_endpoint_mutation_is_local_only_by_default(monkeypatch):
+    monkeypatch.delenv("ARTEMIS_ALLOW_REMOTE_ADB_CONFIGURATION", raising=False)
+    transport = ASGITransport(app=app, client=("192.168.1.20", 42000))
+    async with AsyncClient(transport=transport, base_url="http://localhost") as ac:
+        res = await ac.post(
+            "/api/system/adb/server/probe",
+            json={"host": "127.0.0.1", "port": 5038, "persist": False},
+        )
+
+    assert res.status_code == 403
+    assert "local-only" in res.json()["detail"]

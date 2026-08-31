@@ -31,8 +31,45 @@ export interface DeviceInfo {
   product: string | null;
   android_version: string | null;
   screen_resolution: string | null;
+  is_locked: boolean | null;
   is_emulator: boolean;
   installed_packages?: string[];
+}
+
+export interface AdbServerEndpoint {
+  host: string;
+  port: number;
+  socket: string;
+  identity: string;
+  mode: 'local' | 'remote';
+  is_local_default: boolean;
+}
+
+export interface AdbServerDevice {
+  serial: string;
+  state: string;
+  model: string | null;
+  product: string | null;
+}
+
+export interface AdbServerStatus {
+  endpoint: AdbServerEndpoint;
+}
+
+export interface AdbServerConnectionResult {
+  success: boolean;
+  message: string;
+  endpoint: AdbServerEndpoint;
+  devices: AdbServerDevice[];
+  persisted?: boolean;
+  persistence_error?: string | null;
+  error_code?: string;
+  output?: string;
+}
+
+export interface AdbServerConnectionResponse {
+  connection_result: AdbServerConnectionResult;
+  report?: SystemReadinessReport;
 }
 
 export interface ProbeResult {

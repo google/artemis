@@ -188,6 +188,16 @@ class ModelFactory:
 
     @classmethod
     def create_model(cls, endpoint: ModelEndpoint) -> BaseChatModel:
+        if os.environ.get("ARTEMIS_FAKE_LLM") == "1":
+            from artemis.llm.fake_model import FakeChatModel
+
+            delay = float(os.environ.get("ARTEMIS_FAKE_LLM_DELAY_S", "0") or 0)
+            logger.warning(
+                f"ARTEMIS_FAKE_LLM=1 — returning FakeChatModel (delay={delay}s) "
+                f"instead of {endpoint.provider}/{endpoint.model_name}"
+            )
+            return FakeChatModel(delay_s=delay)
+
         provider = ModelProvider.from_string(endpoint.provider)
 
         if provider == ModelProvider.GOOGLE:
@@ -204,6 +214,10 @@ class ModelFactory:
                 or os.environ.get("GOOGLE_API_KEY")
                 or os.environ.get("GEMINI_API_KEY")
             )
+            thinking_level = endpoint.thinking_level
+            if endpoint.model_name and any(v in endpoint.model_name for v in ("2.5", "2.0", "1.5")):
+                thinking_level = None
+
             kwargs: dict[str, Any] = {
                 "model": endpoint.model_name,
                 "temperature": endpoint.temperature,
@@ -211,7 +225,7 @@ class ModelFactory:
                 "api_key": api_key,
                 "timeout": endpoint.timeout_seconds,
                 "thinking_budget": endpoint.thinking_budget,
-                "thinking_level": endpoint.thinking_level,
+                "thinking_level": thinking_level,
                 "include_thoughts": endpoint.include_thoughts,
                 "safety_settings": {
                     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,

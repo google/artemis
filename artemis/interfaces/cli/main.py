@@ -23,6 +23,11 @@ from artemis.interfaces.cli.commands.init import init_command
 from artemis.interfaces.cli.commands.mcp import mcp_command
 from artemis.interfaces.cli.commands.run import run_command
 from artemis.interfaces.cli.commands.server import server_app
+from artemis.interfaces.cli.commands.server_lifecycle import (
+    restart_command,
+    status_command,
+    stop_command,
+)
 from artemis.interfaces.cli.commands.trace import trace_app
 from artemis.interfaces.cli.commands.ui import ui_command
 from artemis.utils.logger import get_logger
@@ -44,6 +49,9 @@ app = typer.Typer(
 app.command(name="ui", help="Launch the unified Showcase UI & Admin Console in your browser.")(
     ui_command
 )
+app.command(name="restart", help="Restart running Artemis Web UI & server.")(restart_command)
+app.command(name="stop", help="Stop running Artemis Web UI & server.")(stop_command)
+app.command(name="status", help="Display Artemis Web UI & server status.")(status_command)
 app.command(name="run", help="Execute an autonomous task on a mobile device.")(run_command)
 app.command(name="init", help="Interactive quickstart wizard to configure API keys & device.")(
     init_command

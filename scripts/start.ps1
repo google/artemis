@@ -159,9 +159,11 @@ if ($installMcp -match "^[Yy]") {
 Write-Host ""
 
 # 8. Launch unified Showcase UI & open browser
+# Launch via `python -m artemis` (not the `artemis.exe` console-script shim) so the
+# long-running server never locks .venv\Scripts\artemis.exe against `uv sync` reinstalls.
 Write-Host "   [INFO] Launching Artemis Showcase UI & Admin Console..." -ForegroundColor Green
 if ($NoOpen) {
-    uv run artemis ui --port $Port --no-open
+    uv run python -m artemis ui --port $Port --no-open
 } else {
-    uv run artemis ui --port $Port --open
+    uv run python -m artemis ui --port $Port --open
 }

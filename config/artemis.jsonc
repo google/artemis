@@ -139,7 +139,7 @@
       "explorer_mode": "flash", // Perception mode for Flash runner ('flash' 1-shot detection)
       // 🧠 Step Summarizer: Asynchronous visual context compressor
       // Summarizes intermediate steps in background without blocking the runner,
-      // replacing pruned images with strictly objective, high-density state summaries.
+      // replacing images only after strictly objective, high-density summaries are ready.
       "step_summarizer": {
         "enabled": true, // Whether background step summarization is active
         "model": "gemini-3.5-flash-lite", // Lightweight model for fast background inference

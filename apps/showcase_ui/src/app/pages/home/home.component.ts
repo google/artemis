@@ -14,13 +14,18 @@
  * limitations under the License.
  */
 
-import { Component, signal, computed, effect, inject, OnInit, OnDestroy } from '@angular/core';
-import { CommonModule } from '@angular/common';
+import { Component, signal, computed, effect, inject, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
+
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AgentService } from '../../services/agent.service';
 import { SystemService } from '../../services/system.service';
-import { DeviceInfo, ProbeResult } from '../../core/models/system.model';
+import {
+  AdbServerConnectionResult,
+  AdbServerDevice,
+  DeviceInfo,
+  ProbeResult
+} from '../../core/models/system.model';
 import {
   AppReference,
   SmartSuggestion,
@@ -30,12 +35,15 @@ import { TaskRecommendationService } from '../../core/services/task-recommendati
 
 export type { AppReference, SmartSuggestion, SuggestionCategory };
 
+type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
+
 
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [FormsModule],
   templateUrl: './home.component.html',
+  changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './home.component.scss'
 })
 export class HomeComponent implements OnInit, OnDestroy {
@@ -47,8 +55,8 @@ export class HomeComponent implements OnInit, OnDestroy {
   // High-level navigation mode: 'diagnostics' (System Setup Guide) vs 'launcher' (Task Execution)
   public activeTab = signal<'diagnostics' | 'launcher'>('launcher');
 
-  // Interactive guide sub-tab inside ADB section: 'emulator' | 'usb' | 'wifi'
-  public activeAdbGuideTab = signal<'emulator' | 'usb' | 'wifi'>('emulator');
+  // Interactive guide sub-tab inside the ADB section
+  public activeAdbGuideTab = signal<AdbGuideTab>('emulator');
   public emulatorSetupMode = signal<'studio' | 'cli'>('studio');
 
   // Interactive guide tab for LLM / OCR credentials: 'gemini' | 'ocr'
@@ -90,6 +98,29 @@ export class HomeComponent implements OnInit, OnDestroy {
   public wifiConnectMessage = signal<string | null>(null);
   public wifiConnectError = signal<string | null>(null);
   public adbRestartFeedback = signal<string | null>(null);
+  public showConnectionMethods = signal<boolean>(false);
+
+  // ADB server endpoint connection state
+  public remoteAdbHost = signal<string>('127.0.0.1');
+  public remoteAdbPort = signal<string>('5038');
+  public rememberRemoteAdb = signal<boolean>(true);
+  public isConnectingRemoteAdb = signal<boolean>(false);
+  public isActivatingRemoteAdb = signal<boolean>(false);
+  public isSwitchingToLocalAdb = signal<boolean>(false);
+  public remoteAdbMessage = signal<string | null>(null);
+  public remoteAdbError = signal<string | null>(null);
+  public remoteAdbDevices = signal<AdbServerDevice[]>([]);
+  public remoteAdbProbeResult = signal<AdbServerConnectionResult | null>(null);
+  public adbServerStatus = computed(() => this.systemService.adbServerStatus());
+  public isRemoteAdbServer = computed(() => this.systemService.isRemoteAdbServer());
+  public remoteAdbHasReadyDevice = computed(() =>
+    this.remoteAdbDevices().some(device => device.state === 'device')
+  );
+  public isProbedRemoteAdbActive = computed(() => {
+    const tested = this.remoteAdbProbeResult()?.endpoint;
+    const active = this.adbServerStatus()?.endpoint;
+    return !!tested && !!active && tested.identity === active.identity;
+  });
 
   public wifiCommand = computed(() => {
     const h = this.wifiHost().trim() || '<phone-ip>';
@@ -140,6 +171,7 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   // Computed helper states delegating to SystemService
   public isReady = computed(() => this.systemService.isReady());
+  public hasReadinessReport = computed(() => this.systemService.hasReadinessReport());
   public isLoading = computed(() => this.systemService.isLoading());
   public isRestartingAdb = computed(() => this.systemService.isRestartingAdb());
   public launchingAvd = computed(() => this.systemService.launchingAvd());
@@ -333,6 +365,16 @@ export class HomeComponent implements OnInit, OnDestroy {
     // Initial fetch of system readiness & model configuration
     this.systemService.fetchReadiness().subscribe();
     this.systemService.fetchModelConfigEnv().subscribe();
+    this.systemService.fetchAdbServerStatus().subscribe({
+      next: status => {
+        if (status.endpoint.mode === 'remote') {
+          this.remoteAdbHost.set(status.endpoint.host);
+          this.remoteAdbPort.set(String(status.endpoint.port));
+          this.activeAdbGuideTab.set('remote');
+        }
+      },
+      error: () => {}
+    });
 
     window.addEventListener('focus', this.focusListener);
   }
@@ -353,8 +395,10 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.selectedOs.set(os);
   }
 
-  public setAdbGuideTab(tab: 'emulator' | 'usb' | 'wifi'): void {
+  public setAdbGuideTab(tab: AdbGuideTab): void {
     this.activeAdbGuideTab.set(tab);
+    this.remoteAdbError.set(null);
+    this.remoteAdbMessage.set(null);
   }
 
   public setEmulatorSetupMode(mode: 'studio' | 'cli'): void {
@@ -591,7 +635,7 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   public refreshReadiness(): void {
     this.isRefreshingDiagnostics.set(true);
-    this.systemService.fetchReadiness().subscribe({
+    this.systemService.fetchReadiness(false, true).subscribe({
       next: () => {
         this.systemService.fetchModelConfigEnv().subscribe({
           next: () => {
@@ -608,7 +652,9 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.adbRestartFeedback.set(null);
     this.systemService.restartAdb().subscribe({
       next: (res) => {
-        this.adbRestartFeedback.set('ADB Refreshed ✓');
+        this.adbRestartFeedback.set(
+          res?.restart_result?.skipped ? 'Devices Refreshed ✓' : 'ADB Refreshed ✓'
+        );
         setTimeout(() => this.adbRestartFeedback.set(null), 2500);
       },
       error: () => {
@@ -619,6 +665,10 @@ export class HomeComponent implements OnInit, OnDestroy {
   }
 
   public connectWifiDevice(): void {
+    if (this.isRemoteAdbServer()) {
+      this.wifiConnectError.set('Switch to local ADB before connecting a Wireless ADB device.');
+      return;
+    }
     const host = this.wifiHost().trim();
     const portStr = this.wifiPort().trim() || '5555';
     const port = parseInt(portStr, 10) || 5555;
@@ -650,7 +700,123 @@ export class HomeComponent implements OnInit, OnDestroy {
     });
   }
 
+  public connectRemoteAdbServer(): void {
+    const host = this.remoteAdbHost().trim();
+    const port = Number(this.remoteAdbPort().trim());
+
+    if (!host) {
+      this.remoteAdbError.set('Enter the host name or IP address of the ADB server.');
+      return;
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      this.remoteAdbError.set('Enter a port between 1 and 65535.');
+      return;
+    }
+
+    this.isConnectingRemoteAdb.set(true);
+    this.remoteAdbError.set(null);
+    this.remoteAdbMessage.set(null);
+    this.remoteAdbDevices.set([]);
+    this.remoteAdbProbeResult.set(null);
+
+    this.systemService.probeAdbServer(host, port).subscribe({
+      next: response => {
+        this.isConnectingRemoteAdb.set(false);
+        const result = response.connection_result;
+        if (result.success) {
+          this.remoteAdbProbeResult.set(result);
+          this.remoteAdbDevices.set(result.devices || []);
+          this.remoteAdbMessage.set(result.message);
+        } else {
+          this.remoteAdbError.set(result.message);
+        }
+      },
+      error: error => {
+        this.isConnectingRemoteAdb.set(false);
+        this.remoteAdbError.set(
+          error?.error?.detail || 'Unable to test the ADB server endpoint.'
+        );
+      }
+    });
+  }
+
+  public activateRemoteAdbServer(): void {
+    const tested = this.remoteAdbProbeResult();
+    if (!tested?.success) {
+      this.remoteAdbError.set('Test the endpoint before using it.');
+      return;
+    }
+
+    this.isActivatingRemoteAdb.set(true);
+    this.remoteAdbError.set(null);
+    this.systemService.connectAdbServer(
+      tested.endpoint.host,
+      tested.endpoint.port,
+      this.rememberRemoteAdb()
+    ).subscribe({
+      next: response => {
+        this.isActivatingRemoteAdb.set(false);
+        const result = response.connection_result;
+        if (result.success) {
+          this.remoteAdbProbeResult.set(result);
+          this.remoteAdbDevices.set(result.devices || []);
+          this.remoteAdbMessage.set(result.message);
+        } else {
+          this.remoteAdbError.set(result.message);
+        }
+      },
+      error: error => {
+        this.isActivatingRemoteAdb.set(false);
+        this.remoteAdbError.set(
+          error?.error?.detail || 'Unable to use the ADB server endpoint.'
+        );
+      }
+    });
+  }
+
+  public updateRemoteAdbHost(value: string): void {
+    this.remoteAdbHost.set(value);
+    this.clearRemoteAdbProbe();
+  }
+
+  public updateRemoteAdbPort(value: string): void {
+    this.remoteAdbPort.set(value);
+    this.clearRemoteAdbProbe();
+  }
+
+  private clearRemoteAdbProbe(): void {
+    this.remoteAdbProbeResult.set(null);
+    this.remoteAdbDevices.set([]);
+    this.remoteAdbMessage.set(null);
+    this.remoteAdbError.set(null);
+  }
+
+  public switchToLocalAdbServer(): void {
+    this.isSwitchingToLocalAdb.set(true);
+    this.remoteAdbError.set(null);
+    this.systemService.useLocalAdbServer(true).subscribe({
+      next: response => {
+        this.isSwitchingToLocalAdb.set(false);
+        this.remoteAdbDevices.set([]);
+        this.remoteAdbMessage.set(response.connection_result.message);
+      },
+      error: error => {
+        this.isSwitchingToLocalAdb.set(false);
+        this.remoteAdbError.set(
+          error?.error?.detail || 'Unable to switch back to the local ADB server.'
+        );
+      }
+    });
+  }
+
+  public toggleConnectionMethods(): void {
+    this.showConnectionMethods.update(value => !value);
+  }
+
   public launchAvdEmulator(avdName: string): void {
+    if (this.isRemoteAdbServer()) {
+      return;
+    }
     this.systemService.launchEmulator(avdName).subscribe();
   }
 

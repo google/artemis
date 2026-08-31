@@ -29,10 +29,17 @@ Deeply understand and select between ARTEMIS's dual execution models (**ARTEMIS 
     - **Safety Net & Self-Healing (Failure Analyzer)**: Every action is vetted by an execution safety net. If an action fails or is blocked, the **Failure Analyzer** is triggered to run local step-by-step recovery sequences, achieving autonomous self-healing. This loop continues iteratively until the task terminates.
     - **Outputter (Optional)**: Synthesizes the entire execution trace into a human-readable report detailing every action step and visual result.
 
-### 3. Device & Environment Constraints
-- **ADB & File Transfer**: While ARTEMIS excels at device automation, it operates within the device boundary. To extract diagnostic files, logs, or test artifacts from the mobile device to the host PC for further analysis, you must manually write and execute appropriate `adb` commands (e.g., `adb pull`).
-- **Hardware Prerequisites**: Running ARTEMIS requires a physically connected, fully authorized Android device (e.g., a Pixel phone) or an active emulator.
-- **Single-Device Policy**: ARTEMIS can only operate a single device at any given time. Ensure your workflows and code respect this concurrency limit.
+### 3. Device & Environment Constraints & Multi-Device Management
+- **Device Selection & Multi-Device Execution**: ARTEMIS supports multi-device execution and per-device concurrency. You can control device targeting via two modes:
+  - **Direct Device Specification**: Explicitly provide the target phone's serial number via `device_serial` to `mobile_run_task` or `mobile_get_device_state`. Tasks targeting distinct devices run concurrently without blocking each other.
+  - **Automatic Device Selection**: When `device_serial` is omitted or set to `None`, ARTEMIS automatically selects an available connected device or allocates an idle device from the device pool.
+- **Prioritize User Choice for Device Selection**:
+  - When multiple connected devices or emulators are detected, or whenever device selection is ambiguous, **YOU MUST PRIORITIZE ASKING THE USER** to select or confirm their preferred device serial before launching a task.
+- **Device Diagnosis with `adb devices`**:
+  - Use `adb devices` (or `adb devices -l`) via bash command execution to diagnose attached hardware, inspect connection status (`device`, `unauthorized`, `offline`), and retrieve device serials and models whenever preparing tasks or troubleshooting device issues.
+- **ADB & File Transfer**: While ARTEMIS excels at device automation, it operates within the device boundary. To extract diagnostic files, logs, or test artifacts from the mobile device to the host PC for further analysis, you must manually execute appropriate `adb` commands (e.g., `adb -s <serial> pull ...`).
+- **Hardware Prerequisites**: Running ARTEMIS requires at least one physically connected, fully authorized Android device (e.g., a Pixel phone) or an active emulator.
+- **Per-Device Mutual Exclusion**: ARTEMIS manages per-device execution mutexes (`DeviceExecutionLock`). A device can only execute a single task at a time (FIFO queue), while different devices can execute tasks in parallel.
 
 ### 4. Robust Test Code Design (The "Dynamic-First, Coordinate-Fallback" Philosophy)
 *If your task involves authoring test code, you must adhere to the following design principles for maximum reliability:*

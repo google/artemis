@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-import { Component, inject, computed } from '@angular/core';
+import { Component, ChangeDetectionStrategy, inject, computed, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
 import { AgentService } from '../../services/agent.service';
 import { Session } from '../../core/models/session.model';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
@@ -30,15 +29,20 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
   standalone: true,
   imports: [CommonModule, FormsModule],
   templateUrl: './chat-interface.component.html',
-  styleUrl: './chat-interface.component.scss'
+  styleUrl: './chat-interface.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class ChatInterfaceComponent {
   public agentService = inject(AgentService);
-  private http = inject(HttpClient);
 
   public taskInput: string = '';
-  public isSubmitting: boolean = false;
-  public errorMessage: string | null = null;
+  // Signals so async completion handlers refresh this OnPush view.
+  public isSubmitting = signal<boolean>(false);
+  public errorMessage = signal<string | null>(null);
+
+  // Device-serial resolution can require a JSON.parse of device_info; memoize
+  // it per session object so template re-evaluation stays cheap.
+  private deviceSerialCache = new WeakMap<Session, string | null>();
 
   /**
    * Filtered computed list of active tasks (running or pending) sorted by status and submission order
@@ -51,9 +55,11 @@ export class ChatInterfaceComponent {
     return list.sort((a, b) => {
       const statusA = this.getTaskStatus(a);
       const statusB = this.getTaskStatus(b);
-      if (statusA === 'running' || statusA === 'paused') return -1;
-      if (statusB === 'running' || statusB === 'paused') return 1;
-      return a.start_time - b.start_time; // FIFO order
+      const isRunA = statusA === 'running' || statusA === 'paused';
+      const isRunB = statusB === 'running' || statusB === 'paused';
+      if (isRunA && !isRunB) return -1;
+      if (!isRunA && isRunB) return 1;
+      return (a.start_time || 0) - (b.start_time || 0); // stable FIFO order
     });
   });
 
@@ -76,50 +82,50 @@ export class ChatInterfaceComponent {
       return;
     }
 
-    this.isSubmitting = true;
-    this.errorMessage = null;
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
 
-    this.agentService.clearUserPinnedSession();
-    this.http.post<any>('/api/run', { goal }).subscribe({
+    this.agentService.runTask(goal).subscribe({
       next: (res) => {
         this.taskInput = '';
-        this.isSubmitting = false;
-        if (res && res.tasks && res.tasks.length > 0) {
-          const firstTask = res.tasks[0];
-          if (firstTask && firstTask.session_id) {
-            // Only auto-select immediately if no task is currently executing/running
-            const isCurrentlyRunning =
-              this.agentService.agentStatus() === 'running' ||
-              this.agentService.sessions().some((s) => s.status === 'running');
-            if (!isCurrentlyRunning) {
-              this.agentService.selectSession(firstTask.session_id, false);
-            }
-          }
-        }
+        this.isSubmitting.set(false);
         // Fetch status to refresh sessions list and select new session
         this.agentService.fetchStatus();
       },
       error: (err) => {
         console.error('Failed to submit task:', err);
-        this.isSubmitting = false;
-        this.errorMessage = err.error?.detail || 'The runner is busy. Please wait for the current task to finish.';
+        this.isSubmitting.set(false);
+        this.errorMessage.set(err.error?.detail || 'The runner is busy. Please wait for the current task to finish.');
         // Auto-dismiss error banner after 5 seconds
         setTimeout(() => {
-          this.errorMessage = null;
+          this.errorMessage.set(null);
         }, 5000);
       }
     });
   }
 
   /**
+   * Stop an individual task session
+   */
+  public stopTask(sessionId: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
+    this.agentService.stopTask(sessionId, false);
+    setTimeout(() => {
+      this.isSubmitting.set(false);
+    }, 400);
+  }
+
+  /**
    * Stop the currently running task and optionally clear the backend queue
    */
   public stopTasks(stopAll: boolean = false): void {
-    this.isSubmitting = true;
-    this.errorMessage = null;
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
     this.agentService.stopTask(stopAll);
     setTimeout(() => {
-      this.isSubmitting = false;
+      this.isSubmitting.set(false);
     }, 400);
   }
 
@@ -130,16 +136,16 @@ export class ChatInterfaceComponent {
     if (!confirm('Are you sure you want to clear all tasks and history? This cannot be undone.')) {
       return;
     }
-    this.isSubmitting = true;
-    this.errorMessage = null;
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
     this.agentService.clearAllHistory().subscribe({
       next: () => {
-        this.isSubmitting = false;
+        this.isSubmitting.set(false);
       },
       error: (err: any) => {
         console.error('Failed to clear history:', err);
-        this.isSubmitting = false;
-        this.errorMessage = err.error?.detail || 'Failed to clear history.';
+        this.isSubmitting.set(false);
+        this.errorMessage.set(err.error?.detail || 'Failed to clear history.');
       }
     });
   }
@@ -152,16 +158,16 @@ export class ChatInterfaceComponent {
     if (!confirm(`Are you sure you want to delete this task? This cannot be undone.`)) {
       return;
     }
-    this.isSubmitting = true;
-    this.errorMessage = null;
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
     this.agentService.deleteSession(sessionId).subscribe({
       next: () => {
-        this.isSubmitting = false;
+        this.isSubmitting.set(false);
       },
       error: (err: any) => {
         console.error(`Failed to delete task ${sessionId}:`, err);
-        this.isSubmitting = false;
-        this.errorMessage = err.error?.detail || 'Failed to delete task.';
+        this.isSubmitting.set(false);
+        this.errorMessage.set(err.error?.detail || 'Failed to delete task.');
       }
     });
   }
@@ -170,16 +176,45 @@ export class ChatInterfaceComponent {
    * Determine the current task execution status
    */
   public getTaskStatus(session: Session): 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled' {
-    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
-      return this.agentService.agentStatus() as 'running' | 'paused';
-    }
     if (session.status) {
       const s = session.status.toLowerCase();
-      if (s === 'running' || s === 'paused' || s === 'completed' || s === 'pending' || s === 'failed' || s === 'cancelled') {
+      if (s === 'completed' || s === 'success' || s === 'failed' || s === 'cancelled') {
+        return (s === 'success' ? 'completed' : s) as any;
+      }
+      if (s === 'running' || s === 'paused' || s === 'pending') {
         return s as any;
       }
     }
-    return (session.status as any) || 'cancelled';
+    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
+      return this.agentService.agentStatus() as 'running' | 'paused';
+    }
+    return 'completed';
+  }
+
+  /**
+   * Determine the device serial number for the session
+   */
+  public getDeviceSerial(session: Session): string | null {
+    if (this.deviceSerialCache.has(session)) {
+      return this.deviceSerialCache.get(session) ?? null;
+    }
+    let resolved: string | null = null;
+    const serial = session.device_serial || session.device_id;
+    if (serial && serial !== 'pending' && serial !== 'null' && serial !== 'undefined') {
+      resolved = serial;
+    } else if (session.device_info) {
+      try {
+        const info = typeof session.device_info === 'string' ? JSON.parse(session.device_info) : session.device_info;
+        const s = info?.device_id || info?.device_serial;
+        if (s && s !== 'pending' && s !== 'null' && s !== 'undefined') {
+          resolved = s;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    this.deviceSerialCache.set(session, resolved);
+    return resolved;
   }
 
   /**

@@ -198,9 +198,8 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     claude_data = json.loads((tmp_path / ".claude.json").read_text())
     assert claude_data["mcpServers"]["artemis"]["type"] == "stdio"
 
-    vscode_data = json.loads(
-        (tmp_path / "AppData" / "Roaming" / "Code" / "User" / "mcp.json").read_text()
-    )
+    from artemis.interfaces.cli.commands.mcp import _get_vscode_user_dir
+    vscode_data = json.loads((_get_vscode_user_dir() / "mcp.json").read_text())
     assert vscode_data["servers"]["artemis"]["type"] == "stdio"
     assert "mcpServers" not in vscode_data
 
@@ -223,7 +222,9 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     assert (tmp_path / ".gemini" / "rules" / "artemis.md").exists()
     assert (tmp_path / ".cursorrules").exists()
     assert (tmp_path / ".cursor" / "rules" / "artemis.mdc").exists()
-    assert (tmp_path / ".claude" / "CLAUDE.md").exists()
+    # Claude Code loads both CLAUDE.md and rules/*.md, so rules are installed
+    # only as the standalone rule file to avoid duplicated context.
+    assert not (tmp_path / ".claude" / "CLAUDE.md").exists()
     assert (tmp_path / ".claude" / "rules" / "artemis.md").exists()
     assert (tmp_path / ".codeium" / "windsurf" / "memories" / "global_rules.md").exists()
     assert (tmp_path / ".codeium" / "windsurf" / "rules" / "artemis.md").exists()
@@ -235,6 +236,69 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     assert (tmp_path / ".openclaw" / "OPENCLAW.md").exists()
     assert (tmp_path / ".openclaw" / "rules" / "artemis.md").exists()
     assert (tmp_path / ".codex" / "AGENTS.md").exists()
+
+
+def test_cli_mcp_install_claude_migrates_legacy_claude_md(tmp_path, monkeypatch):
+    """Verify the claude target removes a previously injected CLAUDE.md block while preserving user content."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
+
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir(parents=True)
+    claude_md = claude_dir / "CLAUDE.md"
+    claude_md.write_text(
+        "# My own instructions\n\n"
+        "<!-- BEGIN ARTEMIS MOBILE TESTING RULES -->\nold injected rules\n"
+        "<!-- END ARTEMIS MOBILE TESTING RULES -->\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["mcp", "--install", "claude"])
+    assert result.exit_code == 0
+
+    remaining = claude_md.read_text(encoding="utf-8")
+    assert "My own instructions" in remaining
+    assert "ARTEMIS MOBILE TESTING RULES" not in remaining
+    rule_file = claude_dir / "rules" / "artemis.md"
+    assert rule_file.exists()
+    assert "Mobile Testing Mindset" in rule_file.read_text(encoding="utf-8")
+
+
+def test_cli_mcp_install_claude_deletes_block_only_claude_md(tmp_path, monkeypatch):
+    """Verify a CLAUDE.md consisting solely of the injected block is deleted outright."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
+
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir(parents=True)
+    claude_md = claude_dir / "CLAUDE.md"
+    claude_md.write_text(
+        "<!-- BEGIN ARTEMIS MOBILE TESTING RULES -->\nold injected rules\n"
+        "<!-- END ARTEMIS MOBILE TESTING RULES -->\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["mcp", "--install", "claude"])
+    assert result.exit_code == 0
+    assert not claude_md.exists()
+    assert (claude_dir / "rules" / "artemis.md").exists()
+
+
+def test_cli_mcp_install_claude_refuses_unparseable_claude_json(tmp_path, monkeypatch):
+    """Verify an unparseable ~/.claude.json is left untouched instead of being rewritten."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
+
+    corrupt = "{ this is not json at all"
+    claude_json = tmp_path / ".claude.json"
+    claude_json.write_text(corrupt, encoding="utf-8")
+
+    result = runner.invoke(app, ["mcp", "--install", "claude"])
+    assert result.exit_code == 0
+    assert claude_json.read_text(encoding="utf-8") == corrupt
 
 
 def test_cli_mcp_install_codex_preserves_config_and_is_idempotent(tmp_path, monkeypatch):
@@ -333,3 +397,161 @@ def test_cli_mcp_install_openclaw_migrates_legacy_plugin_shape(tmp_path, monkeyp
     assert data["mcp"]["servers"]["artemis"]["command"]
 
 
+def test_cli_restart_help():
+    """Verify 'artemis restart --help' displays lifecycle options."""
+    result = runner.invoke(app, ["restart", "--help"])
+    assert result.exit_code == 0
+    assert "--port" in result.output
+    assert "--host" in result.output
+    assert "--force" in result.output
+    assert "--daemon" in result.output
+    assert "--open" in result.output
+
+
+def test_cli_stop_help():
+    """Verify 'artemis stop --help' displays stop options."""
+    result = runner.invoke(app, ["stop", "--help"])
+    assert result.exit_code == 0
+    assert "--port" in result.output
+    assert "--force" in result.output
+
+
+def test_cli_status_help():
+    """Verify 'artemis status --help' displays status options."""
+    result = runner.invoke(app, ["status", "--help"])
+    assert result.exit_code == 0
+    assert "--port" in result.output
+
+
+def test_cli_status_offline(monkeypatch):
+    """Verify 'artemis status' reports offline when port is unused."""
+    from artemis.runtime import server_lifecycle
+
+    monkeypatch.setattr(server_lifecycle, "is_port_in_use", lambda port, **kwargs: False)
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [])
+    monkeypatch.setattr(server_lifecycle, "read_server_info", lambda: None)
+
+    result = runner.invoke(app, ["status", "--port", "59998"])
+    assert result.exit_code == 0
+    assert "OFFLINE" in result.output or "STOPPED" in result.output
+
+
+def test_cli_status_online(monkeypatch):
+    """Verify 'artemis status' reports online details when server is active."""
+    from artemis.runtime import server_lifecycle
+
+    monkeypatch.setattr(server_lifecycle, "is_port_in_use", lambda port, **kwargs: True)
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [12345])
+    monkeypatch.setattr(
+        server_lifecycle,
+        "read_server_info",
+        lambda: {"pid": 12345, "port": 8000, "started_at": 1000.0, "cwd": "/tmp"},
+    )
+
+    result = runner.invoke(app, ["status", "--port", "8000"])
+    assert result.exit_code == 0
+    assert "ONLINE" in result.output or "RUNNING" in result.output
+    assert "12345" in result.output
+
+
+def test_cli_stop_command(monkeypatch):
+    """Verify 'artemis stop' invokes stop_server with given parameters."""
+    from artemis.interfaces.cli.commands import server_lifecycle as sl_cmd
+
+    mock_called = {}
+
+    def mock_stop(port, timeout=4.0, force=False):
+        mock_called["port"] = port
+        mock_called["force"] = force
+        return True, "Artemis server stopped (PID: 12345).", [12345]
+
+    monkeypatch.setattr(sl_cmd, "find_server_pids", lambda port: [12345])
+    monkeypatch.setattr(sl_cmd, "stop_server", mock_stop)
+
+    result = runner.invoke(app, ["stop", "--port", "8000", "--force"])
+    assert result.exit_code == 0
+    assert mock_called["port"] == 8000
+    assert mock_called["force"] is True
+    assert "stopped successfully" in result.output.lower() or "PID: 12345" in result.output
+
+
+def test_cli_restart_command(monkeypatch):
+    """Verify 'artemis restart' stops previous server and spawns a detached daemon by default."""
+    from unittest.mock import MagicMock
+
+    from artemis.interfaces.cli.commands import server_lifecycle as sl_cmd
+    from artemis.runtime import server_lifecycle
+
+    stopped = {}
+    spawned = {}
+
+    def mock_stop(port, timeout=4.0, force=False):
+        stopped["port"] = port
+        return True, "Stopped server", [12345]
+
+    def mock_spawn(host, port):
+        spawned["host"] = host
+        spawned["port"] = port
+        proc = MagicMock()
+        proc.pid = 54321
+        proc.poll.return_value = None
+        return proc
+
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [12345])
+    monkeypatch.setattr(sl_cmd, "stop_server", mock_stop)
+    monkeypatch.setattr(sl_cmd, "spawn_daemon", mock_spawn)
+    monkeypatch.setattr(sl_cmd, "is_daemon_running", lambda **kwargs: True)
+    monkeypatch.setattr(sl_cmd, "ensure_showcase_built", lambda console: None)
+
+    result = runner.invoke(app, ["restart", "--port", "8888", "--no-open"])
+    assert result.exit_code == 0
+    assert stopped["port"] == 8888
+    assert spawned["port"] == 8888
+    assert "PID: 54321" in result.output
+
+
+def test_cli_restart_foreground_command(monkeypatch):
+    """Verify 'artemis restart --foreground' runs the server attached via ui_command."""
+    from artemis.interfaces.cli.commands import server_lifecycle as sl_cmd
+    from artemis.runtime import server_lifecycle
+
+    stopped = {}
+    ui_called = {}
+
+    def mock_stop(port, timeout=4.0, force=False):
+        stopped["port"] = port
+        return True, "Stopped server", [12345]
+
+    def mock_ui(host, port, open_browser, reload):
+        ui_called["host"] = host
+        ui_called["port"] = port
+        ui_called["open_browser"] = open_browser
+
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [12345])
+    monkeypatch.setattr(sl_cmd, "stop_server", mock_stop)
+    monkeypatch.setattr(sl_cmd, "ui_command", mock_ui)
+
+    result = runner.invoke(app, ["restart", "--port", "8888", "--no-open", "--foreground"])
+    assert result.exit_code == 0
+    assert stopped["port"] == 8888
+    assert ui_called["port"] == 8888
+    assert ui_called["open_browser"] is False
+
+
+def test_cli_server_lifecycle_aliases(monkeypatch):
+    """Verify 'artemis server status/stop/restart' subcommands are accessible."""
+    from artemis.runtime import server_lifecycle
+
+    monkeypatch.setattr(server_lifecycle, "is_port_in_use", lambda port, **kwargs: False)
+    monkeypatch.setattr(server_lifecycle, "find_server_pids", lambda port: [])
+    monkeypatch.setattr(server_lifecycle, "read_server_info", lambda: None)
+
+    result = runner.invoke(app, ["server", "status", "--port", "59998"])
+    assert result.exit_code == 0
+    assert "OFFLINE" in result.output or "STOPPED" in result.output
+
+    help_result = runner.invoke(app, ["server", "--help"])
+    assert help_result.exit_code == 0
+    assert "restart" in help_result.output
+    assert "stop" in help_result.output
+    assert "status" in help_result.output

@@ -25,5 +25,17 @@ def create_device_controller(ctx: ArtemisContext) -> UnifiedMobileController:
 
 
 def get_controller(ctx: ArtemisContext) -> UnifiedMobileController:
-    """Backward-compatible alias for create_device_controller."""
-    return create_device_controller(ctx)
+    """Return the controller shared by one execution context.
+
+    Sharing preserves recording-segment caches and prevents every tool call
+    from constructing a new driver/controller pair.
+    """
+    existing = getattr(ctx, "_mobile_controller", None)
+    if isinstance(existing, UnifiedMobileController):
+        return existing
+    controller = create_device_controller(ctx)
+    try:
+        ctx._mobile_controller = controller
+    except (AttributeError, ValueError):
+        pass
+    return controller

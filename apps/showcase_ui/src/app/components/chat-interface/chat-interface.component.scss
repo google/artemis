@@ -296,11 +296,15 @@ $text-muted: #a1a1aa;
         box-shadow: 0 3px 8px rgba(148, 163, 184, 0.08);
 
         .task-card-header .task-card-header-actions {
-          &:has(.btn-delete-card) .task-time {
+          &:has(.btn-delete-card) .task-time,
+          &:has(.btn-delete-card) .task-time-divider,
+          &:has(.btn-stop-card) .task-time,
+          &:has(.btn-stop-card) .task-time-divider {
             opacity: 0;
           }
 
-          .btn-delete-card {
+          .btn-delete-card,
+          .btn-stop-card {
             opacity: 1;
             pointer-events: auto;
           }
@@ -327,8 +331,11 @@ $text-muted: #a1a1aa;
         display: flex;
         justify-content: space-between;
         align-items: center;
+        gap: 8px;
+        min-width: 0;
 
         .task-badge {
+          flex-shrink: 0;
           display: inline-flex;
           align-items: center;
           font-size: 10.5px;
@@ -405,11 +412,67 @@ $text-muted: #a1a1aa;
         .task-card-header-actions {
           display: flex;
           align-items: center;
+          gap: 4px;
           position: relative;
+          min-width: 0;
+          flex-shrink: 1;
+          justify-content: flex-end;
+
+          .task-device {
+            display: inline-flex;
+            align-items: center;
+            gap: 2.5px;
+            min-width: 0;
+            flex-shrink: 1;
+            font-size: 11px;
+            color: #94a3b8;
+            line-height: 1;
+            cursor: default;
+            transition: color 0.15s ease, opacity 0.15s ease;
+
+            .device-icon {
+              font-size: 12.5px;
+              width: 12.5px;
+              height: 12.5px;
+              line-height: 12.5px;
+              color: #94a3b8;
+              opacity: 0.75;
+              flex-shrink: 0;
+            }
+
+            .device-name {
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+              min-width: 0;
+              font-family: inherit;
+              letter-spacing: -0.15px;
+            }
+
+            &:hover {
+              color: #64748b;
+              .device-icon {
+                color: #64748b;
+                opacity: 1;
+              }
+            }
+          }
+
+          .task-time-divider {
+            font-size: 10px;
+            color: #cbd5e1;
+            line-height: 1;
+            user-select: none;
+            flex-shrink: 0;
+            transition: opacity 0.15s ease;
+          }
 
           .task-time {
             font-size: 11.5px;
             color: #94a3b8;
+            white-space: nowrap;
+            flex-shrink: 0;
+            line-height: 1;
             transition: opacity 0.15s ease;
           }
 
@@ -441,6 +504,43 @@ $text-muted: #a1a1aa;
             &:hover:not(:disabled) {
               color: #ef4444;
               background: #fee2e2;
+            }
+
+            &:disabled {
+              opacity: 0.3;
+              cursor: not-allowed;
+            }
+          }
+
+          .btn-stop-card {
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 20px;
+            height: 20px;
+            padding: 0;
+            border: none;
+            background: transparent;
+            border-radius: 4px;
+            color: #ef4444;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.15s ease;
+
+            .material-symbols-outlined {
+              font-size: 15px;
+              line-height: 1;
+            }
+
+            &:hover:not(:disabled) {
+              color: #dc2626;
+              background: #fee2e2;
+              transform: translateY(-50%) scale(1.1);
             }
 
             &:disabled {

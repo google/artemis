@@ -46,6 +46,69 @@ class VideoAnalyzerConfig(BaseModel):
         default=True,
         description="Whether to enable video action ledger state tracking.",
     )
+    chunk_size_seconds: float = Field(
+        default=60.0,
+        ge=5.0,
+        le=300.0,
+        description="Maximum duration of an initial video-analysis chunk.",
+    )
+    min_chunk_seconds: float = Field(
+        default=4.0,
+        ge=1.0,
+        le=30.0,
+        description="Smallest chunk produced by failure-driven bisection.",
+    )
+    max_split_depth: int = Field(
+        default=4,
+        ge=0,
+        le=8,
+        description="Maximum recursive chunk bisection depth after failures.",
+    )
+    circuit_breaker_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description="Consecutive transient model failures before opening the circuit.",
+    )
+    circuit_breaker_cooldown_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        le=900.0,
+        description="How long an unhealthy video model remains bypassed.",
+    )
+    action_window_seconds: float = Field(
+        default=2.0,
+        ge=0.0,
+        le=10.0,
+        description="Dense-perception window on each side of a recorded mobile action.",
+    )
+    dense_action_fps: float = Field(
+        default=4.0,
+        ge=1.0,
+        le=15.0,
+        description="Frame sampling rate around recorded mobile actions.",
+    )
+    max_dense_action_frames: int = Field(
+        default=24,
+        ge=0,
+        le=120,
+        description="Maximum additional action-proximal keyframes per chunk.",
+    )
+    native_max_retries: int = Field(
+        default=1,
+        ge=0,
+        le=5,
+        description=(
+            "Retries against the native video provider before switching to the "
+            "configured universal fallback. A value of 1 means two total attempts."
+        ),
+    )
+    model_call_timeout_seconds: float = Field(
+        default=120.0,
+        ge=15.0,
+        le=600.0,
+        description="Hard timeout for one native or universal video-model response.",
+    )
     model_config = {"extra": "allow"}
 
 

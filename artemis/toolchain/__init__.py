@@ -14,8 +14,26 @@
 
 """Managed Toolchain and Binary Discovery Subsystem."""
 
+import os
+from pathlib import Path
+
 from artemis.toolchain.descriptors import TOOLS, ToolDescriptor
 from artemis.toolchain.resolver import ToolchainResolver, toolchain
+
+
+def ensure_toolchain_in_path() -> None:
+    """Prepend resolved toolchain paths (e.g. adb, scrcpy, ffmpeg) to process PATH."""
+    for tool_name in ("adb", "ffmpeg", "scrcpy"):
+        tool_path = toolchain.resolve(tool_name)
+        if tool_path:
+            parent_dir = str(Path(tool_path).parent)
+            current_path = os.environ.get("PATH", "")
+            if parent_dir not in current_path.split(os.pathsep):
+                os.environ["PATH"] = f"{parent_dir}{os.pathsep}{current_path}"
+
+
+# Auto-configure process PATH upon import
+ensure_toolchain_in_path()
 
 find_adb = toolchain.find_adb
 find_ffmpeg = toolchain.find_ffmpeg

@@ -72,12 +72,53 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("-p", "--port", type=int, default=8000, help="Port to run UI on")
-    parser.add_argument("-H", "--host", type=str, default="0.0.0.0", help="Host address to bind")
-    parser.add_argument("--no-open", action="store_true", help="Do not automatically open browser")
     parser.add_argument(
-        "--reload", action="store_true", help="Enable uvicorn auto-reload for development"
+        "-H",
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host address to bind (loopback by default; use a tunnel for remote access)",
+    )
+    parser.add_argument(
+        "-r",
+        "--restart",
+        action="store_true",
+        help="Restart the server by terminating any existing instance on the port first",
+    )
+    parser.add_argument(
+        "-s",
+        "--stop",
+        action="store_true",
+        help="Stop running Artemis server on the specified port",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Display status of running Artemis server on the specified port",
     )
     args, unknown = parser.parse_known_args()
+
+    # Ensure project root is on sys.path for lifecycle utility imports
+    if str(ROOT_DIR) not in sys.path:
+        sys.path.insert(0, str(ROOT_DIR))
+
+    from artemis.runtime.server_lifecycle import get_server_status, stop_server
+
+    if args.status:
+        st = get_server_status(args.port)
+        if st["running"]:
+            pid_info = f" (PID: {', '.join(map(str, st['pids']))})" if st["pids"] else ""
+            print(f"\033[1;32m● Artemis Server is RUNNING on port {args.port}{pid_info}\033[0m")
+            print(f"  URL: {st['url']}")
+        else:
+            print(f"\033[1;30m○ Artemis Server is STOPPED (Port {args.port} is free)\033[0m")
+        return
+
+    if args.stop:
+        print(f"\033[1;33m🛑 Stopping Artemis server on port {args.port}...\033[0m")
+        ok, msg, pids = stop_server(args.port)
+        print(f"\033[1;32m✓ {msg}\033[0m")
+        return
 
     ui_url = f"http://localhost:{args.port}"
     admin_url = f"http://localhost:{args.port}/admin"
@@ -86,15 +127,50 @@ def main() -> None:
     print("\033[1;36m      ✨ Artemis Autonomous Mobile Agent UI          \033[0m")
     print("\033[1;36m" + "=" * 56 + "\033[0m\n")
 
+    # Check if restart requested
+    if args.restart:
+        print(f"\033[1;33m🔄 Restart requested. Recycling port {args.port}...\033[0m")
+        ok, msg, pids = stop_server(args.port)
+        if pids:
+            print(f"\033[1;32m✓ {msg}\033[0m\n")
+        else:
+            print(f"Port {args.port} is clear.\n")
+
     # Check if server is already running
-    if is_port_in_use(args.port):
+    elif is_port_in_use(args.port):
         if is_artemis_ui_responsive(ui_url):
             print(f"\033[1;32m✓ Artemis UI is already running at:\033[0m \033[1;36m{ui_url}\033[0m")
             print(f"\033[1;35m🛠️ Admin Console:\033[0m \033[1;36m{admin_url}\033[0m\n")
-            if not args.no_open:
-                print("🌐 Opening browser...")
-                webbrowser.open(ui_url)
-            return
+
+            # In interactive terminal, allow user to restart or open browser
+            if sys.stdin.isatty():
+                print("Server is active in another session/terminal.")
+                print("  [1] Open browser (default)")
+                print("  [2] Restart server (stop existing and start here)")
+                print("  [3] Stop server")
+                try:
+                    choice = input("Select [1-3, default 1]: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    choice = "1"
+
+                if choice == "2":
+                    print(f"\n\033[1;33m🔄 Restarting Artemis server on port {args.port}...\033[0m")
+                    stop_server(args.port)
+                elif choice == "3":
+                    print(f"\n\033[1;33m🛑 Stopping Artemis server on port {args.port}...\033[0m")
+                    ok, msg, _ = stop_server(args.port)
+                    print(f"\033[1;32m✓ {msg}\033[0m")
+                    return
+                else:
+                    if not args.no_open:
+                        print("🌐 Opening browser...")
+                        webbrowser.open(ui_url)
+                    return
+            else:
+                if not args.no_open:
+                    print("🌐 Opening browser...")
+                    webbrowser.open(ui_url)
+                return
         else:
             print(f"\033[1;33m⚠️ Port {args.port} is in use by another process.\033[0m")
             print("Attempting to connect or start on specified port...")
@@ -111,7 +187,9 @@ def main() -> None:
 
     cmd = []
     if has_uv and (ROOT_DIR / "pyproject.toml").exists():
-        cmd = ["uv", "run", "artemis", "ui", "--port", str(args.port), "--host", args.host]
+        # Launch via `python -m artemis` (not the `artemis` console-script shim) so the
+        # long-running server never locks .venv/Scripts/artemis.exe against reinstalls.
+        cmd = ["uv", "run", "python", "-m", "artemis", "ui", "--port", str(args.port), "--host", args.host]
         if args.no_open:
             cmd.append("--no-open")
         if args.reload:

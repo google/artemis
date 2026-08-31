@@ -22,18 +22,27 @@ import sys
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+import typer
 
 from artemis.config import (
     parse_llm_config,
     settings,
 )
 from artemis.config.paths import ROOT_DIR
+from artemis.core.diagnostics.adb_keys import heal_adb_keys, inspect_adb_keys
 from artemis.platform import OSType, platform
 from artemis.toolchain import toolchain
 from artemis.utils.ocr_api import is_ocr_configured
 
 
-def doctor_command() -> None:
+def doctor_command(
+    fix: bool = typer.Option(
+        False,
+        "--fix",
+        "-f",
+        help="Automatically repair fixable environment issues (such as corrupted ADB authentication keys).",
+    ),
+) -> None:
     """Run diagnostics to inspect system dependencies, device connectivity, and configuration."""
     console = Console()
     console.print()
@@ -101,6 +110,44 @@ def doctor_command() -> None:
             "Android ADB",
             "[bold red]✖ Missing[/bold red]",
             f"adb not found in PATH or Android SDK. {hint}",
+        )
+
+    # 2b. ADB Authentication RSA Keys Check
+    key_status = inspect_adb_keys()
+    if key_status.is_corrupted:
+        if fix:
+            heal_result = heal_adb_keys(adb_path=adb_path)
+            if heal_result.get("success"):
+                table.add_row(
+                    "ADB Auth Keys",
+                    "[bold green]✔ Repaired[/bold green]",
+                    "Corrupted RSA keys detected and automatically regenerated.",
+                )
+            else:
+                all_passed = False
+                table.add_row(
+                    "ADB Auth Keys",
+                    "[bold red]✖ Error[/bold red]",
+                    f"Failed to auto-heal keys: {heal_result.get('message')}",
+                )
+        else:
+            all_passed = False
+            table.add_row(
+                "ADB Auth Keys",
+                "[bold red]✖ Corrupted[/bold red]",
+                f"{key_status.error_reason} Run [bold cyan]artemis doctor --fix[/bold cyan] to auto-repair.",
+            )
+    elif key_status.exists:
+        table.add_row(
+            "ADB Auth Keys",
+            "[bold green]✔ OK[/bold green]",
+            f"{key_status.key_path} ({key_status.key_size_bytes} bytes RSA)",
+        )
+    else:
+        table.add_row(
+            "ADB Auth Keys",
+            "[bold cyan]○ Ready[/bold cyan]",
+            "Keys will be generated automatically on first device connection.",
         )
 
     # 3. Connected Android Devices

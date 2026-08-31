@@ -9,6 +9,12 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[manifest]
+members = [
+    "artemis",
+    "artemis-client",
+]
+
 [[package]]
 name = "adbutils"
 version = "2.12.0"
@@ -223,6 +229,7 @@ version = "1.0"
 source = { editable = "." }
 dependencies = [
     { name = "adbutils" },
+    { name = "artemis-client" },
     { name = "colorama" },
     { name = "fastapi" },
     { name = "google-genai" },
@@ -288,6 +295,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "adbutils", specifier = ">=2.12.0" },
+    { name = "artemis-client", editable = "packages/artemis-client" },
     { name = "colorama", specifier = ">=0.4.6" },
     { name = "fastapi", specifier = ">=0.111.0" },
     { name = "google-genai", specifier = ">=0.1.1" },
@@ -346,6 +354,11 @@ dev = [
     { name = "pytest-cov", specifier = ">=5.0.0" },
     { name = "ruff", specifier = ">=0.15.2" },
 ]
+
+[[package]]
+name = "artemis-client"
+version = "0.1.0"
+source = { editable = "packages/artemis-client" }
 
 [[package]]
 name = "asttokens"

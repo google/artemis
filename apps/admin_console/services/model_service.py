@@ -13,49 +13,65 @@
 # limitations under the License.
 
 import json
+import time
 from typing import Any
 
 
 class ModelService:
-    """Service handling model profile detection and metadata formatting."""
+    """Service handling agent architecture profile detection and metadata formatting."""
 
-    @staticmethod
-    def get_active_model_info(profile: str | None = None) -> dict[str, str]:
-        if profile:
-            p_lower = str(profile).lower()
-            if "pro" in p_lower:
-                return {
-                    "name": "Pro",
-                    "id": "gemini-3.7-pro",
-                    "provider": "google",
-                }
-            elif "flash" in p_lower:
-                return {
-                    "name": "Flash",
-                    "id": "gemini-3.7-flash",
-                    "provider": "google",
-                }
+    # parse_llm_config re-reads and re-validates the config file on every call;
+    # /api/sessions calls this once per session row, so cache (provider, model_id)
+    # for a short TTL. Config edits take effect within _LLM_INFO_TTL seconds.
+    _LLM_INFO_TTL = 10.0
+    _llm_info_cache: tuple[float, str, str] | None = None
 
-        model_name = "Flash"
-        model_id = "gemini-3.7-flash"
+    @classmethod
+    def _get_llm_provider_and_model(cls) -> tuple[str, str]:
+        cached = cls._llm_info_cache
+        now = time.monotonic()
+        if cached and now - cached[0] < cls._LLM_INFO_TTL:
+            return cached[1], cached[2]
         provider = "google"
+        model_id = "gemini-3.7-flash"
         try:
             from artemis.config import parse_llm_config
 
             llm_cfg = parse_llm_config()
             if llm_cfg and llm_cfg.operator:
-                op_model = str(llm_cfg.operator.model).lower()
                 provider = str(llm_cfg.operator.provider)
-                model_id = llm_cfg.operator.model
-                if "pro" in op_model:
-                    model_name = "Pro"
-                elif "flash" in op_model:
-                    model_name = "Flash"
-                else:
-                    model_name = llm_cfg.operator.model.capitalize()
+                model_id = str(llm_cfg.operator.model)
+            elif llm_cfg and llm_cfg.default:
+                provider = str(llm_cfg.default.provider)
+                model_id = str(llm_cfg.default.model)
         except Exception:
             pass
-        return {"name": model_name, "id": model_id, "provider": provider}
+        cls._llm_info_cache = (now, provider, model_id)
+        return provider, model_id
+
+    @classmethod
+    def get_active_model_info(cls, profile: str | None = None) -> dict[str, str]:
+        """Return active architecture and underlying LLM model configuration."""
+        # 1. Determine underlying LLM model and provider from config (cached)
+        provider, model_id = cls._get_llm_provider_and_model()
+
+        # 2. Determine agent architecture name (Flash vs Pro)
+        arch_name = "Flash"
+        if profile:
+            p_lower = str(profile).lower()
+            if "pro" in p_lower:
+                arch_name = "Pro"
+            elif "flash" in p_lower:
+                arch_name = "Flash"
+            else:
+                arch_name = str(profile).capitalize()
+
+        return {
+            "name": arch_name,
+            "id": model_id,
+            "provider": provider,
+            "architecture": f"ARTEMIS {arch_name}",
+        }
 
     @staticmethod
     def resolve_session_profile(
@@ -64,6 +80,7 @@ class ModelService:
         running_profile: str | None = None,
         agent_names: list[str] | None = None,
     ) -> str | None:
+        """Resolve the Artemis agent architecture profile ('flash' or 'pro') for a session."""
         sess_profile = None
         d_info_raw = row_dict.get("device_info")
         if d_info_raw:
@@ -98,7 +115,7 @@ class ModelService:
             if any("flashrunner" in name for name in agent_names_lower):
                 return "flash"
 
-        # Check LLM traces for agent name or model overrides
+        # Check LLM traces for agent name
         if llm_trace_payloads:
             for tr_payload in llm_trace_payloads:
                 if tr_payload:
@@ -113,16 +130,6 @@ class ModelService:
                             if any(
                                 x in agent_name
                                 for x in ("planner", "validator", "operator", "checker")
-                            ):
-                                return "pro"
-
-                            m_str = str(p_obj.get("model") or p_obj.get("model_name") or "").lower()
-                            if (
-                                "gemini-3.7-pro" in m_str
-                                or "gemini-3.6-pro" in m_str
-                                or "gemini-1.5-pro" in m_str
-                                or "gpt-4" in m_str
-                                or "claude" in m_str
                             ):
                                 return "pro"
                     except Exception:

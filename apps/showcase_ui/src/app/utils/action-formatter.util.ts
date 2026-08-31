@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ActionParam } from '../core/models/stream.model';
+import { ActionParam, StepReplayFrame } from '../core/models/stream.model';
 import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequenceCoordinates } from './image-overlay.util';
 import { cleanErrorMessage } from './tool-formatter.util';
 
@@ -33,9 +33,15 @@ export function getActionObject(action: any): any {
  * Check if the action is a user interaction action on Android
  */
 export function isAndroidAction(action: any): boolean {
-  const act = getActionObject(action);
-  if (!act) return false;
-  const name = (act.name || act.action || '').toLowerCase();
+  if (!action) return false;
+  let name = '';
+  if (typeof action === 'string') {
+    name = action.toLowerCase();
+  } else {
+    const act = getActionObject(action);
+    if (!act) return false;
+    name = (act.name || act.action || '').toLowerCase();
+  }
   return [
     'tap', 'click', 'click_sequence', 'input', 'input_text', 'swipe', 'scroll', 'press_key', 
     'press_home', 'press_back', 'launch_app', 'manage_app', 'open_app',
@@ -48,9 +54,16 @@ export function isAndroidAction(action: any): boolean {
  * Check if the action or tool is a task completion / submission report
  */
 export function isReportStatusAction(action: any): boolean {
-  const act = getActionObject(action);
-  if (!act) return false;
-  const name = (act.name || act.action || '').toLowerCase().replace(/^(_)?(self\.)?exec_/, '');
+  if (!action) return false;
+  let name = '';
+  if (typeof action === 'string') {
+    name = action.toLowerCase();
+  } else {
+    const act = getActionObject(action);
+    if (!act) return false;
+    name = (act.name || act.action || '').toLowerCase();
+  }
+  name = name.replace(/^(_)?(self\.)?exec_/, '');
   return name === 'report_task_status' || name === 'report_status' || name === 'submit_task_status';
 }
 
@@ -698,7 +711,7 @@ export function resolveStepImageMap(stepData: any): Map<any, ResolvedImageEntry>
     if (explicitPost) {
       resolvedPost = explicitPost;
       hasExplicitPost = true;
-    } else if (e.isPrimary && !hadPrimaryFailure && !hasSubsequentActions) {
+    } else if (e.isPrimary && !hadPrimaryFailure) {
       resolvedPost = stepData.post_image_name || stepData.post_screenshot || null;
     } else if (e.item === lastActionItem && !hadPrimaryFailure) {
       resolvedPost = stepData.post_image_name || stepData.post_screenshot || null;
@@ -706,7 +719,7 @@ export function resolveStepImageMap(stepData: any): Map<any, ResolvedImageEntry>
       resolvedPost = stepData.post_image_name || stepData.post_screenshot || null;
     }
 
-    // "下一次的决策前是上一次的动作后"
+    // "The next pre-action state is the previous post-action state"
     if (resolvedPost) {
       currentPreImage = resolvedPost;
     }
@@ -764,4 +777,174 @@ export function getStepPostImageUrl(stepData: any, actionData?: any): string | n
     return null;
   }
   return postUrl;
+}
+
+/**
+ * Extract an ordered array of visual StepReplayFrames from session logs or step blocks
+ */
+export function extractStepReplayFrames(logsOrSteps: any[]): StepReplayFrame[] {
+  if (!Array.isArray(logsOrSteps) || logsOrSteps.length === 0) {
+    return [];
+  }
+
+  // Extract raw step data objects
+  const rawSteps: any[] = [];
+  for (const item of logsOrSteps) {
+    if (!item) continue;
+    if ((item.type === 'step_updated' || item.type === 'step_recorded' || item.type === 'step') && item.data) {
+      rawSteps.push(item.data);
+    } else if (item.step_number !== undefined || item.step_id !== undefined) {
+      rawSteps.push(item);
+    }
+  }
+
+  // Unified dual-indexed step store: correlates by step_id and step_number
+  const stepsList: any[] = [];
+  const idToIndex = new Map<string, number>();
+  const numToIndex = new Map<number, number>();
+
+  for (const step of rawSteps) {
+    const stepId = (step.step_id !== undefined && step.step_id !== null && String(step.step_id).trim() !== '')
+      ? String(step.step_id).trim()
+      : null;
+    const stepNum = (step.step_number !== undefined && step.step_number !== null)
+      ? Number(step.step_number)
+      : null;
+
+    let targetIndex = -1;
+    if (stepId && idToIndex.has(stepId)) {
+      targetIndex = idToIndex.get(stepId)!;
+    } else if (stepNum !== null && numToIndex.has(stepNum)) {
+      targetIndex = numToIndex.get(stepNum)!;
+    }
+
+    if (targetIndex >= 0) {
+      const existing = stepsList[targetIndex];
+
+      // When merging duplicate records (e.g. status reports vs real physical actions):
+      const existingAct = existing.action_taken;
+      const newAct = step.action_taken;
+      const preferExistingAction = existingAct && isAndroidAction(existingAct) && isReportStatusAction(newAct);
+      const preferNewAction = newAct && isAndroidAction(newAct) && isReportStatusAction(existingAct);
+
+      const mergedStepNum = (stepNum !== null) ? stepNum : existing.step_number;
+      const mergedStepId = existing.step_id || step.step_id;
+
+      const merged = {
+        ...existing,
+        ...step,
+        step_id: mergedStepId,
+        step_number: mergedStepNum,
+        pre_image_name: preferExistingAction
+          ? existing.pre_image_name
+          : (step.pre_image_name || existing.pre_image_name),
+        post_image_name: preferExistingAction
+          ? (existing.post_image_name || step.post_image_name)
+          : (step.post_image_name || existing.post_image_name),
+        pre_screenshot: preferExistingAction
+          ? existing.pre_screenshot
+          : (step.pre_screenshot || existing.pre_screenshot),
+        post_screenshot: preferExistingAction
+          ? (existing.post_screenshot || step.post_screenshot)
+          : (step.post_screenshot || existing.post_screenshot),
+        action_taken: preferExistingAction
+          ? existing.action_taken
+          : (preferNewAction ? newAct : (step.action_taken || existing.action_taken)),
+        last_execution_result: step.last_execution_result || existing.last_execution_result,
+        summary: preferExistingAction
+          ? (existing.summary || step.summary)
+          : (step.summary || existing.summary),
+        operator_raw_thinking: step.operator_raw_thinking || existing.operator_raw_thinking,
+        operator_native_thinking: step.operator_native_thinking || existing.operator_native_thinking,
+        generic_tools: step.generic_tools || existing.generic_tools,
+        timestamp: existing.timestamp || step.timestamp
+      };
+
+      stepsList[targetIndex] = merged;
+      if (mergedStepId) idToIndex.set(String(mergedStepId), targetIndex);
+      if (mergedStepNum !== undefined && mergedStepNum !== null) {
+        numToIndex.set(Number(mergedStepNum), targetIndex);
+      }
+    } else {
+      const newIndex = stepsList.length;
+      stepsList.push({ ...step });
+      if (stepId) idToIndex.set(stepId, newIndex);
+      if (stepNum !== null) numToIndex.set(stepNum, newIndex);
+    }
+  }
+
+  // Pre-resolve candidate images and actions for every step
+  interface VisualCandidate {
+    stepData: any;
+    act: any;
+    preUrl: string | null;
+    postUrl: string | null;
+    primaryImg: string;
+  }
+
+  const visualCandidates: VisualCandidate[] = [];
+
+  for (const stepData of stepsList) {
+    const act = stepData.action_taken;
+    const preUrl = getStepPreImageUrl(stepData, act);
+    const postUrl = getStepPostImageUrl(stepData, act);
+    const primaryImg = preUrl || postUrl;
+
+    // Only steps with a resolvable screen image qualify as replay frames
+    if (primaryImg) {
+      visualCandidates.push({
+        stepData,
+        act,
+        preUrl,
+        postUrl,
+        primaryImg
+      });
+    }
+  }
+
+  // Sort strictly by original step_number ascending, then by timestamp
+  visualCandidates.sort((a, b) => {
+    const numA = Number(a.stepData.step_number ?? 99999);
+    const numB = Number(b.stepData.step_number ?? 99999);
+    if (numA !== numB) return numA - numB;
+    return Number(a.stepData.timestamp ?? 0) - Number(b.stepData.timestamp ?? 0);
+  });
+
+  // Construct guaranteed sequential 1-indexed frames
+  const frames: StepReplayFrame[] = [];
+
+  for (let i = 0; i < visualCandidates.length; i++) {
+    const { stepData, act, preUrl, postUrl, primaryImg } = visualCandidates[i];
+    const stepNum = i + 1; // 1-indexed sequential frame number (1, 2, 3...)
+    const title = act ? (getActionTitle(act) || 'Action') : `Step ${stepNum}`;
+    const coords = act ? getActionCoords(act) : '';
+    const targetText = act ? getActionTargetText(act) : '';
+    const actionDesc = coords ? `${title} (${coords})` : (targetText ? `${title} (${targetText})` : title);
+    const failed = isActionFailed(act, stepData);
+    const rawStepNum = (stepData.step_number !== undefined && stepData.step_number !== null)
+      ? Number(stepData.step_number)
+      : stepNum;
+
+    frames.push({
+      index: i,
+      stepNumber: stepNum,
+      rawStepNumber: rawStepNum,
+      stepId: String(stepData.step_id || `step-${stepNum}`),
+      title: `Step ${stepNum}: ${title}`,
+      actionText: actionDesc,
+      action: act,
+      actionType: act?.action || act?.name || 'action',
+      targetText,
+      coords,
+      imageUrl: primaryImg,
+      preImageUrl: preUrl,
+      postImageUrl: postUrl,
+      isPost: false,
+      timestamp: stepData.timestamp,
+      summary: stepData.summary || '',
+      status: failed ? 'failed' : 'success'
+    });
+  }
+
+  return frames;
 }

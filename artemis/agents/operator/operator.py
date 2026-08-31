@@ -93,6 +93,7 @@ from artemis.agents.operator.prompts import (
     ToolLimitWarningPromptComponent,
     InjectedInstructionPromptComponent,
 )
+from artemis.agents.operator.prompt_builder import load_operator_prompts
 
 
 class OperatorNode:
@@ -107,13 +108,35 @@ class OperatorNode:
         self.tools = tools or []
         self.prompt_components = prompt_components or []
         self.last_n_detailed = last_n_detailed
-        self.prompts = {}
-        prompts_path = Path(__file__).parent / "operator.json"
-        if prompts_path.exists():
+        try:
+            self.prompts = load_operator_prompts()
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to load operator prompts: {e}")
+            self.prompts = {}
+
+    def _available_device_actions(self) -> frozenset[str]:
+        """Device actions the installed actuator backend provides.
+
+        Without an explicit ``ctx.actuator`` the full manifest set applies (the
+        default AdbActuator implements everything), so behavior is unchanged until a
+        partial backend is actually installed.
+        """
+        from artemis.mcp.action_manifest import (
+            OPTIONAL_ACTIONS,
+            REQUIRED_ACTIONS,
+            available_device_actions,
+        )
+
+        actuator = getattr(self.ctx, "actuator", None)
+        if actuator is not None and callable(getattr(actuator, "capabilities", None)):
             try:
-                self.prompts = json.loads(prompts_path.read_text(encoding="utf-8"))
+                extension_names = frozenset(
+                    e.name for e in actuator.extensions() if "operator" in e.targets
+                )
+                return available_device_actions(actuator) | extension_names
             except Exception as e:
-                logger.error(f"Failed to load operator prompts: {e}")
+                logger.warning(f"Failed to read actuator capabilities: {e}")
+        return REQUIRED_ACTIONS | OPTIONAL_ACTIONS
 
     def _check_infinite_loop(self, state: State):
         subagent_calls = state.subagent_calls or []
@@ -387,15 +410,9 @@ class OperatorNode:
 
             current_messages.append(response)
 
-            action_tool_names = [
-                "click",
-                "input_text",
-                "swipe",
-                "press_key",
-                "manage_app",
-                "wait_for_delay",
-                "long_press",
-            ]
+            # Manifest-driven, so a backend's extension actions are classified as
+            # turn-ending device actions without touching this file.
+            action_tool_names = sorted(self._available_device_actions())
 
             def normalize_name(name: str) -> str:
                 return name.split(":")[-1] if ":" in name else name
@@ -594,8 +611,9 @@ class OperatorNode:
                                         " screen action you attempted to"
                                         " execute was rejected because you are"
                                         " not allowed to simultaneously"
-                                        " read/write memory and execute"
-                                        " physical actions in the same turn."
+                                        " use result-dependent pre-decision"
+                                        " tools and execute physical actions in"
+                                        " the same turn."
                                         " Currently, no screen actions have"
                                         " been executed. Please review your"
                                         " updated context and re-output your"
@@ -614,9 +632,9 @@ class OperatorNode:
                                         " successfully processed. However, your"
                                         " response to the checker was rejected"
                                         " because you are not allowed to"
-                                        " simultaneously read/write memory and"
-                                        " reply to the checker in the same"
-                                        " turn. Currently, no response has been"
+                                        " simultaneously use result-dependent"
+                                        " pre-decision tools and reply to the"
+                                        " checker. Currently, no response has been"
                                         " sent to the checker. Please review"
                                         " your updated context and re-output"
                                         " your reply."
@@ -804,23 +822,24 @@ class OperatorNode:
 
         current_step_num = len(steps) + 1
 
-        # 5. Prepare Tools
-        click_tool = self._get_click_tool()
-        input_text_tool = self._get_input_text_tool()
-        swipe_tool = self._get_swipe_tool()
-        press_key_tool = self._get_press_key_tool()
-        manage_app_tool = self._get_manage_app_tool()
-        wait_for_delay_tool = self._get_wait_for_delay_tool()
-        long_press_tool = self._get_long_press_tool()
-
+        # 5. Prepare Tools. Device-action declarations are assembled against the
+        # installed actuator backend's capabilities: an action the backend does not
+        # implement is simply never declared (and the prompt assembly drops its
+        # teaching segments in lockstep).
+        available_actions = self._available_device_actions()
+        action_tool_factories = {
+            "click": self._get_click_tool,
+            "input_text": self._get_input_text_tool,
+            "swipe": self._get_swipe_tool,
+            "press_key": self._get_press_key_tool,
+            "manage_app": self._get_manage_app_tool,
+            "wait_for_delay": self._get_wait_for_delay_tool,
+            "long_press": self._get_long_press_tool,
+        }
         all_tools = [
-            click_tool,
-            input_text_tool,
-            swipe_tool,
-            press_key_tool,
-            manage_app_tool,
-            wait_for_delay_tool,
-            long_press_tool,
+            factory()
+            for name, factory in action_tool_factories.items()
+            if name in available_actions
         ] + self.tools
 
         if self._has_checker_feedback():

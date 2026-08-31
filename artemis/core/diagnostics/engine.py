@@ -15,11 +15,11 @@
 """System Readiness & Diagnostic Orchestration Engine."""
 
 import asyncio
-import shutil
 import subprocess
 import time
 from typing import Any
 
+from artemis.core.diagnostics.adb_server_connection import adb_server_connection
 from artemis.core.diagnostics.probes.adb_probe import AdbDeviceProbe
 from artemis.core.diagnostics.probes.base import BaseProbe
 from artemis.core.diagnostics.probes.credentials_probe import (
@@ -38,8 +38,8 @@ from artemis.core.diagnostics.schema import (
     ProbeStatus,
     SystemReadinessReport,
 )
-from artemis.platform import platform
 from artemis.toolchain import toolchain
+from artemis.platform import platform
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -47,6 +47,8 @@ logger = get_logger(__name__)
 
 class ReadinessEngine:
     """Central orchestration engine executing modular readiness probes."""
+
+    _REPORT_CACHE_TTL_SECONDS = 2.0
 
     def __init__(self):
         self._probes: dict[str, BaseProbe] = {}
@@ -57,6 +59,11 @@ class ReadinessEngine:
         self._credentials_probe = LLMCredentialsProbe()
         self._ocr_probe = VisionOCRProbe()
         self._adb_probe = AdbDeviceProbe()
+        self._report_cache: SystemReadinessReport | None = None
+        self._report_cache_time = 0.0
+        self._report_cache_generation = -1
+        self._cache_generation = 0
+        self._report_lock = asyncio.Lock()
 
         # Register default core probes in logical lifecycle order
         self.register_probe(self._python_probe)
@@ -77,12 +84,20 @@ class ReadinessEngine:
     def set_active_device_serial(self, serial: str | None) -> None:
         """Set user-selected active target device serial."""
         self._active_device_serial = serial
+        self.invalidate_cache()
         if hasattr(self._adb_probe, "set_target_serial"):
             self._adb_probe.set_target_serial(serial)
 
     def get_active_device_serial(self) -> str | None:
         """Get currently selected active device serial."""
-        return self._active_device_serial
+        if self._report_cache and self._report_cache.active_device:
+            if self._report_cache.active_device.is_locked is False:
+                return self._report_cache.active_device.serial
+        if self._active_device_serial:
+            return self._active_device_serial
+        if self._report_cache and self._report_cache.active_device:
+            return self._report_cache.active_device.serial
+        return None
 
     async def run_probe(self, probe_id: str) -> ProbeResult | None:
         """Execute a single specific probe by ID."""
@@ -91,9 +106,78 @@ class ReadinessEngine:
             return None
         return await probe.probe()
 
-    async def run_all(self, categories: list[ProbeCategory] | None = None) -> SystemReadinessReport:
-        """Concurrently run all registered diagnostic probes and compile report."""
-        toolchain.clear_cache()
+    async def run_device_submission_probe(self, target_serial: str | None = None) -> ProbeResult:
+        """Run the bounded device gate used by task submission."""
+        return await self._adb_probe.probe_submission_readiness(target_serial=target_serial)
+
+    def invalidate_cache(self) -> None:
+        """Invalidate the UI readiness snapshot after an explicit configuration change."""
+        self._cache_generation += 1
+        self._report_cache = None
+        self._report_cache_time = 0.0
+        self._report_cache_generation = -1
+
+    def _cached_report(self, max_age_seconds: float) -> SystemReadinessReport | None:
+        if self._report_cache is None:
+            return None
+        if self._report_cache_generation != self._cache_generation:
+            return None
+        if time.monotonic() - self._report_cache_time > max_age_seconds:
+            return None
+        return self._report_cache.model_copy(deep=True)
+
+    async def run_all(
+        self,
+        categories: list[ProbeCategory] | None = None,
+        *,
+        force_refresh: bool = False,
+    ) -> SystemReadinessReport:
+        """Return a coalesced readiness snapshot.
+
+        The dashboard polls frequently, so allowing every HTTP request to launch a
+        complete toolchain and ADB scan creates a request storm. Full reports are
+        cached briefly and all concurrent refreshes share one execution. The task
+        submission gate remains independent and always performs its own bounded
+        device check.
+        """
+        cacheable = categories is None
+        request_started = time.monotonic()
+        if cacheable and not force_refresh:
+            cached = self._cached_report(self._REPORT_CACHE_TTL_SECONDS)
+            if cached is not None:
+                return cached
+
+        async with self._report_lock:
+            # A refresh that completed while this caller waited satisfies even a
+            # forced request that began before it, coalescing concurrent clicks.
+            if cacheable and self._report_cache_time >= request_started:
+                cached = self._cached_report(float("inf"))
+                if cached is not None:
+                    return cached
+            if cacheable and not force_refresh:
+                cached = self._cached_report(self._REPORT_CACHE_TTL_SECONDS)
+                if cached is not None:
+                    return cached
+
+            if force_refresh:
+                toolchain.clear_cache()
+                self._adb_probe.invalidate_enrichment_cache()
+
+            build_generation = self._cache_generation
+            report = await self._build_report(categories)
+            # If a device/configuration change happened during the scan, return
+            # this result only to its original caller and never publish it as the
+            # shared snapshot for later requests.
+            if cacheable and build_generation == self._cache_generation:
+                self._report_cache = report.model_copy(deep=True)
+                self._report_cache_time = time.monotonic()
+                self._report_cache_generation = build_generation
+            return report
+
+    async def _build_report(
+        self, categories: list[ProbeCategory] | None = None
+    ) -> SystemReadinessReport:
+        """Execute the underlying probes and compile an uncached report."""
         target_probes = [
             probe
             for probe in self._probes.values()
@@ -129,11 +213,40 @@ class ReadinessEngine:
             timestamp=time.time(),
         )
 
+    async def heal_adb_keys(self, force: bool = False) -> dict[str, Any]:
+        """Auto-heal corrupted or 0-byte ADB authentication keys."""
+        from artemis.core.diagnostics.adb_keys import heal_adb_keys
+
+        logger.info("[ReadinessEngine] Auto-healing ADB authentication keys...")
+        return await asyncio.to_thread(heal_adb_keys, None, force)
+
     async def restart_adb_server(self) -> dict[str, Any]:
-        """Execute adb kill-server && adb start-server to recover connectivity."""
-        adb_path = shutil.which("adb") or "adb"
+        """Execute adb kill-server && adb start-server to recover connectivity, auto-healing corrupted keys if needed."""
+        from artemis.core.diagnostics.adb_keys import heal_adb_keys, inspect_adb_keys
+
+        endpoint = adb_server_connection.current_endpoint()
+        if not endpoint.is_local_default:
+            return {
+                "success": True,
+                "skipped": True,
+                "message": (
+                    "Remote ADB is active. Artemis refreshed device discovery without stopping "
+                    "the active ADB server endpoint."
+                ),
+                "endpoint": endpoint.to_dict(),
+            }
+
+        adb_path = toolchain.resolve("adb") or "adb"
 
         def _restart_sync():
+            # If keys are corrupted, heal them first
+            key_status = inspect_adb_keys()
+            if key_status.is_corrupted:
+                logger.warning(
+                    f"[ReadinessEngine] Corrupted ADB keys detected ({key_status.error_reason}). Auto-healing..."
+                )
+                return heal_adb_keys(adb_path=adb_path)
+
             try:
                 subprocess.run(
                     [adb_path, "kill-server"],
@@ -166,6 +279,20 @@ class ReadinessEngine:
 
     async def launch_emulator(self, avd_name: str) -> dict[str, Any]:
         """Launch an Android emulator by AVD name in the background and track its lifecycle."""
+        if not adb_server_connection.current_endpoint().is_local_default:
+            return {
+                "avd_name": avd_name,
+                "status": "failed",
+                "pid": None,
+                "serial": None,
+                "error": "Switch to local ADB before launching a local emulator.",
+                "stage_message": "Local ADB is not active",
+                "progress_percent": 0,
+                "started_at": None,
+                "elapsed_seconds": 0,
+                "logs": [],
+                "can_retry": True,
+            }
         from artemis.core.diagnostics.emulator_manager import emulator_manager
 
         state = await emulator_manager.launch(avd_name)
@@ -191,11 +318,16 @@ class ReadinessEngine:
 
     async def connect_wireless_adb(self, host: str, port: int = 5555) -> dict[str, Any]:
         """Connect to an Android device over Wi-Fi via adb connect."""
+        if not adb_server_connection.current_endpoint().is_local_default:
+            return {
+                "success": False,
+                "message": "Switch to local ADB before connecting a Wireless ADB device.",
+            }
         clean_host = host.strip()
         if not clean_host:
             return {"success": False, "message": "Host IP address cannot be empty"}
         target = f"{clean_host}:{port}"
-        adb_path = shutil.which("adb") or "adb"
+        adb_path = toolchain.resolve("adb") or "adb"
 
         def _connect_sync():
             try:

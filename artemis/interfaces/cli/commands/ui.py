@@ -15,6 +15,8 @@
 """UI Launch and Web Console CLI Command (artemis ui)."""
 
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -25,6 +27,40 @@ import webbrowser
 from rich.console import Console
 from rich.panel import Panel
 import typer
+
+
+def running_via_console_script_shim() -> bool:
+    """Return True when this CLI was launched through a console-script ``.exe`` shim.
+
+    On Windows, ``uv``/pip install entry points as trampoline executables
+    (``Scripts/artemis.exe``) that stay resident for the lifetime of the CLI
+    process and hold a lock on their own file. A long-running foreground server
+    started through the shim therefore blocks ``uv sync`` from reinstalling the
+    package ("os error 32") until the server exits. Launching via
+    ``python -m artemis`` avoids the shim entirely.
+    """
+    if sys.platform != "win32":
+        return False
+    argv0 = Path(sys.argv[0] or "")
+    return argv0.suffix.lower() == ".exe" and argv0.name.lower() != "python.exe"
+
+
+def warn_if_console_script_shim(console: Console) -> None:
+    """Print a hint when a foreground server run will pin the console-script exe."""
+    if running_via_console_script_shim():
+        console.print(
+            "   [dim]⚠ Running in foreground via the [bold]artemis.exe[/bold] launcher: package "
+            "syncs (uv sync / uv run) cannot replace it while this server is running.\n"
+            "     Prefer [bold]artemis restart[/bold] (background daemon) or launch with "
+            "[bold]uv run python -m artemis ui[/bold] to avoid this.[/dim]\n"
+        )
+
+
+def _resolve_npm_executable(platform_name: str | None = None) -> str | None:
+    """Return a directly executable npm path for the current platform."""
+    platform_name = platform_name or sys.platform
+    candidates = ("npm.cmd", "npm.exe", "npm") if platform_name == "win32" else ("npm",)
+    return next((path for candidate in candidates if (path := shutil.which(candidate))), None)
 
 
 def _showcase_build_required(showcase_dir: Path) -> bool:
@@ -48,6 +84,25 @@ def _showcase_build_required(showcase_dir: Path) -> bool:
     return any(path.exists() and path.stat().st_mtime > build_time for path in input_paths)
 
 
+def ensure_showcase_built(console: Console) -> None:
+    """Rebuild the Angular Showcase UI when its sources are newer than the dist build."""
+    from artemis.config.paths import ROOT_DIR
+
+    showcase_dir = ROOT_DIR / "apps" / "showcase_ui"
+    if not _showcase_build_required(showcase_dir):
+        return
+    npm_executable = _resolve_npm_executable()
+    if not npm_executable:
+        return
+    console.print("   [yellow]🎨 Showcase UI sources changed. Compiling Angular Showcase UI...[/yellow]")
+    try:
+        subprocess.run([npm_executable, "install", "--silent"], cwd=showcase_dir, check=True)
+        subprocess.run([npm_executable, "run", "build"], cwd=showcase_dir, check=True)
+        console.print("   [green]✓ Showcase UI built successfully.[/green]\n")
+    except Exception as e:
+        console.print(f"   [red]⚠ Failed to auto-build Showcase UI: {e}[/red]\n")
+
+
 def _poll_and_open_browser(url: str, stop_event: threading.Event, timeout: float = 15.0) -> None:
     """Poll the UI server until it responds, then launch the user's default browser."""
     start = time.time()
@@ -66,8 +121,15 @@ def _poll_and_open_browser(url: str, stop_event: threading.Event, timeout: float
 def ui_command(
     host: Annotated[
         str,
-        typer.Option("--host", "-h", help="Bind host address for the UI server."),
-    ] = "0.0.0.0",
+        typer.Option(
+            "--host",
+            "-h",
+            help=(
+                "Bind host address for the UI server. Defaults to loopback; for remote "
+                "access prefer a Tailscale/SSH tunnel over a wide bind."
+            ),
+        ),
+    ] = "127.0.0.1",
     port: Annotated[
         int,
         typer.Option("--port", "-p", help="Port to run the unified UI server on."),
@@ -86,10 +148,58 @@ def ui_command(
             help="Enable uvicorn live auto-reload (for development).",
         ),
     ] = False,
+    restart: Annotated[
+        bool,
+        typer.Option(
+            "--restart",
+            "-r",
+            help="Restart server by terminating any existing instance on the port first.",
+        ),
+    ] = False,
 ) -> None:
     """Launch the unified Artemis Showcase UI & Admin Console in one click."""
     console = Console()
     local_url = f"http://localhost:{port}"
+
+    from artemis.runtime.server_lifecycle import (
+        find_server_pids,
+        is_port_in_use,
+        stop_server,
+    )
+
+    if restart:
+        console.print(f"   [yellow]🔄 Restart requested. Recycling port {port}...[/yellow]")
+        stop_server(port=port, timeout=12.0)
+    elif is_port_in_use(port):
+        pids = find_server_pids(port)
+        pid_str = f" (PID: {', '.join(map(str, pids))})" if pids else ""
+        if sys.stdin.isatty():
+            console.print(f"\n   [yellow]⚠ Port {port} is already in use by an active Artemis server{pid_str}.[/yellow]")
+            console.print("   [dim]Choose an action:[/dim]")
+            console.print("     [bold]1[/bold] Open browser (default)")
+            console.print("     [bold]2[/bold] Restart server (stop existing and start here)")
+            console.print("     [bold]3[/bold] Cancel")
+            try:
+                choice = input("   Select [1-3, default 1]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                choice = "1"
+            if choice == "2":
+                console.print(f"\n   [yellow]🔄 Terminating previous Artemis instance on port {port}...[/yellow]")
+                stop_server(port=port, timeout=12.0)
+            elif choice == "3":
+                return
+            else:
+                if open_browser:
+                    webbrowser.open(local_url)
+                return
+        else:
+            console.print(
+                f"\n   [yellow]⚠ Port {port} is already in use by Artemis{pid_str}. "
+                f"Use '[bold]artemis restart[/bold]' to restart.[/yellow]\n"
+            )
+            if open_browser:
+                webbrowser.open(local_url)
+            return
 
     console.print()
     msg = (
@@ -121,21 +231,8 @@ def ui_command(
             except Exception:
                 pass
 
-    showcase_dir = ROOT_DIR / "apps" / "showcase_ui"
-    if _showcase_build_required(showcase_dir):
-        import shutil
-        import subprocess
-
-        if shutil.which("npm"):
-            console.print(
-                "   [yellow]🎨 Showcase UI sources changed. Compiling Angular Showcase UI...[/yellow]"
-            )
-            try:
-                subprocess.run(["npm", "install", "--silent"], cwd=showcase_dir, check=True)
-                subprocess.run(["npm", "run", "build"], cwd=showcase_dir, check=True)
-                console.print("   [green]✓ Showcase UI built successfully.[/green]\n")
-            except Exception as e:
-                console.print(f"   [red]⚠ Failed to auto-build Showcase UI: {e}[/red]\n")
+    ensure_showcase_built(console)
+    warn_if_console_script_shim(console)
 
     stop_event = threading.Event()
     if open_browser:

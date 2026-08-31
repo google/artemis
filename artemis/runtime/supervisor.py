@@ -66,6 +66,32 @@ class ProcessSupervisor:
         return platform.process.terminate_process_tree(pid, timeout_seconds=timeout_seconds)
 
     @staticmethod
+    def terminate_tree_verified(
+        pid: int,
+        process_created_at: float,
+        timeout_seconds: float = 3.0,
+    ) -> bool:
+        """Terminate a process tree only if PID and creation time still match.
+
+        Cross-entry task control discovers the worker through a shared lease.
+        Verifying creation time prevents a stale lease from terminating an
+        unrelated process after the operating system reuses its PID.
+        """
+        try:
+            import psutil
+        except Exception:
+            return False
+        try:
+            process = psutil.Process(pid)
+            if process_created_at > 0 and abs(process.create_time() - process_created_at) >= 1.0:
+                return False
+        except psutil.NoSuchProcess:
+            return True
+        except Exception:
+            return False
+        return ProcessSupervisor.terminate_tree(pid, timeout_seconds=timeout_seconds)
+
+    @staticmethod
     async def stop_process(
         proc: asyncio.subprocess.Process | None,
         timeout_seconds: float = 3.0,

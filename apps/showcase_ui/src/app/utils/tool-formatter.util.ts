@@ -18,11 +18,27 @@ import { ActionParam } from '../core/models/stream.model';
 import { isAndroidAction, isReportStatusAction } from './action-formatter.util';
 import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequenceCoordinates } from './image-overlay.util';
 
+// Tool objects are replaced (not mutated) when a trace is updated, so a
+// WeakMap keyed on the tool is a safe memo for the parsed-args lookup that
+// templates would otherwise re-run (including JSON.parse) on every render.
+const toolArgsCache = new WeakMap<object, any>();
+
 /**
  * Extract arguments from tool payload or direct args field
  */
 export function getToolArgs(tool: any): any {
   if (!tool) return {};
+  if (typeof tool === 'object') {
+    const cached = toolArgsCache.get(tool);
+    if (cached !== undefined) return cached;
+    const args = computeToolArgs(tool);
+    toolArgsCache.set(tool, args);
+    return args;
+  }
+  return computeToolArgs(tool);
+}
+
+function computeToolArgs(tool: any): any {
   if (tool.payload) {
     let payloadObj = tool.payload;
     if (typeof payloadObj === 'string') {
@@ -64,7 +80,133 @@ export function isVideoTool(tool: any): boolean {
   if (!tool || !tool.name) return false;
   const cleanName = tool.name.replace(/^(_)?(self\.)?exec_/, '');
   const nameLower = cleanName.toLowerCase();
-  return ['video_analyzer', 'video_analyzer_pure'].includes(nameLower);
+  return [
+    'video_analysis',
+    'video_analyzer',
+    'video_analyzer_pure',
+    'spawn_sub_agent',
+    'analyze_audio_only'
+  ].includes(nameLower);
+}
+
+export type VideoAnalysisOutcome = 'running' | 'recovering' | 'waiting' | 'complete' | 'partial' | 'failed';
+
+export interface VideoAnalysisRange {
+  start: number;
+  end: number;
+  category?: string;
+  retryable?: boolean;
+}
+
+export interface VideoAnalysisView {
+  outcome: VideoAnalysisOutcome;
+  title: string;
+  query: string;
+  summary: string;
+  reuse: 'none' | 'partial' | 'full';
+  requestedRange: VideoAnalysisRange | null;
+  completedRanges: VideoAnalysisRange[];
+  failedRanges: VideoAnalysisRange[];
+  evidenceCount: number;
+  completedCount: number;
+  totalCount: number;
+  fallbackUsed: boolean;
+}
+
+function numericRange(value: any): VideoAnalysisRange | null {
+  if (!value || typeof value !== 'object') return null;
+  const start = Number(value.start);
+  const end = Number(value.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return {
+    start,
+    end,
+    category: value.category ? String(value.category) : undefined,
+    retryable: value.retryable === true
+  };
+}
+
+function parseVideoResultText(text: string): Partial<VideoAnalysisView> {
+  const value = text.trim();
+  if (!value) return {};
+  if (value.startsWith('CACHED VIDEO ANALYSIS:')) {
+    return { outcome: 'complete', reuse: 'full', summary: value.replace(/^CACHED VIDEO ANALYSIS:\s*/, '') };
+  }
+  if (value.startsWith('PARTIAL VIDEO ANALYSIS')) {
+    return { outcome: 'partial', reuse: 'partial', summary: value };
+  }
+  if (value.startsWith('All sub-agent chunks failed') || value.startsWith('Error:')) {
+    return { outcome: 'failed', summary: value };
+  }
+  if (value.includes('Analysis is already in progress in another video agent')) {
+    return { outcome: 'waiting', summary: 'Another video agent is already analyzing this evidence.' };
+  }
+  return { outcome: 'complete', summary: value };
+}
+
+/** Build the user-facing, backward-compatible video analysis state. */
+export function getVideoAnalysisView(tool: any): VideoAnalysisView | null {
+  if (!isVideoTool(tool)) return null;
+  const args = getToolArgs(tool);
+  const payload = tool?.payload && typeof tool.payload === 'object' ? tool.payload : {};
+  const rawResult = payload.result ?? tool.result ?? null;
+  const structured = rawResult && typeof rawResult === 'object' ? rawResult : {};
+  const parsed = typeof rawResult === 'string' ? parseVideoResultText(rawResult) : {};
+
+  let outcome = String(structured.outcome || payload.outcome || parsed.outcome || '').toLowerCase() as VideoAnalysisOutcome;
+  if (!['running', 'recovering', 'waiting', 'complete', 'partial', 'failed'].includes(outcome)) {
+    outcome = tool?.status === 'failed' || tool?.status === 'error'
+      ? 'failed'
+      : tool?.status === 'running' ? 'running' : 'complete';
+  }
+  const recovering = structured.recovering === true || structured.fallback_used === true;
+  if (outcome === 'running' && recovering) outcome = 'recovering';
+
+  const start = Number(args.start_time ?? structured.requested_range?.start);
+  const end = Number(args.end_time ?? structured.requested_range?.end);
+  const requestedRange = Number.isFinite(start) && Number.isFinite(end) && end > start
+    ? { start, end }
+    : numericRange(structured.requested_range);
+  const completedRanges = Array.isArray(structured.completed_ranges)
+    ? structured.completed_ranges.map(numericRange).filter((range: VideoAnalysisRange | null): range is VideoAnalysisRange => Boolean(range))
+    : [];
+  const failedRanges = Array.isArray(structured.failed_ranges)
+    ? structured.failed_ranges.map(numericRange).filter((range: VideoAnalysisRange | null): range is VideoAnalysisRange => Boolean(range))
+    : [];
+  const completedCount = Number(structured.completed_count ?? completedRanges.length ?? 0);
+  const totalCount = Number(structured.total_count ?? (completedRanges.length + failedRanges.length));
+  const titleByOutcome: Record<VideoAnalysisOutcome, string> = {
+    running: 'Analyzing screen recording',
+    recovering: 'Analyzing unfinished recording segment',
+    waiting: 'Waiting for existing video analysis',
+    complete: structured.reuse === 'full' || parsed.reuse === 'full'
+      ? 'Reused video analysis'
+      : 'Analyzed screen recording',
+    partial: 'Video analysis partially completed',
+    failed: 'Video analysis returned no result'
+  };
+
+  return {
+    outcome,
+    title: titleByOutcome[outcome],
+    query: String(args.specific_query || args.query || args.prompt || structured.query || ''),
+    summary: String(structured.summary || parsed.summary || ''),
+    reuse: (structured.reuse || parsed.reuse || 'none') as 'none' | 'partial' | 'full',
+    requestedRange,
+    completedRanges,
+    failedRanges,
+    evidenceCount: Number(structured.evidence_count || 0),
+    completedCount: Number.isFinite(completedCount) ? completedCount : 0,
+    totalCount: Number.isFinite(totalCount) ? totalCount : 0,
+    fallbackUsed: structured.fallback_used === true
+  };
+}
+
+export function formatVideoTime(seconds: number): string {
+  const safe = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(safe / 60);
+  const secs = Math.floor(safe % 60);
+  return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
 /**
@@ -185,41 +327,57 @@ export function getToolAgentName(tool: any): string | null {
 export function getUniqueGenericTools(tools: any[] | undefined): any[] {
   if (!tools) return [];
 
+  // Only Google GenAI SDK retries are observable. Artemis wrapper retries and
+  // opaque provider retries must never be presented as provider internals.
   const retryTools = tools.filter(tool =>
     tool?.type === 'llm_call'
     && tool?.status === 'retrying'
     && (tool?.name === 'llm_retry' || tool?.name === 'llm_retry_group')
+    && tool?.payload?.source === 'provider_sdk'
+    && ['google', 'gemini'].includes(String(tool?.payload?.provider || '').toLowerCase())
   );
-  const firstRetry = retryTools[0];
-  const latestRetry = retryTools[retryTools.length - 1];
-  const retryAggregate = firstRetry ? {
-    ...firstRetry,
-    trace_id: `llm-retry-group-${firstRetry.trace_id || firstRetry.timestamp || 'unknown'}`,
-    name: 'llm_retry_group',
-    payload: {
-      ...(latestRetry?.payload || {}),
-      retry_count: retryTools.length,
-      total_delay: retryTools.reduce(
-        (total, retry) => total + (Number(retry?.payload?.delay) || 0),
-        0
-      ),
-      providers: Array.from(new Set(
-        retryTools
-          .map(retry => retry?.payload?.provider)
-          .filter((provider): provider is string => typeof provider === 'string' && !!provider)
-      )),
-      retries: retryTools.map(retry => ({
-        trace_id: retry.trace_id,
-        timestamp: retry.timestamp,
-        error: retry?.payload?.error || retry.error,
-        delay: Number(retry?.payload?.delay) || 0,
-        provider: retry?.payload?.provider,
-        source: retry?.payload?.source,
-        attempt: retry?.payload?.attempt,
-        max_retries: retry?.payload?.max_retries
-      }))
-    }
-  } : null;
+  const retryKey = (tool: any) => String(
+    tool?.payload?.request_id || `legacy-${tool?.step_id || 'unassigned'}`
+  );
+  const retryGroups = new Map<string, any[]>();
+  for (const retry of retryTools) {
+    const key = retryKey(retry);
+    retryGroups.set(key, [...(retryGroups.get(key) || []), retry]);
+  }
+  const terminalRequestIds = new Set(
+    tools
+      .filter(tool => tool?.type === 'llm_call' && tool?.status === 'failed')
+      .map(tool => tool?.payload?.request_id)
+      .filter((requestId): requestId is string => typeof requestId === 'string' && !!requestId)
+  );
+
+  const buildRetryAggregate = (group: any[]) => {
+    const firstRetry = group[0];
+    const latestRetry = group[group.length - 1];
+    return {
+      ...firstRetry,
+      trace_id: `llm-retry-group-${firstRetry?.payload?.request_id || firstRetry?.trace_id || firstRetry?.timestamp || 'unknown'}`,
+      name: 'llm_retry_group',
+      payload: {
+        ...(latestRetry?.payload || {}),
+        retry_count: group.length,
+        total_delay: group.reduce(
+          (total, retry) => total + (Number(retry?.payload?.delay) || 0),
+          0
+        ),
+        retries: group.map(retry => ({
+          trace_id: retry.trace_id,
+          timestamp: retry.timestamp,
+          error: retry?.payload?.error || retry.error,
+          delay: Number(retry?.payload?.delay) || 0,
+          provider: retry?.payload?.provider,
+          source: retry?.payload?.source,
+          request_id: retry?.payload?.request_id,
+          scheduled_at: retry?.payload?.scheduled_at
+        }))
+      }
+    };
+  };
 
   const toolMap = new Map<string, any>();
   for (const t of tools) {
@@ -232,22 +390,33 @@ export function getUniqueGenericTools(tools: any[] | undefined): any[] {
 
   const result: any[] = [];
   const seenTraces = new Set<string>();
-  let retryAggregateAdded = false;
+  const addedRetryGroups = new Set<string>();
 
   for (const tool of tools) {
     if (!tool || !tool.name) continue;
     if (tool.type === 'agent') continue;
 
     if (tool.type === 'llm_call' && tool.status === 'retrying') {
-      if (!retryAggregateAdded && retryAggregate) {
-        result.push(retryAggregate);
-        retryAggregateAdded = true;
+      const groupKey = retryKey(tool);
+      const group = retryGroups.get(groupKey);
+      const requestId = tool?.payload?.request_id;
+      if (
+        group
+        && !addedRetryGroups.has(groupKey)
+        && !(requestId && terminalRequestIds.has(requestId))
+      ) {
+        result.push(buildRetryAggregate(group));
+        addedRetryGroups.add(groupKey);
       }
       continue;
     }
 
     if (tool.type === 'llm_call' && tool.status === 'failed') {
-      result.push(tool);
+      // Callback-level attempt errors are implementation details. The wrapper
+      // emits one terminal llm_pause trace after retries are exhausted.
+      if (tool.name === 'llm_pause' || tool?.payload?.pause === true) {
+        result.push(tool);
+      }
       continue;
     }
 
@@ -274,7 +443,107 @@ export function getUniqueGenericTools(tools: any[] | undefined): any[] {
       }
     }
   }
-  return result;
+  return collapseVideoAnalysisTools(result);
+}
+
+/**
+ * Present one note-style timeline row for one video-analyzer execution. Child
+ * chunk, audio, and wrapper traces stay available in the raw trace but do not
+ * look like repeated user-visible analyses.
+ */
+function collapseVideoAnalysisTools(tools: any[]): any[] {
+  const groups = new Map<string, { firstIndex: number; tools: any[] }>();
+  const passthrough: Array<{ index: number; tool: any }> = [];
+
+  tools.forEach((tool, index) => {
+    if (!isVideoTool(tool)) {
+      passthrough.push({ index, tool });
+      return;
+    }
+    const cleanName = String(tool.name || '').replace(/^(_)?(self\.)?exec_/, '').toLowerCase();
+    const groupId = cleanName === 'video_analyzer' || cleanName === 'video_analyzer_pure'
+      ? String(tool.trace_id || tool.parent_trace_id || `video-${index}`)
+      : String(tool.parent_trace_id || tool.trace_id || `video-${index}`);
+    const existing = groups.get(groupId);
+    if (existing) {
+      existing.tools.push(tool);
+    } else {
+      groups.set(groupId, { firstIndex: index, tools: [tool] });
+    }
+  });
+
+  const collapsed = [...passthrough];
+  for (const [groupId, group] of groups) {
+    const views = group.tools
+      .map(getVideoAnalysisView)
+      .filter((view): view is VideoAnalysisView => Boolean(view));
+    if (!views.length) continue;
+
+    const hasActive = views.some(view => view.outcome === 'running' || view.outcome === 'recovering');
+    const completed = views.filter(view => view.outcome === 'complete');
+    const hasPartial = views.some(view => view.outcome === 'partial');
+    const failed = views.filter(view => view.outcome === 'failed');
+    const waiting = views.filter(view => view.outcome === 'waiting');
+    let outcome: VideoAnalysisOutcome;
+    if (hasActive) {
+      outcome = views.some(view => view.outcome === 'recovering') ? 'recovering' : 'running';
+    } else if (hasPartial || (completed.length > 0 && failed.length > 0)) {
+      outcome = 'partial';
+    } else if (completed.length > 0) {
+      outcome = 'complete';
+    } else if (waiting.length > 0) {
+      outcome = 'waiting';
+    } else {
+      outcome = 'failed';
+    }
+
+    const ranges = views
+      .map(view => view.requestedRange)
+      .filter((range): range is VideoAnalysisRange => Boolean(range));
+    const requestedRange = ranges.length
+      ? {
+          start: Math.min(...ranges.map(range => range.start)),
+          end: Math.max(...ranges.map(range => range.end))
+        }
+      : null;
+    const reuse = completed.length > 0 && completed.every(view => view.reuse === 'full')
+      ? 'full'
+      : views.some(view => view.reuse !== 'none') ? 'partial' : 'none';
+    const base = group.tools[0];
+    const structuredResult = {
+      outcome,
+      reuse,
+      requested_range: requestedRange,
+      completed_count: completed.length,
+      total_count: views.length,
+      evidence_count: views.reduce((sum, view) => sum + view.evidenceCount, 0),
+      query: views.find(view => view.query)?.query || '',
+      recovering: outcome === 'recovering',
+      fallback_used: views.some(view => view.fallbackUsed)
+    };
+
+    collapsed.push({
+      index: group.firstIndex,
+      tool: {
+        ...base,
+        trace_id: `video-analysis-${groupId}`,
+        name: 'video_analysis',
+        status: outcome === 'running' || outcome === 'recovering' ? 'running' : 'success',
+        payload: {
+          ...(base.payload || {}),
+          args: {
+            ...(base.payload?.args || base.args || {}),
+            start_time: requestedRange?.start,
+            end_time: requestedRange?.end
+          },
+          result: structuredResult
+        }
+      }
+    });
+  }
+
+  collapsed.sort((a, b) => a.index - b.index);
+  return collapsed.map(item => item.tool);
 }
 
 /**
@@ -995,7 +1264,11 @@ export function cleanErrorMessage(rawError: any): string {
     .replace(/^Pixel-level validation failed:\s*/i, '')
     .replace(/^Execution error:\s*/i, '')
     .replace(/^ServerError:\s*/i, '')
+    // LLM wrappers may add this prefix more than once. It is context, not the
+    // actual provider reason, and an empty prefix must not be shown as though
+    // it were a useful error message.
+    .replace(/^(?:LLM\s+(?:Request\s+)?Error\s*:\s*)+/i, '')
     .trim();
 
-  return fallback || errorStr;
+  return fallback || 'Unknown error';
 }

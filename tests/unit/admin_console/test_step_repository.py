@@ -73,3 +73,42 @@ def test_retrying_llm_payload_keeps_user_visible_retry_details():
         "source": "provider_sdk",
         "recoverable": True,
     }
+
+
+def test_terminal_llm_payload_keeps_wait_and_retry_aggregation():
+    repository = StepRepository()
+    retries = [
+        {
+            "delay": 5.0,
+            "scheduled_at": 100.0,
+            "provider": "google",
+            "source": "provider_sdk",
+        }
+    ]
+    trace = {
+        "type": "llm_call",
+        "name": "llm_pause",
+        "status": "failed",
+        "payload": json.dumps(
+            {
+                "error": "503 UNAVAILABLE",
+                "pause": True,
+                "request_id": "request-1",
+                "provider": "google",
+                "waited_seconds": 18.5,
+                "retries": retries,
+                "messages": ["private prompt"],
+            }
+        ),
+    }
+
+    normalized = repository._normalize_display_trace(trace)
+
+    assert normalized["payload"] == {
+        "error": "503 UNAVAILABLE",
+        "provider": "google",
+        "pause": True,
+        "request_id": "request-1",
+        "waited_seconds": 18.5,
+        "retries": retries,
+    }

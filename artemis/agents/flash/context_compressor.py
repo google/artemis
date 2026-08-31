@@ -14,9 +14,9 @@
 
 """Universal Context Compressor for Artemis Flash profile.
 
-Replaces pruned historical screenshots with high-density visual step summaries
-when ready, while seamlessly falling back to standard pruned action text if
-the background summary is still in flight.
+Replaces historical screenshots with high-density visual step summaries only
+after they are ready. Screenshots remain in context while summarization or
+retry is still in flight.
 """
 
 from typing import Any
@@ -27,6 +27,17 @@ from artemis.agents.flash.summarizer import VisualStepSummarizer
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_HISTORY_SUMMARY_PREFIX = "--- Historical Visual Transition ---\n"
+_UI_LIST_MARKER = "--- UI Element List ---"
+
+
+def _without_historical_ui_list(text: str) -> str:
+    """Remove a historical UI list without discarding text before its marker."""
+    marker_index = text.find(_UI_LIST_MARKER)
+    if marker_index < 0:
+        return text
+    return text[:marker_index].rstrip()
 
 
 def compress_flash_messages(
@@ -40,8 +51,8 @@ def compress_flash_messages(
     1. Keeps the latest screenshot and live UI hierarchy completely intact.
     2. For earlier steps, if a VisualStepSummarizer has completed the step's summary,
        replaces the intermediate image block with the objective summary text.
-    3. If the background summary is not ready yet, gracefully falls back to the existing
-       behavior (omitting the image block and retaining the original action text).
+    3. If the background summary is not ready yet, retains the original image until
+       a successful summary can replace it.
     4. If prune_history_xml is True, removes heavy outdated UI Element lists from past turns.
     """
     if not messages:
@@ -61,7 +72,9 @@ def compress_flash_messages(
                 last_img_msg_idx = idx
                 break
 
-    # 2. Iterate through historical messages and apply compression/fallback
+    # 2. Iterate through historical messages and apply compression/fallback.
+    # ``tool_call_id`` is the stable identity of an action result. The legacy
+    # ordinal is retained only for summaries produced by older callers/tests.
     tool_step_counter = 0
     for idx in range(len(messages)):
         msg = messages[idx]
@@ -74,42 +87,76 @@ def compress_flash_messages(
             continue
 
         # Count tool steps strictly corresponding to FlashRunner action turns
-        is_tool_msg = getattr(msg, "tool_call_id", None) is not None
+        tool_call_id = getattr(msg, "tool_call_id", None)
+        is_tool_msg = tool_call_id is not None
         if is_tool_msg:
             tool_step_counter += 1
-            current_step_num = tool_step_counter
+            legacy_step_num = tool_step_counter
         else:
-            current_step_num = None
+            legacy_step_num = None
 
-        new_blocks: list[dict[str, Any]] = []
-        summary_injected = False
+        summary_text = None
+        summary_pending = False
+        if summarizer and is_tool_msg:
+            # New FlashRunner instances key summaries by tool_call_id, so generic
+            # tools, no-tool turns, and parallel tool calls cannot shift memories.
+            action_key = str(tool_call_id)
+            summary_text = summarizer.get_summary(action_key)
+            summary_pending = summarizer.is_pending(action_key)
+            if (
+                summary_text is None
+                and not summarizer.has_job(action_key)
+                and legacy_step_num is not None
+            ):
+                summary_text = summarizer.get_summary(legacy_step_num)
+                summary_pending = summarizer.is_pending(legacy_step_num)
+
+        new_blocks: list[Any] = []
 
         for b in msg_content:
             if not isinstance(b, dict):
+                # LangChain permits string parts in multimodal content lists.
+                # They are lightweight historical evidence and must not vanish.
+                new_blocks.append(b)
                 continue
             b_type = b.get("type", "")
             b_text = b.get("text", "")
 
-            # Filter heavy outdated XML hierarchy from past steps to save tokens
-            if prune_history_xml and b_type == "text" and "--- UI Element List ---" in b_text:
+            if b_type == "text" and b_text.startswith(_HISTORY_SUMMARY_PREFIX):
+                # Rebuild this generated block on every pass. This makes the
+                # compressor idempotent and lets a late summary replace itself.
+                continue
+
+            # Filter heavy outdated XML hierarchy from past steps to save tokens.
+            # Some adapters combine action text and the hierarchy in one block;
+            # retain the useful prefix instead of dropping the entire block.
+            if prune_history_xml and b_type == "text" and _UI_LIST_MARKER in b_text:
+                retained_text = _without_historical_ui_list(b_text)
+                if retained_text:
+                    retained_block = dict(b)
+                    retained_block["text"] = retained_text
+                    new_blocks.append(retained_block)
                 continue
 
             if b_type in ("image_url", "image"):
-                # Check if this is a tool execution step and background summarizer has a ready summary
-                if (
-                    current_step_num
-                    and summarizer
-                    and summarizer.has_summary(current_step_num)
-                    and not summary_injected
-                ):
-                    summary_text = summarizer.get_summary(current_step_num)
-                    if summary_text:
-                        new_blocks.append({"type": "text", "text": summary_text})
-                        summary_injected = True
-                # If summarizer is not ready or initial screen, gracefully omit the image block
+                # A submitted image remains visible until its summary is ready.
+                # This temporarily favors context size over losing visual evidence.
+                if summary_pending:
+                    new_blocks.append(b)
                 continue
 
             new_blocks.append(b)
+
+        # Do not tie injection to the presence of an image: the image is normally
+        # pruned before the background summary finishes. A stable tool-call key lets
+        # a later compression pass backfill the summary into the correct result.
+        if summary_text:
+            new_blocks.append(
+                {
+                    "type": "text",
+                    "text": f"{_HISTORY_SUMMARY_PREFIX}{summary_text}",
+                }
+            )
 
         # Defensive fallback: never leave ToolMessage or HumanMessage content empty
         if not new_blocks:

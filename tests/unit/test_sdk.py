@@ -5,62 +5,133 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
-"""Unit tests for the official Python SDK (ArtemisClient, Task, TaskResult)."""
+"""Compatibility tests for the single, remote-only ArtemisClient implementation."""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from collections.abc import Mapping
+from typing import Any
 
 import pytest
-from artemis import ArtemisClient, Task, TaskResult
+
+import artemis
+from artemis import ArtemisClient, ConcurrencyMode, Task, TaskResult
+from artemis_client import ArtemisClient as ThinArtemisClient
+from artemis_client import TaskResult as ThinTaskResult
+from artemis_client.errors import NotFoundError
 
 
-@pytest.mark.asyncio
-async def test_artemis_client_run_mock():
-    """Verify ArtemisClient runs a task through the execution pipeline."""
-    client = ArtemisClient(device_id="mock-test-dev", default_profile="pro")
-    assert client.device_id == "mock-test-dev"
+class FakeTransport:
+    def __init__(self) -> None:
+        self.responses: dict[tuple[str, str], list[Any]] = defaultdict(list)
+        self.calls: list[tuple[str, str, Mapping[str, Any] | None]] = []
+
+    def add(self, method: str, path: str, *responses: Any) -> None:
+        self.responses[(method, path)].extend(responses)
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Mapping[str, Any] | None = None,
+    ) -> Any:
+        self.calls.append((method, path, json_body))
+        queued = self.responses[(method, path)]
+        if not queued:
+            raise AssertionError(f"Unexpected request: {method} {path}")
+        response = queued.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+def test_full_runtime_reexports_thin_client_types():
+    assert ArtemisClient is ThinArtemisClient
+    assert TaskResult is ThinTaskResult
+    assert artemis.ArtemisClient is ThinArtemisClient
+
+
+def test_legacy_constructor_settings_are_remote_defaults():
+    client = ArtemisClient(
+        device_serial="emulator-5554",
+        default_profile="pro",
+        concurrency_mode=ConcurrencyMode.PER_DEVICE,
+        transport=FakeTransport(),
+    )
+
+    assert client.base_url == "http://127.0.0.1:8000"
+    assert client.device_id == "emulator-5554"
     assert client.default_profile == "pro"
-
-    result = await client.run(goal="Open Settings and enable Dark Theme")
-    assert isinstance(result, TaskResult)
-    assert result.status in ("completed", "running", "success")
-    assert result.trace_id.startswith("trace_") or len(result.trace_id) > 0
-
-
-def test_task_model_validation():
-    """Verify Task validation and default arguments."""
-    task = Task(goal="Search for flight prices", profile="flash", device_id="emulator-5554")
-    assert task.goal == "Search for flight prices"
-    assert task.profile == "flash"
-    assert task.device_id == "emulator-5554"
-    assert task.max_turns == 30
-    assert task.locked_package is None
+    assert client.concurrency_mode == "per_device"
+    assert client.set_device("pixel-10") is client
+    assert client.device_serial == "pixel-10"
 
 
 @pytest.mark.asyncio
-async def test_artemis_client_stream_run():
-    """Verify ArtemisClient.stream_run yields real-time StreamEvents."""
-    from artemis import StreamEvent, StreamEventType
+async def test_run_uses_remote_api_and_returns_thin_result():
+    task_id = "00000000-0000-4000-8000-000000000001"
+    transport = FakeTransport()
+    transport.add(
+        "POST",
+        "/api/run",
+        {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+    )
+    transport.add(
+        "GET",
+        f"/api/sessions/{task_id}",
+        NotFoundError(404, "not ready"),
+        {"session_id": task_id, "status": "completed", "current_turn": 3},
+    )
+    transport.add(
+        "GET",
+        "/api/status",
+        {"status": "running", "queue": [{"session_id": task_id, "status": "pending"}]},
+    )
+    client = ArtemisClient(
+        device_serial="pixel-10",
+        default_profile="flash",
+        poll_interval=0.001,
+        transport=transport,
+    )
 
-    client = ArtemisClient(device_id="mock-stream-dev", default_profile="flash")
-    collected_events: list[StreamEvent] = []
+    result = await client.run("Open Settings", task_id=task_id, timeout=1)
 
-    def on_event(ev: StreamEvent):
-        collected_events.append(ev)
+    assert isinstance(result, ThinTaskResult)
+    assert result.succeeded
+    request_body = transport.calls[0][2]
+    assert request_body is not None
+    assert request_body["device_serial"] == "pixel-10"
+    assert request_body["profile"] == "flash"
 
-    events: list[StreamEvent] = []
-    async for event in client.stream_run(
-        goal="Test streaming UI action flow",
+
+@pytest.mark.asyncio
+async def test_legacy_task_object_is_forwarded_to_remote_api():
+    task_id = "00000000-0000-4000-8000-000000000002"
+    transport = FakeTransport()
+    transport.add(
+        "POST",
+        "/api/run",
+        {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+    )
+    transport.add(
+        "GET",
+        f"/api/sessions/{task_id}",
+        {"session_id": task_id, "status": "success"},
+    )
+    client = ArtemisClient(transport=transport)
+    task = Task(
+        goal="Verify search functionality",
         profile="flash",
-        callbacks=[on_event],
-    ):
-        events.append(event)
+        device_serial="pixel-10",
+        locked_package="com.android.settings",
+    )
 
-    assert len(events) >= 2
-    assert events[0].event_type == StreamEventType.STATUS
-    assert events[0].payload.get("status") == "starting"
-    assert len(collected_events) == len(events)
+    result = await client.run_task(task, task_id=task_id, timeout=1)
+
+    assert result.succeeded
+    request_body = transport.calls[0][2]
+    assert request_body is not None
+    assert request_body["locked_app_package"] == "com.android.settings"

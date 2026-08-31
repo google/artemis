@@ -23,6 +23,7 @@ from abc import ABC, abstractmethod
 import asyncio
 from enum import Enum
 from pathlib import Path
+import re
 import time
 from typing import Any, Literal
 from pydantic import BaseModel, Field
@@ -249,9 +250,34 @@ class BaseDeviceDriver(ABC):
 
         elem = matched[index]
         bounds = elem.get("bounds")
-        center = elem.get("center")
-        if not center and bounds and len(bounds) == 4:
-            center = [(bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2]
+        parsed_bounds = elem.get("parsed_bounds")
+        numeric_bounds: list[int] | None = None
+        if isinstance(parsed_bounds, dict):
+            keys = ("left", "top", "right", "bottom")
+            if all(isinstance(parsed_bounds.get(key), (int, float)) for key in keys):
+                numeric_bounds = [int(parsed_bounds[key]) for key in keys]
+        if numeric_bounds is None and isinstance(bounds, (list, tuple)) and len(bounds) == 4:
+            if all(isinstance(value, (int, float)) for value in bounds):
+                numeric_bounds = [int(value) for value in bounds]
+        if numeric_bounds is None and isinstance(bounds, str):
+            match = re.fullmatch(
+                r"\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]",
+                bounds,
+            )
+            if match:
+                numeric_bounds = [int(value) for value in match.groups()]
+        # Bounds belong to the freshly captured hierarchy. Some UIAutomator
+        # adapters also attach a precomputed center which can lag one layout
+        # transition behind (for example when an expanding drawer shifts a
+        # keypad). Always derive the tap point from live bounds when possible;
+        # retain center only for adapters that do not expose bounds.
+        if numeric_bounds is not None:
+            center = [
+                (numeric_bounds[0] + numeric_bounds[2]) // 2,
+                (numeric_bounds[1] + numeric_bounds[3]) // 2,
+            ]
+        else:
+            center = elem.get("center")
         return elem, center, None
 
     async def tap_element(

@@ -75,12 +75,12 @@ class DeviceContext(BaseModel):
         extra="allow",
     )
 
-    host_platform: Literal["WINDOWS", "LINUX", "DARWIN", "MACOS"] | str
-    mobile_platform: DevicePlatform
-    device_id: str
+    host_platform: Literal["WINDOWS", "LINUX", "DARWIN", "MACOS"] | str = "DARWIN"
+    mobile_platform: DevicePlatform = DevicePlatform.ANDROID
+    device_id: str = "default-device"
 
-    device_width: int
-    device_height: int
+    device_width: int = 1080
+    device_height: int = 2400
 
     def to_str(self):
         return (
@@ -163,6 +163,7 @@ class ArtemisContext(BaseModel):
     checker_task: asyncio.Task[Any] | None = None
     planner_task: asyncio.Task[Any] | None = None
     background_tasks: list[asyncio.Task[Any]] = Field(default_factory=list)
+    background_task_grace_period_seconds: float = 2.0
     package_cache: dict[str, str | None] = Field(default_factory=dict)
     background_jobs: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
@@ -170,17 +171,60 @@ class ArtemisContext(BaseModel):
     task_plan_content_before: str | None = None
 
     _genai_client: Any | None = PrivateAttr(default=None)
+    _video_blackboard: Any | None = PrivateAttr(default=None)
+    _video_circuit_breaker: Any | None = PrivateAttr(default=None)
+    _mobile_controller: Any | None = PrivateAttr(default=None)
     mcp_client_ctx: Any | None = None
     mcp_session: Any | None = None
+    action_session: Any | None = None
+    """In-process unified action MCP session (artemis.mcp.action_session)."""
+    actuator: Any | None = None
+    """Optional actuator backend override (artemis.mcp.actuators). ``None`` selects
+    the default AdbActuator; installing e.g. a robot-arm backend happens here."""
 
     async def __aenter__(self) -> ArtemisContext:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # Close the in-process action session before draining background tasks so its
+        # owner task exits cleanly rather than being cancelled below.
+        if self.action_session is not None:
+            try:
+                await self.action_session.aclose()
+            except Exception:
+                pass
+            finally:
+                self.action_session = None
+
         if self.background_tasks:
-            logger.info(f"Waiting for {len(self.background_tasks)} background tasks to complete...")
-            results = await asyncio.gather(*self.background_tasks, return_exceptions=True)
-            for task, result in zip(self.background_tasks, results):
+            tasks = list(self.background_tasks)
+            pending_tasks = [task for task in tasks if not task.done()]
+            grace_period = (
+                max(0.0, self.background_task_grace_period_seconds)
+                if exc_type is None
+                else 0.0
+            )
+
+            if pending_tasks and grace_period > 0:
+                logger.info(
+                    f"Draining {len(pending_tasks)} background tasks for up to "
+                    f"{grace_period:.1f}s..."
+                )
+                _, pending_tasks = await asyncio.wait(
+                    pending_tasks,
+                    timeout=grace_period,
+                )
+
+            if pending_tasks:
+                logger.info(
+                    f"Cancelling {len(pending_tasks)} unfinished background tasks; "
+                    "primary automation is already complete."
+                )
+                for task in pending_tasks:
+                    task.cancel()
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for task, result in zip(tasks, results):
                 if isinstance(result, Exception):
                     logger.error(
                         f"Background task {task.get_name()} failed: {result}",

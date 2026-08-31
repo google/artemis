@@ -23,11 +23,13 @@ from typing import Annotated
 from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import initialize_llm_config, settings
+from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
 from artemis.sdk.types.task import AgentProfile
 from artemis.utils.cli_helpers import display_device_status
 from artemis.utils.logger import get_logger
 from artemis.utils.video import check_ffmpeg_available
+import signal
 from rich.console import Console
 from rich.panel import Panel
 import typer
@@ -37,6 +39,8 @@ logger = get_logger(__name__)
 
 async def execute_task(
     goal: str,
+    device_serial: str | None = None,
+    session_id: str | None = None,
     locked_app_package: str | None = None,
     test_name: str | None = None,
     traces_output_path_str: str | None = None,
@@ -73,6 +77,19 @@ async def execute_task(
         explorer_flash_mode: Override Explorer version mode for Flash execution profile.
         explorer_pro_mode: Override Explorer version mode for Pro execution profile.
     """
+    effective_sid = (
+        session_id
+        or os.getenv("ARTEMIS_SESSION_ID")
+        or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+    )
+    if effective_sid:
+        os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
+    if not os.environ.get("ARTEMIS_TASK_INGRESS"):
+        os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
+    publish_startup_progress(
+        "configuration", "Loading the run configuration", session_id=str(effective_sid) if effective_sid else None
+    )
+
     llm_config = initialize_llm_config()
     agent_profile = AgentProfile(name="default", llm_config=llm_config)
     config = Builders.AgentConfig.with_default_profile(profile=agent_profile)
@@ -112,12 +129,24 @@ async def execute_task(
     if settings.ADB_HOST:
         config.with_adb_server(host=settings.ADB_HOST, port=settings.ADB_PORT)
 
+    target_serial = device_serial or settings.ADB_DEVICE_SERIAL or os.environ.get("ADB_DEVICE_SERIAL")
+    if not target_serial:
+        try:
+            from artemis.runtime import device_pool
+            target_serial = device_pool.select_device()
+        except Exception:
+            target_serial = None
+
+    if target_serial:
+        from artemis.context import DevicePlatform
+        config.for_device(DevicePlatform.ANDROID, target_serial)
+
     if graph_config_callbacks:
         config.with_graph_config_callbacks(graph_config_callbacks)
 
     agent: Agent | None = None
     try:
-        agent = Agent(config=config.build())
+        agent = Agent(config=config.build(), session_id=effective_sid)
         await agent.init(
             retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
             retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
@@ -268,12 +297,109 @@ def run_command(
             help="Explorer version mode when running under Pro profile (Operator/Validator).",
         ),
     ] = None,
+    device_serial: Annotated[
+        str | None,
+        typer.Option(
+            "--device-serial",
+            "-s",
+            help="Target specific Android device by serial number (e.g. emulator-5554).",
+        ),
+    ] = None,
+    session_id: Annotated[
+        str | None,
+        typer.Option(
+            "--session-id",
+            help="Canonical session UUID for trace and stream telemetry.",
+        ),
+    ] = None,
+    standalone: Annotated[
+        bool,
+        typer.Option(
+            "--standalone",
+            help="Run in standalone embedded mode without auto-spawning the Artemis Daemon.",
+        ),
+    ] = False,
 ) -> None:
     """Run an autonomous UI automation task on the connected Android device."""
     if with_video_recording_tools:
         check_ffmpeg_available()
 
     console = Console()
+
+    is_worker = (
+        os.environ.get("ARTEMIS_TASK_WORKER") == "1"
+        or os.environ.get("ARTEMIS_DEVICE_QUEUE_TICKET") is not None
+    )
+    is_standalone = standalone or os.environ.get("ARTEMIS_STANDALONE") == "1"
+
+    # All platforms route through unified Artemis Daemon unless specifically configured as standalone
+    if not is_worker and not is_standalone:
+        try:
+            import uuid
+            from artemis.runtime import (
+                ensure_daemon_running,
+                submit_task_to_daemon,
+                wait_for_daemon_task,
+                stop_task_on_daemon,
+            )
+
+            console.print("[dim]Connecting to Artemis Daemon scheduler...[/dim]")
+            is_running, base_url = ensure_daemon_running(timeout=8.0, wait_ready=True)
+            if is_running and base_url:
+                target_sid = session_id or str(uuid.uuid4())
+                console.print(f"[bold green]✓[/bold green] Artemis Daemon active at [cyan]{base_url}[/cyan]")
+                resp = submit_task_to_daemon(
+                    goal=goal,
+                    profile=profile or "pro",
+                    device_serial=device_serial,
+                    expected_output=output_description,
+                    enable_outputter=enable_outputter,
+                    locked_app_package=locked_app_package,
+                    app_path=app_path,
+                    session_id=target_sid,
+                    ingress="cli",
+                    base_url=base_url,
+                )
+                if resp and resp.get("tasks"):
+                    console.print(f"[bold green]✓[/bold green] Task scheduled in unified queue (Session: [cyan]{target_sid}[/cyan])")
+                    console.print(f"[dim]Live dashboard & replay: {base_url}[/dim]\n")
+
+                    def on_status(sess_info):
+                        st = sess_info.get("status")
+                        if st == "queued":
+                            console.print("[yellow]⏳ Task queued in scheduler, waiting for device...[/yellow]")
+                        elif st == "running":
+                            console.print("[green]▶ Task executing on mobile device...[/green]")
+
+                    try:
+                        final_res = wait_for_daemon_task(
+                            target_sid,
+                            base_url=base_url,
+                            timeout=1800.0,
+                            on_status_update=on_status,
+                        )
+                        final_st = final_res.get("status")
+                        if final_st in ("completed", "success"):
+                            console.print("\n[bold green]✅ Task completed successfully![/bold green]")
+                            return
+                        else:
+                            err = final_res.get("error") or final_res.get("explanation") or ""
+                            console.print(f"\n[bold red]✖ Task {final_st}[/bold red]: {err}")
+                            raise SystemExit(1)
+                    except KeyboardInterrupt:
+                        console.print("\n[yellow]Stopping task on Daemon...[/yellow]")
+                        stop_task_on_daemon(target_sid, base_url=base_url)
+                        console.print("[yellow]Task cancelled.[/yellow]")
+                        raise SystemExit(130)
+                else:
+                    console.print("[yellow]Warning: Could not enqueue task to Daemon. Falling back to local execution...[/yellow]")
+            else:
+                console.print("[yellow]Warning: Artemis Daemon could not be started. Falling back to local execution...[/yellow]")
+        except SystemExit:
+            raise
+        except Exception as exc:
+            logger.debug(f"Daemon dispatch error: {exc}")
+            console.print(f"[yellow]Daemon routing notice: {exc}. Falling back to local execution...[/yellow]")
 
     adb_client = None
     try:
@@ -288,10 +414,21 @@ def run_command(
     display_device_status(console, adb_client=adb_client)
 
     cancelled = False
+    original_sigterm = None
+    try:
+        if hasattr(signal, "SIGTERM"):
+            original_sigterm = signal.signal(
+                signal.SIGTERM, lambda s, f: (_ for _ in ()).throw(KeyboardInterrupt())
+            )
+    except Exception:
+        pass
+
     try:
         asyncio.run(
             execute_task(
                 goal=goal,
+                device_serial=device_serial,
+                session_id=session_id,
                 locked_app_package=locked_app_package,
                 test_name=test_name,
                 traces_output_path_str=traces_path,
@@ -331,5 +468,10 @@ def run_command(
             console.print(f"[bold red]Task execution failed:[/bold red] {e}")
             raise
     finally:
+        try:
+            if original_sigterm is not None and hasattr(signal, "SIGTERM"):
+                signal.signal(signal.SIGTERM, original_sigterm)
+        except Exception:
+            pass
         if cancelled:
             raise SystemExit(130)

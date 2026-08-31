@@ -21,17 +21,40 @@ except ImportError:
     from apps.admin_console.database.connection import db_session
 
 
+def _canonicalize_status(row: dict[str, Any]) -> dict[str, Any]:
+    """Map the legacy "success" terminal status to the canonical "completed".
+
+    Rows written before the vocabulary was unified may still carry "success";
+    API consumers must only ever see "completed". get_session_status is left
+    raw on purpose so the queue reconcile can detect and persist the rewrite.
+    """
+    if row.get("status") == "success":
+        row["status"] = "completed"
+    return row
+
+
 class SessionRepository:
     """Repository handling all database queries and updates for Sessions."""
 
     def __init__(self, db_path=None):
         self.db_path = db_path
 
+    @staticmethod
+    def process_is_alive(pid: Any) -> bool:
+        """Return whether a session's worker PID is still alive."""
+        try:
+            import psutil
+
+            process = psutil.Process(int(pid))
+            return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+        except Exception:
+            return False
+
     def get_all_sessions(self) -> list[dict[str, Any]]:
         with db_session(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM sessions ORDER BY start_time DESC")
-            return [dict(r) for r in cursor.fetchall()]
+            return [_canonicalize_status(dict(r)) for r in cursor.fetchall()]
 
     def get_video_recordings_map(self) -> dict[str, str]:
         with db_session(self.db_path) as conn:
@@ -41,10 +64,110 @@ class SessionRepository:
             )
             if cursor.fetchone() is None:
                 return {}
+            columns = {
+                str(row[1]) for row in cursor.execute("PRAGMA table_info(video_recordings)")
+            }
+            ready_clause = "status = 'ready'" if "status" in columns else "end_time IS NOT NULL"
             cursor.execute(
-                "SELECT session_id, local_video_path FROM video_recordings WHERE session_id IS NOT NULL AND local_video_path IS NOT NULL ORDER BY start_time ASC"
+                "SELECT session_id, local_video_path FROM video_recordings "
+                "WHERE session_id IS NOT NULL AND local_video_path IS NOT NULL "
+                f"AND {ready_clause} ORDER BY start_time ASC"
             )
             return {str(r[0]): str(r[1]) for r in cursor.fetchall() if r[0] and r[1]}
+
+    def get_video_recording_for_session(self, session_id: str) -> dict[str, Any] | None:
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='video_recordings'"
+                )
+                if cursor.fetchone() is None:
+                    return None
+                cursor.execute(
+                    "SELECT * FROM video_recordings WHERE session_id = ? "
+                    "ORDER BY start_time DESC LIMIT 1",
+                    (str(session_id),),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                result = dict(row)
+                if "status" not in result:
+                    result["status"] = "ready" if result.get("end_time") is not None else "recording"
+                result.setdefault("error", None)
+                return result
+        except Exception:
+            return None
+
+    def get_latest_video_recordings_map(self) -> dict[str, dict[str, Any]]:
+        """Return the newest recording row for every session in one query.
+
+        The task-list endpoint renders every session at once. Calling
+        ``get_video_recording_for_session`` in that loop used to open a new
+        SQLite connection for every row, which made a refresh progressively
+        slower as history grew.
+        """
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='video_recordings'"
+                )
+                if cursor.fetchone() is None:
+                    return {}
+
+                rows = cursor.execute(
+                    "SELECT * FROM video_recordings WHERE session_id IS NOT NULL "
+                    "ORDER BY start_time DESC"
+                ).fetchall()
+                latest: dict[str, dict[str, Any]] = {}
+                for row in rows:
+                    recording = dict(row)
+                    session_id = str(recording.get("session_id") or "")
+                    if not session_id or session_id in latest:
+                        continue
+                    if "status" not in recording:
+                        recording["status"] = (
+                            "ready" if recording.get("end_time") is not None else "recording"
+                        )
+                    recording.setdefault("error", None)
+                    latest[session_id] = recording
+                return latest
+        except Exception:
+            return {}
+
+    def mark_recording_failed_if_pending(self, session_id: str, error: str) -> bool:
+        """Close a recording lifecycle when its worker exits before finalization."""
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE video_recordings SET status = 'failed', error = ?, "
+                    "end_time = COALESCE(end_time, ?) "
+                    "WHERE session_id = ? AND status IN ('recording', 'finalizing')",
+                    (error, time.time(), str(session_id)),
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception:
+            return False
+
+    def mark_recording_ready(self, session_id: str, local_video_path: str) -> bool:
+        """Mark a recording as ready with its finalized video path."""
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE video_recordings SET status = 'ready', error = NULL, "
+                    "local_video_path = ?, end_time = COALESCE(end_time, ?) "
+                    "WHERE session_id = ?",
+                    (str(local_video_path), time.time(), str(session_id)),
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception:
+            return False
 
     def get_llm_traces_for_profile(self, session_id: str, limit: int = 3) -> list[str]:
         with db_session(self.db_path) as conn:
@@ -55,6 +178,40 @@ class SessionRepository:
             )
             rows = cursor.fetchall()
             return [r[0] for r in rows if r and r[0]]
+
+    def get_llm_traces_for_profiles_map(
+        self, session_ids: list[str] | None = None, limit: int = 3
+    ) -> dict[str, list[str]]:
+        """Return bounded LLM payloads for only the sessions needing fallback."""
+        if session_ids is not None and not session_ids:
+            return {}
+
+        session_filter = ""
+        params: list[Any] = []
+        if session_ids is not None:
+            placeholders = ",".join("?" for _ in session_ids)
+            session_filter = f" AND session_id IN ({placeholders})"
+            params.extend(session_ids)
+        params.append(limit)
+
+        with db_session(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT session_id, payload FROM ("
+                " SELECT session_id, payload, ROW_NUMBER() OVER ("
+                "  PARTITION BY session_id ORDER BY timestamp ASC"
+                " ) AS row_number FROM traces WHERE type = 'llm_call'"
+                f"{session_filter}"
+                ") WHERE row_number <= ?",
+                params,
+            )
+            result: dict[str, list[str]] = {}
+            for row in cursor.fetchall():
+                session_id = str(row[0] or "")
+                payload = row[1]
+                if session_id and payload:
+                    result.setdefault(session_id, []).append(payload)
+            return result
 
     def get_agent_trace_names(self, session_id: str) -> list[str]:
         try:
@@ -69,6 +226,23 @@ class SessionRepository:
         except Exception:
             return []
 
+    def get_agent_trace_names_map(self) -> dict[str, list[str]]:
+        """Return distinct agent/LLM trace names grouped by session."""
+        with db_session(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT session_id, name FROM traces "
+                "WHERE type IN ('agent', 'llm_call') AND session_id IS NOT NULL "
+                "GROUP BY session_id, name"
+            )
+            result: dict[str, list[str]] = {}
+            for row in cursor.fetchall():
+                session_id = str(row[0] or "")
+                name = row[1]
+                if session_id and name:
+                    result.setdefault(session_id, []).append(name)
+            return result
+
     def get_session_by_id(self, session_id: str) -> dict[str, Any] | None:
         try:
             with db_session(self.db_path) as conn:
@@ -78,7 +252,7 @@ class SessionRepository:
                     (str(session_id),),
                 )
                 row = cursor.fetchone()
-                return dict(row) if row else None
+                return _canonicalize_status(dict(row)) if row else None
         except Exception:
             return None
 
@@ -88,28 +262,66 @@ class SessionRepository:
         with db_session(self.db_path) as conn:
             cursor = conn.cursor()
             now = time.time()
+            count = 0
             for s_id in orphaned_ids:
+                row = cursor.execute(
+                    "SELECT pid FROM sessions WHERE session_id = ? AND status = ?",
+                    (s_id, "running"),
+                ).fetchone()
+                if row is None or self.process_is_alive(row["pid"]):
+                    continue
                 cursor.execute(
                     "UPDATE sessions SET status = ?, end_time = ? "
                     "WHERE session_id = ? AND status = ?",
                     ("failed", now, s_id, "running"),
                 )
+                count += cursor.rowcount
             conn.commit()
-            return len(orphaned_ids)
+            return count
 
-    def cleanup_orphans_on_startup(self) -> int:
+    def reconcile_orphaned_sessions(self) -> int:
+        """Mark running sessions with no live worker process as failed.
+
+        This is safe to call both during startup and immediately after a
+        forced server stop: live workers, including workers owned by another
+        server instance, are left untouched.
+        """
         try:
             with db_session(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE sessions SET status = ?, end_time = ? WHERE status = ?",
-                    ("failed", time.time(), "running"),
-                )
-                count = cursor.rowcount
+                rows = cursor.execute(
+                    "SELECT session_id, pid FROM sessions WHERE status = ?", ("running",)
+                ).fetchall()
+                count = 0
+                now = time.time()
+                for row in rows:
+                    if self.process_is_alive(row["pid"]):
+                        continue
+                    cursor.execute(
+                        "UPDATE sessions SET status = ?, end_time = ? "
+                        "WHERE session_id = ? AND status = ?",
+                        ("failed", now, row["session_id"], "running"),
+                    )
+                    count += cursor.rowcount
+                    try:
+                        from mcp_server.utils import trace_store
+
+                        if trace_store.read_status(str(row["session_id"])):
+                            trace_store.update_trace_status(
+                                str(row["session_id"]),
+                                "failed",
+                                error="Process terminated prior to server startup.",
+                            )
+                    except Exception:
+                        pass
                 conn.commit()
                 return count
         except Exception:
             return 0
+
+    def cleanup_orphans_on_startup(self) -> int:
+        """Backward-compatible startup entrypoint for orphan reconciliation."""
+        return self.reconcile_orphaned_sessions()
 
     def get_latest_session(self) -> dict[str, Any] | None:
         try:
@@ -119,7 +331,7 @@ class SessionRepository:
                     "SELECT session_id, status FROM sessions ORDER BY start_time DESC LIMIT 1"
                 )
                 row = cursor.fetchone()
-                return dict(row) if row else None
+                return _canonicalize_status(dict(row)) if row else None
         except Exception:
             return None
 

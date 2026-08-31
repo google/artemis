@@ -31,6 +31,7 @@ from PIL import Image
 from pydantic import BaseModel
 import uiautomator2 as u2
 
+from artemis.runtime.awake_service import ensure_device_awake
 from artemis.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -173,6 +174,7 @@ def _is_package_installed(device_id: str, pkg: str) -> bool:
     try:
         result = subprocess.run(
             ["adb", "-s", device_id, "shell", "pm", "list", "packages"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
@@ -207,6 +209,7 @@ def _uninstall_package(device_id: str, pkg: str) -> bool:
                 "0",
                 pkg,
             ],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=30,
@@ -257,6 +260,7 @@ class UIAutomatorClient:
         """
         self._device_id = device_id
         self._device: Device | None = None
+        self._awake_strategy: str | None = None
 
     def _ensure_connected(self) -> "Device":
         """Ensure connection to the device, handling Maestro blocker.
@@ -276,11 +280,24 @@ class UIAutomatorClient:
         # Ensure Maestro is not blocking us
         _ensure_maestro_not_installed(self._device_id)
 
+        # Enroll the device in the containing Artemis service lifetime before
+        # UIAutomator2 reads the screen. Client disconnects do not release it.
+        if self._awake_strategy is None:
+            self._awake_strategy = ensure_device_awake(self._device_id)
+
         # Connect to device
         logger.info(f"Connecting UIAutomator2 to device: {self._device_id}")
-        self._device = u2.connect(self._device_id)
+        try:
+            self._device = u2.connect(self._device_id)
+        except Exception:
+            self._awake_strategy = None
+            raise
         logger.info("UIAutomator2 connected successfully")
         return self._device
+
+    def connect(self) -> None:
+        """Connect and activate this session's awake strategy without an action."""
+        self._ensure_connected()
 
     def press_key(self, key: str):
         """Press a key on the device.
@@ -326,6 +343,23 @@ class UIAutomatorClient:
             logger.error(f"UIAutomator2 clear_text failed: {e}")
             return False
 
+    def set_clipboard(self, text: str) -> bool:
+        """Set text to system clipboard via UIAutomator2.
+
+        Args:
+            text: The string to set in the device clipboard.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            device = self._ensure_connected()
+            device.set_clipboard(text)
+            return True
+        except Exception as e:
+            logger.debug(f"UIAutomator2 set_clipboard failed: {e}")
+            return False
+
     def get_hierarchy(self) -> str:
         """Get the UI hierarchy XML from the device.
 
@@ -347,6 +381,7 @@ class UIAutomatorClient:
         try:
             result = subprocess.run(
                 ["adb", "-s", self._device_id, "exec-out", "screencap", "-p"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=10,
                 check=True,
@@ -399,7 +434,8 @@ class UIAutomatorClient:
         )
 
     def disconnect(self) -> None:
-        """Disconnect from the device."""
+        """Disconnect this client without ending the host's awake lifetime."""
+        self._awake_strategy = None
         self._device = None
         logger.info("UIAutomator2 client disconnected")
 

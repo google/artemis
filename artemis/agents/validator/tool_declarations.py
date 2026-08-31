@@ -15,35 +15,31 @@
 """Universal Tool Declarations, Execution Results, and Dispatcher for Artemis."""
 
 import ast
-import asyncio
 import base64
 import hashlib
-import inspect
 import json
 from pathlib import Path
-import time
 from typing import Any, Literal
 
 from google.genai import types as genai_types
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, Field
 
-from artemis.config import get_temp_dir, resolve_explorer_version
+from artemis.config import resolve_explorer_version
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.core.tool_declaration import ToolDeclaration
 from artemis.data_engine.trace import trace
+from artemis.mcp.action_types import ActionCode
+from artemis.mcp.actuators.adb import AdbActuator
+from artemis.mcp.observation import observe
 from artemis.tools.explorer_tool import _run_explorer_logic
 from artemis.graph.state import State
-from artemis.tools.mobile.launch_app import find_package
-from artemis.utils.app_launch_utils import launch_app_with_retries
 from artemis.utils.coordinates import (
     compute_smart_swipe_coordinates,
     parse_swipe_parameters,
 )
 from artemis.utils.logger import get_logger
-from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
-from artemis.utils.visualization import format_minimal_list_with_elements
 from artemis.utils.notes import (
     LIST_NOTES_DOCSTRING,
     READ_NOTE_ARG_KEY_DESC,
@@ -186,65 +182,22 @@ async def capture_screenshot_and_parse_ui(
     controller: UnifiedMobileController,
     skip_settling: bool = False,
 ) -> tuple[str | None, bytes | None, str | None]:
-    """Captures screenshot and parses fused XML tree after optional screen settling delay."""
-    try:
-        if skip_settling:
-            logger.info("Retrieving screen data directly (skip settling)...")
-            device_data = await controller.get_screen_data()
-            latest_screenshot_b64 = device_data.base64
-        else:
-            logger.info("Delaying 0.4s before capturing screen state...")
-            await asyncio.sleep(0.4)
-            device_data = await controller.get_screen_data()
-            latest_screenshot_b64 = device_data.base64
+    """Captures screenshot and parses fused XML tree after optional screen settling delay.
 
-        latest_screenshot_bytes = base64.b64decode(latest_screenshot_b64)
-    except Exception as e:
-        logger.error(f"Failed to capture screen state: {e}")
+    Thin adapter over :func:`artemis.mcp.observation.observe` that adds the LangGraph
+    ``State`` write-back (indexed points/elements) the agents rely on.
+    """
+    obs, screenshot_bytes = await observe(
+        ctx, controller, settle_ms=0 if skip_settling else 400
+    )
+    if not obs.ok:
         return None, None, None
 
-    try:
-        xml_hierarchy = device_data.elements
-        width = device_data.width or 1080
-        height = device_data.height or 2400
-        if ctx.device:
-            ctx.device.device_width = width
-            ctx.device.device_height = height
+    if obs.hierarchy_ok:
+        state.indexed_points = [el["center"] for el in obs.elements]
+        state.indexed_elements = obs.elements
 
-        ocr_results = []
-
-        fused_xml = fuse_ocr_with_xml(xml_hierarchy, ocr_results)
-
-        minimal_list_str, elements, _ = format_minimal_list_with_elements(fused_xml, width, height)
-
-        state.indexed_points = [el["center"] for el in elements]
-        state.indexed_elements = elements
-    except Exception as e:
-        logger.error(f"Failed to fetch or fuse UI hierarchy: {e}")
-        minimal_list_str = "Not available due to hierarchy error."
-
-    screenshot_path = None
-    if ctx.data_engine:
-        try:
-            image_name = ctx.data_engine.get_or_create_image(
-                latest_screenshot_bytes,
-                ui_tree=xml_hierarchy,
-                ocr_result=ocr_results,
-            )
-            screenshot_path = str(ctx.data_engine.get_image_path(image_name))
-        except Exception as e:
-            logger.error(f"Failed to save image in DataEngine: {e}")
-
-    if not screenshot_path:
-        try:
-            temp_dir = get_temp_dir("screenshots")
-            temp_file = temp_dir / f"screenshot_{int(time.time())}.jpg"
-            temp_file.write_bytes(latest_screenshot_bytes)
-            screenshot_path = str(temp_file)
-        except Exception as e:
-            logger.error(f"Failed to save fallback screenshot: {e}")
-
-    return screenshot_path, latest_screenshot_bytes, minimal_list_str
+    return obs.screenshot_path, screenshot_bytes, obs.elements_text
 
 
 def normalize_coordinate_target(target: Any) -> int | list[int] | Any:
@@ -313,11 +266,23 @@ def serialize_mobile_action_result(result: Any) -> dict[str, Any]:
 
 
 class MobileActionExecutor:
-    """Encapsulates device action execution, observation capture, and result reporting."""
+    """Adapts LLM tool calls onto an actuator backend and captures observations.
 
-    def __init__(self, ctx: ArtemisContext, controller: UnifiedMobileController | None = None):
+    Device-call bodies live in the actuator (``artemis/mcp/actuators/``); this class
+    keeps the agent-side responsibilities: argument normalization, index resolution
+    against LangGraph ``State``, act-then-observe screenshot capture, tracing, and the
+    legacy 4-tuple result contract.
+    """
+
+    def __init__(
+        self,
+        ctx: ArtemisContext,
+        controller: UnifiedMobileController | None = None,
+        actuator: "AdbActuator | None" = None,
+    ):
         self.ctx = ctx
-        self.controller = controller or UnifiedMobileController(ctx)
+        self.actuator = actuator or AdbActuator(ctx, controller)
+        self.controller = self.actuator.controller
 
     @trace(type="action", name="click", serializer=serialize_mobile_action_result)
     async def exec_click(
@@ -327,27 +292,16 @@ class MobileActionExecutor:
         times: int = 1,
         delay_ms: int = 100,
     ) -> tuple[str, bytes | None, str | None, str | None]:
-        width = getattr(self.ctx.device, "device_width", 1080)
-        height = getattr(self.ctx.device, "device_height", 2400)
         try:
             target = normalize_coordinate_target(target)
             if not isinstance(target, (list, tuple)) or len(target) != 2:
                 raise ValueError(f"Invalid target format: {target}")
             nx, ny = target
-            x = int(max(0, min(width - 1, int(nx) * width / 1000)))
-            y = int(max(0, min(height - 1, int(ny) * height / 1000)))
-
-            result = await self.controller.tap_at(x, y, times=times, delay_ms=delay_ms)
-            err = getattr(result, "error", None) if result else None
-            success = err is None
-            outcome = (
-                f"Clicked at [{nx}, {ny}] (normalized) successfully."
-                if success
-                else f"Error executing click: {err}"
-            )
+            res = await self.actuator.click(int(nx), int(ny), times=times, delay_ms=delay_ms)
+            outcome = res.message
 
             img_bytes, shot_path, xml_list = None, None, None
-            if success:
+            if res.ok:
                 shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
                     self.ctx, state, self.controller
                 )
@@ -385,15 +339,20 @@ class MobileActionExecutor:
                     None,
                 )
 
-            outcomes = []
-            for i, raw_target in enumerate(sequence):
+            # Resolve each entry to normalized coordinates: integer element indices go
+            # through state.indexed_points (pixel centers -> normalized), coordinate
+            # pairs are already normalized.
+            norm_points: list[tuple[int, int]] = []
+            for raw_target in sequence:
                 target = normalize_coordinate_target(raw_target)
                 if isinstance(target, int):
                     idx = target
                     points = getattr(state, "indexed_points", []) or []
                     if 1 <= idx <= len(points):
                         pt = points[idx - 1]
-                        x, y = int(pt[0]), int(pt[1])
+                        px, py = int(pt[0]), int(pt[1])
+                        nx = int(max(0, min(1000, round(px * 1000 / max(1, width)))))
+                        ny = int(max(0, min(1000, round(py * 1000 / max(1, height)))))
                     else:
                         return (
                             (
@@ -405,9 +364,7 @@ class MobileActionExecutor:
                             None,
                         )
                 elif isinstance(target, (list, tuple)) and len(target) == 2:
-                    nx, ny = target
-                    x = int(max(0, min(width - 1, int(nx) * width / 1000)))
-                    y = int(max(0, min(height - 1, int(ny) * height / 1000)))
+                    nx, ny = int(target[0]), int(target[1])
                 else:
                     return (
                         f"Error during click sequence: Invalid target format: {raw_target}",
@@ -415,25 +372,16 @@ class MobileActionExecutor:
                         None,
                         None,
                     )
+                norm_points.append((nx, ny))
 
-                result = await self.controller.tap_at(x, y)
-                err = getattr(result, "error", None) if result else None
-                if err:
-                    return (
-                        f"Error executing click at step {i + 1}: {err}",
-                        None,
-                        None,
-                        None,
-                    )
-                outcomes.append(f"Tapped at [{x}, {y}]")
-                if i < len(sequence) - 1:
-                    await asyncio.sleep(max(0, delay_ms) / 1000.0)
+            res = await self.actuator.click_sequence(norm_points, delay_ms=delay_ms)
+            if not res.ok:
+                return res.message, None, None, None
 
-            outcome_str = f"Sequence clicked successfully: {'; '.join(outcomes)}"
             shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
                 self.ctx, state, self.controller
             )
-            return outcome_str, img_bytes, shot_path, xml_list
+            return res.message, img_bytes, shot_path, xml_list
         except Exception as e:
             return f"Error executing click sequence: {e}", None, None, None
 
@@ -445,8 +393,6 @@ class MobileActionExecutor:
         duration_ms: int = 1000,
         duration: int | None = None,
     ) -> tuple[str, bytes | None, str | None, str | None]:
-        width = getattr(self.ctx.device, "device_width", 1080)
-        height = getattr(self.ctx.device, "device_height", 2400)
         if duration is not None:
             duration_ms = duration
         try:
@@ -454,22 +400,11 @@ class MobileActionExecutor:
             if not isinstance(target, (list, tuple)) or len(target) != 2:
                 raise ValueError(f"Invalid target format: {target}")
             nx, ny = target
-            x = int(max(0, min(width - 1, int(nx) * width / 1000)))
-            y = int(max(0, min(height - 1, int(ny) * height / 1000)))
-
-            result = await self.controller.tap_at(
-                x, y, long_press=True, long_press_duration=duration_ms
-            )
-            err = getattr(result, "error", None) if result else None
-            success = err is None
-            outcome = (
-                f"Long pressed at [{nx}, {ny}] (normalized) for {duration_ms}ms successfully."
-                if success
-                else f"Error executing long press: {err}"
-            )
+            res = await self.actuator.long_press(int(nx), int(ny), duration_ms=duration_ms)
+            outcome = res.message
 
             img_bytes, shot_path, xml_list = None, None, None
-            if success:
+            if res.ok:
                 shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
                     self.ctx, state, self.controller
                 )
@@ -487,24 +422,16 @@ class MobileActionExecutor:
         state: State,
         clear_exist: bool = True,
     ) -> tuple[str, bytes | None, str | None, str | None]:
-        width = getattr(self.ctx.device, "device_width", 1080)
-        height = getattr(self.ctx.device, "device_height", 2400)
         try:
+            norm_target: tuple[int, int] | None = None
             if target:
                 target = normalize_coordinate_target(target)
                 if not isinstance(target, (list, tuple)) or len(target) != 2:
                     raise ValueError(f"Invalid target format: {target}")
-                nx, ny = target
-                x = int(max(0, min(width - 1, int(nx) * width / 1000)))
-                y = int(max(0, min(height - 1, int(ny) * height / 1000)))
+                norm_target = (int(target[0]), int(target[1]))
 
-                await self.controller.tap_at(x, y)
-            if clear_exist and hasattr(self.controller, "erase_text"):
-                await self.controller.erase_text()
-            if hasattr(self.controller, "type_text"):
-                await self.controller.type_text(text)
-
-            outcome = f"Executed typing '{text}'."
+            res = await self.actuator.input_text(text, norm_target, clear_exist=clear_exist)
+            outcome = res.message
             shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
                 self.ctx, state, self.controller
             )
@@ -540,6 +467,8 @@ class MobileActionExecutor:
         try:
             if kind == "direction":
                 dir_name = target
+                # Smart-swipe resolution needs State (indexed elements + ui tree), so
+                # it stays client-side; the actuator only receives the two points.
                 x1, y1, x2, y2, smart_dur = compute_smart_swipe_coordinates(
                     direction=target,
                     target=swipe_input.get("target"),
@@ -550,19 +479,21 @@ class MobileActionExecutor:
                     duration=final_duration,
                 )
                 final_duration = smart_dur
-                err = await self.controller.swipe_coords(x1, y1, x2, y2, final_duration)
-                if err:
-                    return f"Error swiping {dir_name}: {err}", None, None, None
+                nx1 = int(max(0, min(1000, round(x1 * 1000 / max(1, width)))))
+                ny1 = int(max(0, min(1000, round(y1 * 1000 / max(1, height)))))
+                nx2 = int(max(0, min(1000, round(x2 * 1000 / max(1, width)))))
+                ny2 = int(max(0, min(1000, round(y2 * 1000 / max(1, height)))))
+                res = await self.actuator.swipe((nx1, ny1), (nx2, ny2), final_duration)
+                if not res.ok:
+                    return f"Error swiping {dir_name}: {res.detail}", None, None, None
                 outcome = f"Swipe completed successfully. Swiped {dir_name}."
             elif kind == "coords":
                 x1, y1, x2, y2 = target
-                px1 = int(max(0, min(width - 1, int(x1) * width / 1000)))
-                py1 = int(max(0, min(height - 1, int(y1) * height / 1000)))
-                px2 = int(max(0, min(width - 1, int(x2) * width / 1000)))
-                py2 = int(max(0, min(height - 1, int(y2) * height / 1000)))
-                err = await self.controller.swipe_coords(px1, py1, px2, py2, final_duration)
-                if err:
-                    return f"Error dragging: {err}", None, None, None
+                res = await self.actuator.swipe(
+                    (int(x1), int(y1)), (int(x2), int(y2)), final_duration
+                )
+                if not res.ok:
+                    return f"Error dragging: {res.detail}", None, None, None
                 outcome = f"Swipe completed successfully. Swiped from [{x1}, {y1}] to [{x2}, {y2}]."
             else:
                 return (
@@ -589,24 +520,11 @@ class MobileActionExecutor:
         state: State,
     ) -> tuple[str, bytes | None, str | None, str | None]:
         try:
-            valid_keys = {"home", "back", "enter", "delete", "tab", "search", "menu", "app_switch"}
-            key_str = str(key).lower()
-            if key_str not in valid_keys:
-                return f"Error executing key press '{key}'.", None, None, None
+            res = await self.actuator.press_key(key)
+            if not res.ok:
+                return res.message, None, None, None
 
-            if key_str == "back" and hasattr(self.controller, "go_back"):
-                await self.controller.go_back()
-            elif key_str == "home" and hasattr(self.controller, "go_home"):
-                await self.controller.go_home()
-            elif key_str == "enter" and hasattr(self.controller, "press_enter"):
-                await self.controller.press_enter()
-            elif hasattr(self.controller, "press_key"):
-                res = await self.controller.press_key(key)
-                err = getattr(res, "error", None) if res else None
-                if err:
-                    return f"Error executing key press '{key}': {err}", None, None, None
-
-            outcome = f"Executed key press '{key}'."
+            outcome = res.message
             shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
                 self.ctx, state, self.controller
             )
@@ -624,35 +542,13 @@ class MobileActionExecutor:
         state: State,
     ) -> tuple[str, bytes | None, str | None, str | None]:
         try:
-            res = find_package(self.ctx, app_name, use_fallback=False)
-            pkg = await res if inspect.iscoroutine(res) else res
-            if not pkg:
-                return f"Error finding package for app: {app_name}", None, None, None
-            target_pkg = pkg
+            res = await self.actuator.manage_app(action, app_name)
+            # Argument-level failures return without an observation, exactly as the
+            # historical early returns did; a failed launch still captures the screen.
+            if res.code in (ActionCode.PACKAGE_NOT_FOUND, ActionCode.INVALID_ARGS):
+                return res.message, None, None, None
 
-            if action.lower() == "launch":
-                res_launch = launch_app_with_retries(self.ctx, target_pkg)
-                if inspect.iscoroutine(res_launch):
-                    res_launch = await res_launch
-                if isinstance(res_launch, tuple):
-                    success, error_msg = res_launch
-                else:
-                    success, error_msg = bool(res_launch), ""
-
-                outcome = (
-                    f"Launched app '{app_name}' ({target_pkg}) successfully."
-                    if success
-                    else f"Failed to launch app '{app_name}': {error_msg}"
-                )
-            elif action.lower() == "stop":
-                if hasattr(self.controller, "terminate_app"):
-                    res_term = self.controller.terminate_app(target_pkg)
-                    if inspect.iscoroutine(res_term):
-                        await res_term
-                outcome = f"Terminated app '{app_name}' successfully."
-            else:
-                return f"Invalid manage_app action: {action}", None, None, None
-
+            outcome = res.message
             shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
                 self.ctx, state, self.controller
             )
@@ -669,9 +565,8 @@ class MobileActionExecutor:
         state: State,
     ) -> tuple[str, bytes | None, str | None, str | None]:
         try:
-            delay_s = max(0.0, float(time_in_ms) / 1000.0)
-            await asyncio.sleep(delay_s)
-            outcome = f"Waited for {time_in_ms}ms successfully."
+            res = await self.actuator.wait_for_delay(time_in_ms)
+            outcome = res.message
             shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
                 self.ctx, state, self.controller
             )
@@ -690,27 +585,9 @@ class MobileActionExecutor:
         state: State,
     ) -> tuple[str, bytes | None, str | None, str | None]:
         try:
-            timeout_s = (timeout_ms or 5000) / 1000.0
-            start = time.time()
-            found = False
-            target_state = (wait_state or "appear").lower()
-
-            while time.time() - start < timeout_s:
-                tree = await self.controller.get_ui_elements()
-                text_present = text.lower() in (tree or "").lower()
-                if target_state == "appear" and text_present:
-                    found = True
-                    break
-                elif target_state == "disappear" and not text_present:
-                    found = True
-                    break
-                await asyncio.sleep(0.5)
-
-            outcome = (
-                f"Successfully waited for text '{text}' to {target_state}."
-                if found
-                else f"Timed out waiting for text '{text}' to {target_state}."
-            )
+            res = await self.actuator.wait_for_text(text, wait_state, timeout_ms)
+            outcome = res.message
+            # A timeout still captures the screen, as the original loop did.
             shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
                 self.ctx, state, self.controller
             )

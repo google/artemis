@@ -14,21 +14,189 @@
 
 """Unit tests for UnifiedMobileController video recording and playback features."""
 
+import subprocess
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+import cv2
 
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.utils.video import (
     RecordingSession,
+    build_scrcpy_record_command,
+    extract_audio_from_video,
+    extract_frames_at_timestamps,
+    get_ffmpeg_path,
     get_active_session,
+    normalize_recording_to_mp4,
+    render_timeline_clip,
     remove_active_session,
     set_active_session,
 )
+
+
+@pytest.mark.asyncio
+async def test_audio_extraction_rejects_silent_video_without_running_ffmpeg(tmp_path):
+    silent_video = tmp_path / "silent.mp4"
+    silent_video.write_bytes(b"video")
+    probe = MagicMock(returncode=0)
+    probe.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=probe)) as spawn:
+        with pytest.raises(ValueError, match="no audio stream"):
+            await extract_audio_from_video(silent_video)
+
+    assert spawn.await_count == 1
+
+
+def test_targeted_frame_extraction_uses_requested_timestamps():
+    fixture = Path(__file__).parents[1] / "tools" / "inputs" / "recording.mp4"
+    frames = extract_frames_at_timestamps(
+        fixture,
+        [0.0, 0.2, 0.4, 0.2, -1.0],
+        max_frames=3,
+        max_dimension=320,
+    )
+
+    assert [timestamp for timestamp, _ in frames] == [0.0, 0.2, 0.4]
+    assert all(data.startswith(b"\xff\xd8") for _, data in frames)
+
+
+def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
+    output_path = tmp_path / "recording.mkv"
+
+    command = build_scrcpy_record_command("scrcpy", "device-1", output_path)
+
+    assert "--capture-orientation=@" in command
+    assert command[command.index("--record") + 1] == str(output_path)
+
+
+@pytest.mark.asyncio
+async def test_normalize_recording_handles_resolution_change(tmp_path):
+    """A portrait/landscape H.264 track must become one fixed-size MP4."""
+    ffmpeg = get_ffmpeg_path()
+    portrait = tmp_path / "portrait.mkv"
+    landscape = tmp_path / "landscape.mkv"
+    dynamic = tmp_path / "dynamic.mkv"
+    output = tmp_path / "recording.mp4"
+
+    for size, path in (("108x242", portrait), ("242x108", landscape)):
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"testsrc=size={size}:rate=10:duration=0.5",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    concat_file = tmp_path / "segments.txt"
+    concat_file.write_text(
+        f"file '{portrait.as_posix()}'\nfile '{landscape.as_posix()}'\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_file),
+            "-c",
+            "copy",
+            str(dynamic),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    assert await normalize_recording_to_mp4(dynamic, output, 108, 242)
+
+    capture = cv2.VideoCapture(str(output))
+    dimensions = set()
+    frame_count = 0
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        frame_count += 1
+        dimensions.add((frame.shape[1], frame.shape[0]))
+    capture.release()
+
+    assert frame_count >= 8
+    assert dimensions == {(108, 242)}
+
+
+@pytest.mark.asyncio
+async def test_analyzer_clip_stays_continuous_across_orientation_segments(tmp_path):
+    """The analyzer must still receive one decodable MP4 across a rotation."""
+    ffmpeg = get_ffmpeg_path()
+    portrait = tmp_path / "recording.mkv"
+    landscape = tmp_path / "recording_001.mkv"
+    output = tmp_path / "agent_clip.mp4"
+    for color, size, path in (
+        ("red", "108x242", portrait),
+        ("blue", "242x108", landscape),
+    ):
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color={color}:size={size}:rate=15:duration=1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    assert await render_timeline_clip(
+        [
+            {"path": portrait, "start": 0.0, "end": 1.0},
+            {"path": landscape, "start": 1.0, "end": 2.0},
+        ],
+        0.25,
+        1.75,
+        output,
+        canvas_width=180,
+        canvas_height=320,
+    )
+
+    capture = cv2.VideoCapture(str(output))
+    dimensions = set()
+    frames = 0
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        dimensions.add((frame.shape[1], frame.shape[0]))
+        frames += 1
+    capture.release()
+    assert dimensions == {(180, 320)}
+    assert frames >= 20
 
 
 @pytest.fixture
@@ -60,17 +228,21 @@ async def test_unified_controller_start_recording(mock_ctx, tmp_path):
     mock_proc.returncode = None
 
     with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
-        with patch("asyncio.sleep", AsyncMock()):
-            res = await controller.start_video_recording(output_dir=tmp_path)
+        with patch(
+            "artemis.controllers.unified_controller.get_android_display_state",
+            AsyncMock(return_value=(0, 1080, 2424)),
+        ):
+            with patch("asyncio.sleep", AsyncMock()):
+                res = await controller.start_video_recording(output_dir=tmp_path)
 
-            assert res.success is True
-            assert get_active_session("emulator-5554") is not None
-            assert mock_ctx.data_engine.record_video_start.called
+                assert res.success is True
+                assert get_active_session("emulator-5554") is not None
+                assert mock_ctx.data_engine.record_video_start.called
 
-            # Calling start again should report already in progress
-            res2 = await controller.start_video_recording(output_dir=tmp_path)
-            assert res2.success is False
-            assert "already in progress" in res2.message
+                # Calling start again should report already in progress
+                res2 = await controller.start_video_recording(output_dir=tmp_path)
+                assert res2.success is False
+                assert "already in progress" in res2.message
 
     remove_active_session("emulator-5554")
 
@@ -99,10 +271,12 @@ async def test_unified_controller_stop_recording(mock_ctx, tmp_path):
     )
     set_active_session("emulator-5554", session)
 
-    with patch.object(
-        controller,
-        "_convert_mkv_to_mp4",
-        AsyncMock(side_effect=lambda src, dst: dst.write_bytes(b"mp4 content") or True),
+    with patch(
+        "artemis.controllers.unified_controller.remux_recording_to_mp4",
+        AsyncMock(side_effect=lambda src, dst: (dst.write_bytes(b"mp4 content"), True)[1]),
+    ), patch(
+        "artemis.controllers.unified_controller.write_recording_manifest",
+        AsyncMock(return_value=tmp_path / "recording.json"),
     ):
         res = await controller.stop_video_recording()
 
@@ -135,7 +309,7 @@ async def test_unified_controller_extract_segment_metadata(mock_ctx, tmp_path):
     set_active_session("emulator-5554", session)
 
     with patch(
-        "artemis.controllers.unified_controller.trim_video",
+        "artemis.controllers.unified_controller.render_timeline_clip",
         AsyncMock(side_effect=lambda src, s, e, dst: dst.write_bytes(b"segment mp4") or True),
     ):
         res = await controller.extract_segment_metadata(start_time=2.0, end_time=8.0)
@@ -145,6 +319,38 @@ async def test_unified_controller_extract_segment_metadata(mock_ctx, tmp_path):
         assert res.video_path.exists()
         # Ensure session is still active (not stopped by extraction!)
         assert get_active_session("emulator-5554") is not None
+    remove_active_session("emulator-5554")
+
+
+@pytest.mark.asyncio
+async def test_segment_cache_is_scoped_to_recording_generation(mock_ctx, tmp_path):
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+    recording = tmp_path / "recording.mkv"
+    recording.write_bytes(b"recording")
+    session = RecordingSession(
+        video_id=uuid4(),
+        device_id="emulator-5554",
+        start_time=time.time() - 20.0,
+        data_engine_start_time=time.time() - 20.0,
+        local_video_path=recording,
+        process=MagicMock(returncode=None),
+    )
+    set_active_session("emulator-5554", session)
+
+    render = AsyncMock(
+        side_effect=lambda source, start, end, output: output.write_bytes(b"clip") or True
+    )
+    with patch("artemis.controllers.unified_controller.render_timeline_clip", render):
+        first = await controller.extract_segment_metadata(2.0, 8.0)
+        cached = await controller.extract_segment_metadata(2.0, 8.0)
+        session.generation = 1
+        regenerated = await controller.extract_segment_metadata(2.0, 8.0)
+
+    assert first is cached
+    assert regenerated is not cached
+    assert regenerated.generation == 1
+    assert render.await_count == 2
     remove_active_session("emulator-5554")
 
 
@@ -204,6 +410,14 @@ async def test_unified_controller_crash_recovery_and_multi_segment(mock_ctx, tmp
         data_engine_start_time=time.time() - 30.0,
         local_video_path=seg2,
         android_video_segments=[seg1],
+        android_segment_records=[
+            {
+                "path": seg1,
+                "output_path": tmp_path / "recording.mp4",
+                "start": 0.0,
+                "end": 15.0,
+            }
+        ],
         android_segment_index=1,
         process=mock_proc,
     )
@@ -211,13 +425,12 @@ async def test_unified_controller_crash_recovery_and_multi_segment(mock_ctx, tmp
 
     with (
         patch(
-            "artemis.controllers.unified_controller.concatenate_videos",
-            AsyncMock(side_effect=lambda segs, out: out.write_bytes(b"combined mkv") or True),
+            "artemis.controllers.unified_controller.remux_recording_to_mp4",
+            AsyncMock(side_effect=lambda src, dst: (dst.write_bytes(b"final mp4"), True)[1]),
         ),
-        patch.object(
-            controller,
-            "_convert_mkv_to_mp4",
-            AsyncMock(side_effect=lambda src, dst: dst.write_bytes(b"final mp4") or True),
+        patch(
+            "artemis.controllers.unified_controller.write_recording_manifest",
+            AsyncMock(return_value=tmp_path / "recording.json"),
         ),
     ):
         res = await controller.stop_video_recording()
@@ -261,7 +474,8 @@ async def test_unified_controller_timeline_alignment(mock_ctx, tmp_path):
         return True
 
     with patch(
-        "artemis.controllers.unified_controller.trim_video", AsyncMock(side_effect=mock_trim)
+        "artemis.controllers.unified_controller.render_timeline_clip",
+        AsyncMock(side_effect=mock_trim),
     ):
         # Agent asks for system time range [5.0s, 10.0s]
         res = await controller.extract_segment_metadata(start_time=5.0, end_time=10.0)

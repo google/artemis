@@ -59,7 +59,7 @@ class ReactiveRunner(BaseRunner):
                     artemis_ctx = ArtemisContext(
                         device=DeviceContext(
                             host_platform=platform.os_type.name,
-                            device_serial=self.driver.device_id,
+                            device_id=self.driver.device_id,
                         )
                     )
                 flash_runner = FlashRunner(

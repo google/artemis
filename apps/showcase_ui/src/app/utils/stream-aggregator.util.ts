@@ -64,8 +64,12 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
         const updatedData = { ...existing.data };
         if (streamType === 'thinking') {
           updatedData.operator_native_thinking = text;
+          updatedData.operator_native_thinking_timestamp =
+            updatedData.operator_native_thinking_timestamp || log.timestamp;
         } else {
           updatedData.operator_raw_thinking = text;
+          updatedData.operator_raw_thinking_timestamp =
+            updatedData.operator_raw_thinking_timestamp || log.timestamp;
         }
         if (stepId && !updatedData.step_id) {
           updatedData.step_id = stepId;
@@ -89,8 +93,10 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
         };
         if (streamType === 'thinking') {
           blockData.operator_native_thinking = text;
+          blockData.operator_native_thinking_timestamp = log.timestamp;
         } else {
           blockData.operator_raw_thinking = text;
+          blockData.operator_raw_thinking_timestamp = log.timestamp;
         }
 
         blocks.push({
@@ -134,6 +140,12 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           ...log.data,
           operator_native_thinking: log.data.operator_native_thinking || existingBlock.data.operator_native_thinking || undefined,
           operator_raw_thinking: log.data.operator_raw_thinking || existingBlock.data.operator_raw_thinking || undefined,
+          operator_native_thinking_timestamp: existingBlock.data.operator_native_thinking_timestamp
+            || log.data.operator_native_thinking_timestamp
+            || (log.data.operator_native_thinking ? log.timestamp : undefined),
+          operator_raw_thinking_timestamp: existingBlock.data.operator_raw_thinking_timestamp
+            || log.data.operator_raw_thinking_timestamp
+            || (log.data.operator_raw_thinking ? log.timestamp : undefined),
           action_taken: log.data.action_taken || existingBlock.data.action_taken || undefined,
           last_execution_result: log.data.last_execution_result || existingBlock.data.last_execution_result || undefined,
           generic_tools: mergedTools,
@@ -155,6 +167,10 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           data: {
             ...log.data,
             isCompleted: true,
+            operator_native_thinking_timestamp: log.data.operator_native_thinking_timestamp
+              || (log.data.operator_native_thinking ? log.timestamp : undefined),
+            operator_raw_thinking_timestamp: log.data.operator_raw_thinking_timestamp
+              || (log.data.operator_raw_thinking ? log.timestamp : undefined),
             generic_tools: log.data.generic_tools || []
           }
         });
@@ -268,6 +284,39 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
 }
 
 /**
+ * Cache for the token-estimate fallback. Tool payloads can carry multi-megabyte
+ * base64 screenshots; serializing them on every recompute would block the main
+ * thread, so each payload object is measured exactly once.
+ */
+const payloadSizeCache = new WeakMap<object, { isImage: boolean; length: number }>();
+
+function estimatePayloadSize(payload: any): { isImage: boolean; length: number } {
+  if (typeof payload === 'string') {
+    return {
+      isImage: payload.includes('data:image/') || payload.includes('base64,'),
+      length: payload.length
+    };
+  }
+  if (payload === null || typeof payload !== 'object') {
+    return { isImage: false, length: String(payload).length };
+  }
+  const cached = payloadSizeCache.get(payload);
+  if (cached) return cached;
+  let payloadStr = '';
+  try {
+    payloadStr = JSON.stringify(payload) || '';
+  } catch {
+    payloadStr = String(payload);
+  }
+  const result = {
+    isImage: payloadStr.includes('data:image/') || payloadStr.includes('base64,'),
+    length: payloadStr.length
+  };
+  payloadSizeCache.set(payload, result);
+  return result;
+}
+
+/**
  * Safely extract and aggregate token usage for a step block
  */
 export function extractBlockTokens(block: StepBlock): { total: number; prompt: number; completion: number } {
@@ -329,11 +378,11 @@ export function extractBlockTokens(block: StepBlock): { total: number; prompt: n
   if (data.generic_tools && Array.isArray(data.generic_tools)) {
     data.generic_tools.forEach((t: any) => {
       if (t.payload) {
-        const payloadStr = typeof t.payload === 'string' ? t.payload : JSON.stringify(t.payload);
-        if (payloadStr.includes('data:image/') || payloadStr.includes('base64,')) {
+        const estimate = estimatePayloadSize(t.payload);
+        if (estimate.isImage) {
           numImages += 1;
         } else {
-          textLen += payloadStr.length;
+          textLen += estimate.length;
         }
       }
     });
@@ -410,23 +459,58 @@ export function groupBlocksToPhases(blocks: StepBlock[], sessionStartTime: numbe
  */
 export function getSortedStepEvents(
   stepData: any, 
-  cache?: WeakMap<any, { length: number; actionTs: any; events: StepEvent[] }>
+  cache?: WeakMap<any, { signature: string; events: StepEvent[] }>
 ): StepEvent[] {
   if (!stepData || typeof stepData !== 'object') return [];
   const toolsLen = stepData.generic_tools ? stepData.generic_tools.length : 0;
   const actionTs = stepData.action_taken ? (stepData.action_taken.timestamp || stepData.action_taken.start_time || stepData.action_taken.created_at) : null;
+  const nativeText = typeof stepData.operator_native_thinking === 'string'
+    ? stepData.operator_native_thinking.trim()
+    : '';
+  const rawText = typeof stepData.operator_raw_thinking === 'string'
+    ? stepData.operator_raw_thinking.trim()
+    : '';
+  const signature = [
+    toolsLen,
+    actionTs ?? '',
+    stepData.operator_native_thinking_timestamp ?? '',
+    stepData.operator_raw_thinking_timestamp ?? '',
+    nativeText.length,
+    rawText.length
+  ].join('|');
 
   if (cache) {
     const cached = cache.get(stepData);
-    if (cached && cached.length === toolsLen && cached.actionTs === actionTs) {
+    if (cached?.signature === signature) {
       return cached.events;
     }
   }
 
-  const events: Array<{ type: 'action' | 'tool'; data: any; timestamp: number }> = [];
+  const events: Array<{ type: StepEvent['type']; data: any; timestamp: number; sequence: number }> = [];
   const fallbackTime = getItemTimestamp(stepData.timestamp, 0);
+  let sequence = 0;
 
-  // 1. Add action_taken if present and valid
+  // Text and tools share one timeline. Live streams carry their first-seen
+  // timestamps; persisted steps use the step timestamp as a stable fallback.
+  if (nativeText) {
+    events.push({
+      type: 'thinking',
+      data: { text: stepData.operator_native_thinking },
+      timestamp: getItemTimestamp(stepData.operator_native_thinking_timestamp, fallbackTime),
+      sequence: sequence++
+    });
+  }
+
+  if (rawText) {
+    events.push({
+      type: 'text',
+      data: { text: stepData.operator_raw_thinking },
+      timestamp: getItemTimestamp(stepData.operator_raw_thinking_timestamp, fallbackTime),
+      sequence: sequence++
+    });
+  }
+
+  // Add action_taken if present and valid.
   if (stepData.action_taken && (isAndroidAction(stepData.action_taken) || isReportStatusAction(stepData.action_taken))) {
     const actTime = getItemTimestamp(
       stepData.action_taken.timestamp ?? stepData.action_taken.start_time ?? stepData.action_taken.created_at,
@@ -435,11 +519,12 @@ export function getSortedStepEvents(
     events.push({
       type: 'action',
       data: stepData.action_taken,
-      timestamp: actTime
+      timestamp: actTime,
+      sequence: sequence++
     });
   }
 
-  // 2. Add generic tools if present
+  // Add generic tools if present.
   const uniqueTools = getUniqueGenericTools(stepData.generic_tools);
   uniqueTools.forEach((tool: any) => {
     const toolTime = getItemTimestamp(
@@ -449,16 +534,22 @@ export function getSortedStepEvents(
     events.push({
       type: 'tool',
       data: tool,
-      timestamp: toolTime
+      timestamp: toolTime,
+      sequence: sequence++
     });
   });
 
-  // 3. Sort chronologically by timestamp
-  events.sort((a, b) => a.timestamp - b.timestamp);
+  // Sort chronologically. The explicit sequence makes equal/missing timestamp
+  // behavior deterministic across browsers and preserves the legacy fallback.
+  events.sort((a, b) => (a.timestamp - b.timestamp) || (a.sequence - b.sequence));
 
-  const result: StepEvent[] = events.map(e => ({ type: e.type, data: e.data }));
+  const result: StepEvent[] = events.map(e => ({
+    type: e.type,
+    data: e.data,
+    timestamp: e.timestamp
+  }));
   if (cache) {
-    cache.set(stepData, { length: toolsLen, actionTs, events: result });
+    cache.set(stepData, { signature, events: result });
   }
   return result;
 }

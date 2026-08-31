@@ -17,8 +17,8 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 import sys
+from typing import Any
 
 # Ensure repository root is in sys.path when executed directly or via MCP runner
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
@@ -42,44 +42,61 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.platform import platform
 from artemis.utils.app_launch_utils import launch_app_with_retries
 
-# Redirect stdio to prevent logs from breaking MCP JSON-RPC protocol and causing deadlocks.
-try:
-    from artemis.config import settings
-
-    log_path = Path(settings.TRACES_PATH) / "mcp_server.log"
-except Exception:
-    log_path = Path("traces") / "mcp_server.log"
-
-log_path.parent.mkdir(parents=True, exist_ok=True)
-
-for name in ["artemis", __name__]:
-    log_instance = logging.getLogger(name)
-    log_instance.setLevel(logging.DEBUG)
-    log_instance.propagate = False
-    # Remove standard streams handlers
-    log_instance.handlers = [
-        h for h in log_instance.handlers if not isinstance(h, logging.StreamHandler)
-    ]
-    fh = logging.FileHandler(log_path, encoding="utf-8")
-    fh.setFormatter(logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s"))
-    log_instance.addHandler(fh)
-
 logger = logging.getLogger(__name__)
-logger.info("MCP Server Python process fully started. Configuring FastMCP service...")
 
-# Avoid concurrent SQLite WAL locks by blocking child processes from connecting to primary DataEngine.
-os.environ["ARTEMIS_IPC_PORT"] = ""
+
+def configure_stdio_mode() -> None:
+    """Applies process-wide settings required when serving MCP over stdio.
+
+    These are destructive to the host process (console logging is removed and the
+    DataEngine IPC port is cleared), so they must only run when this module owns the
+    process -- i.e. from the ``__main__`` block. Importing this module for its tools
+    or for :func:`_get_controller` must leave the caller's logging and environment
+    untouched.
+    """
+    # Redirect stdio to prevent logs from breaking MCP JSON-RPC protocol and causing deadlocks.
+    try:
+        from artemis.config import settings
+
+        log_path = Path(settings.TRACES_PATH) / "mcp_server.log"
+    except Exception:
+        log_path = Path("traces") / "mcp_server.log"
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    for name in ["artemis", __name__]:
+        log_instance = logging.getLogger(name)
+        log_instance.setLevel(logging.DEBUG)
+        log_instance.propagate = False
+        # Remove standard streams handlers
+        log_instance.handlers = [
+            h for h in log_instance.handlers if not isinstance(h, logging.StreamHandler)
+        ]
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s"))
+        log_instance.addHandler(fh)
+
+    logger.info("MCP Server Python process fully started. Configuring FastMCP service...")
+
+    # Avoid concurrent SQLite WAL locks by blocking child processes from connecting
+    # to the primary DataEngine.
+    os.environ["ARTEMIS_IPC_PORT"] = ""
+
 
 # Create minimal MCP server
 mcp = FastMCP("Android_ADB_Controller")
 
 _GLOBAL_CONTROLLER = None
+_CONTROLLERS: dict[str, Any] = {}
 
 
-def _get_controller():
-    """Lazy-load device controller on-demand as a singleton."""
-    global _GLOBAL_CONTROLLER
-    if _GLOBAL_CONTROLLER is not None:
+def _get_controller(device_serial: str | None = None):
+    """Lazy-load device controller on-demand, caching per device serial."""
+    global _GLOBAL_CONTROLLER, _CONTROLLERS
+    target_serial = device_serial or os.environ.get("ARTEMIS_DEVICE_ID") or os.environ.get("ADB_DEVICE_SERIAL")
+    if target_serial and target_serial in _CONTROLLERS:
+        return _CONTROLLERS[target_serial]
+    if not target_serial and _GLOBAL_CONTROLLER is not None:
         return _GLOBAL_CONTROLLER
 
     logger.info("Initializing lazy device controller...")
@@ -87,21 +104,21 @@ def _get_controller():
         logger.info(
             "GCP CLOUD MODE active: initializing CloudMobileDeviceController via UnifiedMobileController..."
         )
-        target_serial = (
-            os.environ.get("ARTEMIS_DEVICE_ID")
-            or os.environ.get("ADB_DEVICE_SERIAL")
-            or "cloud_device"
-        )
+        resolved_serial = target_serial or "cloud_device"
         ctx = ArtemisContext(
             device=DeviceContext(
                 platform=DevicePlatform.ANDROID,
-                device_id=target_serial,
+                device_id=resolved_serial,
                 width=1080,
                 height=2400,
             )
         )
-        _GLOBAL_CONTROLLER = UnifiedMobileController(ctx=ctx)
-        return _GLOBAL_CONTROLLER
+        controller = UnifiedMobileController(ctx=ctx)
+        if resolved_serial:
+            _CONTROLLERS[resolved_serial] = controller
+        if _GLOBAL_CONTROLLER is None:
+            _GLOBAL_CONTROLLER = controller
+        return controller
 
     host = os.environ.get("ADB_HOST", "localhost")
     port_str = os.environ.get("ADB_PORT", "5037")
@@ -110,7 +127,6 @@ def _get_controller():
         os.environ["ADB_SERVER_SOCKET"] = f"tcp:{host}:{port}"
     adb = AdbClient(host=host, port=port)
 
-    target_serial = os.environ.get("ARTEMIS_DEVICE_ID") or os.environ.get("ADB_DEVICE_SERIAL")
     devices = adb.device_list()
     if not devices:
         raise Exception(f"No Android devices found at {host}:{port}")
@@ -148,57 +164,22 @@ def _get_controller():
         ui_adb_client=ui_client,
     )
 
-    _GLOBAL_CONTROLLER = UnifiedMobileController(ctx)
+    controller = UnifiedMobileController(ctx)
+    if device_id:
+        _CONTROLLERS[device_id] = controller
+    if _GLOBAL_CONTROLLER is None:
+        _GLOBAL_CONTROLLER = controller
     logger.info(f"Lazy device controller fully initialized for device: {device_id}")
-    return _GLOBAL_CONTROLLER
+    return controller
 
 
-def _find_element_at_coords(elements: list[dict], x: int, y: int) -> dict | None:
-    """Finds the smallest (leaf-most) focusable element containing [x, y]."""
-    matching_element = None
-    min_area = float("inf")
-
-    for elem in elements:
-        is_focusable = (
-            elem.get("focusable") == "true"
-            or elem.get("clickable") == "true"
-            or "EditText" in str(elem.get("class", ""))
-        )
-        if not is_focusable:
-            continue
-
-        bounds_str = elem.get("bounds")
-        if bounds_str and isinstance(bounds_str, str):
-            match = re.match(r"\[(\-?\d+),(\-?\d+)\]\[(\-?\d+),(\-?\d+)\]", bounds_str)
-            if match:
-                x1, y1, x2, y2 = map(int, match.groups())
-                if x1 <= x <= x2 and y1 <= y <= y2:
-                    area = (x2 - x1) * (y2 - y1)
-                    if area < min_area:
-                        min_area = area
-                        matching_element = elem
-
-    return matching_element
-
-
-async def _ensure_focus_at_coords(controller, x: int, y: int) -> str | None:
-    """Ensures the element at [x, y] is focused, tapping only if it is not already focused."""
-    try:
-        elements = await controller.get_ui_elements()
-        elem = _find_element_at_coords(elements, x, y)
-        if elem and elem.get("focused") == "true":
-            logger.info(f"Element under [{x}, {y}] is already focused. Skipping tap.")
-            return None
-    except Exception as e:
-        logger.warning(f"Failed to check focus status: {e}. Falling back to unconditional tap.")
-
-    result = await controller.tap_at(x=x, y=y)
-    if hasattr(result, "error") and result.error:
-        return result.error
-
-    # Wait for the UI to settle and keyboard to pop up after tapping
-    await asyncio.sleep(1.0)
-    return None
+# Shared with the in-process actuator layer; this stdio server keeps its legacy
+# pixel-space contract for external MCP clients, but the element/focus logic has a
+# single implementation in artemis.mcp.actuators.adb.
+from artemis.mcp.actuators.adb import (  # noqa: E402  pylint: disable=wrong-import-position
+    ensure_focus_at_coords as _ensure_focus_at_coords,
+    find_element_at_coords as _find_element_at_coords,
+)
 
 
 @mcp.tool()
@@ -470,4 +451,11 @@ async def get_ui_hierarchy(ctx: Context) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    from artemis.runtime import shutdown_awake_service, start_awake_service
+
+    configure_stdio_mode()
+    start_awake_service()
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        shutdown_awake_service()

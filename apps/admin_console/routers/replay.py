@@ -15,12 +15,12 @@
 import traceback
 from fastapi import APIRouter, HTTPException
 
+from artemis.config import WORKSPACE_ROOT
+
 try:
-    from admin_console.core.config import WORKSPACE_ROOT
     from admin_console.schemas.task_schema import ReplayRequest
     from admin_console.replay_manager import ReplayManager
 except ImportError:
-    from apps.admin_console.core.config import WORKSPACE_ROOT
     from apps.admin_console.schemas.task_schema import ReplayRequest
     from apps.admin_console.replay_manager import ReplayManager
 

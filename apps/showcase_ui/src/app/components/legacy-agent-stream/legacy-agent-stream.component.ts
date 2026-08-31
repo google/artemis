@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, inject } from '@angular/core';
+import { Component, inject, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AgentService } from '../../services/agent.service';
@@ -24,6 +24,7 @@ import { AgentService } from '../../services/agent.service';
   standalone: true,
   imports: [CommonModule, FormsModule],
   templateUrl: './legacy-agent-stream.component.html',
+  changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './legacy-agent-stream.component.scss'
 })
 export class LegacyAgentStreamComponent {

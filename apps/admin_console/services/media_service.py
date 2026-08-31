@@ -17,27 +17,127 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import threading
 from typing import Any
 import urllib.parse
 from fastapi import HTTPException
 
-try:
-    from admin_console.core.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
-except ImportError:
-    from apps.admin_console.core.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
+from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
 
 
 class MediaService:
     """Service handling media indexing, local file security, payload unwrapping and notes/plans."""
+
+    # Conversion results keyed by source path -> (mtime, size, resolved path).
+    # Failed conversions are cached too (resolved path == source path) so a broken
+    # file doesn't re-run ffmpeg (up to 45s) on every /api/sessions poll.
+    _playable_cache: dict[str, tuple[float, int, str]] = {}
+    _playable_cache_lock = threading.Lock()
+
+    @classmethod
+    def ensure_browser_playable_video(cls, p: Path) -> Path:
+        """Ensure the video file is in a browser-supported container (MP4).
+
+        If given an MKV, check if a converted MP4 already exists or convert it.
+        """
+        try:
+            if not p.exists():
+                return p
+            suffix = p.suffix.lower()
+            if suffix == ".mp4":
+                return p
+            if suffix in (".mkv", ".webm"):
+                src_stat = p.stat()
+                cache_key = str(p)
+                cached = cls._playable_cache.get(cache_key)
+                if cached and cached[0] == src_stat.st_mtime and cached[1] == src_stat.st_size:
+                    return Path(cached[2])
+                mp4_cand = p.with_suffix(".mp4")
+                if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+                    cls._playable_cache[cache_key] = (
+                        src_stat.st_mtime,
+                        src_stat.st_size,
+                        str(mp4_cand),
+                    )
+                    return mp4_cand
+                with cls._playable_cache_lock:
+                    # Another thread may have converted this file while we waited.
+                    cached = cls._playable_cache.get(cache_key)
+                    if cached and cached[0] == src_stat.st_mtime and cached[1] == src_stat.st_size:
+                        return Path(cached[2])
+                    try:
+                        result = cls._convert_to_mp4(p, mp4_cand)
+                    except Exception:
+                        result = p
+                    cls._playable_cache[cache_key] = (
+                        src_stat.st_mtime,
+                        src_stat.st_size,
+                        str(result),
+                    )
+                    return result
+        except Exception:
+            pass
+        return p
+
+    @staticmethod
+    def _convert_to_mp4(p: Path, mp4_cand: Path) -> Path:
+        from artemis.utils.video import get_ffmpeg_path
+        ffmpeg = get_ffmpeg_path()
+        # 1. Attempt fast copy remux
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-fflags",
+                "+genpts",
+                "-i",
+                str(p),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(mp4_cand),
+            ],
+            capture_output=True,
+            timeout=15,
+        )
+        if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+            return mp4_cand
+        # 2. If copy remux failed, fallback to ultrafast re-encode
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-fflags",
+                "+genpts+discardcorrupt",
+                "-i",
+                str(p),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(mp4_cand),
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+            return mp4_cand
+        return p
 
     @staticmethod
     def path_to_video_url(p: Path) -> str:
         resolved = p.resolve()
         try:
             rel = resolved.relative_to(WORKSPACE_ROOT)
-            return f"/videos/{rel}"
+            return f"/videos/{urllib.parse.quote(rel.as_posix(), safe='/')}"
         except ValueError:
-            return f"/videos/{str(resolved).lstrip('/')}"
+            return f"/videos/{urllib.parse.quote(resolved.as_posix().lstrip('/'), safe='/:')}"
 
     @classmethod
     def build_video_index(cls) -> dict[str, str]:
@@ -56,12 +156,14 @@ class MediaService:
                         for ext in [".mp4", ".mkv", ".webm"]:
                             vfile = item / f"recording{ext}"
                             if vfile.exists():
+                                vfile = cls.ensure_browser_playable_video(vfile)
                                 url = cls.path_to_video_url(vfile)
                                 idx[item.name] = url
                                 prefix = item.name.split("_PASS_")[0].split("_FAIL_")[0]
                                 idx[prefix] = url
                                 break
                     elif item.suffix in [".mp4", ".mkv", ".webm"]:
+                        item = cls.ensure_browser_playable_video(item)
                         url = cls.path_to_video_url(item)
                         idx[item.stem] = url
                         idx[item.name] = url
@@ -85,12 +187,14 @@ class MediaService:
         v_url = None
         v_fp = row_dict.get("video_filepath")
         if v_fp and os.path.exists(v_fp):
-            v_url = cls.path_to_video_url(Path(v_fp))
+            p = cls.ensure_browser_playable_video(Path(v_fp))
+            v_url = cls.path_to_video_url(p)
 
         orig_rec = video_rec_map.get(s_id)
         if not v_url and orig_rec:
             p = Path(orig_rec)
             if p.exists():
+                p = cls.ensure_browser_playable_video(p)
                 v_url = cls.path_to_video_url(p)
             else:
                 folder_name = p.parent.name
@@ -105,12 +209,14 @@ class MediaService:
                 for ext in [".mp4", ".webm", ".mkv"]:
                     vfile = sess_dir / f"recording{ext}"
                     if vfile.exists():
+                        vfile = cls.ensure_browser_playable_video(vfile)
                         v_url = cls.path_to_video_url(vfile)
                         break
                 if not v_url:
                     try:
                         for item in sess_dir.iterdir():
                             if item.is_file() and item.suffix.lower() in [".mp4", ".webm", ".mkv"]:
+                                item = cls.ensure_browser_playable_video(item)
                                 v_url = cls.path_to_video_url(item)
                                 break
                     except Exception:
@@ -126,6 +232,36 @@ class MediaService:
             v_url = video_idx.get(task_hint)
 
         return v_url
+
+    @classmethod
+    def resolve_video_segments(cls, video_url: str | None) -> list[dict[str, Any]]:
+        """Resolve a recording sidecar manifest into browser-safe segment URLs."""
+        if not video_url or not video_url.startswith("/videos/"):
+            return []
+        relative = urllib.parse.unquote(video_url.removeprefix("/videos/"))
+        video_path = (WORKSPACE_ROOT / relative).resolve()
+        manifest_path = video_path.parent / "recording.json"
+        if not manifest_path.is_file():
+            return []
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            segments = []
+            for item in payload.get("segments", []):
+                segment_path = (manifest_path.parent / str(item["file"])).resolve()
+                if segment_path.parent != manifest_path.parent.resolve() or not segment_path.is_file():
+                    continue
+                segments.append(
+                    {
+                        "url": cls.path_to_video_url(segment_path),
+                        "start": float(item.get("start", 0)),
+                        "duration": float(item.get("duration", 0)),
+                        "width": int(item.get("width", 0)),
+                        "height": int(item.get("height", 0)),
+                    }
+                )
+            return segments
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return []
 
     @staticmethod
     def unwrap_payload(obj: Any) -> Any:
@@ -187,30 +323,51 @@ class MediaService:
             return [MediaService.unwrap_payload(x) for x in obj]
         return obj
 
-    @staticmethod
-    def get_safe_local_file(path_str: str) -> tuple[Path, str]:
+    _LOCAL_FILE_MEDIA_TYPES = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".mkv": "video/x-matroska",
+    }
+
+    @classmethod
+    def get_safe_local_file(cls, path_str: str) -> tuple[Path, str]:
+        """Serve trace media only: resolved path must sit inside the workspace
+        or traces tree AND carry a media extension, so this endpoint can never
+        hand out .env, databases, or source files."""
         decoded_path = urllib.parse.unquote(path_str)
         if decoded_path.startswith("file://"):
             decoded_path = decoded_path[len("file://") :]
-        p = Path(decoded_path).resolve()
+        try:
+            p = Path(decoded_path).resolve(strict=True)
+        except (OSError, ValueError):
+            raise HTTPException(status_code=404, detail="File not found")
 
         if not p.is_file():
             raise HTTPException(status_code=404, detail="File not found")
 
-        if not str(p).startswith(str(WORKSPACE_ROOT)):
+        allowed_roots = []
+        for root in (WORKSPACE_ROOT, TRACES_PATH):
+            try:
+                allowed_roots.append(Path(root).resolve())
+            except OSError:
+                continue
+        if not any(p.is_relative_to(root) for root in allowed_roots):
             raise HTTPException(
                 status_code=403,
                 detail="Access denied. Path is outside workspace root.",
             )
 
-        ext = p.suffix.lower()
-        media_type = "application/octet-stream"
-        if ext in (".jpg", ".jpeg"):
-            media_type = "image/jpeg"
-        elif ext == ".png":
-            media_type = "image/png"
-        elif ext == ".mp4":
-            media_type = "video/mp4"
+        media_type = cls._LOCAL_FILE_MEDIA_TYPES.get(p.suffix.lower())
+        if media_type is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied. Only media files are served.",
+            )
 
         return p, media_type
 

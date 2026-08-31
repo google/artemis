@@ -163,7 +163,12 @@ class StepRepository:
         co = (len(resp_text) // 4) + (resp_images * 258)
         return int(pr), int(co), int(pr + co)
 
-    def _clean_tool_payload(self, payload_raw: Any, trace_type: str | None = None) -> Any:
+    def _clean_tool_payload(
+        self,
+        payload_raw: Any,
+        trace_type: str | None = None,
+        trace_name: str | None = None,
+    ) -> Any:
         if not payload_raw:
             return None
         payload_obj = payload_raw
@@ -186,6 +191,10 @@ class StepRepository:
                 "source",
                 "recoverable",
                 "pause",
+                "request_id",
+                "scheduled_at",
+                "waited_seconds",
+                "retries",
             )
             cleaned = {
                 key: self._clean_value(payload_obj.get(key))
@@ -200,8 +209,18 @@ class StepRepository:
         )
         result_payload: dict[str, Any] = {"args": cleaned_args}
 
-        # Extract structured action execution results
+        # Extract structured action execution results. Video analysis keeps its
+        # result because the task stream needs to distinguish cached, partial,
+        # recovering, waiting, completed, and terminal outcomes. Other tools
+        # retain the historical compact payload to avoid sending large blobs.
         res = payload_obj.get("result")
+        is_video_analysis = str(trace_name or "").lower() in {
+            "video_analysis",
+            "video_analyzer",
+            "video_analyzer_pure",
+            "spawn_sub_agent",
+            "analyze_audio_only",
+        }
         if isinstance(res, dict):
             if res.get("post_image_name"):
                 result_payload["post_image_name"] = res["post_image_name"]
@@ -209,8 +228,12 @@ class StepRepository:
                 result_payload["pre_image_name"] = res["pre_image_name"]
             if res.get("outcome"):
                 result_payload["outcome"] = res["outcome"]
+            if is_video_analysis:
+                result_payload["result"] = self._clean_value(res)
         elif res:
             res_str = str(res)
+            if is_video_analysis:
+                result_payload["result"] = res_str
             match = re.search(r"([a-f0-9]{64})", res_str)
             if match:
                 result_payload["post_image_name"] = match.group(1)
@@ -255,7 +278,7 @@ class StepRepository:
                 return trace_dict
 
         trace_dict["payload"] = self._clean_tool_payload(
-            trace_dict.get("payload"), trace_dict.get("type")
+            trace_dict.get("payload"), trace_dict.get("type"), trace_dict.get("name")
         )
         return trace_dict
 
@@ -367,20 +390,20 @@ class StepRepository:
 
                 steps.append(step_dict)
 
-            # Fetch step-less tool traces (e.g. planner tools)
+            # Fetch step-less tool traces (e.g. planner tools or turns without recorded step)
             cursor.execute(
                 "SELECT t1.trace_id, t1.parent_trace_id, t1.step_id, t1.type,"
                 " t1.name, t1.timestamp, t1.duration, t1.status, t1.payload,"
                 " t2.name as agent_name FROM traces t1 LEFT JOIN traces t2 ON"
                 " t1.parent_trace_id = t2.trace_id WHERE t1.session_id = ? AND"
-                " (t1.step_id IS NULL OR t1.step_id = '') AND (t1.type = 'tool' OR"
+                " (t1.step_id IS NULL OR t1.step_id = '' OR t1.step_id NOT IN (SELECT step_id FROM steps WHERE session_id = ?)) AND (t1.type = 'tool' OR"
                 " (t1.type = 'llm_call' AND t1.status IN ('failed', 'retrying')) OR (t1.type = 'log'"
                 " AND t1.payload LIKE '%LLM Error:%Pausing execution%' AND NOT EXISTS"
                 " (SELECT 1 FROM traces t3 WHERE t3.session_id = t1.session_id AND"
                 " t3.type = 'llm_call' AND t3.status = 'failed' AND"
                 " ABS(t3.timestamp - t1.timestamp) < 2))) ORDER BY"
                 " t1.timestamp ASC",
-                (session_id,),
+                (session_id, session_id),
             )
             stepless_rows = cursor.fetchall()
             if stepless_rows:

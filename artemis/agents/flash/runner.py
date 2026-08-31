@@ -36,10 +36,8 @@ from langchain_core.messages import (
 from artemis.agents.flash.context_compressor import compress_flash_messages
 from artemis.agents.flash.summarizer import VisualStepSummarizer
 from artemis.agents.validator.tool_declarations import (
-    ACTION_TOOL_NAMES,
     ASK_EXPLORER_TOOL,
     CLICK_SEQUENCE_TOOL,
-    MobileActionExecutor,
     REPORT_TASK_STATUS_TOOL,
     VALIDATOR_TOOLS_DECLARATION,
     capture_screenshot_and_parse_ui,
@@ -51,6 +49,7 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import trace
 from artemis.graph.perception import _check_injected_instruction_file
 from artemis.graph.state import State
+from artemis.mcp.action_executor import McpActionExecutor
 from artemis.services.llm import (
     RobustChatModelWrapper,
     get_google_llm,
@@ -78,7 +77,7 @@ class FlashRunner:
             self.step_summarizer_cfg = StepSummarizerConfig()
 
         self.controller = UnifiedMobileController(ctx)
-        self.executor = MobileActionExecutor(ctx, self.controller)
+        self.executor = McpActionExecutor(ctx, self.controller)
         self.summarizer = (
             VisualStepSummarizer(ctx, model_name=self.step_summarizer_cfg.model)
             if self.step_summarizer_cfg.enabled
@@ -90,6 +89,14 @@ class FlashRunner:
         tools.insert(1, CLICK_SEQUENCE_TOOL)
         tools.append(ASK_EXPLORER_TOOL)
         tools.append(REPORT_TASK_STATUS_TOOL)
+        # With an actuator installed, drop declarations for device actions the
+        # backend does not implement (and append its extension tools); without
+        # one, the full historical declaration set is kept.
+        actuator = getattr(self.ctx, "actuator", None)
+        if actuator is not None:
+            from artemis.mcp.action_manifest import filter_declarations
+
+            tools = filter_declarations(tools, actuator, "flash")
         return tools
 
     def _prune_intermediate_screenshots(self, messages: list[BaseMessage]) -> None:
@@ -144,10 +151,15 @@ class FlashRunner:
             }
         )
 
-        # Render System Prompt
+        # Render System Prompt. Tool-teaching segments are gated on the available
+        # tool set so an absent tool leaves no trace in the prompt; until an actuator
+        # is wired in, the full manifest set reproduces the historical prompt.
         prompt_path = Path(__file__).parent / "flash_runner.md"
         prompt_template = prompt_path.read_text(encoding="utf-8")
-        system_prompt = Template(prompt_template).render(goal=self.goal)
+        available_tools = frozenset(t.name for t in tools_declaration)
+        system_prompt = Template(prompt_template).render(
+            goal=self.goal, available_tools=available_tools
+        )
 
         messages: list[BaseMessage] = [
             SystemMessage(content=system_prompt),
@@ -155,6 +167,7 @@ class FlashRunner:
         ]
 
         turns = 0
+        action_sequence = 0
         final_report = None
         current_pre_screenshot_bytes = img_bytes
         current_xml_list = xml_list
@@ -186,15 +199,13 @@ class FlashRunner:
                 except Exception as e:
                     logger.warning(f"Failed to check injected instruction in FlashRunner: {e}")
 
-            # Compress previous history before LLM call to save context and inject objective summaries
-            if self.summarizer:
-                compress_flash_messages(
-                    messages,
-                    summarizer=self.summarizer,
-                    prune_history_xml=self.step_summarizer_cfg.prune_history_xml,
-                )
-            else:
-                prune_intermediate_screenshots(messages)
+            # Compress history even when visual summarization is disabled, so
+            # screenshot and historical XML pruning have identical semantics.
+            compress_flash_messages(
+                messages,
+                summarizer=self.summarizer,
+                prune_history_xml=self.step_summarizer_cfg.prune_history_xml,
+            )
 
             # Tool restriction on the final turn
             if turns == self.max_turns:
@@ -219,6 +230,7 @@ class FlashRunner:
 
             for attempt in range(max_retries):
                 try:
+                    stream_exec_id = uuid.uuid4()
 
                     async def run_stream():
                         full_response = None
@@ -227,6 +239,34 @@ class FlashRunner:
                                 full_response = chunk
                             else:
                                 full_response += chunk
+
+                            # Real-time token streaming to DataEngine for live UI display
+                            if (
+                                getattr(self, "ctx", None)
+                                and getattr(self.ctx, "data_engine", None)
+                                and getattr(chunk, "content", None)
+                            ):
+                                text_to_stream = ""
+                                thinking_to_stream = ""
+                                if isinstance(chunk.content, str):
+                                    text_to_stream = chunk.content
+                                elif isinstance(chunk.content, list):
+                                    for item in chunk.content:
+                                        if isinstance(item, str):
+                                            text_to_stream += item
+                                        elif isinstance(item, dict):
+                                            if item.get("type") == "text":
+                                                text_to_stream += item.get("text", "")
+                                            elif item.get("type") == "thinking":
+                                                thinking_to_stream += item.get("thinking", "")
+                                if text_to_stream:
+                                    self.ctx.data_engine.stream_output(
+                                        stream_exec_id, text_to_stream, is_thinking=False
+                                    )
+                                if thinking_to_stream:
+                                    self.ctx.data_engine.stream_output(
+                                        stream_exec_id, thinking_to_stream, is_thinking=True
+                                    )
                         return full_response
 
                     response = await invoke_llm_with_timeout_message(
@@ -404,8 +444,12 @@ class FlashRunner:
                 try:
                     exec_result = await self.executor.execute(name, args, tc_id, state)
 
+                    # Dynamic dispatch set: manifest device actions plus any backend
+                    # extension tools, so extension steps are recorded like actions.
+                    action_names = self.executor.action_tool_names
+
                     post_img_bytes = exec_result.screenshot_bytes
-                    if not post_img_bytes and name in ACTION_TOOL_NAMES:
+                    if not post_img_bytes and name in action_names:
                         try:
                             controller = UnifiedMobileController(self.ctx)
                             screen_data = await controller.get_screen_data()
@@ -418,7 +462,8 @@ class FlashRunner:
                             )
 
                     # Record telemetry / step in DataEngine
-                    if self.ctx.data_engine and name in ACTION_TOOL_NAMES:
+                    recorded_step_id = None
+                    if self.ctx.data_engine and name in action_names:
                         try:
                             if self.ctx.data_engine.current_step_id is None:
                                 self.ctx.data_engine.allocate_step_id()
@@ -475,7 +520,7 @@ class FlashRunner:
                                 action_dict["normalized_start_coordinates"] = norm_start
                                 action_dict["normalized_end_coordinates"] = norm_end
 
-                            self.ctx.data_engine.record_step(
+                            recorded_step_id = self.ctx.data_engine.record_step(
                                 pre_screenshot_bytes=current_pre_screenshot_bytes,
                                 post_screenshot_bytes=post_img_bytes,
                                 ui_tree=(exec_result.ui_elements_text or current_xml_list),
@@ -488,14 +533,17 @@ class FlashRunner:
                             logger.warning(f"Error recording step in FlashRunner: {step_err}")
 
                     # ⚡ Non-blocking dispatch of objective visual transition summarizer
-                    if self.summarizer and name in ACTION_TOOL_NAMES:
+                    if self.summarizer and name in action_names:
+                        action_sequence += 1
                         self.summarizer.dispatch(
-                            step_number=turns,
+                            step_number=action_sequence,
                             action_name=name,
                             action_args=args,
                             pre_img_bytes=current_pre_screenshot_bytes,
                             post_img_bytes=post_img_bytes,
                             exec_outcome=exec_result.text_summary,
+                            action_key=str(tc_id),
+                            data_engine_step_id=recorded_step_id,
                         )
 
                     if post_img_bytes:

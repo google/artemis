@@ -45,10 +45,12 @@ from artemis.utils.video import (
     DEFAULT_MAX_DURATION_SECONDS,
     RecordingSession,
     VideoRecordingResult,
+    build_scrcpy_record_command,
     cleanup_video_segments,
     concatenate_videos,
     get_active_session,
     has_active_session,
+    normalize_recording_to_mp4,
     remove_active_session,
     set_active_session,
     trim_video,
@@ -76,7 +78,9 @@ class AndroidDeviceController(MobileDeviceController):
         self.data_engine_start_time = data_engine_start_time
         self.data_engine = data_engine
         self._device: AdbDevice | None = None
-        self._segment_cache: dict[tuple[float, float | None], VideoRecordingResult] = {}
+        self._segment_cache: dict[
+            tuple[str, int, float, float], VideoRecordingResult
+        ] = {}
 
     @property
     def device(self) -> AdbDevice:
@@ -154,22 +158,46 @@ class AndroidDeviceController(MobileDeviceController):
 
     async def input_text(self, text: str) -> bool:
         try:
-            # Fast path for ASCII text: Use ADB directly.
-            # This avoids toggling FastInputIME, which hides the keyboard and can cause focus loss.
-            is_ascii = all(ord(c) < 128 for c in text)
-            if is_ascii:
-                return self._input_text_adb_fallback(text)
+            norm_text = (
+                text.replace(r"\r\n", "\n")
+                .replace(r"\n", "\n")
+                .replace(r"\r", "\n")
+            )
 
-            self.ui_adb_client.send_text(text)
-            return True
+            # 1. Tier 1: Try clipboard injection + KEYCODE_PASTE (Zero IME interference, preserves multiline, works for all charsets)
+            if self.ui_adb_client:
+                try:
+                    set_clip_ok = False
+                    if hasattr(self.ui_adb_client, "set_clipboard"):
+                        set_clip_ok = self.ui_adb_client.set_clipboard(norm_text)
+                    elif hasattr(self.ui_adb_client, "_device") and self.ui_adb_client._device:
+                        self.ui_adb_client._device.set_clipboard(norm_text)
+                        set_clip_ok = True
+                    elif hasattr(self.ui_adb_client, "_ensure_connected"):
+                        dev = self.ui_adb_client._ensure_connected()
+                        dev.set_clipboard(norm_text)
+                        set_clip_ok = True
+
+                    if set_clip_ok:
+                        self.device.shell("input keyevent 279")
+                        return True
+                except Exception as e:
+                    logger.debug(f"Clipboard paste fallback: {e}")
+
+            return self._input_text_adb_fallback(norm_text)
         except Exception as e:
-            logger.warning(f"UIAutomator2 send_text failed: {e}, falling back to ADB shell")
-            return self._input_text_adb_fallback(text)
+            logger.error(f"Failed to input text: {e}")
+            return False
 
     def _input_text_adb_fallback(self, text: str) -> bool:
         """Fallback method using ADB shell input text command."""
         try:
-            lines = text.split("\n")
+            norm_text = (
+                text.replace(r"\r\n", "\n")
+                .replace(r"\n", "\n")
+                .replace(r"\r", "\n")
+            )
+            lines = norm_text.split("\n")
             for line_idx, line in enumerate(lines):
                 if line_idx > 0:
                     self.device.shell("input keyevent 66")
@@ -561,6 +589,8 @@ class AndroidDeviceController(MobileDeviceController):
                 start_time=time.time(),
                 data_engine_start_time=self.data_engine_start_time,
                 local_video_path=local_video_path,
+                capture_width=self.device_width,
+                capture_height=self.device_height,
             )
 
             # Persist to local database if Data Engine is active
@@ -578,18 +608,9 @@ class AndroidDeviceController(MobileDeviceController):
                     logger.error(f"Failed to persist video recording start to DB: {db_err}")
 
             # Start scrcpy in background
-            cmd = [
-                "scrcpy",
-                "--serial",
-                self.device_id,
-                "--no-window",
-                "--record",
-                str(local_video_path),
-                "--record-format",
-                "mkv",
-                "--video-bit-rate",
-                "2M",
-            ]
+            cmd = build_scrcpy_record_command(
+                "scrcpy", self.device_id, local_video_path, lock_capture_orientation=False
+            )
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -715,25 +736,28 @@ class AndroidDeviceController(MobileDeviceController):
         end_relative_time: float | None = None,
     ) -> VideoRecordingResult:
         """Get a video segment for a specific time range (relative to video start)."""
-        cache_key = (
-            round(start_relative_time, 1),
-            round(end_relative_time, 1) if end_relative_time is not None else None,
-        )
-        if cache_key in self._segment_cache:
-            cached_res = self._segment_cache[cache_key]
-            if cached_res.success and cached_res.video_path and cached_res.video_path.exists():
-                logger.info(
-                    "Reusing cached trimmed video segment for range"
-                    f" {cache_key[0]}s to {cache_key[1]}s"
-                )
-                return cached_res
-
         session = get_active_session(self.device_id)
         if not session:
             return VideoRecordingResult(
                 success=False,
                 message=f"No active recording for device {self.device_id}",
             )
+
+        cache_key = None
+        if end_relative_time is not None:
+            cache_key = (
+                str(session.video_id),
+                session.generation,
+                round(start_relative_time, 1),
+                round(end_relative_time, 1),
+            )
+            cached_res = self._segment_cache.get(cache_key)
+            if cached_res and cached_res.success and cached_res.video_path and cached_res.video_path.exists():
+                logger.info(
+                    "Reusing generation-scoped trimmed video segment for range"
+                    f" {cache_key[2]}s to {cache_key[3]}s"
+                )
+                return cached_res
 
         try:
             mkv_path = session.local_video_path
@@ -757,21 +781,13 @@ class AndroidDeviceController(MobileDeviceController):
                 # Try to restart scrcpy
                 try:
                     session.android_segment_index += 1
+                    session.generation = session.android_segment_index
                     output_dir = mkv_path.parent
                     new_video_path = output_dir / f"recording_{session.android_segment_index}.mkv"
 
-                    cmd = [
-                        "scrcpy",
-                        "--serial",
-                        self.device_id,
-                        "--no-window",
-                        "--record",
-                        str(new_video_path),
-                        "--record-format",
-                        "mkv",
-                        "--video-bit-rate",
-                        "2M",
-                    ]
+                    cmd = build_scrcpy_record_command(
+                        "scrcpy", self.device_id, new_video_path, lock_capture_orientation=False
+                    )
 
                     process = await asyncio.create_subprocess_exec(
                         *cmd,
@@ -880,8 +896,15 @@ class AndroidDeviceController(MobileDeviceController):
                 duration_seconds=round(duration, 2),
                 actual_start_relative_time=actual_start,
                 warning=truncation_warning,
+                video_id=session.video_id,
+                generation=session.generation,
+                sealed_until=session.sealed_until,
+                source_revision=(
+                    f"{session.video_id}:{session.generation}:{round(actual_end, 3)}"
+                ),
             )
-            self._segment_cache[cache_key] = res
+            if cache_key is not None:
+                self._segment_cache[cache_key] = res
             return res
 
         except Exception as e:
@@ -892,21 +915,11 @@ class AndroidDeviceController(MobileDeviceController):
             )
 
     async def _convert_mkv_to_mp4(self, mkv_path: Path, mp4_path: Path) -> bool:
-        """Convert MKV to MP4 using ffmpeg."""
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(mkv_path),
-                "-c",
-                "copy",
-                str(mp4_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await process.wait()
-            return mp4_path.exists()
-        except Exception as e:
-            logger.error(f"Failed to convert MKV to MP4: {e}")
-            return False
+        """Normalize MKV into a fixed-size, browser-safe MP4."""
+        session = get_active_session(self.device_id)
+        return await normalize_recording_to_mp4(
+            mkv_path,
+            mp4_path,
+            session.capture_width if session else self.device_width,
+            session.capture_height if session else self.device_height,
+        )

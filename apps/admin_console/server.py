@@ -17,9 +17,11 @@
 Modular entrypoint for full trace inspection, step replay, and task execution management.
 """
 
+import argparse
 import asyncio
 import os
 from pathlib import Path
+import secrets
 import signal
 import sys
 from types import FrameType
@@ -43,23 +45,31 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
         sys.path.insert(0, _p)
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
 
-from artemis.runtime import DeviceExecutionLock
+from artemis.runtime import (
+    DeviceExecutionLock,
+    clear_server_info,
+    device_pool,
+    shutdown_awake_service,
+    start_awake_service,
+    write_server_info,
+)
+
+from artemis.config import (
+    DB_PATH,
+    IMAGES_DIR,
+    REPLAY_BASE_DIR,
+    TEST_DATA_DIR,
+    TEST_OUTPUTS_DIR,
+    TRACES_PATH,
+    WORKSPACE_ROOT,
+    init_ls_address,
+)
 
 try:
-    from admin_console.core.config import (
-        DB_PATH,
-        IMAGES_DIR,
-        REPLAY_BASE_DIR,
-        TEST_DATA_DIR,
-        TEST_OUTPUTS_DIR,
-        TRACES_PATH,
-        WORKSPACE_ROOT,
-        init_ls_address,
-    )
+    from admin_console.core.security import SameOriginBoundaryMiddleware
     from admin_console.core.state import ServerState, state
     from admin_console.database.connection import db_session, get_db
     from admin_console.database.repositories.session_repository import session_repo
@@ -72,9 +82,7 @@ try:
     from admin_console.services.model_service import model_service
     from admin_console.services.task_queue_service import task_queue_service
 except ImportError:
-    from apps.admin_console.core.config import (
-        init_ls_address,
-    )
+    from apps.admin_console.core.security import SameOriginBoundaryMiddleware
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.routers import media, replay, sessions, steps, stream, system, tasks
@@ -88,15 +96,13 @@ init_ls_address()
 
 # Initialize FastAPI application
 app = FastAPI(title="Artemis Admin & Trace Console")
+LIFECYCLE_TOKEN = os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
+app.state.lifecycle_token = LIFECYCLE_TOKEN
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The console UI is served same-origin from this process, so no CORS grants
+# exist at all; the boundary middleware rejects cross-origin browser traffic
+# and unrecognized Host headers (DNS rebinding) instead.
+app.add_middleware(SameOriginBoundaryMiddleware)
 
 
 @app.on_event("startup")
@@ -104,9 +110,29 @@ async def on_startup():
     """Startup lifecycle hooks."""
     state.is_shutting_down = False
     state.shutdown_event.clear()
+    write_server_info(
+        port=getattr(state, "port", 8000),
+        host=getattr(state, "host", "127.0.0.1"),
+        lifecycle_token=LIFECYCLE_TOKEN,
+    )
+    await asyncio.to_thread(start_awake_service)
     cleaned_device_locks = DeviceExecutionLock.cleanup_stale_locks()
     if cleaned_device_locks:
         print(f"[ServerStartup] Removed {cleaned_device_locks} stale device lock(s).")
+
+    # Warm the adb server and complete one enumeration before requests are
+    # served, so submissions in the first seconds never race an adb cold start
+    # and get a false "no devices attached" rejection.
+    try:
+        adb_warmed = await device_pool.warm_up_async()
+    except Exception as exc:
+        adb_warmed = False
+        print(f"[ServerStartup] ADB warm-up failed: {exc}")
+    if not adb_warmed:
+        print(
+            "[ServerStartup] ADB warm-up did not confirm a responding adb server; "
+            "device enumeration will retry on demand."
+        )
     asyncio.create_task(asyncio.to_thread(task_queue_service.archive_older_replays_on_launch))
     asyncio.create_task(
         asyncio.to_thread(task_queue_service.verify_chunks_exist_on_launch, replay_manager)
@@ -141,8 +167,28 @@ async def on_shutdown():
             pass
     state.worker_task = None
 
+    # Cancel in-flight run coroutines and wait for their finalizers (DB status,
+    # session_ended broadcast, trace sync, recording recovery) to run.
+    run_tasks = [t for t in list(task_queue_service._run_tasks) if not t.done()]
+    for run_task in run_tasks:
+        run_task.cancel()
+    if run_tasks:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*run_tasks, return_exceptions=True), timeout=5.0
+            )
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+    for run in list(state.active_runs.values()):
+        run_proc = run.get("process")
+        if run_proc is not None and run_proc.returncode is None:
+            await task_queue_service._terminate_worker_process(run_proc)
+    state.active_runs.clear()
     if state.current_process is not None and state.current_process.returncode is None:
         await task_queue_service._terminate_worker_process(state.current_process)
+    for item in state.queue_items:
+        if isinstance(item, dict):
+            DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
     DeviceExecutionLock.cleanup_stale_locks()
     state.current_process = None
     state.queue_items.clear()
@@ -151,6 +197,11 @@ async def on_shutdown():
 
     await ipc_service.stop_server()
     state.ipc_subscribers.clear()
+    await asyncio.to_thread(shutdown_awake_service)
+    clear_server_info(
+        port=getattr(state, "port", 8000),
+        lifecycle_token=LIFECYCLE_TOKEN,
+    )
 
 
 # Mount modular routers
@@ -194,6 +245,18 @@ def _get_showcase_dist() -> Path:
     return base_dist / "frontend" / "browser"
 
 
+def _resolve_static_file(root: Path, relative_path: str) -> Path | None:
+    """Return the requested file only when it truly lives under ``root``."""
+    try:
+        root = root.resolve()
+        target = (root / relative_path).resolve()
+    except (OSError, ValueError):
+        return None
+    if target.is_file() and target.is_relative_to(root):
+        return target
+    return None
+
+
 @app.get("/", include_in_schema=False)
 async def serve_showcase_root():
     """Explicitly serve the Showcase UI at the root path by default."""
@@ -230,15 +293,18 @@ async def serve_showcase_spa(full_path: str):
 
     showcase_dist = _get_showcase_dist()
 
-    # Exact static file match (js, css, images, fonts, favicon, logo)
+    # Exact static file match (js, css, images, fonts, favicon, logo).
+    # Resolve and re-anchor under the static root so encoded traversal
+    # sequences cannot address files outside the build directories.
     if clean_path:
-        target_file = showcase_dist / clean_path
-        if target_file.is_file():
+        target_file = _resolve_static_file(showcase_dist, clean_path)
+        if target_file is not None:
             return FileResponse(target_file)
 
         # Fallback for icons/logos if showcase UI hasn't been built yet
-        public_file = _workspace_root / "apps" / "showcase_ui" / "public" / clean_path
-        if public_file.is_file():
+        public_root = _workspace_root / "apps" / "showcase_ui" / "public"
+        public_file = _resolve_static_file(public_root, clean_path)
+        if public_file is not None:
             return FileResponse(public_file)
 
     # Serve Showcase UI Angular SPA index.html
@@ -373,28 +439,54 @@ class ArtemisUvicornServer(uvicorn.Server):
 
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
-    if reload:
-        uvicorn.run(
+    state.host = host
+    state.port = port
+    write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
+
+    try:
+        if reload:
+            uvicorn.run(
+                "apps.admin_console.server:app",
+                host=host,
+                port=port,
+                reload=True,
+                timeout_graceful_shutdown=5,
+            )
+            return
+
+        config = uvicorn.Config(
             app,
             host=host,
             port=port,
-            reload=True,
             timeout_graceful_shutdown=5,
         )
-        return
+        server = ArtemisUvicornServer(config)
+        app.state.uvicorn_server = server
+        server.run()
+    finally:
+        app.state.uvicorn_server = None
+        clear_server_info(port=port, lifecycle_token=LIFECYCLE_TOKEN)
 
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=port,
-        timeout_graceful_shutdown=5,
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the daemon/standalone server bind address and run Uvicorn."""
+    parser = argparse.ArgumentParser(description="Run the Artemis Admin Console server")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("ARTEMIS_SERVER_HOST", "127.0.0.1"),
+        help=(
+            "Address to bind the HTTP server to. Defaults to loopback; expose "
+            "remotely via a Tailscale/SSH tunnel rather than a wide bind."
+        ),
     )
-    ArtemisUvicornServer(config).run()
-
-
-def main():
-    port = int(os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT", 8000))
-    run_ui_server(host="0.0.0.0", port=port)
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT", "8000")),
+        help="TCP port for the HTTP server.",
+    )
+    args = parser.parse_args(argv)
+    run_ui_server(host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

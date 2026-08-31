@@ -42,3 +42,36 @@ async def test_artemis_context_waits_for_background_tasks():
 
     # After exiting the context, the task should have run to completion
     assert task_run is True
+
+
+@pytest.mark.asyncio
+async def test_artemis_context_cancels_background_tasks_after_grace_period():
+    device = DeviceContext(
+        host_platform="LINUX",
+        mobile_platform=DevicePlatform.ANDROID,
+        device_id="dummy",
+        device_width=1080,
+        device_height=2400,
+    )
+    context = ArtemisContext(
+        device=device,
+        background_task_grace_period_seconds=0.01,
+    )
+
+    task_cancelled = False
+
+    async def stuck_summary():
+        nonlocal task_cancelled
+        try:
+            await asyncio.Event().wait()
+        finally:
+            task_cancelled = True
+
+    async with context:
+        task = asyncio.create_task(stuck_summary(), name="stuck_summary")
+        context.background_tasks.append(task)
+
+    assert task.done()
+    assert task.cancelled()
+    assert task_cancelled is True
+    assert context.background_tasks == []

@@ -104,7 +104,7 @@ $rose-dark: #dc2626;
       height: 40px;
       background: rgba(0, 0, 0, 0.15);
       border-radius: 4px;
-      transition: all 0.2s ease;
+      transition: background 0.2s ease, height 0.2s ease;
     }
   }
 
@@ -308,7 +308,11 @@ $rose-dark: #dc2626;
         background: radial-gradient(ellipse at center, rgba(168, 85, 247, 0.45) 0%, rgba(236, 72, 153, 0.25) 50%, transparent 80%);
       }
 
-      /* Wave Tracks Wrapper with Soft Gaussian Blur */
+      /* Wave Tracks Wrapper. The soft-liquid look comes from blurring each
+         wave individually: blurring the WRAPPER forced the GPU to re-run the
+         gaussian pass every animation frame (child transforms invalidate the
+         parent's filtered layer), while per-wave blur over transform-only
+         animations is rasterized once and then just composited. */
       .wave-tracks-wrapper {
         position: absolute;
         bottom: 0;
@@ -316,7 +320,6 @@ $rose-dark: #dc2626;
         width: 100%;
         height: 22px;
         overflow: hidden;
-        filter: blur(7px); /* Soften sharp vector wave edges into silky liquid light */
         mask-image: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 60%, transparent 100%);
         -webkit-mask-image: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 60%, transparent 100%);
 
@@ -327,7 +330,7 @@ $rose-dark: #dc2626;
           width: 200%;
           height: 100%;
           will-change: transform;
-          filter: blur(3px); /* Secondary soft layer blur */
+          filter: blur(8px); /* Silky liquid softness, applied per cached wave layer */
 
           &.wave-back {
             opacity: 0.45;
@@ -562,7 +565,11 @@ $rose-dark: #dc2626;
           cursor: pointer;
           outline: none;
           flex-shrink: 0;
-          transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+          transition: background 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+                      color 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+                      transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+                      box-shadow 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+                      border-color 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 
           .material-symbols-outlined {
             font-size: 18px;
@@ -695,7 +702,9 @@ $rose-dark: #dc2626;
               font-size: 11px;
               font-weight: 550;
               cursor: pointer;
-              transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+              transition: color 0.16s cubic-bezier(0.16, 1, 0.3, 1),
+                          background 0.16s cubic-bezier(0.16, 1, 0.3, 1),
+                          box-shadow 0.16s cubic-bezier(0.16, 1, 0.3, 1);
               outline: none;
               user-select: none;
               box-sizing: border-box;
@@ -861,5 +870,16 @@ $rose-dark: #dc2626;
   100% {
     opacity: 0.95;
     transform: scaleX(1.08);
+  }
+}
+
+/* Respect the user's motion preference: freeze the decorative liquid waves
+   and pulses while keeping the frosted dock visuals intact. */
+@media (prefers-reduced-motion: reduce) {
+  .liquid-wave,
+  .wave-glow-ambient,
+  .pulse-indicator-dot,
+  .running-pulse-dot {
+    animation: none !important;
   }
 }

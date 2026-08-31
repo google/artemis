@@ -14,6 +14,12 @@
 
 """Artemis Diagnostics & System Readiness Package."""
 
+from artemis.core.diagnostics.adb_keys import (
+    AdbKeyStatus,
+    get_adb_key_paths,
+    heal_adb_keys,
+    inspect_adb_keys,
+)
 from artemis.core.diagnostics.emulator_manager import (
     EmulatorLaunchStage,
     EmulatorLaunchState,
@@ -59,4 +65,8 @@ __all__ = [
     "ProbeResult",
     "ProbeStatus",
     "SystemReadinessReport",
+    "AdbKeyStatus",
+    "get_adb_key_paths",
+    "inspect_adb_keys",
+    "heal_adb_keys",
 ]

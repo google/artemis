@@ -24,6 +24,8 @@ authors = [
 requires-python = ">=3.12"
 
 dependencies = [
+    # Remote Python SDK (kept as a zero-dependency workspace package)
+    "artemis-client>=0.1.0",
     # Orchestration & Framework
     "langgraph>=1.0.2,<2.0.0",
     "langchain>=1.0.0",
@@ -99,6 +101,12 @@ build-backend = "setuptools.build_meta"
 [tool.uv.build-backend]
 module-root = ""
 module-name = "artemis"
+
+[tool.uv.workspace]
+members = ["packages/artemis-client"]
+
+[tool.uv.sources]
+artemis-client = { workspace = true }
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import threading
 import tomllib
 from typing import Annotated
 
@@ -26,6 +27,7 @@ from mcp_server.base import mcp as agent_mcp
 import mcp_server.tools  # noqa: F401
 from mcp_server.utils import env_utils
 from artemis.mcp.adb_server import mcp as adb_mcp
+from artemis.runtime import shutdown_awake_service, start_awake_service
 from artemis.utils.logger import get_logger
 from rich.console import Console
 from rich.syntax import Syntax
@@ -155,11 +157,15 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
         return {"mcpServers": {"artemis": config_body}}
 
 
-def _parse_json_lenient(text: str) -> dict:
-    """Parses JSON or JSONC (JSON with comments / trailing commas) safely."""
+def _parse_json_lenient(text: str) -> dict | None:
+    """Parses JSON or JSONC (JSON with comments / trailing commas) safely.
+
+    Returns ``None`` when the text cannot be parsed as a JSON object, so callers
+    can tell a genuinely empty ``{}`` file apart from a corrupt one.
+    """
     try:
         data = json.loads(text)
-        return data if isinstance(data, dict) else {}
+        return data if isinstance(data, dict) else None
     except Exception:
         pass
     # Remove // single-line comments
@@ -170,9 +176,9 @@ def _parse_json_lenient(text: str) -> dict:
     cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
     try:
         data = json.loads(cleaned)
-        return data if isinstance(data, dict) else {}
+        return data if isinstance(data, dict) else None
     except Exception:
-        return {}
+        return None
 
 
 def _merge_json_file(
@@ -181,15 +187,29 @@ def _merge_json_file(
     server_config: dict,
     key_name: str | tuple[str, ...] = "mcpServers",
     remove_paths: tuple[tuple[str, ...], ...] = (),
+    strict_parse: bool = False,
 ) -> bool:
-    """Merges server configuration into a target JSON file without overwriting existing servers."""
+    """Merges server configuration into a target JSON file without overwriting existing servers.
+
+    With ``strict_parse=True``, an existing non-empty file that cannot be parsed
+    aborts the merge instead of being replaced. Use this for files that hold
+    state beyond MCP config (e.g. ~/.claude.json), where a degraded rewrite
+    would destroy unrelated data.
+    """
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         data: dict = {}
         if file_path.exists() and file_path.stat().st_size > 0:
             raw_text = file_path.read_text(encoding="utf-8")
-            data = _parse_json_lenient(raw_text)
-            if not data and raw_text.strip():
+            parsed = _parse_json_lenient(raw_text)
+            data = parsed or {}
+            if parsed is None and raw_text.strip():
+                if strict_parse:
+                    logger.warning(
+                        f"Existing JSON in {file_path} could not be parsed; refusing to rewrite it. "
+                        "Fix or remove the file, then re-run the install."
+                    )
+                    return False
                 # Backup unparseable existing file to prevent accidental loss
                 backup_path = file_path.with_suffix(file_path.suffix + ".bak")
                 try:
@@ -300,6 +320,36 @@ def _merge_codex_toml(file_path: Path, server_config: dict) -> bool:
                 pass
         else:
             logger.warning(f"Could not create Codex MCP config file {file_path}: {e}")
+        return False
+
+
+def _remove_rules_block(file_path: Path) -> bool:
+    """Removes a previously injected managed ARTEMIS block from a rules file.
+
+    Used to migrate clients that load both their main rules file and a
+    standalone rule file (e.g. Claude Code loads ~/.claude/CLAUDE.md AND
+    ~/.claude/rules/*.md), where keeping the injected block would duplicate
+    the rules in the model's context. If the file contains nothing but the
+    managed block, the file is deleted entirely.
+    """
+    try:
+        if not file_path.exists():
+            return True
+        begin_marker = "<!-- BEGIN ARTEMIS MOBILE TESTING RULES -->"
+        end_marker = "<!-- END ARTEMIS MOBILE TESTING RULES -->"
+        existing = file_path.read_text(encoding="utf-8")
+        if begin_marker not in existing or end_marker not in existing:
+            return True
+        prefix = existing.split(begin_marker)[0]
+        suffix = existing.split(end_marker)[1]
+        remainder = f"{prefix.rstrip()}\n\n{suffix.lstrip()}".strip()
+        if remainder:
+            file_path.write_text(remainder + "\n", encoding="utf-8")
+        else:
+            file_path.unlink()
+        return True
+    except Exception as e:
+        logger.warning(f"Could not remove rules block from {file_path}: {e}")
         return False
 
 
@@ -417,13 +467,22 @@ def install_rules(client: str, project_root: str) -> list[str]:
                 installed_paths.append(str(cursor_rules_file))
             if _write_cursor_mdc(global_mdc, raw_rules):
                 installed_paths.append(str(global_mdc))
-        elif target in ("claude", "claude_code", "claude_desktop"):
+        elif target in ("claude", "claude_code"):
+            # Claude Code loads BOTH ~/.claude/CLAUDE.md and ~/.claude/rules/*.md
+            # into context every session, so install the rules in exactly one
+            # place (the standalone rule file) and migrate away any block a
+            # previous version injected into CLAUDE.md.
             claude_md = Path.home() / ".claude" / "CLAUDE.md"
             global_rule = Path.home() / ".claude" / "rules" / "artemis.md"
-            if _inject_rules_block(claude_md, raw_rules):
-                installed_paths.append(str(claude_md))
+            _remove_rules_block(claude_md)
             if _write_rule_file(global_rule, raw_rules):
                 installed_paths.append(str(global_rule))
+        elif target == "claude_desktop":
+            # Claude Desktop only reads ~/.claude/CLAUDE.md (not rules/*.md), so
+            # the rules block stays injected there for this target.
+            claude_md = Path.home() / ".claude" / "CLAUDE.md"
+            if _inject_rules_block(claude_md, raw_rules):
+                installed_paths.append(str(claude_md))
         elif target == "windsurf":
             global_rule = Path.home() / ".codeium" / "windsurf" / "rules" / "artemis.md"
             global_mem = Path.home() / ".codeium" / "windsurf" / "memories" / "global_rules.md"
@@ -514,9 +573,11 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
             if _merge_json_file(claude_path, "artemis", server_cfg):
                 installed_paths.append(str(claude_path))
 
-            # Also install to Claude Code CLI global config (~/.claude.json)
+            # Also install to Claude Code CLI global config (~/.claude.json).
+            # This file holds Claude Code state well beyond MCP config, so a
+            # parse failure must abort the merge rather than rewrite the file.
             claude_code_path = Path.home() / ".claude.json"
-            if _merge_json_file(claude_code_path, "artemis", server_cfg):
+            if _merge_json_file(claude_code_path, "artemis", server_cfg, strict_parse=True):
                 installed_paths.append(str(claude_code_path))
         elif target == "cursor":
             server_cfg = snippet["mcpServers"]["artemis"]
@@ -723,27 +784,41 @@ def mcp_command(
         console.print(syntax)
         raise typer.Exit(0)
 
-    st = server_type.lower()
-    if st in ("agent", "mobile", "artemis", "default"):
-        logger.info(f"Starting Artemis Mobile Agent MCP Server over {transport}...")
-        if transport.lower() == "sse":
-            agent_mcp.run(transport="sse", host=host, port=port)
-        else:
-            agent_mcp.run(transport="stdio")
-    elif st == "adb":
-        logger.info(f"Starting Artemis ADB MCP Server over {transport}...")
-        if transport.lower() == "sse":
-            adb_mcp.run(transport="sse", host=host, port=port)
-        else:
-            adb_mcp.run(transport="stdio")
-    elif st == "xml":
-        from artemis.mcp.xml_search_server import mcp as xml_mcp
+    threading.Thread(
+        target=start_awake_service, daemon=True, name="artemis-awake-init"
+    ).start()
+    try:
+        st = server_type.lower()
+        if st in ("agent", "mobile", "artemis", "default"):
+            logger.info(f"Starting Artemis Mobile Agent MCP Server over {transport}...")
+            if transport.lower() == "sse":
+                agent_mcp.run(transport="sse", host=host, port=port)
+            else:
+                agent_mcp.run(transport="stdio")
+        elif st == "adb":
+            if transport.lower() == "sse":
+                logger.info(f"Starting Artemis ADB MCP Server over {transport}...")
+                adb_mcp.run(transport="sse", host=host, port=port)
+            else:
+                # stdio carries the MCP JSON-RPC stream: redirect logging and detach
+                # from the parent DataEngine before any output can corrupt it.
+                from artemis.mcp.adb_server import configure_stdio_mode
 
-        logger.info(f"Starting Artemis XML Fuzzy Search MCP Server over {transport}...")
-        if transport.lower() == "sse":
-            xml_mcp.run(transport="sse", host=host, port=port)
+                configure_stdio_mode()
+                logger.info("Starting Artemis ADB MCP Server over stdio...")
+                adb_mcp.run(transport="stdio")
+        elif st == "xml":
+            from artemis.mcp.xml_search_server import mcp as xml_mcp
+
+            logger.info(f"Starting Artemis XML Fuzzy Search MCP Server over {transport}...")
+            if transport.lower() == "sse":
+                xml_mcp.run(transport="sse", host=host, port=port)
+            else:
+                xml_mcp.run(transport="stdio")
         else:
-            xml_mcp.run(transport="stdio")
-    else:
-        logger.error(f"Unsupported MCP server type: {server_type}. Use 'agent', 'adb', or 'xml'.")
-        raise typer.Exit(1)
+            logger.error(
+                f"Unsupported MCP server type: {server_type}. Use 'agent', 'adb', or 'xml'."
+            )
+            raise typer.Exit(1)
+    finally:
+        shutdown_awake_service()

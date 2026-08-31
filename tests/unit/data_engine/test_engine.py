@@ -101,6 +101,29 @@ def test_ipc_does_not_reconnect_after_engine_shutdown(tmp_path):
     connected_socket.close.assert_called_once()
 
 
+def test_ipc_connection_failure_is_backed_off(tmp_path):
+    """A stale desktop port must not block every emitted trace event."""
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    with (
+        patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
+        patch("artemis.data_engine.engine.get_ipc_port_file", return_value=tmp_path / "none"),
+        patch(
+            "artemis.data_engine.engine.socket.create_connection",
+            side_effect=TimeoutError("stale port"),
+        ) as create_connection,
+    ):
+        engine = DataEngine(mock_ctx)
+        for index in range(20):
+            engine._publish("llm_stream", {"chunk": str(index)})
+
+    assert create_connection.call_count == 1
+
+
 def test_get_or_create_image_updates_missing_data(tmp_path):
     # Setup mock context
     mock_ctx = MagicMock(spec=ArtemisContext)
@@ -191,16 +214,19 @@ def test_video_recording_persistence(tmp_path):
     assert persisted.start_time == 100.0
     assert persisted.end_time is None
     assert persisted.local_video_path == "/tmp/recording.mp4"
+    assert persisted.status == "recording"
 
     # Test update
     record.end_time = 150.0
     record.local_video_path = "/tmp/recording_final.mp4"
+    record.status = "ready"
     storage.update_video_recording(record)
 
     updated = storage.get_video_recording(video_id)
     assert updated is not None
     assert updated.end_time == 150.0
     assert updated.local_video_path == "/tmp/recording_final.mp4"
+    assert updated.status == "ready"
 
 
 def test_record_step_suppresses_identical_post_screenshot(tmp_path):
@@ -244,6 +270,8 @@ def test_update_step_execution_result_suppresses_identical_post_screenshot(tmp_p
         pre_screenshot_bytes=image_bytes,
         summary="Initial step",
     )
+    for t in list(engine._pending_threads):
+        t.join()
 
     step_record = engine.storage.get_steps(engine.current_session_id)[0]
     assert step_record.post_image_name is None
@@ -267,3 +295,88 @@ def test_update_step_execution_result_suppresses_identical_post_screenshot(tmp_p
 
     updated_step_distinct = engine.storage.get_steps(engine.current_session_id)[0]
     assert updated_step_distinct.post_image_name == "distinct_new_hash_789"
+
+
+def test_resumed_session_monotonic_step_numbering(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    # First runner records Step 1 and Step 2
+    engine1 = DataEngine(mock_ctx)
+    sid = engine1.start_session("Monotonic test")
+    engine1.record_step(summary="Step 1 action")
+    engine1.record_step(summary="Step 2 action")
+    for t in list(engine1._pending_threads):
+        t.join()
+
+    # Second runner starts or resumes the same session
+    engine2 = DataEngine(mock_ctx)
+    engine2.start_session("Resumed goal", session_id=sid)
+    assert engine2.current_step_number == 2
+
+    # Recording a new step must be Step 3, strictly monotonic
+    engine2.record_step(summary="Step 3 action")
+    for t in list(engine2._pending_threads):
+        t.join()
+
+    steps = engine2.storage.get_steps(sid)
+    assert len(steps) == 3
+    assert [s.step_number for s in steps] == [1, 2, 3]
+
+
+def test_end_session_normalizes_legacy_success_status(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    engine = DataEngine(mock_ctx)
+    sid = engine.start_session("Terminal status normalization test")
+    engine.end_session("success")
+
+    session = engine.storage.get_session(sid)
+    assert session is not None
+    assert session.status == "completed"
+    assert session.end_time is not None
+
+
+def test_update_step_summary_includes_step_number_in_sse(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+
+    published_events = []
+
+    def mock_subscriber(event_type, data):
+        published_events.append((event_type, data))
+
+    engine = DataEngine(mock_ctx)
+    engine.subscribe(mock_subscriber)
+    sid = engine.start_session("SSE step_number verification")
+
+    step_id = engine.record_step(summary="Initial step 1")
+    for t in list(engine._pending_threads):
+        t.join()
+
+    assert engine.get_step_number(step_id) == 1
+
+    # Call update_step_summary
+    engine.update_step_summary(step_id, "Updated concise summary for Step 1")
+    for t in list(engine._pending_threads):
+        t.join()
+
+    # Find the published step_updated event
+    step_updated_events = [e for e in published_events if e[0] == "step_updated"]
+    assert len(step_updated_events) >= 1
+    last_update = step_updated_events[-1][1]
+    assert last_update["step_id"] == str(step_id)
+    assert last_update["summary"] == "Updated concise summary for Step 1"
+    assert last_update["step_number"] == 1
+
+

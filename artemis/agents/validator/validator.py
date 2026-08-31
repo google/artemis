@@ -17,40 +17,31 @@ import base64
 import difflib
 import json
 import math
-import os
 from pathlib import Path
-import psutil
 import re
-import signal
-import sys
 import time
 import traceback
 import uuid
 from uuid import UUID
-
-from adbutils import AdbClient
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from artemis.agents.validator.failure_analyzer import (
     FailureAnalyzer,
     ValidationErrorCategory,
 )
-from artemis.clients.ui_automator_client import UIAutomatorClient
 from artemis.constants import (
     VALIDATOR_POLL_INTERVAL,
     VALIDATOR_POLL_TIMEOUT,
     VALIDATOR_UI_HIERARCHY_TIMEOUT,
 )
-from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
+from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import CURRENT_TRACE_ID, trace
 from artemis.graph.state import State
-from artemis.platform import platform
+from artemis.mcp.action_names import to_canonical_call
+from artemis.mcp.action_session import ActionSession, get_action_session
 from artemis.services.llm import get_llm
-from artemis.tools.mobile.launch_app import find_package
-from artemis.utils import app_launch_utils, image_diff, visualization
+from artemis.utils import image_diff, visualization
 from artemis.utils.decorators import wrap_with_callbacks
 from artemis.utils.logger import get_logger
 
@@ -86,88 +77,14 @@ class ValidatorNode:
     def __init__(self, ctx: ArtemisContext):
         self.ctx = ctx
 
-    def _kill_mcp_server_instantly(self):
-        """Instantly terminate MCP ADB server child processes using SIGKILL."""
+    async def _get_mcp_session(self) -> ActionSession:
+        """Returns the in-process unified action session (created lazily on ctx).
 
-        try:
-            current_process = psutil.Process()
-            children = current_process.children(recursive=True)
-            for child in children:
-                try:
-                    cmdline = child.cmdline()
-                    if any("adb_server.py" in part for part in cmdline):
-                        logger.warning(f"Instantly killing MCP Server child process: {child.pid}")
-                        os.kill(child.pid, signal.SIGKILL)
-                except psutil.NoSuchProcess:
-                    pass
-        except Exception as e:
-            logger.error(f"Failed to instantly kill MCP server child processes: {e}")
-
-    async def _get_mcp_session(self):
-        if getattr(self.ctx, "mcp_session", None) is not None:
-            return self.ctx.mcp_session
-
-        root_dir = Path(__file__).parent.parent.parent
-        venv_python = root_dir / ".venv" / "bin" / "python3"
-        python_exe = str(venv_python) if venv_python.exists() else sys.executable
-
-        server_params = StdioServerParameters(
-            command=python_exe,
-            args=[str(root_dir / "mcp" / "adb_server.py")],
-            env=os.environ.copy(),
-        )
-
-        logger.info("Starting persistent MCP server session...")
-        self.ctx.mcp_client_ctx = stdio_client(server_params)
-        try:
-            read, write = await self.ctx.mcp_client_ctx.__aenter__()
-            self.ctx.mcp_session = ClientSession(read, write)
-            await self.ctx.mcp_session.__aenter__()
-            # Handshake timeout protection
-            await asyncio.wait_for(self.ctx.mcp_session.initialize(), timeout=15.0)
-            return self.ctx.mcp_session
-        except Exception as e:
-            err_stack = traceback.format_exc()
-            logger.critical(
-                "CRITICAL: Failed to initialize MCP server session:"
-                f" {e}\n{err_stack}. Cleaning up child processes."
-            )
-            self._kill_mcp_server_instantly()
-            self.ctx.mcp_session = None
-            self.ctx.mcp_client_ctx = None
-
-            logger.warning(
-                "Falling back to robust local in-process execution bypassing MCP protocol."
-            )
-
-            try:
-                adb = AdbClient(host="localhost", port=5037)
-                devices = adb.device_list()
-                if devices:
-                    device_id = devices[0].serial
-                    ui_client = UIAutomatorClient(device_id=device_id)
-                    try:
-                        ui_data = ui_client.get_screen_data()
-                        w, h = ui_data.width, ui_data.height
-                    except Exception:
-                        w, h = 1080, 2400
-                    local_ctx = ArtemisContext(
-                        trace_id="local-fallback",
-                        device=DeviceContext(
-                            host_platform=platform.os_type.name,
-                            mobile_platform=DevicePlatform.ANDROID,
-                            device_id=device_id,
-                            device_width=w,
-                            device_height=h,
-                        ),
-                        adb_client=adb,
-                        ui_adb_client=ui_client,
-                    )
-                    self._local_controller = UnifiedMobileController(local_ctx)
-            except Exception as le:
-                logger.error(f"Failed to setup local fallback controller: {le}")
-
-            return None
+        The previous stdio-subprocess spawn -- and its local-controller fallback,
+        which on Windows was the *only* path that ever ran -- is gone: the server now
+        lives in-process, so there is no spawn to fail and exactly one execution path.
+        """
+        return await get_action_session(self.ctx)
 
     def _parse_decisions(self, structured_decisions: str) -> tuple[list[dict] | None, str | None]:
         if not structured_decisions:
@@ -208,20 +125,11 @@ class ValidatorNode:
         error_msg = ""
 
         while time.time() - start_time < timeout:
-            if session is not None:
-                result = await session.call_tool("take_screenshot", {})
-                success_img, content_img = self._parse_mcp_result(result)
-            elif getattr(self, "_local_controller", None):
-                try:
-                    content_img = await self._local_controller.take_screenshot()
-                    success_img = True
-                except Exception as e:
-                    success_img, content_img = False, str(e)
-            else:
-                success_img, content_img = (
-                    False,
-                    "No session or local controller",
-                )
+            try:
+                content_img = await session.screenshot_b64()
+                success_img = True
+            except Exception as e:
+                success_img, content_img = False, str(e)
             if success_img:
                 post_screenshot_b64 = content_img
                 img_before_bytes = base64.b64decode(pre_screenshot_b64)
@@ -403,28 +311,10 @@ class ValidatorNode:
 
                     # Capture the live mismatch screenshot to provide context for FailureAnalyzer
                     try:
-                        if session is not None:
-                            result = await session.call_tool("take_screenshot", {})
-                            success_img, post_screenshot_b64 = self._parse_mcp_result(result)
-                        elif getattr(self, "_local_controller", None):
-                            post_screenshot_b64 = await self._local_controller.take_screenshot()
-                            success_img = True
-                        else:
-                            success_img, post_screenshot_b64 = False, None
-
-                        if success_img and post_screenshot_b64:
-                            if self.ctx.data_engine:
-                                post_image_name = self.ctx.data_engine.get_or_create_image(
-                                    base64.b64decode(post_screenshot_b64)
-                                )
-                                screenshot_path = str(
-                                    self.ctx.data_engine.get_image_path(post_image_name)
-                                )
-                                state.latest_screenshot = screenshot_path
+                        post_screenshot_b64 = await session.screenshot_b64()
                     except Exception as e:
                         logger.error(f"Failed to capture live screenshot for failure analysis: {e}")
                         post_screenshot_b64 = None
-                        post_image_name = None
                 else:
                     # 2. Local execution attempts
                     max_local_retries = 1 if action_name == "launch_app" else 2
@@ -452,22 +342,10 @@ class ValidatorNode:
                     if not success and not post_screenshot_b64:
                         logger.info("Action failed, capturing failure screenshot...")
                         try:
-                            if session is not None:
-                                result = await session.call_tool("take_screenshot", {})
-                                success_img, post_screenshot_b64 = self._parse_mcp_result(result)
-                            elif getattr(self, "_local_controller", None):
-                                post_screenshot_b64 = await self._local_controller.take_screenshot()
-                                success_img = True
-                            else:
-                                success_img, post_screenshot_b64 = False, None
-
-                            if success_img and post_screenshot_b64:
-                                if self.ctx.data_engine:
-                                    post_image_name = self.ctx.data_engine.get_or_create_image(
-                                        base64.b64decode(post_screenshot_b64)
-                                    )
+                            post_screenshot_b64 = await session.screenshot_b64()
                         except Exception as e:
-                            logger.error(f"Failed to capture failure screenshot: {e}")
+                            logger.error(f"Failed to capture failure screenshot: {e!r}")
+                            post_screenshot_b64 = None
 
                 # Enrich and record execution
                 if len(attempts_log) > 1 or not success:
@@ -475,11 +353,11 @@ class ValidatorNode:
                 execution.append(action_item)
 
                 if post_screenshot_b64:
+                    decoded_bytes = base64.b64decode(post_screenshot_b64)
                     last_screenshot_b64 = post_screenshot_b64
+                    logger.info(f"Successfully decoded post_screenshot_b64 ({len(decoded_bytes)} bytes)")
                     if self.ctx.data_engine:
-                        post_image_name = self.ctx.data_engine.get_or_create_image(
-                            base64.b64decode(post_screenshot_b64)
-                        )
+                        post_image_name = self.ctx.data_engine.get_or_create_image(decoded_bytes)
                         last_screenshot_name = post_image_name
 
                         screenshot_path = str(self.ctx.data_engine.get_image_path(post_image_name))
@@ -613,10 +491,9 @@ class ValidatorNode:
         try:
             return await self._execute_validation_loop(state)
         except asyncio.CancelledError:
-            logger.warning(
-                "Validator task cancelled (Stop requested). Instantly killing MCP server processes."
-            )
-            self._kill_mcp_server_instantly()
+            # In-process session teardown happens in ArtemisContext.__aexit__; there
+            # is no subprocess left to kill.
+            logger.warning("Validator task cancelled (Stop requested).")
             raise
         except Exception as e:
             err_stack = traceback.format_exc()
@@ -633,225 +510,41 @@ class ValidatorNode:
                     )
                 except Exception:
                     pass
-            self._kill_mcp_server_instantly()
             raise e
         finally:
             if self.ctx.data_engine:
                 self.ctx.data_engine.current_step_id = original_step_id
 
-    async def _exec_action(
-        self, session: ClientSession | None, action_item: dict
-    ) -> tuple[bool, str]:
+    async def _exec_action(self, session: ActionSession, action_item: dict) -> tuple[bool, str]:
+        """Executes one Operator action item through the unified action session.
+
+        The Operator's internal verbs (tap, long_press_on, focus_and_input_text, ...)
+        are translated to canonical tool calls in ``to_canonical_call`` using the
+        ``normalized_coordinates`` the Operator already computed. Success comes from
+        the structured ``ActionResult.ok`` -- no string parsing.
+        """
         action_name = action_item.get("action")
-        coordinates = action_item.get("coordinates")
 
-        # Intercept non-wait_for_text actions for local fallback
-        if session is None and getattr(self, "_local_controller", None) is not None:
-            ctrl = self._local_controller
-            logger.info(f"Executing in-process action fallback: {action_name}")
-            try:
-                if action_name == "tap":
-                    if coordinates and len(coordinates) == 2:
-                        times = action_item.get("times", 1)
-                        delay_ms = action_item.get("delay_ms", 100)
-                        res = await ctrl.tap_at(
-                            coordinates[0],
-                            coordinates[1],
-                            times=times,
-                            delay_ms=delay_ms,
-                        )
-                        return (True, "Success") if not res.error else (False, res.error)
-                    return False, "Invalid coords"
-                elif action_name == "long_press_on":
-                    d = action_item.get("duration", 1000)
-                    if coordinates and len(coordinates) == 2:
-                        res = await ctrl.tap_at(
-                            coordinates[0],
-                            coordinates[1],
-                            long_press=True,
-                            long_press_duration=d,
-                        )
-                        return (True, "Success") if not res.error else (False, res.error)
-                    return False, "Invalid coords"
-                elif action_name == "swipe":
-                    d = action_item.get("duration", 400)
-                    if coordinates and len(coordinates) == 4:
-                        err = await ctrl.swipe_coords(
-                            coordinates[0],
-                            coordinates[1],
-                            coordinates[2],
-                            coordinates[3],
-                            duration=d,
-                        )
-                        return (True, "Success") if not err else (False, str(err))
-                    return False, "Invalid coords"
-                elif action_name == "focus_and_input_text":
-                    t = action_item.get("text")
-                    clear_before = action_item.get("clear_before_input", False)
-                    if coordinates and len(coordinates) == 2:
-                        await ctrl.tap_at(coordinates[0], coordinates[1])
+        if action_name == "wait_for_delay":
+            time_in_ms = action_item.get("time_in_ms", 0)
+            logger.info(f"Validator performing wait_for_delay for {time_in_ms}ms...")
+            await asyncio.sleep(time_in_ms / 1000.0)
+            return True, ""
 
-                        await asyncio.sleep(0.5)
-                        if clear_before:
-                            await ctrl.erase_text()
-                        else:
-                            await ctrl.press_key("123")  # Move cursor to end for clean append
-                        success = await ctrl.type_text(t, clear_existing=False)
-                        return (True, "Success") if success else (False, "Failed typing")
-                    return False, "Invalid coords"
-                elif action_name == "focus_and_clear_text":
-                    if coordinates and len(coordinates) == 2:
-                        await ctrl.tap_at(coordinates[0], coordinates[1])
+        width = getattr(self.ctx.device, "device_width", 1080) if self.ctx.device else 1080
+        height = getattr(self.ctx.device, "device_height", 2400) if self.ctx.device else 2400
 
-                        await asyncio.sleep(0.5)
-                        success = await ctrl.erase_text()
-                        return (True, "Success") if success else (False, "Failed erase")
-                    return False, "Invalid coords"
-                elif action_name == "erase_one_char":
-                    success = await ctrl.erase_text(nb_chars=1)
-                    return (True, "Success") if success else (False, "Failed erase")
-                elif action_name == "press_key":
-                    keycode = action_item.get("keycode")
-                    success = await ctrl.press_key(keycode)
-                    return (True, "Success") if success else (False, f"Failed press {keycode}")
-                elif action_name == "back":
-                    success = await ctrl.go_back()
-                    return (True, "Success") if success else (False, "Failed back")
-                elif action_name == "launch_app":
-                    app_name = action_item.get("app_name")
-                    package_name = await find_package(self.ctx, app_name, use_fallback=False)
-                    if package_name:
-                        success, err_msg = await app_launch_utils.launch_app_with_retries(
-                            ctrl.ctx, package_name
-                        )
-                        return (True, "Success") if success else (False, err_msg)
-                    return False, "Package not found"
-                elif action_name == "stop_app":
-                    app_name = action_item.get("app_name")
-                    package_name = await find_package(self.ctx, app_name, use_fallback=False)
-                    if package_name:
-                        success = await ctrl.terminate_app(package_name)
-                        return (True, "Success") if success else (False, "Failed terminate")
-                    return False, "Package not found"
-                elif action_name == "open_link":
-                    url = action_item.get("url")
-                    success = await ctrl.open_url(url)
-                    return (True, "Success") if success else (False, "Failed open url")
-                elif action_name == "wait_for_delay":
-                    time_in_ms = action_item.get("time_in_ms", 0)
-
-                    await asyncio.sleep(time_in_ms / 1000.0)
-                    return True, ""
-                else:
-                    return (
-                        False,
-                        f"Unsupported action for local fallback: {action_name}",
-                    )
-            except Exception as e:
-                return False, f"In-process fallback failed: {e}"
-
-        # Normal MCP Execution Path
         try:
-            if action_name == "tap":
-                coordinates = action_item.get("coordinates")
-                times = action_item.get("times") or action_item.get("click_times") or 1
-                delay_ms = action_item.get("delay_ms") or action_item.get("delay") or 100
-                result = await session.call_tool(
-                    "tap",
-                    {
-                        "coordinates": coordinates,
-                        "times": times,
-                        "delay_ms": delay_ms,
-                    },
-                )
-                return self._parse_mcp_result(result)
+            tool_name, wire_args = to_canonical_call(action_item, dims=(width, height))
+        except ValueError as e:
+            return False, str(e)
 
-            elif action_name == "long_press_on":
-                coordinates = action_item.get("coordinates")
-                duration = action_item.get("duration", 1000)
-                result = await session.call_tool(
-                    "long_press_on",
-                    {"coordinates": coordinates, "duration": duration},
-                )
-                return self._parse_mcp_result(result)
-
-            elif action_name == "swipe":
-                coordinates = action_item.get("coordinates")
-                duration = action_item.get("duration", 400)
-                result = await session.call_tool(
-                    "swipe", {"coordinates": coordinates, "duration": duration}
-                )
-                return self._parse_mcp_result(result)
-
-            elif action_name == "focus_and_input_text":
-                coordinates = action_item.get("coordinates")
-                text = action_item.get("text", "")
-                clear_before_input = action_item.get("clear_before_input", False)
-                result = await session.call_tool(
-                    "focus_and_input_text",
-                    {
-                        "coordinates": coordinates,
-                        "text": text,
-                        "clear_before_input": clear_before_input,
-                    },
-                )
-                return self._parse_mcp_result(result)
-
-            elif action_name == "focus_and_clear_text":
-                coordinates = action_item.get("coordinates")
-                result = await session.call_tool(
-                    "focus_and_clear_text", {"coordinates": coordinates}
-                )
-                return self._parse_mcp_result(result)
-
-            elif action_name == "erase_one_char":
-                result = await session.call_tool("erase_one_char", {})
-                return self._parse_mcp_result(result)
-
-            elif action_name == "press_key":
-                keycode = action_item.get("keycode", "")
-                result = await session.call_tool("press_key", {"keycode": keycode})
-                return self._parse_mcp_result(result)
-
-            elif action_name == "back":
-                result = await session.call_tool("back", {})
-                return self._parse_mcp_result(result)
-
-            elif action_name == "launch_app":
-                app_name = action_item.get("app_name")
-                package_name = await find_package(self.ctx, app_name, use_fallback=False)
-                if not package_name:
-                    return False, f"Failed to find package for app: {app_name}"
-
-                success, err_msg = await app_launch_utils.launch_app_with_retries(
-                    self.ctx, package_name
-                )
-                return success, "Success" if success else err_msg
-
-            elif action_name == "stop_app":
-                app_name = action_item.get("app_name")
-                package_name = await find_package(self.ctx, app_name, use_fallback=False)
-                if not package_name:
-                    return False, f"Failed to find package for app: {app_name}"
-                result = await session.call_tool("stop_app", {"package_name": package_name})
-                return self._parse_mcp_result(result)
-
-            elif action_name == "open_link":
-                url = action_item.get("url")
-                result = await session.call_tool("open_link", {"url": url})
-                return self._parse_mcp_result(result)
-
-            elif action_name == "wait_for_delay":
-                time_in_ms = action_item.get("time_in_ms", 0)
-                logger.info(f"Validator performing wait_for_delay for {time_in_ms}ms...")
-
-                await asyncio.sleep(time_in_ms / 1000.0)
-                return True, ""
-
-            else:
-                return False, f"Unsupported action: {action_name}"
+        try:
+            res = await session.call(tool_name, wire_args)
         except Exception as e:
             return False, f"MCP call failed: {e}"
+
+        return (True, "") if res.ok else (False, res.message)
 
     @trace(type="tool", name="safety_net_validation")
     async def _validate_action_precondition(
@@ -953,45 +646,21 @@ class ValidatorNode:
 
         try:
             elements = None
-            if session is not None:
-                try:
-                    result = await asyncio.wait_for(
-                        session.call_tool("get_ui_hierarchy", {}),
-                        timeout=VALIDATOR_UI_HIERARCHY_TIMEOUT,
-                    )
-                    if hasattr(result, "content") and result.content:
-                        text_content = (
-                            result.content[0].text
-                            if hasattr(result.content[0], "text")
-                            else str(result.content[0])
-                        )
-                        elements = json.loads(text_content)
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to get live XML via MCP: {e}. Falling back to"
-                        " Pixel-based validation."
-                    )
-                    return (
-                        False,
-                        ValidationErrorCategory.XML_BYPASSED,
-                        f"XML hierarchy fetch timed out or errored: {e}",
-                    )
-            elif getattr(self, "_local_controller", None):
-                try:
-                    elements = await asyncio.wait_for(
-                        self._local_controller.get_ui_elements(),
-                        timeout=VALIDATOR_UI_HIERARCHY_TIMEOUT,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to get live XML via local controller: {e}."
-                        " Falling back to Pixel-based validation."
-                    )
-                    return (
-                        False,
-                        ValidationErrorCategory.XML_BYPASSED,
-                        f"XML hierarchy fetch timed out or errored: {e}",
-                    )
+            try:
+                # The timeout must ride inside the session (MCP read timeout), never an
+                # outer asyncio.wait_for: cancelling call_tool mid-flight corrupts the
+                # in-memory transport and bricks the session for all later callers.
+                elements = await session.ui_hierarchy(timeout=VALIDATOR_UI_HIERARCHY_TIMEOUT)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to get live XML via MCP: {e!r}. Falling back to"
+                    " Pixel-based validation."
+                )
+                return (
+                    False,
+                    ValidationErrorCategory.XML_BYPASSED,
+                    f"XML hierarchy fetch timed out or errored: {e!r}",
+                )
 
             if not elements or not isinstance(elements, list):
                 logger.warning(
@@ -1227,6 +896,9 @@ class ValidatorNode:
                         f" {new_coords}."
                     )
                     action_item["coordinates"] = new_coords
+                    # Drop the now-stale normalized coordinates so the canonical
+                    # translation re-derives them from the healed pixel center.
+                    action_item.pop("normalized_coordinates", None)
             else:
                 logger.info(
                     "Pre-execution validation SUCCESS"
@@ -1387,23 +1059,6 @@ class ValidatorNode:
 
         return passed, category, reason
 
-    def _parse_mcp_result(self, result) -> tuple[bool, str]:
-        """Helper to parse MCP tool result."""
-        if hasattr(result, "content") and result.content:
-            text_content = (
-                result.content[0].text
-                if hasattr(result.content[0], "text")
-                else str(result.content[0])
-            )
-            if text_content.startswith("Error:") or text_content.startswith("Failed:"):
-                return False, text_content
-            elif text_content == "Success":
-                return True, ""
-            elif text_content == "Failed":
-                return False, "Action failed on server"
-            return True, text_content
-        return True, ""
-
     @trace(type="tool", name="safety_net_pixel_validation")
     async def _validate_action_precondition_pixel(
         self,
@@ -1487,13 +1142,10 @@ class ValidatorNode:
             try:
                 # A. Take fresh live screenshot (captures state changes / dynamic loading settling)
                 live_screenshot_b64 = None
-                if session is not None:
-                    result = await session.call_tool("take_screenshot", {})
-                    success_img, live_screenshot_b64 = self._parse_mcp_result(result)
-                elif getattr(self, "_local_controller", None):
-                    live_screenshot_b64 = await self._local_controller.take_screenshot()
+                try:
+                    live_screenshot_b64 = await session.screenshot_b64()
                     success_img = True
-                else:
+                except Exception:
                     success_img, live_screenshot_b64 = False, None
 
                 if not success_img or not live_screenshot_b64:

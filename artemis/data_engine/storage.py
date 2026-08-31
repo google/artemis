@@ -213,9 +213,24 @@ class StorageManager:
                     start_time REAL,
                     end_time REAL,
                     local_video_path TEXT,
+                    status TEXT NOT NULL DEFAULT 'recording',
+                    error TEXT,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 )
             """)
+            video_recording_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(video_recordings)").fetchall()
+            }
+            if "status" not in video_recording_columns:
+                conn.execute(
+                    "ALTER TABLE video_recordings ADD COLUMN status TEXT "
+                    "NOT NULL DEFAULT 'recording'"
+                )
+                conn.execute(
+                    "UPDATE video_recordings SET status = 'ready' WHERE end_time IS NOT NULL"
+                )
+            if "error" not in video_recording_columns:
+                conn.execute("ALTER TABLE video_recordings ADD COLUMN error TEXT")
             try:
                 conn.execute("ALTER TABLE background_tasks ADD COLUMN logs TEXT")
             except sqlite3.OperationalError:
@@ -273,8 +288,11 @@ class StorageManager:
         with self._get_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO video_recordings (video_id, session_id, device_id, start_time, end_time, local_video_path)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO video_recordings (
+                    video_id, session_id, device_id, start_time, end_time,
+                    local_video_path, status, error
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(record.video_id),
@@ -283,6 +301,8 @@ class StorageManager:
                     record.start_time,
                     record.end_time,
                     record.local_video_path,
+                    record.status,
+                    record.error,
                 ),
             )
             conn.commit()
@@ -293,12 +313,14 @@ class StorageManager:
             conn.execute(
                 """
                 UPDATE video_recordings
-                SET end_time = ?, local_video_path = ?
+                SET end_time = ?, local_video_path = ?, status = ?, error = ?
                 WHERE video_id = ?
                 """,
                 (
                     record.end_time,
                     record.local_video_path,
+                    record.status,
+                    record.error,
                     str(record.video_id),
                 ),
             )
@@ -345,6 +367,10 @@ class StorageManager:
                     start_time=row["start_time"],
                     end_time=row["end_time"],
                     local_video_path=row["local_video_path"],
+                    status=row["status"] if "status" in row.keys() else (
+                        "ready" if row["end_time"] is not None else "recording"
+                    ),
+                    error=row["error"] if "error" in row.keys() else None,
                 )
         return None
 
@@ -671,6 +697,8 @@ class StorageManager:
                 )
         return steps
 
+    get_session_steps = get_steps
+
     def get_traces_for_step(self, step_id: UUID | str) -> list[TraceRecord]:
         """Retrieve all traces for a step."""
         traces = []
@@ -869,6 +897,8 @@ class StorageManager:
         with self._get_connection() as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             tables = [
+                "video_analysis_observations",
+                "video_analysis_segments",
                 "failed_outputs",
                 "traces",
                 "background_tasks",
@@ -925,13 +955,16 @@ class StorageManager:
 
         # 1. Get video paths before deleting from DB
         video_paths = []
+        video_ids: list[str] = []
         try:
             with self._get_connection() as conn:
                 cursor = conn.execute(
-                    "SELECT local_video_path FROM video_recordings WHERE session_id = ?",
+                    "SELECT video_id, local_video_path FROM video_recordings WHERE session_id = ?",
                     (session_id_str,),
                 )
                 for row in cursor.fetchall():
+                    if row["video_id"]:
+                        video_ids.append(str(row["video_id"]))
                     if row["local_video_path"]:
                         video_paths.append(Path(row["local_video_path"]))
         except sqlite3.OperationalError as e:
@@ -940,6 +973,20 @@ class StorageManager:
         # 2. Delete from DB tables
         with self._get_connection() as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
+            board_keys = [f"session:{session_id_str}"] + [
+                f"video:{video_id}" for video_id in video_ids
+            ]
+            for table in (
+                "video_analysis_observations",
+                "video_analysis_segments",
+            ):
+                try:
+                    conn.executemany(
+                        f"DELETE FROM {table} WHERE board_key = ?",
+                        [(key,) for key in board_keys],
+                    )
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Failed to delete video memory from {table}: {e}")
             tables = [
                 "failed_outputs",
                 "traces",

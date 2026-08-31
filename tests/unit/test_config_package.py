@@ -16,7 +16,7 @@
 
 from pathlib import Path
 import tempfile
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
@@ -218,8 +218,12 @@ def test_output_config_and_recording():
 
 def test_runtime_state_and_ipc(tmp_path, monkeypatch):
     """Test IPC port and LS address state helpers."""
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", MagicMock(side_effect=Exception("offline")))
     ipc_state_file = tmp_path / ".artemis_ipc_port"
     monkeypatch.setattr("artemis.config.runtime.get_ipc_port_file", lambda: ipc_state_file)
+    monkeypatch.setattr("artemis.config.runtime.ROOT_DIR", tmp_path)
+    monkeypatch.setattr("artemis.config.runtime.get_app_dir", lambda: tmp_path)
     # Test IPC port
     write_ipc_port(49152)
     assert read_ipc_port() == 49152
@@ -365,8 +369,8 @@ def test_checker_builder_and_context_propagation():
     mock_task.request.record_trace = False
     mock_task.request.name = "test_task"
     mock_task.request.profile = None
-    mock_task.request.goal = "Test goal"
-    agent._prepare_tracing(mock_task, ctx)
+    with patch("artemis.sdk.agent.DataEngine"):
+        agent._prepare_tracing(mock_task, ctx)
 
     assert ctx.execution_setup is not None
     assert ctx.execution_setup.disable_checker is False
@@ -455,8 +459,8 @@ def test_explorer_builder_and_resolution(monkeypatch):
     mock_task.request.record_trace = False
     mock_task.request.name = "explorer_test_task"
     mock_task.request.profile = None
-    mock_task.request.goal = "Test explorer propagation"
-    agent._prepare_tracing(mock_task, ctx)
+    with patch("artemis.sdk.agent.DataEngine"):
+        agent._prepare_tracing(mock_task, ctx)
 
     assert ctx.execution_setup is not None
     assert ctx.execution_setup.explorer_version == "pro"
@@ -505,7 +509,8 @@ def test_outputter_builder_and_context_propagation():
     mock_task.request.name = "outputter_test_task"
     mock_task.request.profile = None
     mock_task.request.goal = "Test outputter propagation"
-    agent._prepare_tracing(mock_task, ctx)
+    with patch("artemis.sdk.agent.DataEngine"):
+        agent._prepare_tracing(mock_task, ctx)
 
     assert ctx.execution_setup is not None
     assert ctx.execution_setup.disable_outputter is False
@@ -583,3 +588,60 @@ def test_agent_config_environment_variable_overrides(monkeypatch):
     assert cfg.outputter.enabled is False
     assert cfg.video_analyzer.enable_ledger is False
     assert cfg.pro.video_analyzer.enable_ledger is False
+
+
+def test_consolidated_workspace_and_admin_paths():
+    """Verify consolidated workspace and admin paths exported from artemis.config."""
+    from artemis.config import (
+        DB_PATH,
+        IMAGES_DIR,
+        PAUSE_FILE,
+        REPLAY_BASE_DIR,
+        ROOT_DIR,
+        TEST_DATA_DIR,
+        TEST_OUTPUTS_DIR,
+        TRACES_PATH,
+        WORKSPACE_ROOT,
+        get_images_dir,
+        get_pause_file,
+        get_replay_dir,
+        get_test_data_dir,
+        get_test_outputs_dir,
+    )
+
+    assert WORKSPACE_ROOT == ROOT_DIR
+    assert PAUSE_FILE == get_pause_file()
+    assert PAUSE_FILE.name == ".artemis_paused"
+    assert REPLAY_BASE_DIR == get_replay_dir()
+    assert TEST_DATA_DIR == get_test_data_dir()
+    assert TEST_OUTPUTS_DIR == get_test_outputs_dir()
+    assert IMAGES_DIR == get_images_dir()
+    assert DB_PATH.name == "data_engine.db"
+    assert TRACES_PATH.name == "traces"
+
+
+def test_admin_console_config_facade_backward_compatibility():
+    """Verify apps.admin_console.core.config continues to re-export consolidated paths."""
+    from apps.admin_console.core.config import (
+        DB_PATH,
+        IMAGES_DIR,
+        PAUSE_FILE,
+        REPLAY_BASE_DIR,
+        TEST_DATA_DIR,
+        TEST_OUTPUTS_DIR,
+        TRACES_PATH,
+        WORKSPACE_ROOT,
+        init_ls_address,
+    )
+    import artemis.config as ac
+
+    assert WORKSPACE_ROOT == ac.WORKSPACE_ROOT
+    assert PAUSE_FILE == ac.PAUSE_FILE
+    assert REPLAY_BASE_DIR == ac.REPLAY_BASE_DIR
+    assert TEST_DATA_DIR == ac.TEST_DATA_DIR
+    assert TEST_OUTPUTS_DIR == ac.TEST_OUTPUTS_DIR
+    assert IMAGES_DIR == ac.IMAGES_DIR
+    assert DB_PATH == ac.DB_PATH
+    assert TRACES_PATH == ac.TRACES_PATH
+    assert callable(init_ls_address)
+

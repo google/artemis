@@ -69,11 +69,14 @@ class AgentConfigBuilder:
         self._force_web_accessibility: bool = False
         self._disable_checker: bool = True
         self._cloud_mobile_id_or_ref: str | None = None
+        self._concurrency_mode: str = "per_device"
+        self._max_concurrency: int | None = None
 
         agent_cfg = load_agent_config()
         self._explorer = agent_cfg.explorer
         self._explorer_versions = agent_cfg.explorer_versions
         self._denylisted_tools = agent_cfg.denylisted_tools
+        self._video_analyzer = agent_cfg.video_analyzer
         self._enable_video_ledger = agent_cfg.video_analyzer.enable_ledger
         if agent_cfg.video_analyzer.enabled is not None:
             self._video_recording_tools_enabled = agent_cfg.video_analyzer.enabled
@@ -127,14 +130,19 @@ class AgentConfigBuilder:
 
     def for_device(
         self,
-        platform: DevicePlatform,
-        device_id: str,
+        platform_or_device_id: DevicePlatform | str,
+        device_id: str | None = None,
     ) -> "AgentConfigBuilder":
         """Configure the ARTEMIS agent for a specific device.
 
+        Supports both:
+            builder.for_device(DevicePlatform.ANDROID, "emulator-5554")
+        and:
+            builder.for_device("emulator-5554")  (defaults to DevicePlatform.ANDROID)
+
         Args:
-            platform: The device platform (ANDROID)
-            device_id: The unique identifier for the device
+            platform_or_device_id: DevicePlatform or unique identifier for the device
+            device_id: The unique identifier for the device (if platform was passed first)
         """
         if self._cloud_mobile_id_or_ref is not None:
             raise ValueError(
@@ -142,8 +150,28 @@ class AgentConfigBuilder:
                 " configured.\n> for_device() and for_cloud_mobile() are"
                 " mutually exclusive"
             )
-        self._device_id = device_id
-        self._device_platform = platform
+        if isinstance(platform_or_device_id, DevicePlatform):
+            self._device_platform = platform_or_device_id
+            self._device_id = device_id
+        else:
+            self._device_platform = DevicePlatform.ANDROID
+            self._device_id = str(platform_or_device_id)
+        return self
+
+    def for_device_serial(self, device_serial: str) -> "AgentConfigBuilder":
+        """Target a specific Android device by its ADB serial number."""
+        return self.for_device(DevicePlatform.ANDROID, device_serial)
+
+    def with_concurrency_mode(
+        self, mode: str
+    ) -> "AgentConfigBuilder":
+        """Configure concurrency mode: 'global' (1 task globally) or 'per_device' (1 task per device)."""
+        self._concurrency_mode = str(mode).strip().lower()
+        return self
+
+    def with_max_concurrency(self, max_concurrency: int) -> "AgentConfigBuilder":
+        """Configure max concurrent tasks limit."""
+        self._max_concurrency = max_concurrency
         return self
 
     def with_default_task_config(self, config: TaskRequestCommon) -> "AgentConfigBuilder":
@@ -507,6 +535,11 @@ class AgentConfigBuilder:
             explorer_versions=self._explorer_versions,
             denylisted_tools=self._denylisted_tools,
             enable_video_ledger=self._enable_video_ledger,
+            video_analyzer=self._video_analyzer.model_copy(
+                update={"enable_ledger": self._enable_video_ledger}
+            ),
+            concurrency_mode=self._concurrency_mode,
+            max_concurrency=self._max_concurrency,
         )
 
 

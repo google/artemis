@@ -16,13 +16,14 @@
 
 Processes Before/After screenshot pairs and action metadata in the background
 to generate high-density, strictly objective visual state transition summaries.
-Ensures zero blocking latency for the main runner and includes out-of-order self-healing retries.
+Ensures zero blocking latency for the main runner and independently retries failed jobs.
 """
 
 import asyncio
 import base64
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from jinja2 import Template
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -40,18 +41,17 @@ class VisualStepSummarizer:
 
     Key design properties:
     1. Zero-blocking dispatch: The main Flash runner dispatches and proceeds immediately.
-    2. Graceful fallback: If a step summary is not ready, it cleanly falls back to the original action text.
-    3. Self-healing re-trigger: If a previous step's summary is stalled or lost while subsequent steps
-       complete, it automatically re-dispatches the stalled step.
+    2. Lossless pending state: The compressor retains the source image until its summary is ready.
+    3. Independent retry: Every action owns a retry loop and does not depend on later actions arriving.
     """
 
     def __init__(self, ctx: ArtemisContext, model_name: str | None = None):
         self.ctx = ctx
-        self._summaries: dict[int, str] = {}
-        self._pending_tasks: dict[int, asyncio.Task] = {}
-        self._step_inputs: dict[int, dict[str, Any]] = {}
-        self._retry_counts: dict[int, int] = {}
-        self._max_retries = 2
+        self._summaries: dict[int | str, str] = {}
+        self._pending_tasks: dict[int | str, asyncio.Task] = {}
+        self._step_inputs: dict[int | str, dict[str, Any]] = {}
+        self._retry_counts: dict[int | str, int] = {}
+        self._retry_delays = (0.0, 0.5, 1.0, 2.0, 3.0)
 
         # Initialize lightweight VLM: prioritize explicit model_name
         target_model = model_name or "gemini-3.5-flash-lite"
@@ -83,44 +83,50 @@ class VisualStepSummarizer:
         pre_img_bytes: bytes | None,
         post_img_bytes: bytes | None,
         exec_outcome: str,
+        *,
+        action_key: str | None = None,
+        data_engine_step_id: UUID | str | None = None,
     ) -> None:
         """Dispatches an asynchronous summarization task without blocking the caller."""
-        self._step_inputs[step_number] = {
+        key: int | str = action_key or step_number
+        self._step_inputs[key] = {
+            "step_number": step_number,
             "action_name": action_name,
             "action_args": action_args,
             "pre_img_bytes": pre_img_bytes,
             "post_img_bytes": post_img_bytes,
             "exec_outcome": exec_outcome,
+            "data_engine_step_id": data_engine_step_id,
         }
 
-        task = asyncio.create_task(self._run_summary(step_number))
-        self._pending_tasks[step_number] = task
+        task = asyncio.create_task(self._run_summary_until_ready(key))
+        self._pending_tasks[key] = task
 
-        # Check for and re-trigger any previous stalled steps
-        self._check_and_retrigger_stalled_steps(current_step=step_number)
+    async def _run_summary_until_ready(self, action_key: int | str) -> None:
+        """Retry one action independently until a non-empty summary is committed."""
+        while action_key not in self._summaries:
+            if await self._run_summary_once(action_key):
+                return
 
-    def _check_and_retrigger_stalled_steps(self, current_step: int) -> None:
-        """Re-dispatches any previous steps that remain unsummarized while later steps arrive."""
-        for past_step in range(1, current_step):
-            if past_step not in self._summaries and past_step in self._step_inputs:
-                task = self._pending_tasks.get(past_step)
-                retries = self._retry_counts.get(past_step, 0)
-                if (task is None or task.done()) and retries < self._max_retries:
-                    self._retry_counts[past_step] = retries + 1
-                    logger.info(
-                        f"VisualStepSummarizer: Retriggering stalled summary for Step {past_step} "
-                        f"(attempt {self._retry_counts[past_step] + 1})"
-                    )
-                    self._pending_tasks[past_step] = asyncio.create_task(
-                        self._run_summary(past_step)
-                    )
+            retry_count = self._retry_counts.get(action_key, 0) + 1
+            self._retry_counts[action_key] = retry_count
+            delay = self._retry_delays[min(retry_count - 1, len(self._retry_delays) - 1)]
+            input_data = self._step_inputs.get(action_key)
+            display_step = input_data.get("step_number") if input_data else action_key
+            logger.info(
+                f"VisualStepSummarizer: Retrying Step {display_step} "
+                f"(attempt {retry_count + 1}) after {delay:.1f}s"
+            )
+            if delay:
+                await asyncio.sleep(delay)
 
-    async def _run_summary(self, step_number: int) -> None:
-        """Executes the lightweight VLM call to summarize the step transition."""
-        input_data = self._step_inputs.get(step_number)
+    async def _run_summary_once(self, action_key: int | str) -> bool:
+        """Execute one lightweight VLM attempt for a step transition."""
+        input_data = self._step_inputs.get(action_key)
         if not input_data:
-            return
+            return False
 
+        step_number = input_data["step_number"]
         action_name = input_data["action_name"]
         action_args = input_data["action_args"]
         pre_bytes = input_data["pre_img_bytes"]
@@ -183,44 +189,60 @@ class VisualStepSummarizer:
 
             summary_text = summary_raw.strip()
             if summary_text:
-                self._summaries[step_number] = summary_text
+                self._summaries[action_key] = summary_text
                 logger.info(
                     f"VisualStepSummarizer: Generated summary for Step {step_number}: {summary_text[:80]}..."
                 )
 
                 # Free binary image buffers from memory once summary is secured
-                if step_number in self._step_inputs:
-                    self._step_inputs[step_number]["pre_img_bytes"] = None
-                    self._step_inputs[step_number]["post_img_bytes"] = None
+                if action_key in self._step_inputs:
+                    self._step_inputs[action_key]["pre_img_bytes"] = None
+                    self._step_inputs[action_key]["post_img_bytes"] = None
 
                 # Update DataEngine telemetry if active
                 if self.ctx.data_engine:
                     try:
-                        self.ctx.data_engine.update_step_summary(step_number, summary_text)
+                        target_step = input_data.get("data_engine_step_id") or step_number
+                        self.ctx.data_engine.update_step_summary(target_step, summary_text)
                     except Exception as de_err:
                         logger.debug(f"DataEngine step summary update skipped: {de_err}")
+                return True
 
         except Exception as e:
             logger.warning(
                 f"VisualStepSummarizer: Error generating summary for step {step_number}: {e}"
             )
-            if self._retry_counts.get(step_number, 0) >= self._max_retries:
-                # Max retries reached, free memory buffer
-                if step_number in self._step_inputs:
-                    self._step_inputs[step_number]["pre_img_bytes"] = None
-                    self._step_inputs[step_number]["post_img_bytes"] = None
+        return False
 
-    def get_summary(self, step_number: int, fallback_text: str | None = None) -> str | None:
-        """Retrieves summarized state for step_number, or fallback_text if not ready yet."""
-        return self._summaries.get(step_number, fallback_text)
+    def get_summary(
+        self, action_key: int | str, fallback_text: str | None = None
+    ) -> str | None:
+        """Retrieve the summary for a stable action key, or fallback text."""
+        return self._summaries.get(action_key, fallback_text)
 
-    def has_summary(self, step_number: int) -> bool:
-        """Checks if a step summary has completed."""
-        return step_number in self._summaries
+    def has_summary(self, action_key: int | str) -> bool:
+        """Check whether an action summary has completed."""
+        return action_key in self._summaries
 
-    async def flush(self) -> None:
-        """Flushes and awaits all pending background summary tasks upon completion."""
+    def has_job(self, action_key: int | str) -> bool:
+        """Check whether an action has been submitted for visual summarization."""
+        return action_key in self._step_inputs
+
+    def is_pending(self, action_key: int | str) -> bool:
+        """Check whether an action still needs a summary."""
+        return self.has_job(action_key) and not self.has_summary(action_key)
+
+    async def flush(self, timeout_seconds: float = 30.0) -> None:
+        """Wait for active jobs up to a bound, then cancel remaining retry loops."""
         tasks = [t for t in self._pending_tasks.values() if not t.done()]
         if tasks:
             logger.info(f"VisualStepSummarizer: Flushing {len(tasks)} pending summary tasks...")
-            await asyncio.gather(*tasks, return_exceptions=True)
+            _, pending = await asyncio.wait(tasks, timeout=timeout_seconds)
+            if pending:
+                logger.warning(
+                    f"VisualStepSummarizer: Cancelling {len(pending)} unfinished summary tasks "
+                    f"after {timeout_seconds:.1f}s flush timeout."
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)

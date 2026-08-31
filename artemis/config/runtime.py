@@ -21,8 +21,11 @@ import time
 from artemis.config.constants import (
     ENV_ANTIGRAVITY_LS_ADDRESS,
     ENV_ARTEMIS_IPC_PORT,
+    IPC_PORT_FILENAME,
 )
 from artemis.config.paths import (
+    ROOT_DIR,
+    get_app_dir,
     get_ipc_port_file,
     get_ls_address_file,
     get_temp_dir,
@@ -33,19 +36,43 @@ logger = get_logger(__name__)
 
 
 def read_ipc_port() -> int | None:
-    """Read the active ARTEMIS IPC port from environment or temporary state file."""
+    """Read the active ARTEMIS IPC port from environment, state files, or local server API."""
     env_port = os.getenv(ENV_ARTEMIS_IPC_PORT)
     if env_port and env_port.strip().isdigit():
         return int(env_port.strip())
 
-    port_file = get_ipc_port_file()
-    if port_file.exists():
-        try:
-            content = port_file.read_text(encoding="utf-8").strip()
-            if content.isdigit():
-                return int(content)
-        except Exception as e:
-            logger.warning(f"Failed to read IPC port from {port_file}: {e}")
+    candidate_paths = [
+        get_temp_dir() / "artemis-ipc-port",
+        get_app_dir() / IPC_PORT_FILENAME,
+        ROOT_DIR / IPC_PORT_FILENAME,
+        get_ipc_port_file(),
+    ]
+    for p in candidate_paths:
+        if p.exists():
+            try:
+                content = p.read_text(encoding="utf-8").strip()
+                if content.isdigit():
+                    return int(content)
+            except Exception:
+                pass
+
+    # Dynamic fallback: check local admin console status endpoint
+    try:
+        import urllib.request
+        import json
+
+        req = urllib.request.Request(
+            "http://127.0.0.1:8000/api/status",
+            headers={"User-Agent": "Artemis-IPC-Discovery"},
+        )
+        with urllib.request.urlopen(req, timeout=0.2) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                ipc_port = data.get("ipc_port")
+                if ipc_port and str(ipc_port).isdigit():
+                    return int(ipc_port)
+    except Exception:
+        pass
 
     return None
 
@@ -54,23 +81,36 @@ def write_ipc_port(port: int) -> Path:
     """Save active IPC port to environment and temporary synchronization file."""
     os.environ[ENV_ARTEMIS_IPC_PORT] = str(port)
     port_file = get_ipc_port_file()
-    try:
-        port_file.parent.mkdir(parents=True, exist_ok=True)
-        port_file.write_text(str(port), encoding="utf-8")
-    except Exception as e:
-        logger.warning(f"Failed to write IPC port file to {port_file}: {e}")
+    all_targets = [
+        port_file,
+        get_temp_dir() / "artemis-ipc-port",
+        get_app_dir() / IPC_PORT_FILENAME,
+        ROOT_DIR / IPC_PORT_FILENAME,
+    ]
+    for target in all_targets:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(port), encoding="utf-8")
+        except Exception as e:
+            logger.debug(f"Could not write IPC port to {target}: {e}")
     return port_file
 
 
 def clear_ipc_port() -> None:
     """Remove IPC port synchronization state from the process and filesystem."""
     os.environ.pop(ENV_ARTEMIS_IPC_PORT, None)
-    port_file = get_ipc_port_file()
-    if port_file.exists():
-        try:
-            port_file.unlink(missing_ok=True)
-        except Exception as e:
-            logger.warning(f"Failed to remove IPC port file {port_file}: {e}")
+    all_targets = [
+        get_ipc_port_file(),
+        get_temp_dir() / "artemis-ipc-port",
+        get_app_dir() / IPC_PORT_FILENAME,
+        ROOT_DIR / IPC_PORT_FILENAME,
+    ]
+    for target in all_targets:
+        if target.exists():
+            try:
+                target.unlink(missing_ok=True)
+            except Exception as e:
+                logger.debug(f"Failed to remove IPC port file {target}: {e}")
 
 
 def read_ls_address() -> str | None:
@@ -141,3 +181,16 @@ def cleanup_temp_dir(subfolder: str | None = None, max_age_seconds: float | None
                 logger.warning(f"Could not delete temporary file {file_path}: {e}")
 
     return deleted_count
+
+
+def init_ls_address() -> None:
+    """Automatically write ANTIGRAVITY_LS_ADDRESS to shared synchronization file on startup.
+
+    Allows decoupled background processes to communicate with Jetski.
+    """
+    ls_addr = os.environ.get(ENV_ANTIGRAVITY_LS_ADDRESS)
+    if ls_addr:
+        try:
+            write_ls_address(ls_addr)
+        except Exception as e:
+            logger.debug(f"Failed to write LS address on startup: {e}")

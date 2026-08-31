@@ -179,4 +179,6 @@ echo ""
 
 # 8. Launch unified Showcase UI & auto-open browser
 echo -e "   ${GREEN}🚀 Launching Artemis Showcase UI & Admin Console...${NC}"
-exec uv run artemis ui --open "$@"
+# Launch via `python -m artemis` (not the `artemis` console-script shim) so the
+# long-running server never pins .venv/Scripts/artemis[.exe] against reinstalls.
+exec uv run python -m artemis ui --open "$@"

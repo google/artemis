@@ -44,8 +44,21 @@ class Task(BaseModel):
     goal: str = Field(..., description="High-level goal description")
     profile: Literal["flash", "pro"] = Field(default="pro", description="Execution profile")
     device_id: str = Field(default="default-device", description="Target device serial")
+    device_serial: str | None = Field(
+        default=None, description="Target device serial (alias for device_id)"
+    )
+    concurrency_mode: Literal["global", "per_device"] | None = Field(
+        default=None,
+        description="Concurrency mode: 'global' (1 across all devices) or 'per_device' (1 per device)",
+    )
     locked_package: str | None = Field(default=None, description="Package lock restriction")
     max_turns: int = Field(default=30, description="Turn cutoff limit")
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.device_serial and self.device_id == "default-device":
+            self.device_id = self.device_serial
+        elif self.device_id != "default-device" and not self.device_serial:
+            self.device_serial = self.device_id
 
 
 class TaskResult(BaseModel):
@@ -56,3 +69,4 @@ class TaskResult(BaseModel):
     turns: int
     output: Any = None
     error: str | None = None
+    device_id: str | None = None

@@ -14,10 +14,18 @@
  * limitations under the License.
  */
 
-import { Injectable, signal, computed, inject } from '@angular/core';
+import { Injectable, signal, computed, inject, DestroyRef, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, tap } from 'rxjs';
-import { SystemReadinessReport, DeviceInfo, ProbeResult, EmulatorLaunchState, EmulatorLaunchStage } from '../core/models/system.model';
+import { Observable, finalize, shareReplay, tap } from 'rxjs';
+import {
+  AdbServerConnectionResponse,
+  AdbServerStatus,
+  SystemReadinessReport,
+  DeviceInfo,
+  ProbeResult,
+  EmulatorLaunchState,
+  EmulatorLaunchStage
+} from '../core/models/system.model';
 
 @Injectable({
   providedIn: 'root'
@@ -27,8 +35,13 @@ export class SystemService {
 
   // Core reactive signals
   public readinessReport = signal<SystemReadinessReport | null>(null);
+  public hasReadinessReport = computed(() => this.readinessReport() !== null);
   public isLoading = signal<boolean>(false);
   public isRestartingAdb = signal<boolean>(false);
+  public adbServerStatus = signal<AdbServerStatus | null>(null);
+  public isRemoteAdbServer = computed(
+    () => this.adbServerStatus()?.endpoint.mode === 'remote'
+  );
   public launchingAvd = signal<string | null>(null);
   public emulatorLaunchState = signal<EmulatorLaunchState | null>(null);
   public isEmulatorLaunching = computed(() => {
@@ -136,25 +149,50 @@ export class SystemService {
   });
 
   private pollingTimer: any = null;
+  private readinessRequest$: Observable<SystemReadinessReport> | null = null;
+  private zone = inject(NgZone);
+  private lastAppliedReportJson: string | null = null;
+  private onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && !document.hidden) {
+      this.fetchReadiness(true).subscribe({ error: () => {} });
+    }
+  };
 
   constructor() {
-    this.fetchReadiness();
     this.startAutoPolling(3000);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+    }
+    inject(DestroyRef).onDestroy(() => {
+      this.stopAutoPolling();
+      this.stopEmulatorStatusPolling();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', this.onVisibilityChange);
+      }
+    });
   }
 
   /**
-   * Start periodic auto-polling for system readiness changes
+   * Start periodic auto-polling for system readiness changes. The interval
+   * runs outside the Angular zone (a tick alone must not trigger change
+   * detection) and pauses while the tab is hidden; a visibilitychange listener
+   * refreshes immediately when the tab becomes visible again.
    */
   public startAutoPolling(intervalMs: number = 3000): void {
     if (this.pollingTimer) {
       clearInterval(this.pollingTimer);
     }
-    this.pollingTimer = setInterval(() => {
-      // Perform silent background check without disturbing UI loading state
-      this.fetchReadiness(true).subscribe({
-        error: () => {} // Silent catch
-      });
-    }, intervalMs);
+    this.zone.runOutsideAngular(() => {
+      this.pollingTimer = setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) {
+          return;
+        }
+        // Perform silent background check without disturbing UI loading state
+        this.fetchReadiness(true).subscribe({
+          error: () => {} // Silent catch
+        });
+      }, intervalMs);
+    });
   }
 
   /**
@@ -171,27 +209,57 @@ export class SystemService {
    * Fetch latest system readiness report from backend
    * @param silent If true, updates signals silently without triggering global isLoading spinner
    */
-  public fetchReadiness(silent: boolean = false): Observable<SystemReadinessReport> {
+  public fetchReadiness(
+    silent: boolean = false,
+    forceRefresh: boolean = false
+  ): Observable<SystemReadinessReport> {
     if (!silent) {
       this.isLoading.set(true);
     }
-    return this.http.get<SystemReadinessReport>('/api/system/readiness').pipe(
+
+    // Share one request across initialization, focus events, polling, and manual
+    // refreshes. This prevents a slow probe from creating an unbounded queue.
+    if (this.readinessRequest$) {
+      return this.readinessRequest$;
+    }
+
+    const request$ = this.http.get<SystemReadinessReport>('/api/system/readiness', {
+      params: forceRefresh ? { force: true } : {}
+    }).pipe(
       tap({
         next: (report) => {
-          this.readinessReport.set(report);
-          this.lastCheckedTime.set(new Date());
-          if (!silent) {
-            this.isLoading.set(false);
-          }
+          this.applyReadinessReport(report);
         },
         error: (err) => {
           console.error('Failed to fetch system readiness:', err);
-          if (!silent) {
-            this.isLoading.set(false);
-          }
         }
-      })
+      }),
+      finalize(() => {
+        if (this.readinessRequest$ === request$) {
+          this.readinessRequest$ = null;
+        }
+        this.isLoading.set(false);
+      }),
+      shareReplay({ bufferSize: 1, refCount: false })
     );
+    this.readinessRequest$ = request$;
+    return request$;
+  }
+
+  private applyReadinessReport(report: SystemReadinessReport): void {
+    const current = this.readinessReport();
+    if (current && report.timestamp < current.timestamp) {
+      return;
+    }
+    this.lastCheckedTime.set(new Date(report.timestamp * 1000));
+    // A poll usually returns an identical report; setting a new object anyway
+    // would cascade through every probe computed for no visible change.
+    const serialized = JSON.stringify({ ...report, timestamp: 0 });
+    if (serialized === this.lastAppliedReportJson) {
+      return;
+    }
+    this.lastAppliedReportJson = serialized;
+    this.readinessReport.set(report);
   }
 
   /**
@@ -337,8 +405,7 @@ export class SystemService {
       tap({
         next: (res) => {
           if (res?.report) {
-            this.readinessReport.set(res.report);
-            this.lastCheckedTime.set(new Date());
+            this.applyReadinessReport(res.report);
           }
           this.isRestartingAdb.set(false);
         },
@@ -358,9 +425,71 @@ export class SystemService {
       tap({
         next: (res) => {
           if (res?.report) {
-            this.readinessReport.set(res.report);
-            this.lastCheckedTime.set(new Date());
+            this.applyReadinessReport(res.report);
           }
+        }
+      })
+    );
+  }
+
+  /**
+   * Fetch the process-wide ADB server endpoint used by Artemis.
+   */
+  public fetchAdbServerStatus(): Observable<AdbServerStatus> {
+    return this.http.get<AdbServerStatus>('/api/system/adb/server').pipe(
+      tap(status => this.adbServerStatus.set(status))
+    );
+  }
+
+  /**
+   * Test an ADB server endpoint without changing the active connection.
+   */
+  public probeAdbServer(
+    host: string,
+    port: number
+  ): Observable<AdbServerConnectionResponse> {
+    return this.http.post<AdbServerConnectionResponse>(
+      '/api/system/adb/server/probe',
+      { host, port, persist: false }
+    );
+  }
+
+  /**
+   * Validate and activate an ADB server endpoint.
+   */
+  public connectAdbServer(
+    host: string,
+    port: number,
+    persist: boolean = true
+  ): Observable<AdbServerConnectionResponse> {
+    return this.http.post<AdbServerConnectionResponse>(
+      '/api/system/adb/server/connect',
+      { host, port, persist }
+    ).pipe(
+      tap(response => {
+        if (response.connection_result.success) {
+          this.adbServerStatus.set({ endpoint: response.connection_result.endpoint });
+          if (response.report) {
+            this.applyReadinessReport(response.report);
+          }
+        }
+      })
+    );
+  }
+
+  /**
+   * Switch Artemis back to the standard local ADB server.
+   */
+  public useLocalAdbServer(persist: boolean = true): Observable<AdbServerConnectionResponse> {
+    return this.http.post<AdbServerConnectionResponse>(
+      '/api/system/adb/server/local',
+      {},
+      { params: { persist } }
+    ).pipe(
+      tap(response => {
+        this.adbServerStatus.set({ endpoint: response.connection_result.endpoint });
+        if (response.report) {
+          this.applyReadinessReport(response.report);
         }
       })
     );
@@ -375,7 +504,7 @@ export class SystemService {
       tap({
         next: (res) => {
           if (res?.report) {
-            this.readinessReport.set(res.report);
+            this.applyReadinessReport(res.report);
           }
           this.isLoading.set(false);
         },
@@ -436,8 +565,7 @@ export class SystemService {
       tap({
         next: (res) => {
           if (res?.report) {
-            this.readinessReport.set(res.report);
-            this.lastCheckedTime.set(new Date());
+            this.applyReadinessReport(res.report);
           }
           // Refresh model config & env after updating key
           this.fetchModelConfigEnv().subscribe();

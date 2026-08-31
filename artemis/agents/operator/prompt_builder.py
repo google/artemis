@@ -12,20 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dynamic prompt template builder for Operator Agent."""
+"""Compatibility prompt builder backed by the canonical Operator templates."""
+
+import json
+from functools import lru_cache
+from pathlib import Path
 
 from jinja2 import Template
-
-OPERATOR_SYSTEM_PROMPT = """You are ARTEMIS Operator, an expert autonomous mobile device interaction agent.
-Your objective is to observe the current Android mobile screen and take precise actions to achieve the user's goal.
-
-Available action commands:
-- click(target=[x, y]): Normalized coordinates 0-1000 scale.
-- swipe(action="up"|"down"|"left"|"right"|[x1, y1, x2, y2]): Drag across screen.
-- input_text(text="...", target=[x, y]): Click field and type.
-- press_key(key="home"|"back"|"enter"|"delete"): Press hardware key.
-- wait_for_delay(seconds=...): Pause execution.
-"""
 
 OPERATOR_HUMAN_TEMPLATE = """Goal: {{ goal }}
 Active Sub-Goal: {{ sub_goal }}
@@ -35,12 +28,31 @@ Execution History:
 """
 
 
+@lru_cache(maxsize=1)
+def load_operator_prompts() -> dict[str, str]:
+    """Load the single canonical prompt source shared by all Operator entry points."""
+    prompts_path = Path(__file__).with_name("operator.json")
+    return json.loads(prompts_path.read_text(encoding="utf-8"))
+
+
 class OperatorPromptBuilder:
     """Builds prompt messages and multimodal contents for the Operator Agent."""
 
     @classmethod
-    def build_system_message(cls) -> str:
-        return OPERATOR_SYSTEM_PROMPT
+    def build_system_message(
+        cls,
+        template_name: str = "main_template",
+        available_tools: frozenset[str] | None = None,
+    ) -> str:
+        from artemis.agents.operator.prompts import apply_operator_prompt_contract
+
+        prompts = load_operator_prompts()
+        try:
+            return apply_operator_prompt_contract(
+                prompts[template_name], available_tools=available_tools
+            )
+        except KeyError as exc:
+            raise ValueError(f"Unknown Operator template: {template_name}") from exc
 
     @classmethod
     def build_human_message(

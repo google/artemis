@@ -392,10 +392,12 @@ async def test_validator_pre_execution_loop_reverted_to_exact_safety_contract(
     mock_artemis_ctx.data_engine = MagicMock()
 
     node = ValidatorNode(mock_artemis_ctx)
+    # The Validator now talks to the in-process unified action session.
     session = MagicMock()
-    session.call_tool = AsyncMock(
-        return_value=MagicMock(content=[MagicMock(text="ZHVtbXlfZGF0YQ==")])
-    )
+    session.started = True
+    session.screenshot_b64 = AsyncMock(return_value="ZHVtbXlfZGF0YQ==")
+    session.ui_hierarchy = AsyncMock(return_value=[])
+    session.call = AsyncMock()
 
     decisions = json.dumps(
         [
@@ -421,6 +423,10 @@ async def test_validator_pre_execution_loop_reverted_to_exact_safety_contract(
     )
 
     with (
+        patch(
+            "artemis.agents.validator.validator.get_action_session",
+            AsyncMock(return_value=session),
+        ),
         patch.object(
             ValidatorNode, "_get_initial_screenshot", new_callable=AsyncMock
         ) as mock_get_screen,

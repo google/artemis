@@ -24,7 +24,7 @@ import time
 from typing import Any
 from uuid import UUID, uuid4
 
-from artemis.config import get_ipc_port_file, read_ipc_port, settings
+from artemis.config import PAUSE_FILE, get_ipc_port_file, read_ipc_port, settings
 from artemis.context import ArtemisContext
 from artemis.data_engine.models import (
     BackgroundTaskRecord,
@@ -79,11 +79,14 @@ class DataEngine:
         self._accumulated_logs = {}
         self._bg_task_to_trace_id = {}
         self._trace_name_cache = {}
+        self._step_number_cache: dict[str, int] = {}
         # Background tasks are written directly to SQLite storage
 
         self.ipc_socket = None
         self._ipc_socket_lock = threading.Lock()
         self._ipc_shutdown = False
+        self._ipc_retry_after = 0.0
+        self._ipc_failure_count = 0
         with self._ipc_socket_lock:
             self._connect_ipc_locked()
 
@@ -110,25 +113,35 @@ class DataEngine:
                 logger.debug(f"Could not read refreshed IPC port from {port_file}: {exc}")
         return candidates
 
-    def _connect_ipc_locked(self) -> bool:
+    def _connect_ipc_locked(self, *, force: bool = False) -> bool:
         """Connect to the UI event bridge while holding ``_ipc_socket_lock``."""
         if self._ipc_shutdown:
             return False
         if self.ipc_socket is not None:
             return True
+        if not force and time.monotonic() < self._ipc_retry_after:
+            return False
 
         for ipc_port in self._ipc_port_candidates():
             try:
-                sock = socket.create_connection(("127.0.0.1", ipc_port), timeout=1.0)
+                # A localhost listener either accepts immediately or is absent.
+                # A short connect cap prevents telemetry from stalling the
+                # automation/data worker when the desktop event bridge is stale.
+                sock = socket.create_connection(("127.0.0.1", ipc_port), timeout=0.2)
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 sock.settimeout(None)
                 self.ipc_socket = sock
+                self._ipc_failure_count = 0
+                self._ipc_retry_after = 0.0
                 logger.info(f"Connected to IPC server on port {ipc_port} with TCP_NODELAY")
                 return True
             except OSError as exc:
                 logger.warning(f"Failed to connect to IPC server on port {ipc_port}: {exc}")
 
         self.ipc_socket = None
+        self._ipc_failure_count += 1
+        retry_delay = min(30.0, 0.5 * (2 ** min(self._ipc_failure_count - 1, 6)))
+        self._ipc_retry_after = time.monotonic() + retry_delay
         return False
 
     def _send_ipc_event(self, event_type: str, data: Any) -> None:
@@ -143,8 +156,8 @@ class DataEngine:
         encoded_payload = payload.encode("utf-8")
 
         with self._ipc_socket_lock:
-            for _attempt in range(2):
-                if not self._connect_ipc_locked():
+            for attempt in range(2):
+                if not self._connect_ipc_locked(force=attempt > 0):
                     return
                 try:
                     self.ipc_socket.sendall(encoded_payload)
@@ -156,6 +169,7 @@ class DataEngine:
                     except Exception:
                         pass
                     self.ipc_socket = None
+                    self._ipc_retry_after = 0.0
 
     @property
     def base_dir(self) -> Path:
@@ -209,24 +223,36 @@ class DataEngine:
 
         self._send_ipc_event(event_type, data)
 
-    def start_session(self, goal: str, device_info: dict[str, Any] | None = None) -> UUID:
+    def start_session(
+        self,
+        goal: str,
+        device_info: dict[str, Any] | None = None,
+        session_id: UUID | str | None = None,
+    ) -> UUID:
         """Start a new session."""
         global _CURRENT_DATA_ENGINE
         _CURRENT_DATA_ENGINE = self
 
-        env_session_id = os.getenv("ARTEMIS_CLOUD_SESSION_ID") or os.getenv("ARTEMIS_SESSION_ID")
-        if env_session_id:
-            try:
-                session_id = UUID(env_session_id)
-            except ValueError:
-                session_id = env_session_id
+        if session_id is not None:
+            if isinstance(session_id, str):
+                try:
+                    session_id = UUID(session_id)
+                except ValueError:
+                    pass
         else:
-            session_id = uuid4()
+            env_session_id = os.getenv("ARTEMIS_CLOUD_SESSION_ID") or os.getenv("ARTEMIS_SESSION_ID")
+            if env_session_id:
+                try:
+                    session_id = UUID(env_session_id)
+                except ValueError:
+                    session_id = env_session_id
+            else:
+                session_id = uuid4()
         self.current_session_id = session_id
         self.session_start_time = time.time()
 
         # Clear old pause file if it exists
-        pause_file = self.global_base_dir.parent / ".artemis_paused"
+        pause_file = PAUSE_FILE
         if pause_file.exists():
             try:
                 pause_file.unlink()
@@ -242,8 +268,32 @@ class DataEngine:
             pid=os.getpid(),
         )
         self.storage.create_session(session)
-        self.current_step_number = 0
-        logger.info(f"Session started: {session_id}")
+        try:
+            from artemis.runtime import DeviceExecutionLock
+
+            DeviceExecutionLock.annotate_active_owner(
+                session_id=str(session_id),
+                ingress=os.getenv("ARTEMIS_TASK_INGRESS") or "sdk",
+            )
+        except Exception as exc:
+            logger.debug(f"Could not annotate active device owner: {exc}")
+        # Initialize step counter from existing steps if resuming an existing session
+        existing_steps = []
+        if self.storage and hasattr(self.storage, "get_steps"):
+            try:
+                existing_steps = self.storage.get_steps(session_id) or []
+            except Exception:
+                existing_steps = []
+        if existing_steps:
+            self._step_number_cache.clear()
+            for s in existing_steps:
+                if s.step_id and s.step_number is not None:
+                    self._step_number_cache[str(s.step_id)] = s.step_number
+            self.current_step_number = max([s.step_number for s in existing_steps], default=0)
+        else:
+            self._step_number_cache.clear()
+            self.current_step_number = 0
+        logger.info(f"Session started: {session_id} (current step counter: {self.current_step_number})")
         self._publish("session_started", session.model_dump())
         return session_id
 
@@ -252,19 +302,27 @@ class DataEngine:
         if not self.current_session_id:
             return
 
+        # Session-level terminal statuses are canonically "completed" /
+        # "failed" / "cancelled"; "success" is a legacy alias some callers
+        # still pass and must never reach the sessions table.
+        if status == "success":
+            status = "completed"
+
         # Clear pause file if it exists
-        if hasattr(self, "global_base_dir") and self.global_base_dir:
-            pause_file = self.global_base_dir.parent / ".artemis_paused"
-            if pause_file.exists():
-                try:
-                    pause_file.unlink()
-                    logger.info("Removed pause file on session end.")
-                except Exception as e:
-                    logger.error(f"Failed to delete pause file on session end: {e}")
+        pause_file = PAUSE_FILE
+        if pause_file.exists():
+            try:
+                pause_file.unlink()
+                logger.info("Removed pause file on session end.")
+            except Exception as e:
+                logger.error(f"Failed to delete pause file on session end: {e}")
 
         session_id = self.current_session_id
         end_time = time.time()
         session = self.storage.get_session(session_id)
+        if session and session.end_time is not None and session.status not in ("running", "paused"):
+            logger.debug(f"Session end already published for {session_id}; skipping duplicate")
+            return
         if session:
             session.end_time = end_time
             session.status = status
@@ -328,10 +386,54 @@ class DataEngine:
                 start_time=start_time,
                 end_time=end_time or time.time(),
                 local_video_path=str(local_video_path),
+                status="ready",
             )
             self.storage.update_video_recording(record)
+            self._publish(
+                "recording_ready",
+                {
+                    "session_id": str(self.current_session_id),
+                    "video_id": str(video_id),
+                    "local_video_path": str(local_video_path),
+                    "end_time": record.end_time,
+                },
+            )
         except Exception as e:
             logger.error(f"Failed to record video stop in DataEngine: {e}")
+
+    def record_video_failure(
+        self,
+        video_id: UUID,
+        device_id: str,
+        local_video_path: str | Path | None,
+        start_time: float,
+        error: str,
+    ):
+        """Persist and publish a terminal recording failure."""
+        if not self.storage:
+            return
+        try:
+            record = VideoRecordingRecord(
+                video_id=video_id,
+                session_id=self.current_session_id,
+                device_id=device_id,
+                start_time=start_time,
+                end_time=time.time(),
+                local_video_path=str(local_video_path) if local_video_path else None,
+                status="failed",
+                error=error,
+            )
+            self.storage.update_video_recording(record)
+            self._publish(
+                "recording_failed",
+                {
+                    "session_id": str(self.current_session_id),
+                    "video_id": str(video_id),
+                    "error": error,
+                },
+            )
+        except Exception as e:
+            logger.error(f"Failed to record video failure in DataEngine: {e}")
 
     def update_video_path(self, local_video_path: str | Path):
         """Update the video path across tables when traces or videos are moved."""
@@ -403,11 +505,19 @@ class DataEngine:
             raise ValueError("No active session. Call start_session first.")
 
         with self.lock:
-            self.current_step_number += 1
+            existing_steps = []
+            if self.storage and hasattr(self.storage, "get_steps") and self.current_session_id:
+                try:
+                    existing_steps = self.storage.get_steps(self.current_session_id) or []
+                except Exception:
+                    existing_steps = []
+            max_existing = max([s.step_number for s in existing_steps], default=0) if existing_steps else 0
+            self.current_step_number = max(self.current_step_number, max_existing) + 1
             step_number = self.current_step_number
 
             step_id = self.current_step_id or uuid4()
             self.last_recorded_step_id = step_id
+            self._step_number_cache[str(step_id)] = step_number
             # Reset current_step_id so subsequent steps will allocate a new one
             self.current_step_id = None
 
@@ -793,17 +903,42 @@ class DataEngine:
 
         self._run_in_background(_update_and_write)
 
+        step_num = self.get_step_number(step_id)
         update_payload = {
             "step_id": str(step_id),
             "action_taken": action_taken,
             "generic_tools": self._get_generic_tools_for_sse(step_id),
         }
+        if step_num is not None:
+            update_payload["step_number"] = step_num
+
         tokens = self._get_step_token_usage_for_sse(step_id)
         if tokens:
             update_payload["token_usage"] = tokens
             update_payload["total_tokens"] = tokens["total_tokens"]
 
         self._publish("step_updated", update_payload)
+
+    def get_step_number(self, step_id: UUID | int | str | None) -> int | None:
+        """Resolve the 1-based sequential step number for a step ID."""
+        if step_id is None:
+            return None
+        if isinstance(step_id, int):
+            return step_id
+        sid = str(step_id)
+        cached = self._step_number_cache.get(sid)
+        if cached is not None:
+            return cached
+        if self.storage and hasattr(self.storage, "get_step"):
+            try:
+                target_uuid = UUID(sid) if isinstance(step_id, str) else step_id
+                step_record = self.storage.get_step(target_uuid)
+                if step_record and getattr(step_record, "step_number", None) is not None:
+                    self._step_number_cache[sid] = int(step_record.step_number)
+                    return int(step_record.step_number)
+            except Exception:
+                pass
+        return None
 
     def update_step_summary(self, step_id: UUID | int | str, summary: str):
         """Update the step with a concise summary in background."""
@@ -828,26 +963,28 @@ class DataEngine:
             return
 
         self._run_in_background(self.storage.update_step_summary, target_uuid, summary)
-        self._publish(
-            "step_updated",
-            {
-                "step_id": str(target_uuid),
-                "summary": summary,
-                "generic_tools": self._get_generic_tools_for_sse(target_uuid),
-            },
-        )
+        step_num = self.get_step_number(target_uuid if not isinstance(step_id, int) else step_id)
+        payload = {
+            "step_id": str(target_uuid),
+            "summary": summary,
+            "generic_tools": self._get_generic_tools_for_sse(target_uuid),
+        }
+        if step_num is not None:
+            payload["step_number"] = step_num
+        self._publish("step_updated", payload)
 
     def update_step_thinking(self, step_id: UUID, operator_raw_thinking: str):
         """Update step's thinking in SQLite in background."""
         self._run_in_background(self.storage.update_step_thinking, step_id, operator_raw_thinking)
-        self._publish(
-            "step_updated",
-            {
-                "step_id": str(step_id),
-                "operator_raw_thinking": operator_raw_thinking,
-                "generic_tools": self._get_generic_tools_for_sse(step_id),
-            },
-        )
+        step_num = self.get_step_number(step_id)
+        payload = {
+            "step_id": str(step_id),
+            "operator_raw_thinking": operator_raw_thinking,
+            "generic_tools": self._get_generic_tools_for_sse(step_id),
+        }
+        if step_num is not None:
+            payload["step_number"] = step_num
+        self._publish("step_updated", payload)
 
     def update_step_native_thinking(self, step_id: UUID, operator_native_thinking: str):
         """Update step's native thinking in SQLite in background."""
@@ -856,14 +993,15 @@ class DataEngine:
             step_id,
             operator_native_thinking,
         )
-        self._publish(
-            "step_updated",
-            {
-                "step_id": str(step_id),
-                "operator_native_thinking": operator_native_thinking,
-                "generic_tools": self._get_generic_tools_for_sse(step_id),
-            },
-        )
+        step_num = self.get_step_number(step_id)
+        payload = {
+            "step_id": str(step_id),
+            "operator_native_thinking": operator_native_thinking,
+            "generic_tools": self._get_generic_tools_for_sse(step_id),
+        }
+        if step_num is not None:
+            payload["step_number"] = step_num
+        self._publish("step_updated", payload)
 
     def update_step_execution_result(
         self,
@@ -878,15 +1016,16 @@ class DataEngine:
             last_execution_result,
             post_image_name,
         )
-        self._publish(
-            "step_updated",
-            {
-                "step_id": str(step_id),
-                "last_execution_result": last_execution_result,
-                "post_image_name": post_image_name,
-                "generic_tools": self._get_generic_tools_for_sse(step_id),
-            },
-        )
+        step_num = self.get_step_number(step_id)
+        payload = {
+            "step_id": str(step_id),
+            "last_execution_result": last_execution_result,
+            "post_image_name": post_image_name,
+            "generic_tools": self._get_generic_tools_for_sse(step_id),
+        }
+        if step_num is not None:
+            payload["step_number"] = step_num
+        self._publish("step_updated", payload)
 
     def get_relative_time(self, timestamp: float) -> str:
         """Compute relative time since session start."""

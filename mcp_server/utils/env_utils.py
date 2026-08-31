@@ -49,6 +49,7 @@ def resolve_python_executable(project_root: str | None = None) -> str:
 def get_detached_process_kwargs() -> dict[str, Any]:
     """Returns kwargs for subprocess.Popen to run a fully detached background process cross-platform."""
     kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }

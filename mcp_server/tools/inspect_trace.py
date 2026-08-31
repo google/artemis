@@ -24,6 +24,7 @@ from PIL import Image, ImageDraw
 
 from mcp_server.base import mcp
 from mcp_server.utils import env_utils, trace_store
+from artemis.utils.visualization import draw_action_overlay_on_image
 from artemis.utils.task_tree import (
     _render_step_detailed,
     build_plan_and_history,
@@ -31,79 +32,41 @@ from artemis.utils.task_tree import (
 
 
 def _draw_action_overlay(bg_image_path: str, action_obj: dict, output_path: str) -> bool:
-    """Draws the action (tap, swipe, etc.) on the image and saves it."""
+    """Draws the action overlay on the image using Artemis's native visualization engine."""
     try:
-        with Image.open(bg_image_path) as img:
-            draw_img = img.convert("RGBA")
-            draw = ImageDraw.Draw(draw_img)
+        if not os.path.exists(bg_image_path):
+            return False
 
-            act_type = action_obj.get("action") or action_obj.get("name")
-            coords = action_obj.get("coordinates") or action_obj.get("target")
+        with open(bg_image_path, "rb") as f:
+            raw_bytes = f.read()
 
-            if not act_type or not coords:
-                return False
+        act_name = action_obj.get("action") or action_obj.get("name") or ""
+        action_args = dict(action_obj.get("args") or {})
+        for k in (
+            "target",
+            "coordinates",
+            "point",
+            "direction",
+            "sequence",
+            "targets",
+            "normalized_coordinates",
+        ):
+            if k in action_obj and k not in action_args:
+                action_args[k] = action_obj[k]
 
-            fill_color = (255, 0, 0, 80)
-            outline_color = (255, 0, 0, 255)
-            outline_width = 4
+        annotated_bytes = draw_action_overlay_on_image(
+            image_bytes=raw_bytes,
+            action_name=act_name,
+            action_args=action_args,
+        )
 
-            if act_type in (
-                "tap",
-                "click",
-                "long_press",
-                "focus_and_input_text",
-                "focus_and_clear_text",
-            ):
-                if isinstance(coords, list) and len(coords) == 2:
-                    x, y = coords[0], coords[1]
-                    r = 25
-                    draw.ellipse(
-                        [x - r, y - r, x + r, y + r],
-                        fill=fill_color,
-                        outline=outline_color,
-                        width=outline_width,
-                    )
-                    r_center = 4
-                    draw.ellipse(
-                        [
-                            x - r_center,
-                            y - r_center,
-                            x + r_center,
-                            y + r_center,
-                        ],
-                        fill=outline_color,
-                        outline=outline_color,
-                    )
-            elif act_type == "swipe":
-                if isinstance(coords, list) and len(coords) == 4:
-                    x1, y1, x2, y2 = coords[0], coords[1], coords[2], coords[3]
-                    draw.line([x1, y1, x2, y2], fill=outline_color, width=6)
-                    r_start = 8
-                    draw.ellipse(
-                        [
-                            x1 - r_start,
-                            y1 - r_start,
-                            x1 + r_start,
-                            y1 + r_start,
-                        ],
-                        fill=outline_color,
-                    )
-                    dx = x2 - x1
-                    dy = y2 - y1
-                    angle = math.atan2(dy, dx)
-                    arrow_length = 30
-                    arrow_angle = math.pi / 6
+        if not annotated_bytes or annotated_bytes == raw_bytes:
+            return False
 
-                    p1_x = x2 - arrow_length * math.cos(angle - arrow_angle)
-                    p1_y = y2 - arrow_length * math.sin(angle - arrow_angle)
-                    p2_x = x2 - arrow_length * math.cos(angle + arrow_angle)
-                    p2_y = y2 - arrow_length * math.sin(angle + arrow_angle)
-
-                    draw.polygon([x2, y2, p1_x, p1_y, p2_x, p2_y], fill=outline_color)
-
-            final_img = draw_img.convert("RGB")
-            final_img.save(output_path, "JPEG", quality=85)
-            return True
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "wb") as f:
+            f.write(annotated_bytes)
+        return True
     except Exception as e:
         print(f"Error drawing action overlay: {e}", file=sys.stderr)
         return False
@@ -111,52 +74,30 @@ def _draw_action_overlay(bg_image_path: str, action_obj: dict, output_path: str)
 
 @mcp.tool()
 async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | None = None) -> Any:
-    """A specialized trace data retrieval tool designed to extract execution details of mobile automation tasks.
+    """Retrieves execution details of a mobile automation task (running or finished).
 
-    Use this tool DURING a running task or AFTER it has finished (or failed) to
-    monitor progress, verify answers, diagnose agent errors, and debug.
-    It provides comprehensive runtime information, raw agent outputs, and visual
-    screenshots for both **Flash** and **Pro** tasks.
+    Use it to monitor progress, verify answers, and diagnose agent errors for
+    both Flash and Pro tasks. Every result includes the assigned `device_serial`.
 
-    ### Available Actions:
-    - **'view_summary'**: Retrieves a high-level execution summary across all
-    steps.
-        * **Pro Model**: Displays a hierarchical task plan summary, showing the
-        status and descriptions of all completed, active, and pending steps.
-        * **Flash Model**: Displays an all-in-one execution chain containing the
-        complete reasoning (thoughts/motivation) and action taken (`click`,
-        `input_text`, etc.) for every single step.
-
-    - **'view_step_screenshots'**: Retrieves local file paths of screenshots for
-    a specific step (supports both Flash and Pro). Returns:
-        1. `before_screenshot`: The original device screenshot observed by the
-        agent right before taking the action.
-        2. `after_screenshot`: A post-action screenshot capturing the failure or
-        mismatch state (if the action failed or was intercepted). Note: This is
-        conditional/optional and will be `None` (`null`) for normal/successful
-        steps where no extra post-action screenshot was captured.
-        3. `action_overlay_screenshot`: The `before_screenshot` with the agent's
-        action visually marked (e.g., red circle for taps, red arrow for
-        swipes). CRITICAL for verifying if the agent tapped the correct UI
-        element.
-
-    - **'view_step_details'**: Retrieves deep runtime logs, raw VLM thoughts,
-    and exact actions for a specific step.
-        * **Pro Model**: Fully supported. Returns detailed per-step diagnostic
-        data.
-        * **Flash Model**: DO NOT USE. (Flash reasoning and actions are already
-        fully included in 'view_summary', making this action redundant).
+    ### Actions
+    - **'view_summary'**: High-level execution summary across all steps.
+      Pro: hierarchical task plan with per-step status; Flash: full execution
+      chain with each step's reasoning and action.
+    - **'view_step_screenshots'**: Local file paths of one step's screenshots:
+      `before_screenshot` (what the agent saw), `after_screenshot` (only set
+      when the action failed/was intercepted, else null), and
+      `action_overlay_screenshot` (the action visually marked — e.g. red circle
+      for taps — key for verifying the agent tapped the right element).
+    - **'view_step_details'**: Deep per-step diagnostics (raw VLM thoughts,
+      exact actions). Pro only — DO NOT use for Flash tasks ('view_summary'
+      already carries their full execution chain).
 
     Args:
-        action: STR. **REQUIRED**. The retrieval action to perform
-          (`"view_summary"`, `"view_step_screenshots"`, or
-          `"view_step_details"`).
-        trace_id: STR. **REQUIRED**. The unique session identifier of the task
-          (returned by `mobile_run_task`).
-        step_number: INT. **CONDITIONAL**. The 1-indexed step number to query. -
-          You MUST provide this if `action="view_step_screenshots"` or
-          `action="view_step_details"`. - You MUST omit or leave this empty if
-          `action="view_summary"`.
+        action: `"view_summary"`, `"view_step_screenshots"`, or
+          `"view_step_details"`.
+        trace_id: The task's session identifier from `mobile_run_task`.
+        step_number: 1-indexed step to query; required for the two per-step
+          actions, omit for `view_summary`.
     """
     project_root = env_utils.get_project_root()
     db_path = os.path.join(trace_store.TRACES_DIR, "data_engine.db")
@@ -242,11 +183,34 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
 
         status_data = trace_store.read_status(trace_id)
         is_flash = status_data and status_data.get("model", "").lower() == "flash"
+        device_serial = status_data.get("device_serial") if status_data else None
+        if not device_serial and os.path.exists(db_path):
+            try:
+                conn_dev = sqlite3.connect(db_path)
+                conn_dev.row_factory = sqlite3.Row
+                cur_dev = conn_dev.cursor()
+                cur_dev.execute(
+                    "SELECT device_info FROM sessions WHERE session_id = ? LIMIT 1",
+                    (trace_id,),
+                )
+                row_dev = cur_dev.fetchone()
+                if row_dev and row_dev["device_info"]:
+                    try:
+                        d_info = json.loads(row_dev["device_info"])
+                        if isinstance(d_info, dict) and d_info.get("device_id"):
+                            device_serial = d_info["device_id"]
+                    except Exception:
+                        pass
+                conn_dev.close()
+            except Exception:
+                pass
+
+        device_info_str = f" | **Device Serial:** `{device_serial}`" if device_serial else ""
 
         if is_flash:
             summary_lines = [
                 "# ARTEMIS Flash Execution Summary",
-                f"**Session ID:** `{trace_id}` | **Model:** Flash\n",
+                f"**Session ID:** `{trace_id}` | **Model:** Flash{device_info_str}\n",
                 "---",
                 "## Step-by-Step Execution Chain\n",
             ]
@@ -296,6 +260,8 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                 last_n_detailed=0,
                 all_detailed=False,
             )
+            if device_serial and not summary_markdown.startswith("**Session ID:"):
+                summary_markdown = f"**Session ID:** `{trace_id}` | **Model:** Pro{device_info_str}\n\n" + summary_markdown
             return summary_markdown
         except Exception as e:
             return {
@@ -307,6 +273,7 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
     elif action in ("view_step_screenshots", "view_step_details"):
         status_data = trace_store.read_status(trace_id)
         is_flash = status_data and status_data.get("model", "").lower() == "flash"
+        device_serial = status_data.get("device_serial") if status_data else None
 
         if action == "view_step_details" and is_flash:
             return {
@@ -406,7 +373,7 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                         action_obj[0] if isinstance(action_obj, list) and action_obj else action_obj
                     )
 
-                    if isinstance(action_parsed, dict) and action_parsed.get("action"):
+                    if isinstance(action_parsed, dict) and (action_parsed.get("action") or action_parsed.get("name")):
                         if not os.path.exists(overlay_abs_path):
                             success_draw = _draw_action_overlay(
                                 path, action_parsed, overlay_abs_path
@@ -426,6 +393,7 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
 
             return {
                 "trace_id": trace_id,
+                "device_serial": device_serial,
                 "step_number": step_dict["step_number"],
                 "before_screenshot": pre_image,
                 "after_screenshot": post_image,
@@ -451,6 +419,7 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
 
             return {
                 "trace_id": trace_id,
+                "device_serial": device_serial,
                 "step_number": step_dict["step_number"],
                 "details": rendered_text,
             }
