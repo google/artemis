@@ -72,7 +72,7 @@ class ModelEndpoint(BaseModel):
     """Configuration definition for an LLM/VLM model endpoint."""
 
     provider: ModelProvider = Field(default=ModelProvider.GOOGLE, description="Model provider")
-    model_name: str = Field(default="gemini-2.5-flash", description="Model name identifier")
+    model_name: str = Field(default="gemini-3.7-flash", description="Model name identifier")
     api_key: str | None = Field(default=None, description="API Key or secret")
     api_base: str | None = Field(default=None, description="Custom API endpoint base URL")
     temperature: float = Field(default=0.0, description="Sampling temperature")
@@ -370,7 +370,7 @@ class ModelFactory:
 class ModelRouter:
     """Dynamic router mapping agent roles to primary and fallback model endpoints."""
 
-    def __init__(self, default_model: str = "gemini-2.5-flash"):
+    def __init__(self, default_model: str = "gemini-3.7-flash"):
         self.default_endpoint = ModelEndpoint(
             provider=ModelProvider.GOOGLE,
             model_name=default_model,
@@ -383,26 +383,26 @@ class ModelRouter:
         """Initializes recommended role mappings."""
         self._role_routes["planner"] = ModelEndpoint(
             provider=ModelProvider.GOOGLE,
-            model_name="gemini-2.5-pro",
+            model_name="gemini-3.7-pro",
             temperature=0.2,
         )
         self._role_routes["operator"] = ModelEndpoint(
             provider=ModelProvider.GOOGLE,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.7-flash",
             temperature=0.0,
         )
         self._role_routes["validator"] = ModelEndpoint(
             provider=ModelProvider.GOOGLE,
-            model_name="gemini-2.5-pro",
+            model_name="gemini-3.7-pro",
             temperature=0.1,
         )
         self._role_routes["summarizer"] = ModelEndpoint(
             provider=ModelProvider.GOOGLE,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.7-flash",
             temperature=0.0,
         )
         self._fallback_routes["planner"] = [
-            ModelEndpoint(provider=ModelProvider.GOOGLE, model_name="gemini-2.5-flash"),
+            ModelEndpoint(provider=ModelProvider.GOOGLE, model_name="gemini-3.7-flash"),
         ]
 
     def set_role_route(

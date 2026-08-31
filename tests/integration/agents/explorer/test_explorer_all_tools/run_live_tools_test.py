@@ -73,7 +73,7 @@ async def run_single_set(set_idx, query, search_query, labels, coords_nx, coords
     mock_ctx = create_mock_context()
     mock_ctx.llm_config.utils = MagicMock()
     mock_ctx.llm_config.utils.object_detector = MagicMock()
-    mock_ctx.llm_config.utils.object_detector.model = "gemini-2.5-flash"
+    mock_ctx.llm_config.utils.object_detector.model = "gemini-3.5-flash"
     mock_ctx.llm_config.utils.object_detector.timeout = 10.0
 
     mock_state = create_mock_state()

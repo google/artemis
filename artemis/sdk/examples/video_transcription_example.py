@@ -39,11 +39,9 @@ def get_video_capable_llm_config() -> LLMConfig:
 
     The video_analyzer must use a video-capable Gemini model:
     - gemini-3.7-flash (recommended - fast and capable)
+    - gemini-3.7-pro
     - gemini-3.6-flash
     - gemini-3-pro-preview
-    - gemini-2.5-flash
-    - gemini-2.5-pro
-    - gemini-2.0-flash
     """
     return LLMConfig(
         planner=LLMWithFallback(

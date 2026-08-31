@@ -361,14 +361,14 @@ def test_flash_config_and_builder():
         max_turns=25,
         explorer_mode="flash",
         step_summarizer=True,
-        step_summarizer_model="gemini-2.5-flash-lite",
+        step_summarizer_model="gemini-3.5-flash-lite",
         prune_history_xml=True,
     ).build()
 
     assert cfg.flash.max_turns == 25
     assert cfg.flash.explorer_mode == "flash"
     assert cfg.flash.step_summarizer.enabled is True
-    assert cfg.flash.step_summarizer.model == "gemini-2.5-flash-lite"
+    assert cfg.flash.step_summarizer.model == "gemini-3.5-flash-lite"
     assert cfg.flash.step_summarizer.prune_history_xml is True
 
 

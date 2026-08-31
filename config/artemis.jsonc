@@ -28,8 +28,8 @@
     },
     "gemini-flash": {
       "provider": "google",
-      "model": "gemini-2.5-flash",
-      "fallback": { "provider": "google", "model": "gemini-2.0-flash" }
+      "model": "gemini-3.7-flash",
+      "fallback": { "provider": "google", "model": "gemini-3.6-flash" }
     },
     "openai-gpt4o": {
       "provider": "openai",

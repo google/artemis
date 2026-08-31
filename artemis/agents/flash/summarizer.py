@@ -54,7 +54,7 @@ class VisualStepSummarizer:
         self._retry_delays = (0.0, 0.5, 1.0, 2.0, 3.0)
 
         # Initialize lightweight VLM: prioritize explicit model_name
-        target_model = model_name or "gemini-2.5-flash-lite"
+        target_model = model_name or "gemini-3.5-flash-lite"
         try:
             if model_name:
                 self._llm = get_google_llm(model_name=target_model, temperature=0.0)

@@ -105,7 +105,7 @@ DEFAULT_ACTION_TIMEOUT = 30.0
 DEFAULT_STREAM_PING_INTERVAL = 15.0
 
 DEFAULT_PROFILE = "pro"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.7-flash"
 DEFAULT_EXPLORER_VERSION: Literal["flash", "pro", "ultra"] = "flash"
 
 
