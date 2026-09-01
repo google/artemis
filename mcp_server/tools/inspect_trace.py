@@ -23,7 +23,8 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from mcp_server.base import mcp
-from mcp_server.utils import env_utils, trace_store
+from mcp_server.utils import env_utils
+from artemis.runtime import trace_store
 from artemis.utils.visualization import draw_action_overlay_on_image
 from artemis.utils.task_tree import (
     _render_step_detailed,

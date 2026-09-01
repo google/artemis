@@ -15,6 +15,8 @@
 import time
 from typing import Any
 
+from artemis.runtime import trace_store
+
 try:
     from admin_console.database.connection import db_session
 except ImportError:
@@ -309,8 +311,6 @@ class SessionRepository:
                     )
                     count += cursor.rowcount
                     try:
-                        from mcp_server.utils import trace_store
-
                         if trace_store.read_status(str(row["session_id"])):
                             trace_store.update_trace_status(
                                 str(row["session_id"]),
@@ -410,3 +410,11 @@ class SessionRepository:
 
 
 session_repo = SessionRepository()
+
+# Give the base runtime package access to orphan-session reconciliation without
+# letting it import this application-layer module (inverted dependency): any
+# process that loads the admin console DB layer -- the server itself, or an
+# entry point stopping one -- thereby arms stop_server()'s post-kill cleanup.
+from artemis.runtime.server_lifecycle import register_session_reconciler  # noqa: E402
+
+register_session_reconciler(session_repo.reconcile_orphaned_sessions)

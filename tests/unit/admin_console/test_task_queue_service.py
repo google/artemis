@@ -431,7 +431,7 @@ def test_stop_tasks_terminates_external_global_owner_and_preserves_local_waiter(
             "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
         ) as update_status,
         patch(
-            "mcp_server.utils.trace_store.update_trace_status"
+            "artemis.runtime.trace_store.update_trace_status"
         ) as update_trace_status,
     ):
         assert task_queue_service.stop_tasks(clear_all=False) is True
@@ -845,7 +845,7 @@ def test_stop_tasks_by_session_id_targets_correct_task_among_multiple():
         patch(
             "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
         ) as update_status,
-        patch("mcp_server.utils.trace_store.update_trace_status") as update_trace,
+        patch("artemis.runtime.trace_store.update_trace_status") as update_trace,
     ):
         # Explicitly stop session-b
         assert task_queue_service.stop_tasks(clear_all=False, session_id="session-b") is True

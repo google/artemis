@@ -35,6 +35,8 @@ import time
 from typing import Any
 import uuid
 
+from artemis.runtime.process_probe import pid_is_alive
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -137,8 +139,6 @@ def _lock_is_stale(lock_path: str) -> bool:
             return time.time() - os.path.getmtime(lock_path) >= _MALFORMED_LOCK_GRACE_SECONDS
         except OSError:
             return False
-    from artemis.runtime.process_probe import pid_is_alive
-
     return not pid_is_alive(pid, created_at if created_at > 0 else None)
 
 

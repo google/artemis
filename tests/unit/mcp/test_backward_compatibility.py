@@ -52,7 +52,7 @@ def test_legacy_jetski_tools_imports():
 
 def test_legacy_jetski_utils_imports():
     from jetski.utils.trace_store import init_trace
-    from mcp_server.utils.trace_store import init_trace as a_init
+    from artemis.runtime.trace_store import init_trace as a_init
 
     assert init_trace is a_init
 

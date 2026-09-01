@@ -22,6 +22,9 @@ from typing import Any
 
 def get_project_root() -> str:
     """Returns the absolute path to the project root repository."""
+    # Deliberate lazy import: this helper must keep working when the artemis
+    # package (or its config bootstrap) is unavailable or broken, falling back
+    # to filesystem-relative resolution below.
     try:
         from artemis.config.paths import ROOT_DIR
 

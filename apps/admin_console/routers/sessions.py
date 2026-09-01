@@ -19,6 +19,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 
 from artemis.config import DB_PATH, TRACES_PATH
+from artemis.runtime import trace_store
 
 try:
     from admin_console.core.state import state
@@ -149,8 +150,6 @@ def _list_sessions_sync():
             harvested = session_repo.harvest_orphaned_sessions(orphaned_ids)
             print(f"[list_sessions] Auto-harvested {harvested} orphaned running session(s).")
             try:
-                from mcp_server.utils import trace_store
-
                 for o_id in orphaned_ids:
                     if trace_store.read_status(str(o_id)):
                         trace_store.update_trace_status(

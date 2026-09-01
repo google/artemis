@@ -45,6 +45,7 @@ from artemis.runtime import (
     DeviceExecutionLock,
     current_adb_endpoint,
     process_supervisor,
+    trace_store,
 )
 
 
@@ -510,8 +511,6 @@ class TaskQueueService:
             }
             if sess_id:
                 try:
-                    from mcp_server.utils import trace_store
-
                     st = trace_store.read_status(str(sess_id))
                     if st:
                         st["pid"] = proc.pid
@@ -536,8 +535,6 @@ class TaskQueueService:
             log_path = None
             if sess_id:
                 try:
-                    from mcp_server.utils import trace_store
-
                     log_path = trace_store.get_trace_stdout_log_path(str(sess_id))
                 except Exception:
                     log_path = None
@@ -580,8 +577,6 @@ class TaskQueueService:
                         f"status '{new_status}'"
                     )
                 try:
-                    from mcp_server.utils import trace_store
-
                     if trace_store.read_status(str(sess_id)):
                         canonical_mcp_status = "completed" if new_status in ("completed", "success") else new_status
                         trace_store.update_trace_status(
@@ -870,8 +865,6 @@ class TaskQueueService:
                     if sid:
                         session_repo.update_session_status(str(sid), "cancelled", time.time())
                         try:
-                            from mcp_server.utils import trace_store
-
                             is_mcp = bool(dev_owner and dev_owner.ingress == "mcp")
                             if is_mcp or trace_store.read_status(str(sid)):
                                 trace_store.update_trace_status(
@@ -1133,8 +1126,6 @@ class TaskQueueService:
                 str(stopped_session_id), "cancelled", time.time()
             )
             try:
-                from mcp_server.utils import trace_store
-
                 is_mcp = bool(owner and owner.ingress == "mcp")
                 if is_mcp or trace_store.read_status(str(stopped_session_id)):
                     trace_store.update_trace_status(

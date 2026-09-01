@@ -29,12 +29,13 @@ import socket
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 import urllib.error
 import urllib.request
 
 from artemis.config.paths import ROOT_DIR, get_server_info_file
 from artemis.runtime.device_lock import DeviceExecutionLock
+from artemis.runtime.process_probe import pid_is_alive
 from artemis.runtime.supervisor import ProcessSupervisor
 from artemis.utils.logger import get_logger
 
@@ -155,12 +156,28 @@ def request_graceful_shutdown(port: int, timeout: float = 1.5) -> bool:
         return False
 
 
+# Inverted dependency: the session database lives in the application layer
+# (apps.admin_console), which this base runtime package must not import.
+# The application layer registers its orphan-session reconciler here
+# (apps/admin_console/database/repositories/session_repository.py does so on
+# import); entry points that stop servers without loading the admin console
+# perform that import as part of their assembly. Without a registration,
+# reconciliation is skipped -- the admin console re-runs it on next startup.
+_session_reconciler: Callable[[], int] | None = None
+
+
+def register_session_reconciler(reconciler: Callable[[], int]) -> None:
+    """Register the app-layer callback that marks orphaned sessions as failed."""
+    global _session_reconciler
+    _session_reconciler = reconciler
+
+
 def _reconcile_orphaned_sessions() -> int:
     """Immediately mark sessions whose worker PIDs died during forced stop."""
+    if _session_reconciler is None:
+        return 0
     try:
-        from apps.admin_console.database.repositories.session_repository import session_repo
-
-        return session_repo.reconcile_orphaned_sessions()
+        return _session_reconciler()
     except Exception as exc:
         logger.debug(f"Could not reconcile orphaned sessions after server stop: {exc}")
         return 0
@@ -168,8 +185,6 @@ def _reconcile_orphaned_sessions() -> int:
 
 def _any_pid_alive(pids: list[int]) -> bool:
     """Return whether any target process is still running (zombies excluded)."""
-    from artemis.runtime.process_probe import pid_is_alive
-
     return any(pid_is_alive(pid) for pid in pids)
 
 
@@ -188,8 +203,6 @@ def find_server_pids(port: int = 8000) -> list[int]:
     if info and info.get("port") == port:
         saved_pid = info.get("pid")
         if saved_pid and isinstance(saved_pid, int):
-            from artemis.runtime.process_probe import pid_is_alive
-
             if pid_is_alive(saved_pid):
                 discovered.add(saved_pid)
 
