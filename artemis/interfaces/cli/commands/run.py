@@ -408,8 +408,9 @@ def run_command(
                 host=settings.ADB_HOST or "localhost",
                 port=settings.ADB_PORT or 5037,
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        # Optional cosmetic device-status display; run continues without it.
+        logger.debug(f"Could not create ADB client for device status display: {exc}")
 
     display_device_status(console, adb_client=adb_client)
 
@@ -420,7 +421,9 @@ def run_command(
             original_sigterm = signal.signal(
                 signal.SIGTERM, lambda s, f: (_ for _ in ()).throw(KeyboardInterrupt())
             )
-    except Exception:
+    except (ValueError, OSError, RuntimeError):
+        # Not the main thread or platform does not support SIGTERM handlers;
+        # run proceeds without the graceful-cancel hook.
         pass
 
     try:
@@ -471,7 +474,8 @@ def run_command(
         try:
             if original_sigterm is not None and hasattr(signal, "SIGTERM"):
                 signal.signal(signal.SIGTERM, original_sigterm)
-        except Exception:
+        except (ValueError, OSError, RuntimeError):
+            # Best-effort restore of the previous handler on the way out.
             pass
         if cancelled:
             raise SystemExit(130)

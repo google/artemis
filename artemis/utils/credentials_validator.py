@@ -43,7 +43,8 @@ def _extract_error_message(resp: httpx.Response) -> str:
                 return str(data["message"])
             if "detail" in data:
                 return str(data["detail"])
-    except Exception:
+    except ValueError:
+        # Response body is not valid JSON; fall through to the text fallback.
         pass
 
     # Fallback to response text or HTTP status

@@ -113,8 +113,9 @@ class ProcessSupervisor:
             logger.debug(f"Failed graceful stop for process {proc}: {e}")
             try:
                 proc.kill()
-            except Exception:
-                pass
+            except (ProcessLookupError, OSError) as kill_exc:
+                # ProcessLookupError: already exited, nothing to do.
+                logger.debug(f"Failed to kill process {proc}: {kill_exc}")
 
 
 process_supervisor: ProcessSupervisor = ProcessSupervisor()

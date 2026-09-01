@@ -265,7 +265,8 @@ def status_command(
             try:
                 dt = datetime.datetime.fromtimestamp(metadata["started_at"])
                 started_at_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
+            except (TypeError, ValueError, OSError, OverflowError):
+                # Malformed or out-of-range timestamp in metadata: show "Unknown".
                 pass
 
         table = Table(show_header=False, box=None, padding=(0, 2))

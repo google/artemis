@@ -27,7 +27,7 @@ def test_extract_error_message():
     assert _extract_error_message(resp_openai) == "Incorrect API key."
 
     resp_fallback = MagicMock()
-    resp_fallback.json.side_effect = Exception("JSON parse error")
+    resp_fallback.json.side_effect = ValueError("JSON parse error")
     resp_fallback.text = "Raw error text"
     assert _extract_error_message(resp_fallback) == "Raw error text"
 

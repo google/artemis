@@ -20,6 +20,9 @@ from pathlib import Path
 import re
 
 from artemis.data_engine.engine import _CURRENT_DATA_ENGINE
+from artemis.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # Centralized Description and Documentation Constants (Single Source of Truth)
 READ_NOTE_DOCSTRING = (
@@ -153,22 +156,30 @@ def save_note_content(base_dir: str | Path, key: str, content: str) -> None:
     if key == "task_plan" and file_path.exists():
         try:
             content_before = file_path.read_text(encoding="utf-8")
-        except Exception:
-            pass
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning(
+                "Failed to read previous task_plan content from %s; subgoal"
+                " rename tracking will be skipped for this save: %s",
+                file_path,
+                exc,
+            )
 
     file_path.write_text(content, encoding="utf-8")
 
     if key == "task_plan":
         try:
             record_subgoal_hash_chain(base_dir, content_before, content)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Hash-chain bookkeeping must never break a note save, but a
+            # missed record can later confuse plan ratchet validation.
+            logger.warning("Failed to record subgoal hash chain for task_plan: %s", exc)
 
     try:
         if _CURRENT_DATA_ENGINE:
             _CURRENT_DATA_ENGINE._publish("note_saved", {"key": key, "content": content})
-    except Exception:
-        pass
+    except Exception as exc:
+        # Telemetry side channel: publishing must never break a note save.
+        logger.debug("Failed to publish note_saved event for key '%s': %s", key, exc)
 
 
 def append_note_content(base_dir: str | Path, key: str, content: str) -> None:
@@ -186,7 +197,9 @@ def append_note_content(base_dir: str | Path, key: str, content: str) -> None:
                 last_char_bytes = f.read(1)
                 if last_char_bytes != b"\n":
                     prefix = "\n"
-            except Exception:
+            except OSError:
+                # Cannot inspect the last byte; worst case is a missing
+                # separator newline before the appended content.
                 pass
 
     with open(file_path, "a", encoding="utf-8") as f:
@@ -343,8 +356,10 @@ def update_note_content(
         if key == "task_plan":
             try:
                 record_subgoal_hash_chain(base_dir, content, new_content_to_write)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Hash-chain bookkeeping must never break a note edit, but a
+                # missed record can later confuse plan ratchet validation.
+                logger.warning("Failed to record subgoal hash chain for task_plan: %s", exc)
         return warning
 
     raise ValueError(
@@ -410,8 +425,10 @@ def record_subgoal_hash_chain(
                 if line.strip().startswith("- [ ]"):
                     text = line.strip()[5:].strip()
                     return hashlib.md5(text.encode("utf-8")).hexdigest()
-        except Exception:
-            pass
+        except Exception as exc:
+            # Pure string/hash operations; a failure here is unexpected and
+            # silently disables subgoal rename tracking.
+            logger.warning("Failed to compute active subgoal hash: %s", exc)
         return None
 
     old_active = get_active_hash(content_before)
@@ -426,8 +443,13 @@ def record_subgoal_hash_chain(
         if chain_path.exists():
             try:
                 chain = json.loads(chain_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Failed to load subgoal hash chain %s (starting a fresh"
+                    " chain; previous rename history is lost): %s",
+                    chain_path,
+                    exc,
+                )
 
         # Record mapping: old -> new
         chain[old_active] = new_active
@@ -437,5 +459,12 @@ def record_subgoal_hash_chain(
                 json.dumps(chain, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.warning(
+                "Failed to persist subgoal hash chain to %s (rename %s -> %s"
+                " not recorded): %s",
+                chain_path,
+                old_active,
+                new_active,
+                exc,
+            )

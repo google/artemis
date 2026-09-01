@@ -107,7 +107,8 @@ class WindowsPlatformProcess(IPlatformProcess):
             )
             if res.returncode == 0:
                 return True
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
+            # taskkill missing, not runnable, or timed out; try psutil below.
             pass
 
         # 2. Fallback to psutil
@@ -131,12 +132,14 @@ class WindowsPlatformProcess(IPlatformProcess):
         if hasattr(sys.stdout, "reconfigure"):
             try:
                 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
+            except (OSError, ValueError):
+                # Stream is detached/closed or does not support reconfigure.
                 pass
         if hasattr(sys.stderr, "reconfigure"):
             try:
                 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
+            except (OSError, ValueError):
+                # Stream is detached/closed or does not support reconfigure.
                 pass
         os.environ["PYTHONUTF8"] = "1"
 

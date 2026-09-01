@@ -63,7 +63,7 @@ def parse_swipe_parameters(
         if isinstance(p, (list, tuple)) and len(p) >= 2:
             try:
                 return [int(float(p[0])), int(float(p[1]))]
-            except Exception:
+            except (ValueError, TypeError):
                 pass
         if isinstance(p, str):
             nums = re.findall(r"-?\d+(?:\.\d+)?", p)
@@ -88,7 +88,7 @@ def parse_swipe_parameters(
             if len(c) == 4:
                 try:
                     return "coords", [int(float(x)) for x in c], duration_int
-                except Exception:
+                except (ValueError, TypeError):
                     pass
             elif (
                 len(c) == 2 and isinstance(c[0], (list, tuple)) and isinstance(c[1], (list, tuple))
@@ -112,7 +112,7 @@ def parse_swipe_parameters(
                         pt2 = _parse_pt(parsed[1])
                         if pt1 and pt2:
                             return "coords", [pt1[0], pt1[1], pt2[0], pt2[1]], duration_int
-            except Exception:
+            except (ValueError, TypeError):
                 pass
 
             # Regex extract numbers
@@ -448,7 +448,9 @@ def normalize_step_actions(step_dict: dict[str, Any]) -> dict[str, Any]:
                         import ast
 
                         seq = ast.literal_eval(seq)
-                    except Exception:
+                    except (ValueError, TypeError, SyntaxError):
+                        # Unparseable sequence string: leave it as-is; the
+                        # isinstance check below skips non-list values.
                         pass
                 if isinstance(seq, (list, tuple)):
                     item["sequence"] = list(seq)
@@ -481,7 +483,8 @@ def normalize_step_actions(step_dict: dict[str, Any]) -> dict[str, Any]:
         try:
             action_taken = json.loads(action_taken)
             step_dict["action_taken"] = action_taken
-        except Exception:
+        except ValueError:
+            # Not JSON: keep the raw string; downstream isinstance checks skip it.
             pass
 
     if isinstance(action_taken, dict):
