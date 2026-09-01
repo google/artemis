@@ -191,3 +191,104 @@ def test_action_timestamps_drive_dense_sampling():
     assert offsets[0] == 2.0
     assert 4.0 in offsets
     assert offsets[-1] == 6.0
+
+
+class _FakeGenaiError(Exception):
+    """Mimics google.genai.errors.APIError's shape (a ``code`` attribute)."""
+
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_retry_raises_non_retryable_immediately():
+    from artemis.agents.video_analyzer.video_analyzer import _invoke_with_retry
+
+    calls = 0
+
+    async def op():
+        nonlocal calls
+        calls += 1
+        raise _FakeGenaiError("invalid api key", code=401)
+
+    with pytest.raises(_FakeGenaiError):
+        await _invoke_with_retry(op, "test-op")
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_retry_bad_request_never_retried():
+    from artemis.agents.video_analyzer.video_analyzer import _invoke_with_retry
+
+    calls = 0
+
+    async def op():
+        nonlocal calls
+        calls += 1
+        raise _FakeGenaiError("invalid request payload", code=400)
+
+    with pytest.raises(_FakeGenaiError):
+        await _invoke_with_retry(op, "test-op")
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_retry_restarts_from_scratch_on_transient_failure():
+    from artemis.agents.video_analyzer import video_analyzer as va
+
+    calls = 0
+
+    async def op():
+        nonlocal calls
+        calls += 1
+        accumulated = "partial-"  # per-attempt accumulator, like a stream loop
+        if calls < 2:
+            raise _FakeGenaiError("503 service unavailable", code=503)
+        return accumulated + "complete"
+
+    with patch.object(va.asyncio, "sleep", new=AsyncMock()) as sleep_mock:
+        result = await va._invoke_with_retry(op, "test-op")
+
+    # The successful attempt produced the whole output; the failed attempt's
+    # partial accumulation never leaked into the result.
+    assert result == "partial-complete"
+    assert calls == 2
+    assert sleep_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_retry_exhaustion_reraises_original_error():
+    from artemis.agents.video_analyzer import video_analyzer as va
+
+    calls = 0
+
+    async def op():
+        nonlocal calls
+        calls += 1
+        raise _FakeGenaiError("503 service unavailable", code=503)
+
+    with patch.object(va.asyncio, "sleep", new=AsyncMock()):
+        with pytest.raises(_FakeGenaiError):
+            await va._invoke_with_retry(op, "test-op", max_attempts=2)
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_retry_caps_unknown_failures_by_policy():
+    from artemis.llm.reliability import FailureCategory, retry_policy_for
+
+    from artemis.agents.video_analyzer import video_analyzer as va
+
+    calls = 0
+
+    async def op():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("something odd")
+
+    with patch.object(va.asyncio, "sleep", new=AsyncMock()):
+        with pytest.raises(RuntimeError):
+            await va._invoke_with_retry(op, "test-op", max_attempts=5)
+    # UNKNOWN failures follow the shared policy, not the caller's outer cap.
+    assert calls == retry_policy_for(FailureCategory.UNKNOWN).max_attempts

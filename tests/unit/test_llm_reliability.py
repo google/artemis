@@ -66,3 +66,31 @@ def test_breaker_only_trips_on_transient_categories():
     assert not breaker.allow("m", now=13.6)
     breaker.record_success("m")
     assert breaker.allow("m", now=13.7)
+
+
+def test_retry_policy_accepts_extension_category_values():
+    from enum import StrEnum
+
+    class ExtCategory(StrEnum):
+        RATE_LIMIT = "rate_limit"
+        MEDIA_PROCESSING = "media_processing"
+
+    assert retry_policy_for(ExtCategory.RATE_LIMIT) is retry_policy_for(
+        FailureCategory.RATE_LIMIT
+    )
+    assert retry_policy_for("provider_unavailable") is retry_policy_for(
+        FailureCategory.PROVIDER_UNAVAILABLE
+    )
+    # Extension-only categories fall back to the UNKNOWN policy; callers gate
+    # on failure.retryable before consulting attempt counts.
+    assert retry_policy_for(ExtCategory.MEDIA_PROCESSING) is retry_policy_for(
+        FailureCategory.UNKNOWN
+    )
+
+
+def test_classifier_recognizes_genai_deadline_exceeded_shapes():
+    # google-genai SDK timeouts can surface without a status code attached.
+    for message in ("DEADLINE_EXCEEDED", "deadline exceeded while awaiting response"):
+        failure = classify_failure(RuntimeError(message))
+        assert failure.category is FailureCategory.TIMEOUT
+        assert failure.retryable

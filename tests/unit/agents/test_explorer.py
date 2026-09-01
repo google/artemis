@@ -1272,3 +1272,93 @@ def test_explorer_prune_historical_images():
     assert contents[0].parts[1].text == "Some text"
     # Second (last) image part should be kept intact
     assert contents[1].parts[0] is part2
+
+
+class _FakeGenaiError(Exception):
+    """Mimics google.genai.errors.APIError's shape (a ``code`` attribute)."""
+
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code
+
+
+@pytest.mark.asyncio
+async def test_generate_content_reliability_permanent_error_is_not_retried():
+    from artemis.agents.explorer.explorer import _generate_content_with_reliability
+    from artemis.llm.reliability import LLMPermanentError
+
+    calls = 0
+
+    async def op():
+        nonlocal calls
+        calls += 1
+        raise _FakeGenaiError("PERMISSION_DENIED: forbidden", code=403)
+
+    with pytest.raises(LLMPermanentError) as exc_info:
+        await _generate_content_with_reliability(op)
+    assert calls == 1
+    assert exc_info.value.failure.category.value == "authentication"
+    assert isinstance(exc_info.value.__cause__, _FakeGenaiError)
+
+
+@pytest.mark.asyncio
+async def test_generate_content_reliability_bad_request_is_not_retried():
+    from artemis.agents.explorer.explorer import _generate_content_with_reliability
+    from artemis.llm.reliability import LLMPermanentError
+
+    calls = 0
+
+    async def op():
+        nonlocal calls
+        calls += 1
+        raise _FakeGenaiError("invalid request payload", code=400)
+
+    with pytest.raises(LLMPermanentError) as exc_info:
+        await _generate_content_with_reliability(op)
+    assert calls == 1
+    assert exc_info.value.failure.category.value == "bad_request"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_reliability_retries_transient_then_succeeds():
+    from artemis.agents.explorer import explorer as explorer_module
+
+    calls = 0
+    sentinel = object()
+
+    async def op():
+        nonlocal calls
+        calls += 1
+        if calls < 2:
+            raise _FakeGenaiError("429 rate limit exceeded", code=429)
+        return sentinel
+
+    with patch.object(explorer_module.asyncio, "sleep", new=AsyncMock()) as sleep_mock:
+        result = await explorer_module._generate_content_with_reliability(op)
+    assert result is sentinel
+    assert calls == 2
+    assert sleep_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_content_reliability_exhausts_to_typed_error():
+    from artemis.agents.explorer import explorer as explorer_module
+    from artemis.llm.reliability import (
+        FailureCategory,
+        LLMExhaustedError,
+        retry_policy_for,
+    )
+
+    calls = 0
+
+    async def op():
+        nonlocal calls
+        calls += 1
+        raise _FakeGenaiError("503 service unavailable", code=503)
+
+    with patch.object(explorer_module.asyncio, "sleep", new=AsyncMock()):
+        with pytest.raises(LLMExhaustedError) as exc_info:
+            await explorer_module._generate_content_with_reliability(op)
+    assert calls == retry_policy_for(FailureCategory.PROVIDER_UNAVAILABLE).max_attempts
+    assert exc_info.value.failure.category.value == "provider_unavailable"
+    assert isinstance(exc_info.value.__cause__, _FakeGenaiError)

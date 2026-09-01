@@ -19,7 +19,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import random
 import re
 import time
 from typing import Any, Literal
@@ -27,7 +26,6 @@ from typing import Any, Literal
 import cv2
 from google import genai
 from google.genai import types
-from google.genai.errors import APIError
 import httpx
 from langchain_core.messages import (
     BaseMessage,
@@ -44,7 +42,13 @@ from artemis.context import ArtemisContext
 from artemis.data_engine.storage import StorageManager
 from artemis.data_engine.trace import TraceSpan, trace
 from artemis.graph.state import State
-from artemis.services.llm import get_llm
+from artemis.llm.reliability import (
+    LLMExhaustedError,
+    LLMPermanentError,
+    classify_failure,
+    retry_policy_for,
+)
+from artemis.services.llm import _record_llm_event, _record_llm_retry, get_llm
 
 # Import diagnostic functions directly
 from artemis.agents.explorer.constants import EXPLORE_DESCRIPTIONS
@@ -58,6 +62,84 @@ from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
 from artemis.utils.visualization import draw_dots, format_minimal_list_with_points
 
 logger = get_logger(__name__)
+
+
+async def _generate_content_with_reliability(operation, *, label: str = "Explorer model call"):
+    """Run one native google-genai model call under the shared reliability layer.
+
+    Retry decisions are owned by ``classify_failure``/``retry_policy_for``
+    (artemis.llm.reliability) instead of a blanket exponential-backoff loop:
+    non-retryable categories (auth, bad request) are raised immediately as
+    ``LLMPermanentError`` and exhausted retryable categories surface as
+    ``LLMExhaustedError``.  Only the retry/error-classification policy is
+    centralized here; the google-genai transport itself stays untouched.
+    ``operation`` must be a zero-argument callable returning a fresh awaitable
+    per attempt.
+    """
+    attempt = 0
+    while True:
+        try:
+            return await operation()
+        except Exception as call_err:
+            attempt += 1
+            failure = classify_failure(call_err)
+            if not failure.retryable:
+                logger.error(
+                    f"{label} permanently failed [{failure.category.value}]: {call_err}"
+                )
+                _record_llm_event(
+                    "llm_gave_up",
+                    {
+                        "source": "explorer",
+                        "error": str(call_err)[:1000],
+                        "category": failure.category.value,
+                        "retryable": False,
+                    },
+                    status="failed",
+                )
+                raise LLMPermanentError(
+                    f"{label} failed [{failure.category.value}]: {call_err}",
+                    failure=failure,
+                    cause=call_err,
+                ) from call_err
+            policy = retry_policy_for(failure.category)
+            if attempt >= policy.max_attempts:
+                logger.error(
+                    f"{label} exhausted {attempt} attempt(s)"
+                    f" [{failure.category.value}]: {call_err}"
+                )
+                _record_llm_event(
+                    "llm_gave_up",
+                    {
+                        "source": "explorer",
+                        "error": str(call_err)[:1000],
+                        "category": failure.category.value,
+                        "retryable": True,
+                        "attempts": attempt,
+                    },
+                    status="failed",
+                )
+                raise LLMExhaustedError(
+                    f"{label} exhausted {attempt} attempt(s)"
+                    f" [{failure.category.value}]: {call_err}",
+                    failure=failure,
+                    cause=call_err,
+                ) from call_err
+            delay = policy.delay_for(attempt)
+            logger.warning(
+                f"{label} failed [{failure.category.value}] on attempt"
+                f" {attempt}/{policy.max_attempts}: {call_err}."
+                f" Retrying in {delay:.2f}s..."
+            )
+            _record_llm_retry(
+                str(call_err),
+                delay,
+                attempt=attempt,
+                max_retries=policy.max_attempts,
+                source="explorer",
+            )
+            await asyncio.sleep(delay)
+
 
 UNIVERSAL_EXPLORER_TOOLS = [
     {
@@ -1802,41 +1884,16 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                             ),
                         )
 
-                    max_call_retries = 5
-                    for attempt in range(max_call_retries + 1):
-                        try:
-                            response = await asyncio.wait_for(
-                                client.aio.models.generate_content(
-                                    model=model_name,
-                                    contents=contents,
-                                    config=generate_config,
-                                ),
-                                timeout=180,
-                            )
-                            break
-                        except APIError as api_err:
-                            code = getattr(api_err, "code", None)
-                            if code in [429, 503]:
-                                if attempt >= max_call_retries:
-                                    raise api_err
-                                backoff = (2.0**attempt) + random.uniform(0.1, 1.0)
-                                logger.warning(
-                                    f"APIError {code} (overload/rate limit) on"
-                                    f" attempt {attempt + 1}. Retrying in"
-                                    f" {backoff:.2f}s..."
-                                )
-                                await asyncio.sleep(backoff)
-                            else:
-                                raise api_err
-                        except Exception as e:
-                            if attempt >= max_call_retries:
-                                raise e
-                            backoff = (2.0**attempt) + random.uniform(0.1, 1.0)
-                            logger.warning(
-                                f"Unexpected error on attempt {attempt + 1}:"
-                                f" {e}. Retrying in {backoff:.2f}s..."
-                            )
-                            await asyncio.sleep(backoff)
+                    response = await _generate_content_with_reliability(
+                        lambda: asyncio.wait_for(
+                            client.aio.models.generate_content(
+                                model=model_name,
+                                contents=contents,
+                                config=generate_config,
+                            ),
+                            timeout=180,
+                        ),
+                    )
                     end_turn = time.perf_counter()
                     turn_dur = end_turn - start_turn
                     self.turn_latencies.append(turn_dur)
