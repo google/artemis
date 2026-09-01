@@ -28,6 +28,7 @@ from artemis.runtime.adb_endpoint import (
     current_adb_endpoint,
 )
 from artemis.runtime.device_pool import DevicePool, DeviceStatus, device_pool
+from artemis.runtime.process_probe import pid_is_alive
 from artemis.runtime.daemon_client import (
     ensure_daemon_running,
     get_daemon_session,
@@ -78,6 +79,7 @@ __all__ = [
     "get_server_status",
     "is_daemon_running",
     "is_port_in_use",
+    "pid_is_alive",
     "ProcessSupervisor",
     "process_supervisor",
     "read_server_info",

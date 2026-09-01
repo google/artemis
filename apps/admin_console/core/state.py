@@ -17,29 +17,7 @@ from collections.abc import Callable
 from typing import Any
 
 from artemis.config import PAUSE_FILE
-
-
-def _pid_exists(pid: int) -> bool:
-    """Best-effort liveness probe; returns True when liveness cannot be determined.
-
-    psutil is preferred because on Windows ``os.kill(pid, 0)`` does not report
-    dead pids reliably.
-    """
-    try:
-        import psutil
-
-        return psutil.pid_exists(pid)
-    except Exception:
-        pass
-    try:
-        import os
-
-        os.kill(pid, 0)
-        return True
-    except PermissionError:
-        return True
-    except (ProcessLookupError, OSError):
-        return False
+from artemis.runtime.process_probe import pid_is_alive
 
 
 class ServerState:
@@ -59,7 +37,12 @@ class ServerState:
         self.current_profile: str | None = None
         self.active_connections: dict[str, dict[str, Any]] = {}
         self.active_session_id: str | None = None
-        self.was_stopped_manually: bool = False
+        # Run keys (session id, or the synthetic run key of session-less runs)
+        # that were stopped manually. Tracked per run so a manual stop of one
+        # device's task never pollutes the terminal-status resolution of a
+        # concurrently running task on another device. Entries are discarded by
+        # each run's finalizer.
+        self.manually_stopped_run_ids: set[str] = set()
         self.cancelled_session_ids: set[str] = set()
         self.startup_progress: dict[str, list[dict[str, Any]]] = {}
 
@@ -143,7 +126,7 @@ class ServerState:
                 self.active_runs.pop(sid, None)
                 continue
             pid = getattr(proc, "pid", None)
-            if pid and not _pid_exists(pid):
+            if pid and not pid_is_alive(pid):
                 self.active_runs.pop(sid, None)
 
     @property
@@ -168,15 +151,8 @@ class ServerState:
                 self.current_process = None
             else:
                 pid = getattr(self.current_process, "pid", None)
-                if pid:
-                    try:
-                        import os
-
-                        os.kill(pid, 0)
-                        has_proc = True
-                    except (ProcessLookupError, PermissionError, OSError):
-                        has_proc = False
-                        self.current_process = None
+                if pid and pid_is_alive(pid):
+                    has_proc = True
                 else:
                     has_proc = False
                     self.current_process = None
@@ -189,12 +165,9 @@ class ServerState:
         for sid, conn in list(self.active_connections.items()):
             c_pid = conn.get("pid")
             if c_pid:
-                try:
-                    import os
-
-                    os.kill(c_pid, 0)
+                if pid_is_alive(c_pid):
                     has_live_connection = True
-                except (ProcessLookupError, PermissionError, OSError):
+                else:
                     self.active_connections.pop(sid, None)
 
         if not has_proc and not has_running_item and not has_live_connection:

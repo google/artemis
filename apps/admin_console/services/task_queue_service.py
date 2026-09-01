@@ -415,10 +415,12 @@ class TaskQueueService:
             task_item["status"] = "running"
             task_item["start_time"] = time.time()
 
-            # A fresh launch clears a stale stop request from a previous task,
-            # matching the historical serial worker's per-task reset. Per-session
-            # stops are tracked in cancelled_session_ids and are unaffected.
-            state.was_stopped_manually = False
+            # A fresh launch clears a stale stop request left over for this run
+            # key from a previous task. Manual stops are tracked per run in
+            # manually_stopped_run_ids so stopping one device's task never
+            # affects concurrent runs. Per-session stops are tracked in
+            # cancelled_session_ids and are unaffected.
+            state.manually_stopped_run_ids.discard(run_key)
             state.current_goal = goal
             state.current_profile = profile
             state.active_session_id = sess_id
@@ -546,7 +548,7 @@ class TaskQueueService:
 
             if sess_id and (
                 str(sess_id) in getattr(state, "cancelled_session_ids", set())
-                or state.was_stopped_manually
+                or run_key in state.manually_stopped_run_ids
             ):
                 print(
                     f"[QueueWorker] Task [{sess_id}] was cancelled during launch. Terminating."
@@ -557,7 +559,7 @@ class TaskQueueService:
             returncode = await cls._wait_for_worker_process(proc)
             print(f"[QueueWorker] Task [{sess_id}] exited with returncode {returncode}")
 
-            manual_stop = state.was_stopped_manually or bool(
+            manual_stop = run_key in state.manually_stopped_run_ids or bool(
                 sess_id and str(sess_id) in state.cancelled_session_ids
             )
 
@@ -663,6 +665,7 @@ class TaskQueueService:
                 cls._remove_task(sess_id)
                 state.cancelled_session_ids.discard(str(sess_id))
             state.cancelled_session_ids.discard(run_key)
+            state.manually_stopped_run_ids.discard(run_key)
             state.active_runs.pop(run_key, None)
             if proc is not None and state.current_process is proc:
                 state.current_process = None
@@ -670,7 +673,9 @@ class TaskQueueService:
                 state.active_session_id = None
                 state.current_goal = None
                 state.current_profile = None
-                state.was_stopped_manually = False
+                # No runs left: any not-yet-consumed manual-stop markers are
+                # stale and must not leak into future runs.
+                state.manually_stopped_run_ids.clear()
             state.wake_event.set()
 
     @classmethod
@@ -892,11 +897,13 @@ class TaskQueueService:
                             },
                         )
 
-            if state.active_runs or state.current_process:
-                state.was_stopped_manually = True
             for run_key, run in list(state.active_runs.items()):
-                # Track the stop per run so each finalizer resolves its terminal
-                # status as cancelled even if the global flag is reset meanwhile.
+                # Mark each run individually: the global "stopped manually"
+                # boolean was shared process-wide and polluted the terminal
+                # status of unrelated concurrent runs.
+                state.manually_stopped_run_ids.add(str(run_key))
+                # Also track it per session so each finalizer resolves its
+                # terminal status as cancelled.
                 state.cancelled_session_ids.add(str(run_key))
                 run_proc = run.get("process")
                 if run_proc is not None and run_proc.returncode is None:
@@ -969,20 +976,35 @@ class TaskQueueService:
         # Resolve the locally-managed run for this target (concurrent scheduling
         # keeps one subprocess per run in state.active_runs).
         local_run = None
+        local_run_key: str | None = None
         if target_sid:
             local_run = state.active_runs.get(target_sid)
+            if local_run is not None:
+                local_run_key = target_sid
         elif target_device:
-            local_run = next(
+            local_run_key, local_run = next(
                 (
-                    run
-                    for run in state.active_runs.values()
+                    (key, run)
+                    for key, run in state.active_runs.items()
                     if run.get("device_id") and str(run["device_id"]) == target_device
+                ),
+                (None, None),
+            )
+        elif len(state.active_runs) == 1:
+            local_run_key, local_run = next(iter(state.active_runs.items()))
+        local_proc = (local_run or {}).get("process") or state.current_process
+        if local_run is None and local_proc is not None:
+            # Legacy path: current_process without a resolved run entry. Find
+            # the run that owns this process so a manual stop can be attributed
+            # to it instead of to the whole scheduler.
+            local_run_key = next(
+                (
+                    str(key)
+                    for key, run in state.active_runs.items()
+                    if run.get("process") is local_proc
                 ),
                 None,
             )
-        elif len(state.active_runs) == 1:
-            local_run = next(iter(state.active_runs.values()))
-        local_proc = (local_run or {}).get("process") or state.current_process
         local_pid = getattr(local_proc, "pid", None)
         is_local_owner = bool(owner_pid and local_pid and owner_pid == local_pid)
 
@@ -1006,11 +1028,16 @@ class TaskQueueService:
             ),
             None,
         )
+        # active_session_id mirrors the most recently launched run, so with
+        # concurrent runs the resolved local run key (== its session id) must
+        # take precedence to avoid attributing the stop to an unrelated run.
         stopped_session_id = (
             owner.session_id
             if owner and owner.session_id
             else target_sid
             if target_sid
+            else local_run_key
+            if local_run_key is not None
             else state.active_session_id
             if is_local_owner
             else local_item.get("session_id")
@@ -1038,8 +1065,8 @@ class TaskQueueService:
             # initialization window before Agent acquires the device lease.
             if target_sid:
                 state.cancelled_session_ids.add(target_sid)
-            else:
-                state.was_stopped_manually = True
+            elif local_run_key is not None:
+                state.manually_stopped_run_ids.add(str(local_run_key))
             if local_pid:
                 try:
                     stopped = process_supervisor.terminate_tree(local_pid)
@@ -1092,8 +1119,8 @@ class TaskQueueService:
                 # Per-session cancellation: the run's own finalizer resolves the
                 # terminal status without affecting other concurrent runs.
                 state.cancelled_session_ids.add(str(stopped_session_id))
-            else:
-                state.was_stopped_manually = True
+            elif local_run_key is not None:
+                state.manually_stopped_run_ids.add(str(local_run_key))
             if local_proc is not None and state.current_process is local_proc:
                 state.current_process = None
 
