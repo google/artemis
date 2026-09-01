@@ -374,6 +374,34 @@ def test_cli_mcp_install_jsonc_and_backup(tmp_path, monkeypatch):
     assert "INVALID JSON DATA" in backup_file.read_text(encoding="utf-8")
 
 
+def test_cli_mcp_install_refuses_rewrite_when_backup_fails(tmp_path, monkeypatch):
+    """Backup failure for an unparseable config must abort the rewrite instead of destroying it."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
+
+    cursor_dir = tmp_path / ".cursor"
+    cursor_dir.mkdir(parents=True, exist_ok=True)
+    mcp_json = cursor_dir / "mcp.json"
+    original = "INVALID JSON DATA {{{{"
+    mcp_json.write_text(original, encoding="utf-8")
+
+    import pathlib
+
+    real_write_text = pathlib.Path.write_text
+
+    def failing_bak_write(self, *args, **kwargs):
+        if str(self).endswith(".bak"):
+            raise OSError("disk full")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr("pathlib.Path.write_text", failing_bak_write)
+
+    runner.invoke(app, ["mcp", "--install", "cursor"])
+
+    assert mcp_json.read_text(encoding="utf-8") == original
+    assert not (cursor_dir / "mcp.json.bak").exists()
+
+
 def test_cli_mcp_install_openclaw_migrates_legacy_plugin_shape(tmp_path, monkeypatch):
     """Verify reinstalling OpenClaw replaces the obsolete plugin wrapper with mcp.servers."""
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)

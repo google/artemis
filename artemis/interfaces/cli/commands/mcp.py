@@ -219,8 +219,10 @@ def _merge_json_file(
                 except OSError as exc:
                     logger.warning(
                         f"Existing JSON in {file_path} could not be parsed AND the backup to"
-                        f" {backup_path} failed ({exc}); the original content will be overwritten."
+                        f" {backup_path} failed ({exc}); refusing to rewrite it."
+                        " Fix or remove the file, then re-run the install."
                     )
+                    return False
 
         for remove_path in remove_paths:
             parent = data
