@@ -20,8 +20,8 @@ import os
 import time
 from typing import Any
 
+from artemis.runtime import trace_store
 from mcp_server.notifiers.base import BaseNotifier
-from mcp_server.utils import trace_store
 
 logger = logging.getLogger("mcp_server.notifiers.file")
 

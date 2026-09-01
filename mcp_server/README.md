@@ -25,11 +25,14 @@ mcp_server/
 │   ├── task_manager.py   # mobile_manage_task
 │   ├── device_state.py   # mobile_get_device_state
 │   └── inspect_trace.py  # mobile_inspect_trace
-└── utils/                # Environment, device, and trace utilities
+└── utils/                # Environment and device utilities
     ├── device_utils.py   # Cross-platform ADB and emulator resolver
-    ├── env_utils.py      # Python interpreter and process manager
-    └── trace_store.py    # Traces directory and status manager
+    └── env_utils.py      # Python interpreter and process manager
 ```
+
+The trace status store (traces directory layout and `status.json` lifecycle)
+lives in the neutral base package as `artemis/runtime/trace_store.py`, shared
+by the MCP server, the admin console, and spawned worker processes.
 
 ## 🔔 Multi-Platform Notification & Wakeup Support
 

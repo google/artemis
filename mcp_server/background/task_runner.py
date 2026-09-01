@@ -41,8 +41,9 @@ try:
 except Exception:
     load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
+from artemis.runtime import trace_store
 from mcp_server.notifiers import notify
-from mcp_server.utils import device_utils, trace_store
+from mcp_server.utils import device_utils
 
 
 async def _initialize_agent(
@@ -80,6 +81,9 @@ def resolve_profile_file() -> str | None:
             ]
         )
     try:
+        # Deliberate guarded import mirroring the module-level bootstrap above:
+        # profile resolution must degrade to repo-relative candidates when the
+        # artemis config package cannot be loaded.
         from artemis.config.paths import get_app_dir
 
         app_dir = str(get_app_dir())
@@ -146,6 +150,11 @@ async def run_task(
     target_serial = device_serial
 
     try:
+        # Deliberate lazy imports: the SDK pulls in the full agent stack
+        # (LLM clients, graph, drivers), and importing it inside this try
+        # converts an import-time failure into a properly recorded task
+        # failure (trace status + wakeup notification) instead of a crash
+        # before status.json is ever updated.
         from artemis.config import settings
         from artemis.sdk import Agent
         from artemis.sdk.builders import Builders
@@ -167,6 +176,8 @@ async def run_task(
                 target_serial = settings.ADB_DEVICE_SERIAL or os.environ.get("ADB_DEVICE_SERIAL")
                 if not target_serial:
                     try:
+                        # Optional path: pool-based selection falls back to the
+                        # first connected device on any import or query failure.
                         from artemis.runtime import device_pool
                         target_serial = device_pool.select_device()
                     except Exception:

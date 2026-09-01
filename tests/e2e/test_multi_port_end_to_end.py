@@ -55,7 +55,7 @@ from artemis.interfaces.sdk.client import ArtemisClient, ConcurrencyMode
 from mcp_server.tools.device_state import mobile_get_device_state
 from mcp_server.tools.task_runner import mobile_run_task
 from mcp_server.tools.task_manager import mobile_manage_task
-from mcp_server.utils import trace_store
+from artemis.runtime import trace_store
 
 
 @pytest.fixture(scope="module", autouse=True)

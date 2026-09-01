@@ -104,6 +104,15 @@ def main() -> None:
 
     from artemis.runtime.server_lifecycle import get_server_status, stop_server
 
+    def _arm_session_reconciler() -> None:
+        # Entry-layer assembly: importing the admin console session repository
+        # registers its orphan-session reconciler with the runtime, so a forced
+        # stop below can mark sessions whose worker processes were killed.
+        try:
+            import apps.admin_console.database.repositories.session_repository  # noqa: F401
+        except Exception:
+            pass
+
     if args.status:
         st = get_server_status(args.port)
         if st["running"]:
@@ -116,6 +125,7 @@ def main() -> None:
 
     if args.stop:
         print(f"\033[1;33m🛑 Stopping Artemis server on port {args.port}...\033[0m")
+        _arm_session_reconciler()
         ok, msg, pids = stop_server(args.port)
         print(f"\033[1;32m✓ {msg}\033[0m")
         return
@@ -130,6 +140,7 @@ def main() -> None:
     # Check if restart requested
     if args.restart:
         print(f"\033[1;33m🔄 Restart requested. Recycling port {args.port}...\033[0m")
+        _arm_session_reconciler()
         ok, msg, pids = stop_server(args.port)
         if pids:
             print(f"\033[1;32m✓ {msg}\033[0m\n")
@@ -155,9 +166,11 @@ def main() -> None:
 
                 if choice == "2":
                     print(f"\n\033[1;33m🔄 Restarting Artemis server on port {args.port}...\033[0m")
+                    _arm_session_reconciler()
                     stop_server(args.port)
                 elif choice == "3":
                     print(f"\n\033[1;33m🛑 Stopping Artemis server on port {args.port}...\033[0m")
+                    _arm_session_reconciler()
                     ok, msg, _ = stop_server(args.port)
                     print(f"\033[1;32m✓ {msg}\033[0m")
                     return

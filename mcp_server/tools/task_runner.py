@@ -14,6 +14,7 @@
 
 """MCP Tool: mobile_run_task."""
 
+import logging
 import os
 import subprocess
 import sys
@@ -24,8 +25,15 @@ import uuid
 
 from mcp_server.base import mcp
 from mcp_server.notifiers import notify
-from mcp_server.utils import env_utils, trace_store
-from artemis.runtime import DeviceExecutionLock
+from mcp_server.utils import env_utils
+from artemis.config.runtime import read_ipc_port
+from artemis.runtime import (
+    DeviceExecutionLock,
+    device_pool,
+    ensure_daemon_running,
+    submit_task_to_daemon,
+    trace_store,
+)
 
 # Seconds the spawned runner gets to finish its imports and open its log files
 # before the spawn is declared dead. Normal startup creates stdout.log within a
@@ -136,8 +144,6 @@ def _validate_device_serial(device_serial: str) -> dict[str, Any] | None:
     validation is skipped rather than blocking task submission.
     """
     try:
-        from artemis.runtime import device_pool
-
         # The shared validator fails open on an indeterminate/empty enumeration:
         # the task proceeds and fails downstream with a clear no-device error.
         detail = device_pool.validate_explicit_serial(device_serial)
@@ -249,8 +255,6 @@ def mobile_run_task(
     # 3. Dispatch via unified Artemis Daemon scheduler if available (unless standalone forced)
     if os.environ.get("ARTEMIS_STANDALONE") != "1":
         try:
-            from artemis.runtime import ensure_daemon_running, submit_task_to_daemon
-
             is_running, base_url = ensure_daemon_running(timeout=2.0, wait_ready=True)
             if is_running:
                 resp = submit_task_to_daemon(
@@ -321,7 +325,6 @@ def mobile_run_task(
                     pass
 
                 # When Daemon is running, refuse to launch a conflicting standalone runner on the same device
-                import logging
                 logging.getLogger("mcp_server").warning(
                     f"Daemon dispatch failed for task '{task_desc}'. Aborting dispatch to prevent runner collision."
                 )
@@ -332,7 +335,6 @@ def mobile_run_task(
                     "message": "Task rejected or timed out in Artemis Daemon. Standalone fallback blocked to prevent runner collision.",
                 }
         except Exception as exc:
-            import logging
             logging.getLogger("mcp_server").warning(
                 f"Daemon dispatch failed: {exc}"
             )
@@ -387,8 +389,6 @@ def mobile_run_task(
             env["ARTEMIS_DEVICE_ID"] = device_serial
         env[DeviceExecutionLock.QUEUE_TICKET_ENV] = queue_ticket
         try:
-            from artemis.config.runtime import read_ipc_port
-
             ipc_port = read_ipc_port()
             if ipc_port:
                 env["ARTEMIS_IPC_PORT"] = str(ipc_port)

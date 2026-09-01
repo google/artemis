@@ -24,8 +24,15 @@ from typing import Any
 
 from mcp_server.base import mcp
 from mcp_server.notifiers import notify
-from mcp_server.utils import env_utils, trace_store
-from artemis.runtime import DeviceExecutionLock, process_supervisor
+from mcp_server.utils import env_utils
+from artemis.runtime import (
+    DeviceExecutionLock,
+    is_daemon_running,
+    process_supervisor,
+    stop_task_on_daemon,
+    trace_store,
+)
+from artemis.runtime.process_probe import pid_is_alive
 
 _LIVENESS_FAILURE_ERROR = "Task runner process terminated unexpectedly."
 # Grace window covering the spawn race: the launcher pid may already have exited
@@ -48,8 +55,6 @@ def _pid_alive(pid: int | None) -> bool:
         pid_int = int(pid)
     except (TypeError, ValueError):
         return False
-    from artemis.runtime.process_probe import pid_is_alive
-
     return pid_is_alive(pid_int)
 
 
@@ -451,8 +456,6 @@ def mobile_manage_task(
         stopped_via_daemon = False
         if os.environ.get("ARTEMIS_STANDALONE") != "1":
             try:
-                from artemis.runtime import is_daemon_running, stop_task_on_daemon
-
                 if is_daemon_running():
                     stopped_via_daemon = stop_task_on_daemon(trace_id)
             except Exception:

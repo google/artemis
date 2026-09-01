@@ -103,6 +103,20 @@ def ensure_showcase_built(console: Console) -> None:
         console.print(f"   [red]⚠ Failed to auto-build Showcase UI: {e}[/red]\n")
 
 
+def load_session_reconciler() -> None:
+    """Entry-layer assembly: arm stop_server()'s orphan-session cleanup.
+
+    Importing the admin console session repository registers its reconciler
+    with ``artemis.runtime.server_lifecycle`` (inverted dependency: the base
+    runtime package never imports the application layer). Guarded so a broken
+    or absent admin console install can never block stopping a server.
+    """
+    try:
+        import apps.admin_console.database.repositories.session_repository  # noqa: F401
+    except Exception:
+        pass
+
+
 def _poll_and_open_browser(url: str, stop_event: threading.Event, timeout: float = 15.0) -> None:
     """Poll the UI server until it responds, then launch the user's default browser."""
     start = time.time()
@@ -169,6 +183,7 @@ def ui_command(
 
     if restart:
         console.print(f"   [yellow]🔄 Restart requested. Recycling port {port}...[/yellow]")
+        load_session_reconciler()
         stop_server(port=port, timeout=12.0)
     elif is_port_in_use(port):
         pids = find_server_pids(port)
@@ -185,6 +200,7 @@ def ui_command(
                 choice = "1"
             if choice == "2":
                 console.print(f"\n   [yellow]🔄 Terminating previous Artemis instance on port {port}...[/yellow]")
+                load_session_reconciler()
                 stop_server(port=port, timeout=12.0)
             elif choice == "3":
                 return
@@ -244,6 +260,9 @@ def ui_command(
         t.start()
 
     try:
+        # Intentional entry-layer lazy load: the CLI assembles the application
+        # here, and importing the FastAPI server at module import time would
+        # drag the whole admin console into every `artemis <cmd>` invocation.
         from apps.admin_console.server import run_ui_server
 
         run_ui_server(host=host, port=port, reload=reload)

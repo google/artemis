@@ -31,7 +31,7 @@ from mcp_server.tools import (
     mobile_manage_task,
     mobile_run_task,
 )
-from mcp_server.utils import trace_store
+from artemis.runtime import trace_store
 
 
 @pytest.fixture
@@ -162,11 +162,11 @@ def test_mobile_run_task_dispatched_to_daemon(temp_trace_env, monkeypatch):
     monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
     with (
         patch(
-            "artemis.runtime.ensure_daemon_running",
+            "mcp_server.tools.task_runner.ensure_daemon_running",
             return_value=(True, "http://127.0.0.1:8000"),
         ),
         patch(
-            "artemis.runtime.submit_task_to_daemon",
+            "mcp_server.tools.task_runner.submit_task_to_daemon",
             return_value={"status": "started", "tasks": [{"session_id": "daemon-sid-1"}]},
         ),
         patch("mcp_server.tools.task_runner.subprocess.Popen") as popen,
@@ -399,8 +399,8 @@ def test_mobile_manage_task_stop_via_daemon(temp_trace_env, monkeypatch):
     trace_store.init_trace(trace_id, "Daemon task to stop", "Flash", "conv-stop")
 
     with (
-        patch("artemis.runtime.is_daemon_running", return_value=True),
-        patch("artemis.runtime.stop_task_on_daemon", return_value=True) as mock_stop,
+        patch("mcp_server.tools.task_manager.is_daemon_running", return_value=True),
+        patch("mcp_server.tools.task_manager.stop_task_on_daemon", return_value=True) as mock_stop,
     ):
         res = mobile_manage_task(action="stop", trace_id=trace_id)
         mock_stop.assert_called_once_with(trace_id)

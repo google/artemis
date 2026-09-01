@@ -26,7 +26,11 @@ from rich.panel import Panel
 from rich.table import Table
 import typer
 
-from artemis.interfaces.cli.commands.ui import ensure_showcase_built, ui_command
+from artemis.interfaces.cli.commands.ui import (
+    ensure_showcase_built,
+    load_session_reconciler,
+    ui_command,
+)
 from artemis.runtime.daemon_client import daemon_log_path, is_daemon_running, spawn_daemon
 from artemis.runtime.server_lifecycle import (
     find_server_pids,
@@ -128,6 +132,7 @@ def restart_command(
     else:
         console.print(f"   [dim]ℹ No active Artemis server found on port {port}.[/dim]")
 
+    load_session_reconciler()
     success, msg, stopped_pids = stop_server(port=port, force=force, timeout=12.0)
     if stopped_pids:
         console.print(f"   [green]✓ {msg}[/green]\n")
@@ -213,6 +218,7 @@ def stop_command(
     else:
         console.print(f"   [dim]Scanning port {port}...[/dim]")
 
+    load_session_reconciler()
     success, msg, stopped_pids = stop_server(port=port, force=force, timeout=12.0)
     if stopped_pids:
         console.print(
