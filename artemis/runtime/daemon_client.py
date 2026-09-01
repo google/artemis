@@ -133,7 +133,7 @@ def spawn_daemon(
         if log_handle is not subprocess.DEVNULL:
             try:
                 log_handle.close()
-            except Exception:
+            except OSError:
                 pass
 
 

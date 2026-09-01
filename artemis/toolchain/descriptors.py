@@ -26,6 +26,7 @@ def _get_embedded_adb() -> str | None:
         if hasattr(adbutils, "adb_path"):
             return adbutils.adb_path()
     except Exception:
+        # Optional dependency probe: not installed or no bundled binary.
         pass
     return None
 
@@ -38,6 +39,8 @@ def _get_embedded_ffmpeg() -> str | None:
         if hasattr(imageio_ffmpeg, "get_ffmpeg_exe"):
             return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
+        # Optional dependency probe: not installed, or imageio_ffmpeg raises
+        # RuntimeError when it ships no binary for this platform.
         pass
     return None
 

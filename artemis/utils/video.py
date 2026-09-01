@@ -703,7 +703,8 @@ def cleanup_video_segments(segments: list[Path], keep_path: Path | None = None) 
                 segment.unlink()
                 if segment.parent.exists() and not any(segment.parent.iterdir()):
                     segment.parent.rmdir()
-        except Exception:
+        except OSError:
+            # Best-effort cleanup of temporary segments; leftovers are harmless.
             pass
 
 

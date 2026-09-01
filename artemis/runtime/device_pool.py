@@ -152,7 +152,8 @@ class DevicePool:
             if proc is not None:
                 try:
                     proc.kill()
-                except Exception:
+                except (ProcessLookupError, OSError):
+                    # Process already exited; nothing left to clean up.
                     pass
             return None
 
@@ -256,7 +257,8 @@ class DevicePool:
             if proc is not None:
                 try:
                     proc.kill()
-                except Exception:
+                except (ProcessLookupError, OSError):
+                    # Process already exited; nothing left to clean up.
                     pass
 
     async def warm_up_async(

@@ -102,8 +102,9 @@ class AndroidInputIME:
                     broadcast_cmd = f"am broadcast -a ADB_INPUT_B64 --es msg '{b64_text}'"
                     await asyncio.to_thread(self.device.shell, broadcast_cmd)
                     return True
-            except Exception:
-                pass
+            except Exception as e:
+                # ADBKeyboard probe/broadcast failed; fall through to ADB input.
+                logger.debug(f"ADBKeyboard IME path failed, falling back to ADB input: {e}")
 
             # 4. Fallback: ADB input text
             lines = text.split("\n")

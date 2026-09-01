@@ -600,7 +600,9 @@ def draw_action_overlay_on_image(
                         import ast
 
                         sequence = ast.literal_eval(sequence_str)
-                    except Exception:
+                    except (ValueError, TypeError, SyntaxError):
+                        # Unparseable sequence string: leave it as-is; the
+                        # isinstance check below skips non-list values.
                         pass
 
             if isinstance(sequence, list):

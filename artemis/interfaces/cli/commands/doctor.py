@@ -170,7 +170,8 @@ def doctor_command(
                     state = parts[1]
                     extra = " ".join(parts[2:])
                     devices_info.append((serial, state, extra))
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
+            # adb probe failed or timed out; report as "no devices detected".
             pass
 
     if devices_info:

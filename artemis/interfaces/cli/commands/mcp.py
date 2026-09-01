@@ -166,7 +166,8 @@ def _parse_json_lenient(text: str) -> dict | None:
     try:
         data = json.loads(text)
         return data if isinstance(data, dict) else None
-    except Exception:
+    except ValueError:
+        # Not strict JSON; fall through to the lenient JSONC cleanup below.
         pass
     # Remove // single-line comments
     cleaned = re.sub(r"//.*", "", text)
@@ -215,8 +216,11 @@ def _merge_json_file(
                 try:
                     backup_path.write_text(raw_text, encoding="utf-8")
                     logger.warning(f"Existing JSON in {file_path} could not be parsed; backup created at {backup_path}")
-                except Exception:
-                    pass
+                except OSError as exc:
+                    logger.warning(
+                        f"Existing JSON in {file_path} could not be parsed AND the backup to"
+                        f" {backup_path} failed ({exc}); the original content will be overwritten."
+                    )
 
         for remove_path in remove_paths:
             parent = data
@@ -316,8 +320,10 @@ def _merge_codex_toml(file_path: Path, server_config: dict) -> bool:
                 backup_path = file_path.with_suffix(file_path.suffix + ".bak")
                 backup_path.write_text(file_path.read_text(encoding="utf-8"), encoding="utf-8")
                 logger.warning(f"Could not update {file_path}; backup created at {backup_path}: {e}")
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as backup_exc:
+                logger.warning(
+                    f"Could not update {file_path} ({e}); backup also failed: {backup_exc}"
+                )
         else:
             logger.warning(f"Could not create Codex MCP config file {file_path}: {e}")
         return False
@@ -394,7 +400,8 @@ def _write_rule_file(file_path: Path, content: str) -> bool:
             try:
                 if file_path.read_text(encoding="utf-8") == new_text:
                     return True
-            except Exception:
+            except (OSError, UnicodeDecodeError):
+                # Unreadable existing file: skip the no-op check and rewrite it.
                 pass
         file_path.write_text(new_text, encoding="utf-8")
         return True
@@ -419,7 +426,8 @@ def _write_cursor_mdc(file_path: Path, content: str) -> bool:
             try:
                 if file_path.read_text(encoding="utf-8") == new_text:
                     return True
-            except Exception:
+            except (OSError, UnicodeDecodeError):
+                # Unreadable existing file: skip the no-op check and rewrite it.
                 pass
         file_path.write_text(new_text, encoding="utf-8")
         return True

@@ -467,7 +467,9 @@ class EmulatorManager:
                         stderr=subprocess.DEVNULL,
                         timeout=5,
                     )
-                except Exception:
+                except (OSError, subprocess.SubprocessError):
+                    # Graceful `adb emu kill` failed or timed out; the direct
+                    # process terminate/kill below still stops the emulator.
                     pass
 
             if self._proc and self._proc.poll() is None:

@@ -103,6 +103,8 @@ class ToolchainResolver:
                     self._cache[key] = resolved
                     return resolved
             except Exception:
+                # Probing an optional third-party embedded binary; any failure
+                # simply means "tool not found" and the caller handles None.
                 pass
 
         # Do not permanently cache negative lookups so dynamic installs are detected immediately

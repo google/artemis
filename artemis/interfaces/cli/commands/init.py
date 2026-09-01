@@ -78,7 +78,8 @@ def init_command() -> None:
                     serial = parts[0]
                     extra = " ".join(parts[2:])
                     detected_devices.append((serial, extra))
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
+            # adb probe failed or timed out; continue setup with no devices.
             pass
 
     selected_serial = ""

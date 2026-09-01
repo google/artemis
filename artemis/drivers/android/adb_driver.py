@@ -355,8 +355,9 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     broadcast_cmd = f"am broadcast -a ADB_INPUT_B64 --es msg '{b64_text}'"
                     await asyncio.to_thread(self.device.shell, broadcast_cmd)
                     return True
-            except Exception:
-                pass
+            except Exception as e:
+                # ADBKeyboard probe/broadcast failed; fall through to native input.
+                logger.debug(f"ADBKeyboard IME path failed, falling back to ADB input: {e}")
 
             # 3. Tier 3: Universal Native ADB input text fallback
             lines = norm_text.split("\n")
@@ -410,8 +411,9 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     app_info = await asyncio.to_thread(self.device.current_app)
                     if app_info and getattr(app_info, "package", None):
                         return app_info.package
-                except Exception:
-                    pass
+                except Exception as e:
+                    # current_app is unsupported on some devices; use dumpsys below.
+                    logger.debug(f"current_app query failed, falling back to dumpsys: {e}")
 
             # 2. Structured dumpsys extraction
             out = await asyncio.to_thread(
@@ -467,8 +469,10 @@ class AndroidAdbDriver(BaseDeviceDriver):
             try:
                 self._scrcpy_process.terminate()
                 await asyncio.wait_for(self._scrcpy_process.wait(), timeout=5.0)
-            except Exception:
-                pass
+            except (ProcessLookupError, OSError, asyncio.TimeoutError) as e:
+                # Already exited, or did not stop within the timeout; a lingering
+                # scrcpy may keep the MKV file locked on Windows.
+                logger.debug(f"scrcpy process did not terminate cleanly: {e}")
             self._scrcpy_process = None
 
         mkv = getattr(self, "_recording_mkv_path", None)
@@ -493,7 +497,8 @@ class AndroidAdbDriver(BaseDeviceDriver):
                 if mp4.exists() and mp4.stat().st_size > 0:
                     try:
                         mkv.unlink()
-                    except Exception:
+                    except OSError:
+                        # Best-effort cleanup of the intermediate MKV file.
                         pass
                     return str(mp4)
             except Exception as e:

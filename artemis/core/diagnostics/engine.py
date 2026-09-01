@@ -194,8 +194,12 @@ class ReadinessEngine:
         if adb_result and adb_result.metadata.get("active_device"):
             try:
                 active_device = DeviceInfo(**adb_result.metadata["active_device"])
-            except Exception:
-                pass
+            except (TypeError, ValueError) as exc:
+                # Includes pydantic ValidationError (a ValueError subclass).
+                logger.warning(
+                    f"Malformed active_device metadata from ADB probe; readiness"
+                    f" report will omit the active device: {exc}"
+                )
 
         return SystemReadinessReport(
             overall_ready=overall_ready,
