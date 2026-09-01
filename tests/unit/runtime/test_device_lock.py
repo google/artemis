@@ -185,6 +185,78 @@ def test_submission_reservations_preserve_order_before_workers_start():
     thread.join(timeout=2.0)
 
 
+def test_pending_reservation_at_queue_head_does_not_block_other_devices():
+    """An unclaimed pending submission must not gate every device's queue head.
+
+    Regression: a reservation whose device is still "pending" used to be
+    counted into every device's FIFO queue, so one unclaimed head-of-queue
+    ticket blocked all devices at once. It must now park on at most one idle
+    candidate device (the first in sorted order) and leave the others
+    schedulable.
+    """
+    pending_ticket = DeviceExecutionLock.reserve("unclaimed submission")
+    # device-alpha is a known idle device (a queued submission targets it), so
+    # the pending ticket parks there; device-beta must stay schedulable.
+    alpha_ticket = DeviceExecutionLock.reserve(
+        "task for device alpha", device_id="device-alpha"
+    )
+    try:
+        beta = DeviceExecutionLock("device-beta", "task for device beta")
+        # Must acquire immediately even though the older pending ticket is at
+        # the head of the global queue directory.
+        beta.acquire(blocking=False)
+        beta.release()
+    finally:
+        DeviceExecutionLock.cancel_reservation(pending_ticket)
+        DeviceExecutionLock.cancel_reservation(alpha_ticket)
+
+
+def test_pending_reservation_is_served_with_original_fifo_position_after_claim():
+    """A pending reservation is not starved: once its worker claims a device it
+    keeps its original submission-order position in that device's queue."""
+    holder = DeviceExecutionLock("emulator-5554", "current holder")
+    holder.acquire()
+
+    # Submitted while the device is busy; the reservation stays "pending".
+    first_ticket = DeviceExecutionLock.reserve("first submitted task")
+
+    claimed = DeviceExecutionLock("emulator-5554", "claimed pending task", first_ticket)
+    youngest = DeviceExecutionLock("emulator-5554", "youngest task")
+    order = []
+    claimed_acquired = threading.Event()
+    youngest_acquired = threading.Event()
+
+    def run_claimed():
+        claimed.acquire()
+        order.append("claimed")
+        claimed_acquired.set()
+
+    def run_youngest():
+        youngest.acquire()
+        order.append("youngest")
+        youngest_acquired.set()
+
+    t1 = threading.Thread(target=run_claimed)
+    t2 = threading.Thread(target=run_youngest)
+    t1.start()
+    t2.start()
+    time.sleep(0.2)
+    assert not claimed_acquired.is_set()
+    assert not youngest_acquired.is_set()
+
+    holder.release()
+    # The claimed pending ticket kept its original (oldest) FIFO timestamp and
+    # must win the device before the younger concrete ticket.
+    assert claimed_acquired.wait(timeout=2.0)
+    assert not youngest_acquired.is_set()
+    claimed.release()
+    assert youngest_acquired.wait(timeout=2.0)
+    youngest.release()
+    t1.join(timeout=2.0)
+    t2.join(timeout=2.0)
+    assert order == ["claimed", "youngest"]
+
+
 def test_cancelled_reservation_cannot_execute():
     ticket = DeviceExecutionLock.reserve("cancelled task")
     assert DeviceExecutionLock.cancel_reservation(ticket)

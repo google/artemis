@@ -52,7 +52,7 @@ def clean_state(tmp_path, monkeypatch):
     state.current_profile = None
     state.active_session_id = None
     state.active_connections.clear()
-    state.was_stopped_manually = False
+    state.manually_stopped_run_ids.clear()
     state.cancelled_session_ids.clear()
     if state.worker_task and not state.worker_task.done():
         state.worker_task.cancel()
@@ -66,7 +66,7 @@ def clean_state(tmp_path, monkeypatch):
     state.current_process = None
     state.current_goal = None
     state.current_profile = None
-    state.was_stopped_manually = False
+    state.manually_stopped_run_ids.clear()
     if hasattr(state, "recent_submissions"):
         state.recent_submissions.clear()
     if state.worker_task and not state.worker_task.done():
@@ -440,7 +440,7 @@ def test_stop_tasks_terminates_external_global_owner_and_preserves_local_waiter(
     local_waiter.kill.assert_not_called()
     assert state.current_process is local_waiter
     assert state.queue_items[0]["session_id"] == "frontend-waiter"
-    assert state.was_stopped_manually is False
+    assert not state.manually_stopped_run_ids
     assert "frontend-waiter" not in state.cancelled_session_ids
     assert "mcp-session" not in state.active_connections
     update_status.assert_called_once()
@@ -945,6 +945,111 @@ async def test_enqueue_tasks_deduplicates_by_session_id():
         assert len(state.queue_items) == 1
         assert res2["enqueued_count"] == 0
         assert res2["tasks"][0]["session_id"] == "sid-dedup-1"
+
+
+@pytest.mark.asyncio
+async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
+    """Stopping run A must not flip run B's terminal status or its payload.
+
+    Regression test for the process-global ``was_stopped_manually`` flag that
+    used to mark *every* in-flight run as manually stopped. Two concurrent runs
+    on different devices: device A's task is stopped manually, device B's task
+    then finishes normally and must still be reported as completed.
+    """
+    ended_payloads: dict[str, dict] = {}
+
+    def capture(event_type, data):
+        if event_type == "session_ended":
+            ended_payloads[str(data.get("session_id"))] = dict(data)
+
+    class FakeProc:
+        def __init__(self, pid):
+            self.pid = pid
+            self.returncode = None
+            self.stdout = None
+            self._done = asyncio.Event()
+
+        async def wait(self):
+            await self._done.wait()
+            return self.returncode
+
+        def finish(self, returncode):
+            self.returncode = returncode
+            self._done.set()
+
+        def kill(self):
+            self.finish(-9)
+
+    procs: dict[str, FakeProc] = {}
+
+    async def fake_subprocess_exec(*args, **kwargs):
+        goal = args[3]
+        # Use our own pid so the reaped-process watchdog keeps waiting.
+        proc = FakeProc(os.getpid())
+        procs[goal] = proc
+        return proc
+
+    item_a = {
+        "session_id": "run-a",
+        "goal": "Goal A",
+        "status": "pending",
+        "device_serial": "dev-a",
+    }
+    item_b = {
+        "session_id": "run-b",
+        "goal": "Goal B",
+        "status": "pending",
+        "device_serial": "dev-b",
+    }
+    state.queue_items = [item_a, item_b]
+    state.ipc_subscribers.append(capture)
+
+    try:
+        with (
+            patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
+            patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+            patch("apps.admin_console.services.task_queue_service.media_service"),
+            patch(
+                "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree",
+                return_value=True,
+            ),
+        ):
+            mock_repo.get_session_status.return_value = "running"
+            mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
+
+            task_a = asyncio.create_task(TaskQueueService._execute_task_item(item_a))
+            task_b = asyncio.create_task(TaskQueueService._execute_task_item(item_b))
+            for _ in range(40):
+                if "run-a" in state.active_runs and "run-b" in state.active_runs:
+                    break
+                await asyncio.sleep(0.02)
+            assert {"run-a", "run-b"} <= set(state.active_runs)
+            # B launched last, so the legacy single-task mirror points at B.
+            assert state.active_session_id == "run-b"
+
+            # Manually stop device A's task without naming its session id.
+            assert task_queue_service.stop_tasks(clear_all=False, device_id="dev-a") is True
+            await asyncio.wait_for(task_a, timeout=5.0)
+
+            # B finishes normally afterwards.
+            procs["Goal B"].finish(0)
+            await asyncio.wait_for(task_b, timeout=5.0)
+
+        assert ended_payloads["run-a"]["status"] == "cancelled"
+        assert ended_payloads["run-a"]["was_stopped_manually"] is True
+        assert ended_payloads["run-b"]["status"] == "completed"
+        assert ended_payloads["run-b"]["was_stopped_manually"] is False
+
+        persisted = {
+            call.args[0]: call.args[1]
+            for call in mock_repo.update_session_status.call_args_list
+        }
+        assert persisted.get("run-a") == "cancelled"
+        assert persisted.get("run-b") == "completed"
+        assert "run-b" not in state.cancelled_session_ids
+        assert "run-b" not in state.manually_stopped_run_ids
+    finally:
+        state.ipc_subscribers.remove(capture)
 
 
 @pytest.mark.asyncio

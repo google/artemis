@@ -21,7 +21,6 @@ from artemis.interfaces.sdk.task import StreamEvent, StreamEventType, Task
 from artemis_client import Capabilities, Device, TaskHandle, TaskResult
 from artemis.sdk.agent import Agent
 from artemis.sdk.builders import Builders
-from artemis.agents.base import BaseAgent, AgentRegistry
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.tools.base import artemis_tool, ToolRegistry
 
@@ -38,8 +37,6 @@ __all__ = [
     "Task",
     "TaskHandle",
     "TaskResult",
-    "BaseAgent",
-    "AgentRegistry",
     "BaseDeviceDriver",
     "artemis_tool",
     "ToolRegistry",
