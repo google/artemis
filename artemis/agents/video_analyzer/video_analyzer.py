@@ -19,7 +19,6 @@ import glob
 import json
 import os
 from pathlib import Path
-import random
 import re
 import shutil
 import tempfile
@@ -28,7 +27,6 @@ from typing import Any
 
 from google import genai
 from google.genai import types
-from google.genai.errors import APIError
 from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
@@ -49,7 +47,8 @@ from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.context import ArtemisContext
 from artemis.controllers.controller_factory import get_controller
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan, trace
-from artemis.services.llm import get_llm
+from artemis.llm.reliability import retry_policy_for
+from artemis.services.llm import _record_llm_event, _record_llm_retry, get_llm
 from artemis.utils.logger import get_logger
 from artemis.utils.video import (
     compress_video_for_api,
@@ -76,27 +75,50 @@ _CLEANUP_LOCK = asyncio.Lock()
 
 
 async def _invoke_with_retry(operation, label: str, max_attempts: int = 3):
-    """Retry side-effect-free model coordination calls on transient failures."""
-    for attempt in range(1, max_attempts + 1):
+    """Retry side-effect-free model coordination calls using shared classification.
+
+    Retry decisions come from ``classify_video_failure`` plus the shared
+    per-category policies in :mod:`artemis.llm.reliability` instead of ad-hoc
+    status-code sets.  ``operation`` must be restartable from scratch: each
+    retry re-invokes it and any partially accumulated result (e.g. consumed
+    stream chunks) from the failed attempt is discarded, never surfaced as a
+    complete output.  The original exception is re-raised on giving up so
+    downstream ``classify_video_failure`` consumers keep seeing the provider's
+    native error shape.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             return await operation()
-        except APIError as exc:
-            code = getattr(exc, "code", None)
-            if code in {400, 401, 403, 404} or attempt >= max_attempts:
+        except Exception as exc:
+            failure = classify_video_failure(exc)
+            if not failure.retryable:
+                logger.warning(
+                    f"{label} non-retryable failure [{failure.category.value}] "
+                    f"on attempt {attempt}: {exc}"
+                )
                 raise
-            delay = (2.0 ** (attempt - 1)) + random.uniform(0.1, 0.8)
+            policy = retry_policy_for(failure.category)
+            allowed_attempts = min(max_attempts, policy.max_attempts)
+            if attempt >= allowed_attempts:
+                logger.warning(
+                    f"{label} exhausted {attempt} attempt(s) "
+                    f"[{failure.category.value}]: {exc}"
+                )
+                raise
+            delay = policy.delay_for(attempt)
             logger.warning(
-                f"{label} transient API failure ({attempt}/{max_attempts}): {exc}; "
-                f"retrying in {delay:.2f}s"
+                f"{label} retryable failure [{failure.category.value}] "
+                f"({attempt}/{allowed_attempts}): {exc}; retrying from scratch "
+                f"in {delay:.2f}s (partial output from the failed attempt is discarded)"
             )
-            await asyncio.sleep(delay)
-        except (TimeoutError, ConnectionError, OSError) as exc:
-            if attempt >= max_attempts:
-                raise
-            delay = (2.0 ** (attempt - 1)) + random.uniform(0.1, 0.8)
-            logger.warning(
-                f"{label} transient failure ({attempt}/{max_attempts}): {exc}; "
-                f"retrying in {delay:.2f}s"
+            _record_llm_retry(
+                str(exc),
+                delay,
+                attempt=attempt,
+                max_retries=allowed_attempts,
+                source=label,
             )
             await asyncio.sleep(delay)
 
@@ -1094,6 +1116,14 @@ class VideoAnalyzer:
                     logger.warning(
                         "Native video chunk exhausted retries; using universal fallback"
                     )
+                    _record_llm_event(
+                        "llm_fallback",
+                        {
+                            "reason": "native_video_chunk_failed",
+                            "category": failure.category.value,
+                            "error": str(error)[:500],
+                        },
+                    )
                     fallback_result = await self._exec_single_chunk_universal(
                         compressed_path=compressed_path,
                         raw_path=path,
@@ -1697,35 +1727,43 @@ class VideoAnalyzer:
                         except Exception as ce:
                             logger.error(f"Failed to delete cloud file {file.name}: {ce}")
 
-            except APIError as api_err:
-                logger.warning(f"Sub-agent APIError attempt {attempt + 1} failed: {api_err}")
-                code = getattr(api_err, "code", None)
-                if code == 429:
-                    if attempt >= max_retries:
-                        return await finish_failed(api_err)
-
-                    backoff = (2.0**attempt) + random.uniform(0.1, 1.0)
-                    logger.info(
-                        f"Rate limited (429). Backing off for {backoff:.2f}s"
-                        " without expanding boundaries..."
-                    )
-                    await asyncio.sleep(backoff)
-                    continue
-                elif code in [400, 401, 403, 404]:
-                    return await finish_failed(api_err, retryable=False)
-
-                if attempt >= max_retries:
-                    return await finish_failed(api_err)
-                backoff = 2.0**attempt
-                await asyncio.sleep(backoff)
             except Exception as e:
-                logger.warning(f"Sub-agent attempt {attempt + 1} failed: {e}")
-                if attempt >= max_retries:
+                # Retry decisions are owned by the shared classification layer.
+                # Every attempt restarts from scratch (segment re-extracted,
+                # file re-uploaded, stream re-consumed); partially accumulated
+                # stream output from the failed attempt is discarded, never
+                # surfaced as a complete answer.
+                failure = classify_video_failure(e)
+                attempts_so_far = attempt + 1
+                if not failure.retryable:
+                    logger.warning(
+                        f"Sub-agent non-retryable failure [{failure.category.value}]"
+                        f" on attempt {attempts_so_far}: {e}"
+                    )
+                    return await finish_failed(e, retryable=False)
+                policy = retry_policy_for(failure.category)
+                allowed_attempts = min(max_retries + 1, policy.max_attempts)
+                if attempts_so_far >= allowed_attempts:
+                    logger.warning(
+                        f"Sub-agent exhausted {attempts_so_far} attempt(s)"
+                        f" [{failure.category.value}]: {e}"
+                    )
                     return await finish_failed(e)
-
-                backoff = 2.0**attempt
-                logger.info(f"Backing off for {backoff}s before retry...")
-                await asyncio.sleep(backoff)
+                delay = policy.delay_for(attempts_so_far)
+                logger.warning(
+                    f"Sub-agent retryable failure [{failure.category.value}]"
+                    f" ({attempts_so_far}/{allowed_attempts}): {e}; retrying"
+                    f" from scratch in {delay:.2f}s (partial stream output"
+                    " from the failed attempt is discarded)"
+                )
+                _record_llm_retry(
+                    str(e),
+                    delay,
+                    attempt=attempts_so_far,
+                    max_retries=allowed_attempts,
+                    source="video_sub_agent",
+                )
+                await asyncio.sleep(delay)
 
         raise RuntimeError(
             f"Video sub-agent exhausted retries for {current_start:.1f}s-{current_end:.1f}s"
@@ -1803,6 +1841,18 @@ class VideoAnalyzer:
                 and prompt_with_context is not None
             ):
                 try:
+                    logger.warning(
+                        "Native audio analysis failed"
+                        f" [{failure.category.value}]; using universal fallback"
+                    )
+                    _record_llm_event(
+                        "llm_fallback",
+                        {
+                            "reason": "native_audio_analysis_failed",
+                            "category": failure.category.value,
+                            "error": str(error)[:500],
+                        },
+                    )
                     fallback_result = await self._exec_analyze_audio_universal(
                         audio_path=audio_path,
                         start_time=current_start,
@@ -2135,35 +2185,40 @@ class VideoAnalyzer:
                         except Exception as ce:
                             logger.error(f"Failed to delete cloud file {file.name}: {ce}")
 
-            except APIError as api_err:
-                logger.warning(f"Audio APIError attempt {attempt + 1} failed: {api_err}")
-                code = getattr(api_err, "code", None)
-                if code == 429:
-                    if attempt >= max_retries:
-                        return await finish_failed_audio(api_err)
-
-                    backoff = (2.0**attempt) + random.uniform(0.1, 1.0)
-                    logger.info(
-                        f"Rate limited (429). Backing off for {backoff:.2f}s"
-                        " without expanding boundaries..."
-                    )
-                    await asyncio.sleep(backoff)
-                    continue
-                elif code in [400, 401, 403, 404]:
-                    return await finish_failed_audio(api_err, retryable=False)
-
-                if attempt >= max_retries:
-                    return await finish_failed_audio(api_err)
-                backoff = 2.0**attempt
-                await asyncio.sleep(backoff)
             except Exception as e:
-                logger.warning(f"Audio attempt {attempt + 1} failed: {e}")
-                if attempt >= max_retries:
+                # Same contract as the video sub-agent loop: classification
+                # owns the retry decision and every retry restarts the attempt
+                # from scratch.
+                failure = classify_video_failure(e)
+                attempts_so_far = attempt + 1
+                if not failure.retryable:
+                    logger.warning(
+                        f"Audio non-retryable failure [{failure.category.value}]"
+                        f" on attempt {attempts_so_far}: {e}"
+                    )
+                    return await finish_failed_audio(e, retryable=False)
+                policy = retry_policy_for(failure.category)
+                allowed_attempts = min(max_retries + 1, policy.max_attempts)
+                if attempts_so_far >= allowed_attempts:
+                    logger.warning(
+                        f"Audio analysis exhausted {attempts_so_far} attempt(s)"
+                        f" [{failure.category.value}]: {e}"
+                    )
                     return await finish_failed_audio(e)
-
-                backoff = 2.0**attempt
-                logger.info(f"Backing off for {backoff}s before retry...")
-                await asyncio.sleep(backoff)
+                delay = policy.delay_for(attempts_so_far)
+                logger.warning(
+                    f"Audio retryable failure [{failure.category.value}]"
+                    f" ({attempts_so_far}/{allowed_attempts}): {e}; retrying"
+                    f" from scratch in {delay:.2f}s"
+                )
+                _record_llm_retry(
+                    str(e),
+                    delay,
+                    attempt=attempts_so_far,
+                    max_retries=allowed_attempts,
+                    source="video_audio_agent",
+                )
+                await asyncio.sleep(delay)
 
     async def _exec_single_chunk_universal(
         self,

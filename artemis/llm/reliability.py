@@ -77,6 +77,9 @@ def extract_status_code(error: BaseException) -> int | None:
 _RATE_LIMIT_MARKERS = ("rate limit", "quota", "resource_exhausted")
 _UNAVAILABLE_MARKERS = ("unavailable", "overloaded", "high demand", "service unavailable")
 _AUTH_MARKERS = ("unauthorized", "forbidden", "api key", "credential")
+# "deadline exceeded"/"deadline_exceeded" cover google-genai SDK timeouts that
+# surface without an HTTP status code attached.
+_TIMEOUT_MARKERS = ("timed out", "timeout", "deadline exceeded", "deadline_exceeded")
 
 
 def classify_failure(error: BaseException) -> Failure:
@@ -91,7 +94,7 @@ def classify_failure(error: BaseException) -> Failure:
         return Failure(FailureCategory.RATE_LIMIT, True, True)
     if code in {500, 502, 503, 504} or any(marker in message for marker in _UNAVAILABLE_MARKERS):
         return Failure(FailureCategory.PROVIDER_UNAVAILABLE, True, True)
-    if isinstance(error, TimeoutError) or "timed out" in message or "timeout" in message:
+    if isinstance(error, TimeoutError) or any(marker in message for marker in _TIMEOUT_MARKERS):
         return Failure(FailureCategory.TIMEOUT, True, True)
     if isinstance(error, (ConnectionError, OSError)):
         return Failure(FailureCategory.CONNECTION, True, True)
@@ -163,7 +166,19 @@ _DEFAULT_RETRY_POLICIES: dict[FailureCategory, RetryPolicy] = {
 }
 
 
-def retry_policy_for(category: FailureCategory) -> RetryPolicy:
+def retry_policy_for(category: FailureCategory | str) -> RetryPolicy:
+    """Look up the retry policy for a failure category.
+
+    Accepts the generic ``FailureCategory`` or any string-valued category from
+    a domain extension (e.g. the video pipeline's ``VideoFailureCategory``).
+    Extension-only categories fall back to the UNKNOWN policy, so callers must
+    gate on ``failure.retryable`` before consulting attempt counts.
+    """
+    if not isinstance(category, FailureCategory):
+        try:
+            category = FailureCategory(str(category))
+        except ValueError:
+            category = FailureCategory.UNKNOWN
     return _DEFAULT_RETRY_POLICIES.get(category, _DEFAULT_RETRY_POLICIES[FailureCategory.UNKNOWN])
 
 
