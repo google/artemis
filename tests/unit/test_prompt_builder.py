@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for OperatorPromptBuilder and LoopDetector."""
+"""Unit tests for OperatorPromptBuilder."""
 
-from artemis.agents.operator.loop_detector import LoopDetector
 from artemis.agents.operator.prompt_builder import OperatorPromptBuilder
 
 
@@ -33,24 +32,3 @@ def test_operator_prompt_builder():
     assert "Open Settings" in human_msg
     assert "Tap Network & internet" in human_msg
     assert "Current Turn: 2" in human_msg
-
-
-def test_loop_detector():
-    """Verify loop detector flags repeated action sequences."""
-    detector = LoopDetector(repetition_threshold=3)
-    assert not detector.is_loop_detected()
-
-    # Record distinct actions
-    detector.record_action("click", {"target": [100, 200]})
-    detector.record_action("swipe", {"action": "up"})
-    assert not detector.is_loop_detected()
-
-    # Record 3 identical actions
-    detector.record_action("click", {"target": [500, 500]})
-    detector.record_action("click", {"target": [500, 500]})
-    detector.record_action("click", {"target": [500, 500]})
-    assert detector.is_loop_detected()
-
-    # Reset
-    detector.reset()
-    assert not detector.is_loop_detected()
