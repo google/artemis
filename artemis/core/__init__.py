@@ -12,40 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Core framework contracts and lifecycle primitives."""
+"""Core framework primitives.
 
-from artemis.core.context import ExecutionContext, DeviceInfoContext
-from artemis.core.state import ExecutionContextState, ExecutionStatus, StepRecord
-from artemis.core.events import Event, EventBus, HookType, global_event_bus
-from artemis.core.exceptions import (
-    ArtemisException,
-    DeviceDriverException,
-    DeviceNotFoundException,
-    AgentExecutionException,
-    ToolExecutionException,
-    LLMProviderException,
-    StateTransitionException,
-)
-from artemis.core.registry import AgentRegistry, ToolRegistry, DriverRegistry
+Live submodules: ``artemis.core.tool_declaration`` and ``artemis.core.diagnostics``
+(imported directly by module path by their consumers).
+"""
 
-__all__ = [
-    "ExecutionContext",
-    "DeviceInfoContext",
-    "ExecutionContextState",
-    "ExecutionStatus",
-    "StepRecord",
-    "Event",
-    "EventBus",
-    "HookType",
-    "global_event_bus",
-    "ArtemisException",
-    "DeviceDriverException",
-    "DeviceNotFoundException",
-    "AgentExecutionException",
-    "ToolExecutionException",
-    "LLMProviderException",
-    "StateTransitionException",
-    "AgentRegistry",
-    "ToolRegistry",
-    "DriverRegistry",
-]
+__all__: list[str] = []

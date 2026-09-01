@@ -15,7 +15,6 @@
 """Global pytest fixtures for ARTEMIS test suite."""
 
 import pytest
-from artemis.core.context import ExecutionContext
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 
 
@@ -23,9 +22,3 @@ from artemis.drivers.mock.mock_driver import MockDeviceDriver
 def mock_driver():
     """Provides an isolated MockDeviceDriver instance."""
     return MockDeviceDriver(device_id="fixture-mock-device", width=1080, height=2400)
-
-
-@pytest.fixture
-def test_context():
-    """Provides a fresh ExecutionContext."""
-    return ExecutionContext(task_goal="Test sample task objective", device_id="fixture-mock-device")
