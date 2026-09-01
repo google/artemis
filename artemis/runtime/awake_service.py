@@ -150,7 +150,7 @@ def _configure_usb_stay_awake(device_id: str) -> str | None:
 
 
 def _discover_connected_device_ids() -> list[str]:
-    """Return the selected or all connected local Android devices."""
+    """Return the explicitly targeted device, or the connected devices Artemis manages."""
     if not _awake_enabled() or os.environ.get("ARTEMIS_CLOUD_MODE") == "1":
         return []
 
@@ -171,9 +171,18 @@ def _discover_connected_device_ids() -> list[str]:
 
     if target:
         return [target] if target in serials else []
-    # Artemis has a single-device execution policy. Do not modify unrelated
-    # devices that happen to share the ADB server.
-    return serials[:1]
+    # Keep awake only the devices Artemis actually manages: serials claimed in
+    # the device pool by an active execution lock or a live queue reservation.
+    # Other devices sharing the same ADB server belong to unrelated tools or
+    # users, and their power policy must not be touched.
+    try:
+        from artemis.runtime.device_pool import device_pool
+
+        claimed = device_pool.get_claimed_serials()
+    except Exception as exc:
+        logger.debug(f"Could not query claimed devices for the awake policy: {exc}")
+        return []
+    return [serial for serial in serials if serial in claimed]
 
 
 class ScreenAwakeService:

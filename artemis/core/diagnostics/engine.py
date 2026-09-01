@@ -52,7 +52,6 @@ class ReadinessEngine:
 
     def __init__(self):
         self._probes: dict[str, BaseProbe] = {}
-        self._active_device_serial: str | None = None
         self._python_probe = PythonRuntimeProbe()
         self._config_probe = SystemConfigProbe()
         self._toolchain_probe = ToolchainProbe()
@@ -81,23 +80,18 @@ class ReadinessEngine:
         """Remove a diagnostic probe."""
         self._probes.pop(probe_id, None)
 
-    def set_active_device_serial(self, serial: str | None) -> None:
-        """Set user-selected active target device serial."""
-        self._active_device_serial = serial
+    def set_probe_target_serial(self, serial: str | None) -> None:
+        """Set the diagnostics probes' preferred device serial.
+
+        This is a probe/report preference only (which device the readiness
+        report highlights and verifies first). Task routing never reads it
+        back: execution targets come from explicit request serials or the
+        device pool. Pass None to clear the preference, e.g. after switching
+        ADB server endpoints.
+        """
         self.invalidate_cache()
         if hasattr(self._adb_probe, "set_target_serial"):
             self._adb_probe.set_target_serial(serial)
-
-    def get_active_device_serial(self) -> str | None:
-        """Get currently selected active device serial."""
-        if self._report_cache and self._report_cache.active_device:
-            if self._report_cache.active_device.is_locked is False:
-                return self._report_cache.active_device.serial
-        if self._active_device_serial:
-            return self._active_device_serial
-        if self._report_cache and self._report_cache.active_device:
-            return self._report_cache.active_device.serial
-        return None
 
     async def run_probe(self, probe_id: str) -> ProbeResult | None:
         """Execute a single specific probe by ID."""

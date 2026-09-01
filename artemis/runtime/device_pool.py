@@ -398,6 +398,30 @@ class DevicePool:
         """Return ready devices that are not currently holding an execution lock."""
         return [d for d in self.list_devices() if d.state == "device" and not d.is_busy]
 
+    def get_claimed_serials(self) -> set[str]:
+        """Return device serials Artemis currently claims on the ADB server.
+
+        A device is claimed while any Artemis process holds its execution lock
+        or has a live pending queue reservation targeting it. Placeholder
+        reservations not yet bound to a concrete device ("pending"/"any")
+        claim nothing. Read-only: computed purely from cross-process lock and
+        queue metadata, without any adb traffic.
+        """
+        claimed: set[str] = set()
+        try:
+            for owner in DeviceExecutionLock.get_active_owners().values():
+                if owner.device_id:
+                    claimed.add(str(owner.device_id))
+            for item in DeviceExecutionLock.get_queued_tasks():
+                serial = item.get("device_serial")
+                if serial:
+                    claimed.add(str(serial))
+        except Exception as exc:
+            logger.debug(f"Could not compute claimed device serials: {exc}")
+        claimed.discard("pending")
+        claimed.discard("any")
+        return claimed
+
     def select_device(self, preferred_serial: str | None = None) -> str | None:
         """Select a target device serial for task execution.
 
@@ -418,16 +442,6 @@ class DevicePool:
                     return dev.serial
             # If not detected by ADB, still return it so ADB can attempt connection
             return preferred_serial
-
-        # Prefer active ready device from readiness engine if available
-        try:
-            from artemis.core.diagnostics import readiness_engine
-
-            active_serial = readiness_engine.get_active_device_serial()
-            if active_serial and any(d.serial == active_serial and d.state == "device" for d in all_devs):
-                return active_serial
-        except Exception:
-            pass
 
         # Pick first idle device
         for dev in ready_devs:
