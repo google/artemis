@@ -45,16 +45,12 @@ def _pid_alive(pid: int | None) -> bool:
     if not pid:
         return False
     try:
-        import psutil
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    from artemis.runtime.process_probe import pid_is_alive
 
-        proc = psutil.Process(int(pid))
-        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
-    except Exception:
-        try:
-            os.kill(int(pid), 0)
-            return True
-        except OSError:
-            return False
+    return pid_is_alive(pid_int)
 
 
 def _session_tracked_by_lock(trace_id: str) -> bool:

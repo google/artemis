@@ -28,6 +28,7 @@ import time
 import uuid
 
 from artemis.config.paths import get_temp_dir
+from artemis.runtime.process_probe import pid_is_alive
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -77,16 +78,11 @@ class ScreenAwakeLease:
     @staticmethod
     def _owner_is_alive(payload: dict) -> bool:
         try:
-            import psutil
-
             pid = int(payload["pid"])
-            process = psutil.Process(pid)
-            if not process.is_running():
-                return False
-            created_at = float(payload.get("process_created_at", 0.0))
-            return created_at <= 0 or abs(process.create_time() - created_at) < 1.0
-        except Exception:
+            created_at = float(payload.get("process_created_at", 0.0) or 0.0)
+        except (KeyError, TypeError, ValueError):
             return False
+        return pid_is_alive(pid, created_at if created_at > 0 else None)
 
     @staticmethod
     def _read_payload(path: Path) -> dict | None:

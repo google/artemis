@@ -168,31 +168,9 @@ def _reconcile_orphaned_sessions() -> int:
 
 def _any_pid_alive(pids: list[int]) -> bool:
     """Return whether any target process is still running (zombies excluded)."""
-    if not pids:
-        return False
-    try:
-        import psutil
+    from artemis.runtime.process_probe import pid_is_alive
 
-        for pid in pids:
-            try:
-                process = psutil.Process(pid)
-                if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
-                    return True
-            except psutil.NoSuchProcess:
-                continue
-            except psutil.AccessDenied:
-                return True
-        return False
-    except Exception:
-        return any(_pid_exists_portably(pid) for pid in pids)
-
-
-def _pid_exists_portably(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    return any(pid_is_alive(pid) for pid in pids)
 
 
 def find_server_pids(port: int = 8000) -> list[int]:
@@ -210,17 +188,10 @@ def find_server_pids(port: int = 8000) -> list[int]:
     if info and info.get("port") == port:
         saved_pid = info.get("pid")
         if saved_pid and isinstance(saved_pid, int):
-            try:
-                import psutil
+            from artemis.runtime.process_probe import pid_is_alive
 
-                if psutil.pid_exists(saved_pid):
-                    discovered.add(saved_pid)
-            except Exception:
-                try:
-                    os.kill(saved_pid, 0)
-                    discovered.add(saved_pid)
-                except OSError:
-                    pass
+            if pid_is_alive(saved_pid):
+                discovered.add(saved_pid)
 
     # 2. Check port listeners with platform-native tools
     # 2a. lsof (macOS & Linux)

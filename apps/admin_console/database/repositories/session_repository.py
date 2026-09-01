@@ -41,14 +41,19 @@ class SessionRepository:
 
     @staticmethod
     def process_is_alive(pid: Any) -> bool:
-        """Return whether a session's worker PID is still alive."""
-        try:
-            import psutil
+        """Return whether a session's worker PID is still alive.
 
-            process = psutil.Process(int(pid))
-            return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
-        except Exception:
+        Delegates to the repository-wide probe: indeterminate liveness
+        (e.g. AccessDenied) counts as alive so a running session is never
+        reaped by mistake.
+        """
+        try:
+            pid_int = int(pid)
+        except (TypeError, ValueError):
             return False
+        from artemis.runtime.process_probe import pid_is_alive
+
+        return pid_is_alive(pid_int)
 
     def get_all_sessions(self) -> list[dict[str, Any]]:
         with db_session(self.db_path) as conn:

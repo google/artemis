@@ -27,6 +27,7 @@ from typing import Any
 import uuid
 
 from artemis.config.paths import get_temp_dir
+from artemis.runtime.process_probe import pid_is_alive
 
 
 class DeviceBusyError(RuntimeError):
@@ -202,22 +203,22 @@ class DeviceExecutionLock:
     def _owner_is_alive(owner: DeviceLockOwner) -> bool:
         if owner.pid <= 0:
             return False
-        try:
-            import psutil
+        if owner.process_created_at <= 0:
+            # Legacy owner payloads without a create time cannot use PID-reuse
+            # protection; require an Artemis-looking process before trusting
+            # the record (a recycled PID must not keep a lock alive forever).
+            try:
+                import psutil
 
-            process = psutil.Process(owner.pid)
-            if not process.is_running():
-                return False
-            if owner.process_created_at <= 0:
-                try:
-                    name = process.name().lower()
-                    cmdline = " ".join(process.cmdline()).lower()
-                    return any(k in name or k in cmdline for k in ("python", "artemis", "pytest"))
-                except Exception:
+                process = psutil.Process(owner.pid)
+                if not process.is_running():
                     return False
-            return abs(process.create_time() - owner.process_created_at) < 1.0
-        except Exception:
-            return False
+                name = process.name().lower()
+                cmdline = " ".join(process.cmdline()).lower()
+                return any(k in name or k in cmdline for k in ("python", "artemis", "pytest"))
+            except Exception:
+                return False
+        return pid_is_alive(owner.pid, owner.process_created_at)
 
     @staticmethod
     def _read_owner(path: Path) -> DeviceLockOwner | None:
@@ -267,6 +268,108 @@ class DeviceExecutionLock:
         if lock_scope:
             payload["lock_scope"] = str(lock_scope)
         return payload
+
+    @classmethod
+    def _ticket_targets_device(
+        cls,
+        ticket_owner: DeviceLockOwner,
+        *,
+        target_lock_id: str,
+        target_scope: str | None,
+        include_pending: bool,
+    ) -> bool:
+        """Return whether a queue ticket belongs to the given device's queue.
+
+        A concrete ticket matches only its own device. A ticket whose device id
+        is still ``pending``/``any`` is a submission placeholder that no worker
+        has claimed yet; with ``include_pending=True`` it matches any device
+        with a compatible lock scope (used by listings, and by
+        ``_build_device_queue`` which then narrows the match down to a single
+        parked device), while ``include_pending=False`` excludes it.
+        """
+        ticket_dev = cls._normalize_device_id(ticket_owner.device_id)
+        ticket_lock_id = cls._normalize_lock_id(
+            ticket_owner.device_id,
+            ticket_owner.lock_scope,
+        )
+        if ticket_lock_id == target_lock_id:
+            return True
+        if not include_pending:
+            return False
+        same_scope = (
+            not ticket_owner.lock_scope
+            or not target_scope
+            or ticket_owner.lock_scope == target_scope
+        )
+        return ticket_dev in ("pending", "any") and same_scope
+
+    @classmethod
+    def _build_device_queue(
+        cls,
+        wait_files: list[Path],
+        *,
+        target_lock_id: str,
+        target_scope: str | None,
+    ) -> list[Path]:
+        """Return the FIFO wait-ticket queue that gates ``target_lock_id``.
+
+        Concrete tickets belong to exactly their own device's queue. An
+        unclaimed ``pending``/``any`` ticket is *parked* on at most one device:
+        pending tickets, taken in FIFO order, occupy the idle scope-compatible
+        candidate devices in sorted lock-id order. Historically such a ticket
+        was counted into every device's queue, so a single unclaimed
+        head-of-queue ticket blocked all devices at once. Parking preserves
+        submission order on the one device the ticket is presumed to claim
+        while leaving every other idle device schedulable.
+
+        The pending submission itself cannot starve: its ticket file keeps its
+        original timestamp, so once a worker claims a concrete device the
+        ticket sorts ahead of every younger ticket for that device.
+        """
+        entries: list[tuple[Path, str | None]] = []
+        known_lock_ids: set[str] = set()
+        for wait_path in wait_files:
+            owner = cls._read_owner(wait_path)
+            if owner is None:
+                continue
+            if cls._normalize_device_id(owner.device_id) in ("pending", "any"):
+                if cls._ticket_targets_device(
+                    owner,
+                    target_lock_id=target_lock_id,
+                    target_scope=target_scope,
+                    include_pending=True,
+                ):
+                    entries.append((wait_path, None))
+                continue
+            same_scope = (
+                not owner.lock_scope
+                or not target_scope
+                or owner.lock_scope == target_scope
+            )
+            if not same_scope:
+                continue
+            lock_id = cls._normalize_lock_id(owner.device_id, owner.lock_scope)
+            known_lock_ids.add(lock_id)
+            entries.append((wait_path, lock_id))
+
+        lock_dir = get_temp_dir("device-locks")
+        idle_candidates = sorted(
+            lock_id
+            for lock_id in known_lock_ids
+            if not (lock_dir / f"artemis-device-{lock_id}.lock").exists()
+        )
+        parked: dict[Path, str] = {}
+        next_candidate = 0
+        for wait_path, lock_id in entries:
+            if lock_id is None and next_candidate < len(idle_candidates):
+                parked[wait_path] = idle_candidates[next_candidate]
+                next_candidate += 1
+
+        return [
+            wait_path
+            for wait_path, lock_id in entries
+            if lock_id == target_lock_id or parked.get(wait_path) == target_lock_id
+        ]
 
     @classmethod
     def reserve(
@@ -547,27 +650,15 @@ class DeviceExecutionLock:
                     )
                     is_eligible = is_reentrant or bool(all_wait_files and all_wait_files[0] == self._queue_path)
                 else:
-                    # In multi-device parallel mode, per-device FIFO applies
-                    target_dev = self.clean_device_id
-                    device_queue: list[Path] = []
-                    for wait_path in all_wait_files:
-                        ticket_owner = self._read_owner(wait_path)
-                        if ticket_owner is None:
-                            continue
-                        ticket_dev = self._normalize_device_id(ticket_owner.device_id)
-                        ticket_lock_id = self._normalize_lock_id(
-                            ticket_owner.device_id,
-                            ticket_owner.lock_scope,
-                        )
-                        same_scope = (
-                            not ticket_owner.lock_scope
-                            or not self.lock_scope
-                            or ticket_owner.lock_scope == self.lock_scope
-                        )
-                        if ticket_lock_id == target_dev or (
-                            ticket_dev in ("pending", "any") and same_scope
-                        ):
-                            device_queue.append(wait_path)
+                    # In multi-device parallel mode, per-device FIFO applies.
+                    # Unclaimed pending/any tickets are parked on at most one
+                    # idle device instead of gating the head of every device's
+                    # queue (see _build_device_queue).
+                    device_queue = self._build_device_queue(
+                        all_wait_files,
+                        target_lock_id=self.clean_device_id,
+                        target_scope=self.lock_scope,
+                    )
                     is_eligible = bool(device_queue and device_queue[0] == self._queue_path)
 
                 if is_eligible and self._try_acquire_owner_lock():
@@ -729,15 +820,11 @@ class DeviceExecutionLock:
             if owner.token in active_tokens:
                 continue
 
-            target_dev = cls._normalize_device_id(owner.device_id)
-            target_lock_id = cls._normalize_lock_id(owner.device_id, owner.lock_scope)
-            same_scope = (
-                not target_scope
-                or not owner.lock_scope
-                or owner.lock_scope == target_scope
-            )
-            if clean_target is not None and target_lock_id != clean_target and not (
-                target_dev in ("pending", "any") and same_scope
+            if clean_target is not None and not cls._ticket_targets_device(
+                owner,
+                target_lock_id=clean_target,
+                target_scope=target_scope,
+                include_pending=True,
             ):
                 continue
 
