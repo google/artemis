@@ -78,8 +78,8 @@ async def test_run_task_enqueues_when_device_is_unlocked(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_task_switches_to_unlocked_device_and_syncs_engine(monkeypatch):
-    """When default device is locked, run_task should enqueue on verified fallback and update engine."""
+async def test_run_task_binds_probe_verified_device_when_no_serial_requested(monkeypatch):
+    """Without an explicit serial, run_task enqueues on the probe-verified live device."""
     unlocked_probe = ProbeResult(
         id="android_adb",
         category=ProbeCategory.DEVICE,
@@ -100,9 +100,6 @@ async def test_run_task_switches_to_unlocked_device_and_syncs_engine(monkeypatch
         tasks.readiness_engine, "run_device_submission_probe", run_probe
     )
     monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue_tasks)
-    monkeypatch.setattr(tasks.readiness_engine, "get_active_device_serial", lambda: "device-locked-1")
-    set_active_mock = AsyncMock()
-    monkeypatch.setattr(tasks.readiness_engine, "set_active_device_serial", set_active_mock)
 
     result = await tasks.run_task(RunRequest(goal="Run on any ready device"))
 
@@ -111,7 +108,6 @@ async def test_run_task_switches_to_unlocked_device_and_syncs_engine(monkeypatch
     # Check that device_serial passed to enqueue_tasks is the verified unlocked device
     _, kwargs = enqueue_tasks.call_args
     assert kwargs.get("device_serial") == "emulator-5556"
-    set_active_mock.assert_called_once_with("emulator-5556")
 
 
 @pytest.mark.asyncio

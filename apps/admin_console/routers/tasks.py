@@ -140,7 +140,10 @@ async def run_task(request: RunRequest):
     # polling intervals cannot start through a stale Ready state. Use the
     # bounded submission probe: the full diagnostics path also scans packages,
     # emulator installations, Android version, and screen size.
-    target_serial = request.device_serial or readiness_engine.get_active_device_serial()
+    # With no explicit serial the probe itself resolves a live target (it
+    # prefers the diagnostics target preference, then any unlocked ready
+    # device); the verified serial is bound below.
+    target_serial = request.device_serial
     device_probe = await readiness_engine.run_device_submission_probe(
         target_serial=target_serial
     )
@@ -164,10 +167,6 @@ async def run_task(request: RunRequest):
         # invalid, enqueue_tasks rejects the submission with a clear error.
         if verified_serial and not request.device_serial:
             target_serial = verified_serial
-        # The probe verified a live device either way: keep the global active
-        # serial in sync even when the caller pinned the target explicitly.
-        if verified_serial and readiness_engine.get_active_device_serial() != verified_serial:
-            readiness_engine.set_active_device_serial(verified_serial)
 
     return await task_queue_service.enqueue_tasks(
         incoming_goals,

@@ -156,11 +156,30 @@ def test_disconnect_reconciliation_stops_heartbeat_and_allows_reenrollment(
     assert configure.call_count == 2
 
 
+@patch("artemis.runtime.device_pool.device_pool.get_claimed_serials")
 @patch("artemis.runtime.awake_service.AdbClient")
-def test_discovery_honors_single_device_policy(adb_client):
+def test_discovery_keeps_only_pool_claimed_devices(adb_client, claimed):
+    """The pool manages two devices while the ADB server lists three: only the
+    two claimed devices are kept awake; the unrelated one is left untouched."""
+    adb_client.return_value.device_list.return_value = [
+        MagicMock(serial="device-1"),
+        MagicMock(serial="device-2"),
+        MagicMock(serial="device-3"),
+    ]
+    claimed.return_value = {"device-1", "device-2"}
+
+    assert _discover_connected_device_ids() == ["device-1", "device-2"]
+
+
+@patch(
+    "artemis.runtime.device_pool.device_pool.get_claimed_serials",
+    return_value=set(),
+)
+@patch("artemis.runtime.awake_service.AdbClient")
+def test_discovery_returns_nothing_when_pool_claims_no_device(adb_client, _claimed):
     adb_client.return_value.device_list.return_value = [
         MagicMock(serial="device-1"),
         MagicMock(serial="device-2"),
     ]
 
-    assert _discover_connected_device_ids() == ["device-1"]
+    assert _discover_connected_device_ids() == []

@@ -111,7 +111,7 @@ async def select_active_device(request: SelectDeviceRequest):
     if not serial:
         raise HTTPException(status_code=400, detail="Device serial cannot be empty.")
 
-    readiness_engine.set_active_device_serial(serial)
+    readiness_engine.set_probe_target_serial(serial)
     # Return updated readiness
     report = await readiness_engine.run_all(force_refresh=True)
     return {
@@ -192,7 +192,7 @@ async def connect_adb_server(payload: ConnectAdbServerRequest, request: Request)
 
     response: dict[str, object] = {"connection_result": connection_result}
     if connection_result["success"]:
-        readiness_engine.set_active_device_serial(None)
+        readiness_engine.set_probe_target_serial(None)
         readiness_engine.invalidate_cache()
         response["report"] = await readiness_engine.run_all(force_refresh=True)
     return response
@@ -214,7 +214,7 @@ async def use_local_adb_server(request: Request, persist: bool = True):
     """Restore the standard local ADB server without touching a remote daemon."""
     _require_local_admin_request(request)
     connection_result = await adb_server_connection.use_local_server(persist=persist)
-    readiness_engine.set_active_device_serial(None)
+    readiness_engine.set_probe_target_serial(None)
     readiness_engine.invalidate_cache()
     updated_report = await readiness_engine.run_all(force_refresh=True)
     return {

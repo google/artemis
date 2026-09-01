@@ -769,13 +769,6 @@ class TaskQueueService:
             assigned_serial = device_serial
             if not assigned_serial:
                 try:
-                    from artemis.core.diagnostics import readiness_engine
-
-                    assigned_serial = readiness_engine.get_active_device_serial()
-                except Exception:
-                    assigned_serial = None
-            if not assigned_serial:
-                try:
                     from artemis.runtime import device_pool
 
                     assigned_serial = device_pool.select_device()
@@ -949,21 +942,18 @@ class TaskQueueService:
                     owner = dev_owner
                     break
         if owner is None:
+            # Covers scoped/legacy lock records that get_active_owners cannot
+            # key by session or device. A stale owner for a different session
+            # is never adopted: with no live owner, a session-targeted stop
+            # falls through to the queue/session-repository fallbacks below.
             fallback_owner = DeviceExecutionLock.get_active_owner(target_device)
-            if fallback_owner:
-                if not target_sid or (
-                    fallback_owner.session_id and str(fallback_owner.session_id) == target_sid
-                ):
-                    owner = fallback_owner
-                elif not active_owners:
-                    # In unit tests, get_active_owners is unmocked (empty), while get_active_owner is mocked
-                    owner = fallback_owner
+            if fallback_owner and (
+                not target_sid
+                or (fallback_owner.session_id and str(fallback_owner.session_id) == target_sid)
+            ):
+                owner = fallback_owner
 
-        owner_record_exists = (
-            DeviceExecutionLock.has_owner_record(target_device)
-            if hasattr(DeviceExecutionLock, "has_owner_record")
-            else False
-        )
+        owner_record_exists = DeviceExecutionLock.has_owner_record(target_device)
         owner_pid = owner.pid if owner else None
 
         # Resolve the locally-managed run for this target (concurrent scheduling
@@ -981,8 +971,16 @@ class TaskQueueService:
                 None,
             )
         elif len(state.active_runs) == 1:
+            # Untargeted stop (legacy single-device gesture): with exactly one
+            # live run the target is unambiguous. With several runs no run is
+            # resolved -- callers must target a session or device explicitly.
             local_run = next(iter(state.active_runs.values()))
-        local_proc = (local_run or {}).get("process") or state.current_process
+        local_proc = (local_run or {}).get("process")
+        if local_proc is None and not state.active_runs:
+            # Legacy fallback for the window without per-run bookkeeping. With
+            # live active_runs, current_process belongs to the newest run and
+            # must not stand in for an unresolved target.
+            local_proc = state.current_process
         local_pid = getattr(local_proc, "pid", None)
         is_local_owner = bool(owner_pid and local_pid and owner_pid == local_pid)
 

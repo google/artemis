@@ -404,9 +404,12 @@ class EmulatorManager:
                         try:
                             from artemis.core.diagnostics.engine import readiness_engine
 
-                            readiness_engine.set_active_device_serial(detected_serial)
+                            # Focus the readiness report on the freshly booted
+                            # emulator; task routing still resolves its own
+                            # target from the request or the device pool.
+                            readiness_engine.set_probe_target_serial(detected_serial)
                         except Exception as e:
-                            logger.debug(f"Failed to auto-select device serial: {e}")
+                            logger.debug(f"Failed to focus probes on the new emulator: {e}")
                         return
                     else:
                         # Gradual progress visual indicator

@@ -392,11 +392,13 @@ async def test_toolchain_probe_structure():
 
 
 @pytest.mark.asyncio
-async def test_active_device_selection():
-    """Verify selecting a device updates engine state."""
+async def test_probe_target_serial_forwards_to_adb_probe():
+    """Verify the probe target preference reaches the ADB probe and can be cleared."""
     engine = ReadinessEngine()
-    engine.set_active_device_serial("test-emulator-1234")
-    assert engine.get_active_device_serial() == "test-emulator-1234"
+    engine.set_probe_target_serial("test-emulator-1234")
+    assert engine._adb_probe._target_serial == "test-emulator-1234"
+    engine.set_probe_target_serial(None)
+    assert engine._adb_probe._target_serial is None
 
 
 @pytest.mark.asyncio

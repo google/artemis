@@ -91,6 +91,33 @@ def test_device_pool_list_devices_and_busy_status(monkeypatch):
         lock.release()
 
 
+def test_get_claimed_serials_reflects_locks_and_reservations():
+    pool = DevicePool()
+    assert pool.get_claimed_serials() == set()
+
+    lock = DeviceExecutionLock("emulator-5554", "claimed by test")
+    lock.acquire()
+    bound_ticket = DeviceExecutionLock.reserve(
+        description="queued task",
+        device_id="pixel-8-pro",
+        session_id="queued-session",
+    )
+    unbound_ticket = DeviceExecutionLock.reserve(
+        description="unbound task",
+        device_id="pending",
+        session_id="pending-session",
+    )
+    try:
+        # Locked and reserved serials are claimed; the unbound placeholder is not.
+        assert pool.get_claimed_serials() == {"emulator-5554", "pixel-8-pro"}
+    finally:
+        DeviceExecutionLock.cancel_reservation(bound_ticket)
+        DeviceExecutionLock.cancel_reservation(unbound_ticket)
+        lock.release()
+
+    assert pool.get_claimed_serials() == set()
+
+
 RAW_DEVICE = ("emulator-5554", "device", "Emulator", "sdk")
 
 

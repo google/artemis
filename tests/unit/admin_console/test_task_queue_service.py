@@ -223,10 +223,6 @@ async def test_queue_worker_execution_lifecycle():
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
-            "artemis.core.diagnostics.readiness_engine.get_active_device_serial",
-            return_value=None,
-        ),
-        patch(
             "artemis.runtime.device_pool.device_pool.select_device",
             return_value="emulator-5554",
         ),
@@ -272,10 +268,6 @@ async def test_queue_worker_cmd_construction():
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
-        patch(
-            "artemis.core.diagnostics.readiness_engine.get_active_device_serial",
-            return_value=None,
-        ),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device",
             return_value="emulator-5554",
@@ -489,6 +481,48 @@ def test_stop_tasks_does_not_kill_stale_reused_pid():
     terminate_verified.assert_not_called()
 
 
+def test_stop_tasks_session_target_never_adopts_mismatched_fallback_owner():
+    """No live owners is a legal state: a session-targeted stop must not
+    terminate a fallback owner that belongs to a different session."""
+    other_owner = DeviceLockOwner(
+        pid=24680,
+        process_created_at=1234.5,
+        token="other-owner-token",
+        device_id="emulator-5554",
+        description="Task for another session",
+        acquired_at="2026-08-24T00:00:00+00:00",
+        session_id="other-session",
+        ingress="cli",
+    )
+    with (
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.get_active_owners",
+            return_value={},
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.get_active_owner",
+            return_value=other_owner,
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.is_active_owner",
+            return_value=True,
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree_verified"
+        ) as terminate_verified,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
+        ),
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo.get_session_by_id",
+            return_value=None,
+        ),
+    ):
+        task_queue_service.stop_tasks(clear_all=False, session_id="wanted-session")
+
+    terminate_verified.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_status_reports_external_global_owner_without_ipc_connection():
     external_owner = DeviceLockOwner(
@@ -549,10 +583,6 @@ async def test_cancel_task_triggers_next_pending_task():
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
-            "artemis.core.diagnostics.readiness_engine.get_active_device_serial",
-            return_value=None,
-        ),
-        patch(
             "artemis.runtime.device_pool.device_pool.select_device",
             return_value="emulator-5554",
         ),
@@ -603,10 +633,6 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
-        patch(
-            "artemis.core.diagnostics.readiness_engine.get_active_device_serial",
-            return_value=None,
-        ),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device",
             return_value="emulator-5554",
