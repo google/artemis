@@ -106,8 +106,18 @@ class ExecutionSetup(BaseModel):
     app_lock_status: AppLaunchResult | None = None
     video_recording_tools_enabled: bool = Field(default_factory=detect_video_tools_enabled)
     disable_checker: bool = True
+    """Legacy master switch (compat alias): ``True`` disables BOTH the midway
+    checkpoints and the final check, regardless of the individual gates below."""
+    disable_midway_checks: bool = False
+    disable_final_check: bool = False
     checker_max_iterations: int = 20
-    checker_max_chat_rounds: int = 4
+    final_check_max_attempts: int = 3
+    checkpoint_max_repairs: int = 2
+    max_concurrent_checkpoints: int = 3
+    checkpoint_timeout: float = 180.0
+    settlement_timeout: float = 120.0
+    assert_failure_policy: Literal["continue", "halt"] = "continue"
+    disable_device_probes: bool = False
     disable_planner_validation: bool = True
     planner_validation_threshold: float = 0.85
     enable_committee: bool = False
@@ -116,6 +126,23 @@ class ExecutionSetup(BaseModel):
     outputter: OutputterConfig = Field(default_factory=OutputterConfig)
     explorer: ExplorerConfig = Field(default_factory=ExplorerConfig)
     explorer_versions: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def midway_checks_enabled(self) -> bool:
+        """Midway checkpoint gate: honors both the individual switch and the
+        legacy ``disable_checker`` master alias."""
+        return not (self.disable_midway_checks or self.disable_checker)
+
+    @property
+    def final_check_enabled(self) -> bool:
+        """Final review gate: honors both the individual switch and the legacy
+        ``disable_checker`` master alias."""
+        return not (self.disable_final_check or self.disable_checker)
+
+    @property
+    def checks_enabled(self) -> bool:
+        """True when any check gate is active (drives conditional prompt assembly)."""
+        return self.midway_checks_enabled or self.final_check_enabled
 
     @property
     def explorer_version(self) -> str:
@@ -160,20 +187,43 @@ class ArtemisContext(BaseModel):
     execution_setup: ExecutionSetup | None = None
 
     data_engine: DataEngine | None = None
-    checker_task: asyncio.Task[Any] | None = None
     planner_task: asyncio.Task[Any] | None = None
     background_tasks: list[asyncio.Task[Any]] = Field(default_factory=list)
     background_task_grace_period_seconds: float = 2.0
     package_cache: dict[str, str | None] = Field(default_factory=dict)
     background_jobs: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
-    task_plan_snapshot: Path | None = None
+    pending_checkpoints: list[Any] = Field(default_factory=list)
+    """Queued :class:`~artemis.graph.checkpoints.PendingCheckpoint` entries.
+    ``_process_plan_write`` only enqueues; ``execution_check_node`` spawns after
+    the turn's step is recorded so the evidence anchor points at a real step."""
+    checkpoint_tasks: dict[str, Any] = Field(default_factory=dict)
+    """checkpoint_id -> (attempt_id, asyncio.Task). One in-flight attempt per
+    checkpoint; supersede harvests/cancels the old entry before replacing it."""
+    checkpoint_attempt_seq: dict[str, int] = Field(default_factory=dict)
+    """checkpoint_id -> monotonically increasing attempt counter."""
+    checkpoint_repairs: dict[str, int] = Field(default_factory=dict)
+    """checkpoint_id -> number of verify-fail repairs already applied."""
+    assert_halt: bool = False
+    """Latched by an assert failure under ``assert_failure_policy='halt'``."""
+    final_check_attempts: int = 0
+    """Number of final-check passes already executed at exit settlement."""
+
     task_plan_content_before: str | None = None
+    last_validated_plan: str | None = None
+    """Ratchet baseline for planner validation: the last plan content whose
+    top-level milestones were validated (or the initial plan). Drift is always
+    judged against this, never against the immediately preceding write."""
+    pending_validated_plan: str | None = None
+    """Plan content currently under async planner validation; becomes the new
+    baseline when the validator approves it."""
 
     _genai_client: Any | None = PrivateAttr(default=None)
     _video_blackboard: Any | None = PrivateAttr(default=None)
     _video_circuit_breaker: Any | None = PrivateAttr(default=None)
     _mobile_controller: Any | None = PrivateAttr(default=None)
+    _active_driver: Any | None = PrivateAttr(default=None)
+    """Cached device driver singleton (artemis.drivers.factory.get_driver)."""
     mcp_client_ctx: Any | None = None
     mcp_session: Any | None = None
     action_session: Any | None = None
@@ -200,9 +250,7 @@ class ArtemisContext(BaseModel):
             tasks = list(self.background_tasks)
             pending_tasks = [task for task in tasks if not task.done()]
             grace_period = (
-                max(0.0, self.background_task_grace_period_seconds)
-                if exc_type is None
-                else 0.0
+                max(0.0, self.background_task_grace_period_seconds) if exc_type is None else 0.0
             )
 
             if pending_tasks and grace_period > 0:

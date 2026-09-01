@@ -14,85 +14,252 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from artemis.agents.checker.checker import CheckerResult, run_async_check
-from artemis.context import ArtemisContext
 import pytest
+
+from artemis.agents.checker.checker import (
+    CheckReport,
+    CheckVerdict,
+    _normalize_report,
+    assemble_checker_prompt_segments,
+    build_checker_tools,
+    build_probe_argv,
+    run_checkpoint_check,
+    run_final_check,
+    verdicts_allow_release,
+)
+from artemis.context import ArtemisContext, ExecutionSetup
+from artemis.graph.checkpoints import EvidenceAnchor
+from artemis.utils.plan_grammar import CheckItem
+
+
+def _ci(kind="verify", when="on_complete", text="expected state", parent="p"):
+    return CheckItem(kind=kind, when=when, text=text, parent_key=parent)
+
+
+def _mock_ctx(**setup_kwargs):
+    ctx = MagicMock(spec=ArtemisContext)
+    ctx.execution_setup = ExecutionSetup(**setup_kwargs)
+    ctx.data_engine = MagicMock()
+    ctx.data_engine.base_dir = "unused"
+    ctx.data_engine.get_agent_friendly_steps.return_value = []
+    ctx.data_engine.get_step_number.return_value = 7
+    return ctx
+
+
+# --- probe_device: enumerated table, programmatic argv (§8 item 12) ------------------
+
+
+def test_probe_argv_enumerated_kinds_allowed():
+    assert build_probe_argv("alarms") == ["dumpsys", "alarm"]
+    assert build_probe_argv("battery") == ["dumpsys", "battery"]
+    assert build_probe_argv("foreground") == ["dumpsys", "activity", "activities"]
+    assert build_probe_argv("packages") == ["pm", "list", "packages"]
+    assert build_probe_argv("setting", {"namespace": "system", "key": "screen_brightness"}) == [
+        "settings",
+        "get",
+        "system",
+        "screen_brightness",
+    ]
+    assert build_probe_argv("content", {"uri": "content://settings/system"}) == [
+        "content",
+        "query",
+        "--uri",
+        "content://settings/system",
+    ]
+    assert build_probe_argv("prop", {"key": "ro.build.version.sdk"}) == [
+        "getprop",
+        "ro.build.version.sdk",
+    ]
+
+
+def test_probe_argv_rejects_unknown_kind():
+    with pytest.raises(ValueError):
+        build_probe_argv("shell")
+    with pytest.raises(ValueError):
+        build_probe_argv("dumpsys")
+
+
+def test_probe_argv_rejects_whitespace_and_metachars():
+    for bad in ("a key", "key;rm", "key|x", "key$", "key`x`", "key&&y", "a\nb"):
+        with pytest.raises(ValueError):
+            build_probe_argv("prop", {"key": bad})
+    with pytest.raises(ValueError):
+        build_probe_argv("setting", {"namespace": "system", "key": "a b"})
+    with pytest.raises(ValueError):
+        build_probe_argv("content", {"uri": "content://a; rm -rf /"})
+
+
+def test_probe_argv_battery_set_inexpressible():
+    """Mutating dumpsys subcommands cannot be expressed: no-parameter probes
+    reject every parameter."""
+    with pytest.raises(ValueError):
+        build_probe_argv("battery", {"extra": "set level 100"})
+    with pytest.raises(ValueError):
+        build_probe_argv("alarms", {"args": "anything"})
+    # And the setting namespace is a closed set
+    with pytest.raises(ValueError):
+        build_probe_argv("setting", {"namespace": "battery", "key": "level"})
+
+
+# --- Release decision is node-side and never rewrites verdicts -----------------------
+
+
+def test_verdicts_allow_release_semantics():
+    ok = CheckReport(
+        verdicts=[
+            CheckVerdict(item_text="a", kind="verify", status="passed", evidence="e"),
+            CheckVerdict(item_text="b", kind="verify", status="inconclusive", evidence="e"),
+            CheckVerdict(item_text="c", kind="assert", status="failed", evidence="e"),
+        ]
+    )
+    # Assert failures never block release
+    assert verdicts_allow_release(ok)
+
+    blocked = CheckReport(
+        verdicts=[
+            CheckVerdict(item_text="a", kind="verify", status="failed", evidence="e"),
+        ]
+    )
+    assert not verdicts_allow_release(blocked)
+
+
+def test_normalize_report_downgrades_vague_failures_and_fills_missing():
+    items = [_ci(kind="verify", text="v1"), _ci(kind="assert", text="a1")]
+    report = CheckReport(
+        verdicts=[CheckVerdict(item_text="v1", kind="verify", status="failed", evidence="  ")]
+    )
+    normalized = _normalize_report(report, items)
+    by_text = {(v.kind, v.item_text): v for v in normalized.verdicts}
+    # Vague failed -> inconclusive (verdict value hygiene, not release logic)
+    assert by_text[("verify", "v1")].status == "inconclusive"
+    # Missing item gets an inconclusive verdict, never a silent pass
+    assert by_text[("assert", "a1")].status == "inconclusive"
+
+
+# --- Assembly: prompt segments x entry x content x config (§8 item 18) ---------------
+
+
+def test_prompt_segments_verify_only_has_no_assert_section():
+    prompts = {
+        "base_rules": "BASE",
+        "verify_semantics": "VERIFY-SEG",
+        "assert_semantics": "ASSERT-SEG",
+        "anchor_guide": "ANCHOR-SEG",
+        "final_guide": "FINAL-SEG",
+        "probe_guide": "PROBE-SEG",
+    }
+    text = assemble_checker_prompt_segments(
+        "checkpoint", [_ci(kind="verify")], probe_tool_registered=True, prompts=prompts
+    )
+    assert "VERIFY-SEG" in text
+    assert "ASSERT-SEG" not in text
+    assert "ANCHOR-SEG" in text
+    assert "FINAL-SEG" not in text
+    assert "PROBE-SEG" in text
+
+    text2 = assemble_checker_prompt_segments(
+        "final", [_ci(kind="assert")], probe_tool_registered=False, prompts=prompts
+    )
+    assert "ASSERT-SEG" in text2
+    assert "VERIFY-SEG" not in text2
+    assert "FINAL-SEG" in text2
+    assert "ANCHOR-SEG" not in text2
+    # Probe disabled -> zero mention of probing anywhere in the prompt
+    assert "PROBE-SEG" not in text2
+
+
+def test_tool_table_probe_gate():
+    ctx = _mock_ctx(disable_device_probes=False)
+    names = {t.name for t in build_checker_tools(ctx, "checkpoint")}
+    assert "probe_device" in names
+    assert "read_note" in names
+    assert "get_step_detail" in names
+    assert "get_step_screenshot" in names
+    # Never any device action, note write, or sub-agent
+    assert not names & {
+        "save_note",
+        "update_note",
+        "append_note",
+        "click",
+        "swipe",
+        "ask_diagnoser",
+        "ask_explorer",
+        "run_adb_command",
+    }
+
+    ctx2 = _mock_ctx(disable_device_probes=True)
+    names2 = {t.name for t in build_checker_tools(ctx2, "checkpoint")}
+    assert "probe_device" not in names2
 
 
 @pytest.mark.asyncio
-async def test_run_async_check(tmp_path):
-    notes_dir = tmp_path / "notes"
-    notes_dir.mkdir(parents=True, exist_ok=True)
-
-    # Put a dummy task plan file
-    (notes_dir / "task_plan.md").write_text("Plan")
-
-    # Put a dummy verification_chat file
-    import hashlib
-
-    subgoal_text = "Open WhatsApp"
-    s_hash = hashlib.md5(subgoal_text.encode("utf-8")).hexdigest()
-    (notes_dir / f"verification_chat_{s_hash}.json").write_text("[]")
-
-    mock_ctx = MagicMock(spec=ArtemisContext)
-    mock_ctx.data_engine = MagicMock()
-    mock_ctx.data_engine.base_dir = str(tmp_path)
-    mock_ctx.data_engine.get_agent_friendly_steps.return_value = []
-    mock_ctx.execution_setup = None
-
-    # Mock controller for screen data
-    mock_controller = MagicMock()
-    mock_controller.take_screenshot = AsyncMock(return_value="dummy_screenshot_base64")
-
-    from artemis.controllers.device_controller import ScreenDataResponse
-
-    mock_screen_data = ScreenDataResponse(
-        base64="dummy_screenshot_base64",
-        elements=[],
-        width=1080,
-        height=2400,
-        platform="android",
+async def test_checkpoint_entry_never_touches_live_screen():
+    """Evidence discipline: the checkpoint entry must not capture the current
+    screen — its evidence is anchored history plus persistent probes."""
+    ctx = _mock_ctx()
+    report = CheckReport(
+        verdicts=[CheckVerdict(item_text="x", kind="verify", status="passed", evidence="e")]
     )
-    mock_controller.get_screen_data = AsyncMock(return_value=mock_screen_data)
 
-    # Mock LLM response with with_structured_output
-    mock_llm = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = "Task completed successfully."
-    mock_response.tool_calls = []
-
-    async def mock_astream(*args, **kwargs):
-        yield mock_response
-
-    mock_llm.astream.side_effect = mock_astream
-    mock_llm.bind_tools.return_value = mock_llm
-
-    mock_structured_llm = MagicMock()
-    mock_structured_llm.ainvoke = AsyncMock(
-        return_value=CheckerResult(success=True, reason="Task completed successfully.")
-    )
-    mock_llm.with_structured_output.return_value = mock_structured_llm
+    structured = MagicMock()
+    structured.ainvoke = AsyncMock(return_value=report)
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+    response = MagicMock()
+    response.tool_calls = []
 
     with (
+        patch("artemis.agents.checker.checker.get_llm", return_value=llm),
         patch(
-            "artemis.agents.checker.checker.UnifiedMobileController",
-            return_value=mock_controller,
+            "artemis.agents.checker.checker.acomplete",
+            new=AsyncMock(return_value=response),
         ),
-        patch("artemis.agents.checker.checker.get_llm", return_value=mock_llm),
         patch(
-            "artemis.utils.task_tree.build_plan_and_history",
-            return_value="Task tree",
-        ),
+            "artemis.agents.checker.checker._capture_final_screen",
+            new=AsyncMock(return_value=(None, "SHOULD NOT BE CALLED")),
+        ) as capture_mock,
     ):
-        result = await run_async_check(
-            mock_ctx,
-            subgoal_text=subgoal_text,
-            subgoal_hash=s_hash,
-            raw_perception_data={"screenshot_b64": "dummy", "width": 1080, "height": 2400},
-            latest_ui_hierarchy=[],
+        result = await run_checkpoint_check(
+            ctx,
+            check_items=[_ci(text="x")],
+            anchor=EvidenceAnchor(anchor_step_id="sid", trigger_ts=0.0, plan_text="- [x] G"),
+            goal="the goal",
+            subgoal_text="G",
         )
 
-        assert result["status"] == "success"
-        assert result["reason"] == "Task completed successfully."
-        assert mock_llm.astream.called
-        assert mock_llm.with_structured_output.called
+    capture_mock.assert_not_awaited()
+    assert result.verdicts[0].status == "passed"
+
+
+@pytest.mark.asyncio
+async def test_final_entry_captures_live_screen():
+    ctx = _mock_ctx()
+    report = CheckReport(verdicts=[])
+
+    structured = MagicMock()
+    structured.ainvoke = AsyncMock(return_value=report)
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+    response = MagicMock()
+    response.tool_calls = []
+
+    with (
+        patch("artemis.agents.checker.checker.get_llm", return_value=llm),
+        patch(
+            "artemis.agents.checker.checker.acomplete",
+            new=AsyncMock(return_value=response),
+        ),
+        patch(
+            "artemis.agents.checker.checker._capture_final_screen",
+            new=AsyncMock(return_value=("b64img", "elements")),
+        ) as capture_mock,
+    ):
+        await run_final_check(
+            ctx,
+            goal="the goal",
+            plan_text="- [x] G",
+            ledger=[],
+            check_items=[_ci(kind="assert", when="at_end", text="no crash", parent=None)],
+        )
+
+    capture_mock.assert_awaited_once()

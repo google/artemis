@@ -79,7 +79,6 @@ async def main():
 
     # Set up State
     state = State(
-        messages=[],
         initial_goal="Play a video in full screen on YouTube in Chrome",
         latest_ui_hierarchy=screen_data.elements,
         latest_screenshot=str(
@@ -87,11 +86,7 @@ async def main():
                 data_engine.get_or_create_image(base64.b64decode(screenshot_b64))
             )
         ),
-        focused_app_info="",
-        device_date="",
         structured_decisions="",
-        complete_subgoals_by_ids=[],
-        validator_messages=[],
     )
 
     # 3. Instantiate and run Failure Analyzer directly

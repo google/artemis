@@ -62,8 +62,6 @@ class TestCommitteeTool(unittest.IsolatedAsyncioTestCase):
             mock_state.device_date = None
             mock_state.structured_decisions = None
             mock_state.complete_subgoals_by_ids = []
-            mock_state.validator_messages = []
-            mock_state.operator_replan_reason = "Mock Immediate Replan Reason"
 
             # Mock LLM responses for the members
             mock_llm_pl = MagicMock()
@@ -165,9 +163,6 @@ class TestCommitteeTool(unittest.IsolatedAsyncioTestCase):
                     "Timeout waiting for element", content
                 )  # Check failed history is in blackboard
                 self.assertIn("Test Goal", content)  # Check initial goal is in blackboard
-                self.assertIn(
-                    "Mock Immediate Replan Reason", content
-                )  # Check current replan reason is in blackboard
 
         finally:
             # Clean up temp directory

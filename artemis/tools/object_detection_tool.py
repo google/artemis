@@ -95,7 +95,7 @@ async def _run_object_detection_logic(
 
     if not target_image:
         error_msg = "No image path provided and no screenshot available in state."
-        if state and callable(getattr(state, "asanitize_update", None)):
+        if state is not None:
             return await _create_error_command(ctx, state, tool_call_id, error_msg, active_wrapper)
         return f"Object Detection failed: {error_msg}"
 
@@ -107,12 +107,12 @@ async def _run_object_detection_logic(
             span.result = result
             output = json.dumps(result) if not isinstance(result, str) else result
 
-        if state and callable(getattr(state, "asanitize_update", None)):
+        if state is not None:
             return await _create_success_command(ctx, state, tool_call_id, output, active_wrapper)
         return output
     except Exception as e:
         logger.error(f"Object detection execution failed: {e}")
-        if state and callable(getattr(state, "asanitize_update", None)):
+        if state is not None:
             return await _create_error_command(ctx, state, tool_call_id, str(e), active_wrapper)
         return f"Object Detection failed: {e}"
 

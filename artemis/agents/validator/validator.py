@@ -38,9 +38,10 @@ from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import CURRENT_TRACE_ID, trace
 from artemis.graph.state import State
+from artemis.graph.visibility import strict_state
 from artemis.mcp.action_names import to_canonical_call
 from artemis.mcp.action_session import ActionSession, get_action_session
-from artemis.services.llm import get_llm
+from artemis.services.llm import acomplete_structured, get_llm
 from artemis.utils import image_diff, visualization
 from artemis.utils.decorators import wrap_with_callbacks
 from artemis.utils.logger import get_logger
@@ -154,11 +155,7 @@ class ValidatorNode:
     async def _execute_validation_loop(self, state: State):
         actions, error_msg = self._parse_decisions(state.structured_decisions)
         if error_msg:
-            return await state.asanitize_update(
-                ctx=self.ctx,
-                update={},
-                agent="validator",
-            )
+            return {}
 
         execution = []
         failed_action = None
@@ -176,11 +173,7 @@ class ValidatorNode:
             decision_screenshot_b64 = last_screenshot_b64
             decision_screenshot_name = last_screenshot_name
         except Exception:
-            return await state.asanitize_update(
-                ctx=self.ctx,
-                update={},
-                agent="validator",
-            )
+            return {}
 
         step_id = None
         if state.current_step_id:
@@ -355,7 +348,9 @@ class ValidatorNode:
                 if post_screenshot_b64:
                     decoded_bytes = base64.b64decode(post_screenshot_b64)
                     last_screenshot_b64 = post_screenshot_b64
-                    logger.info(f"Successfully decoded post_screenshot_b64 ({len(decoded_bytes)} bytes)")
+                    logger.info(
+                        f"Successfully decoded post_screenshot_b64 ({len(decoded_bytes)} bytes)"
+                    )
                     if self.ctx.data_engine:
                         post_image_name = self.ctx.data_engine.get_or_create_image(decoded_bytes)
                         last_screenshot_name = post_image_name
@@ -466,11 +461,7 @@ class ValidatorNode:
                 step_id, report, post_image_name=distinct_post_image_name
             )
 
-        return await state.asanitize_update(
-            ctx=self.ctx,
-            update={"last_execution_result": report},
-            agent="validator",
-        )
+        return {"last_execution_result": report}
 
     @wrap_with_callbacks(
         before=lambda: logger.info("Starting Validator Agent..."),
@@ -479,6 +470,7 @@ class ValidatorNode:
     )
     @trace(type="agent", name="validator")
     async def __call__(self, state: State):
+        state = strict_state(state, "validator")
 
         step_id = None
         if state.current_step_id:
@@ -1196,22 +1188,16 @@ class ValidatorNode:
                     HumanMessage(content=user_content),
                 ]
 
-                # D. Invoke Universal VLM
-                response = await llm.ainvoke(messages)
-                output = response.content if isinstance(response.content, str) else ""
-                if isinstance(response.content, list):
-                    output = "".join(
-                        b.get("text", "")
-                        for b in response.content
-                        if isinstance(b, dict) and "text" in b
+                # D. Invoke Universal VLM. Parsing (fences, repair) and one
+                # corrective re-ask on unparseable JSON are handled by the
+                # structured-output layer; a StructuredOutputError lands in
+                # this attempt loop's except like any other attempt failure.
+                res_json = await acomplete_structured(llm, messages)
+                if not isinstance(res_json, dict):
+                    raise ValueError(
+                        "Pixel validation response parsed to"
+                        f" {type(res_json).__name__}, expected a JSON object."
                     )
-
-                if output.startswith("```"):
-                    code_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", output)
-                    if code_match:
-                        output = code_match.group(1).strip()
-
-                res_json = json.loads(output)
                 reasoning = res_json.get("reasoning", "")
                 is_present = res_json.get("is_present", True)
                 confidence = res_json.get("confidence", 1.0)

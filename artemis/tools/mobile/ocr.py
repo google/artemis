@@ -19,10 +19,8 @@ from typing import Any
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
-from langgraph.types import Command
 from pydantic import BaseModel
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
@@ -169,23 +167,14 @@ class OcrRecognitionTool(ArtemisTool):
             has_failed = True
             error_message = f"Failed to perform OCR: {str(e)}"
 
-        if st and callable(getattr(st, "asanitize_update", None)):
-            tool_message = ToolMessage(
+        if st is not None:
+            return ToolMessage(
                 tool_call_id=tcid or "",
                 content=ocr_recognition_wrapper.on_failure_fn(error_message)
                 if has_failed
                 else ocr_recognition_wrapper.on_success_fn(output),
                 additional_kwargs={"error": error_message} if has_failed else {},
                 status="error" if has_failed else "success",
-            )
-            return Command(
-                update=await st.asanitize_update(
-                    ctx=ctx,
-                    update={
-                        VALIDATOR_MESSAGES_KEY: [tool_message],
-                    },
-                    agent="validator",
-                )
             )
 
         if has_failed:

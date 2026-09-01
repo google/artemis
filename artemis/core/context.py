@@ -50,6 +50,9 @@ class ExecutionContext:
         self.device = DeviceInfoContext(device_id=device_id, platform=platform)
         self.driver: Any | None = None
         self.telemetry: Any | None = None
+        # Fully-wired ArtemisContext (data_engine, adb clients, execution setup).
+        # Required by the live (non-mock) paths of GraphRunner/ReactiveRunner.
+        self.artemis_context: Any | None = None
         self.custom_attributes: dict[str, Any] = {}
 
     def set_attribute(self, key: str, value: Any) -> None:

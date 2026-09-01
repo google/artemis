@@ -19,13 +19,12 @@ from typing import Annotated, Any, get_args, get_origin
 from unittest.mock import MagicMock, Mock
 import uuid
 
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import InjectedToolCallId
 from langgraph.prebuilt import InjectedState
-from langgraph.types import Command
 from pydantic import BaseModel
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.data_engine import engine as engine_mod
 from artemis.data_engine.trace import CURRENT_TRACE_ID, smart_serialize
@@ -169,12 +168,7 @@ async def invoke_tool_with_injection(
 
 
 def get_tool_result_content(result: Any) -> Any:
-    """Extracts the content from a tool result, handling Command objects."""
-    if isinstance(result, Command):
-        updates = result.update
-        if VALIDATOR_MESSAGES_KEY in updates:
-            msgs = updates[VALIDATOR_MESSAGES_KEY]
-            if msgs and hasattr(msgs[0], "content"):
-                return msgs[0].content
-        return result
+    """Extracts the content from a tool result, handling ToolMessage returns."""
+    if isinstance(result, ToolMessage):
+        return result.content
     return result

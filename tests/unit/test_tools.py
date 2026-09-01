@@ -17,7 +17,7 @@
 import pytest
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.tools.base import ToolRegistry
-import artemis.tools.actions.device_actions  # noqa: F401 - Register action tools
+import artemis.tools.mobile.exec_tools  # noqa: F401 - Register action tools
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,6 @@ def mock_artemis_ctx(tmp_path):
     mock_execution_setup.traces_path = str(tmp_path)
     mock_ctx.execution_setup = mock_execution_setup
     mock_ctx.device = None
-    mock_ctx.task_plan_snapshot = None
     return mock_ctx
 
 
@@ -225,14 +224,9 @@ async def test_perception_node_async_offloading(mock_artemis_ctx, tmp_path):
         mock_ocr.return_value = [{"text": "Home", "box": [100, 100, 200, 200]}]
 
         state = State(
-            messages=[HumanMessage(content="test")],
             initial_goal="test goal",
-            complete_subgoals_by_ids=[],
-            validator_messages=[],
             latest_ui_hierarchy=[],
             latest_screenshot=None,
-            focused_app_info=None,
-            device_date=None,
             structured_decisions=None,
         )
 
@@ -256,42 +250,6 @@ async def test_perception_node_async_offloading(mock_artemis_ctx, tmp_path):
     assert img_record is not None
     assert img_record.image_name == expected_hash
     assert engine.get_image_path(expected_hash).exists()
-
-
-@pytest.mark.asyncio
-async def test_snapshot_copy_and_restore_offloading(mock_artemis_ctx, tmp_path):
-    """Verify operator create_snapshot and graph rollback/restore execute asynchronously without blocking."""
-    from artemis.utils.file import create_snapshot, restore_snapshot
-
-    notes_dir = tmp_path / "notes"
-    notes_dir.mkdir(parents=True, exist_ok=True)
-    (notes_dir / "task_plan.md").write_text("# Plan\n- Step 1", encoding="utf-8")
-    (notes_dir / "verification_chat_1.json").write_text('{"messages": ["hello"]}', encoding="utf-8")
-
-    snapshot_dir = tmp_path / "notes_snapshot"
-
-    # Test async offloading of create_snapshot (operator pattern)
-    await asyncio.to_thread(create_snapshot, notes_dir, snapshot_dir)
-    assert snapshot_dir.exists()
-    assert (snapshot_dir / "task_plan.md").read_text(encoding="utf-8") == "# Plan\n- Step 1"
-
-    # Modify live task_plan.md
-    (notes_dir / "task_plan.md").write_text("# Plan\n- Step 1 (Modified)", encoding="utf-8")
-
-    # Test async offloading of restore_snapshot (graph pattern when checker fails)
-    def _restore_and_preserve():
-        chat_contents = {}
-        for p in notes_dir.glob("verification_chat_*.json"):
-            chat_contents[p.name] = p.read_text(encoding="utf-8")
-        restore_snapshot(snapshot_dir, notes_dir)
-        for name, content in chat_contents.items():
-            (notes_dir / name).write_text(content, encoding="utf-8")
-
-    await asyncio.to_thread(_restore_and_preserve)
-    assert (notes_dir / "task_plan.md").read_text(encoding="utf-8") == "# Plan\n- Step 1"
-    assert (notes_dir / "verification_chat_1.json").read_text(
-        encoding="utf-8"
-    ) == '{"messages": ["hello"]}'
 
 
 @pytest.mark.asyncio
@@ -411,15 +369,10 @@ async def test_validator_pre_execution_loop_reverted_to_exact_safety_contract(
         ]
     )
     state = State(
-        messages=[],
         initial_goal="test",
-        complete_subgoals_by_ids=[],
-        validator_messages=[],
         latest_ui_hierarchy=[],
         latest_screenshot="dummy.png",
         structured_decisions=decisions,
-        focused_app_info=None,
-        device_date=None,
     )
 
     with (

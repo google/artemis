@@ -44,6 +44,7 @@ coverage.xml
 .nox/
 tests/**/outputs/
 **/outputs/
+tests/**/trace_output/
 
 # Linters & Formatters
 .ruff_cache/

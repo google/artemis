@@ -30,7 +30,7 @@ from artemis.data_engine.trace import (
     trace_langchain_tool,
 )
 from artemis.graph.state import State
-from artemis.services.llm import get_llm, invoke_llm_with_timeout_message
+from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
 from artemis.tools.command_tool import get_run_short_adb_command_tool
 from artemis.tools.diagnoser_submit_answer_tool import get_submit_answer_tool
 from artemis.tools.index import get_tool_by_name
@@ -173,21 +173,11 @@ class Diagnoser:
                 logger.error(f"Failed to build plan and history in Diagnoser: {e}")
                 plan_and_history = f"Error building plan and history: {e}"
 
-        # Get Checker Feedback
+        # Get verification findings injected by the checkpoint harvest, if any
         checker_feedback = ""
-        if self.ctx.data_engine:
-            notes_dir = Path(self.ctx.data_engine.base_dir) / "notes"
-            verification_chat_path = notes_dir / f"verification_chat_{subgoal_hash}.json"
-            if verification_chat_path.exists():
-                try:
-                    turns = json.loads(verification_chat_path.read_text(encoding="utf-8"))
-                    dialogue_lines = []
-                    for t in turns:
-                        role = "Operator" if t["role"] == "operator" else "Checker"
-                        dialogue_lines.append(f"**{role} (Round {t['round']})**:\n{t['content']}")
-                    checker_feedback = "\n\n".join(dialogue_lines)
-                except Exception as e:
-                    logger.error(f"Error reading verification chat in Diagnoser: {e}")
+        findings = getattr(state, "operator_feedback", None)
+        if findings:
+            checker_feedback = "\n".join(f"- {f}" for f in findings)
 
         # Get Current Screenshot and UI Hierarchy
         latest_screenshot_b64 = None
@@ -309,18 +299,6 @@ class Diagnoser:
                         )
                     llm = base_llm.bind_tools(tools=traced_tools)
 
-                async def run_stream():
-                    full_response = None
-                    trace_id = CURRENT_TRACE_ID.get()
-                    async for chunk in llm.astream(current_messages):
-                        if full_response is None:
-                            full_response = chunk
-                        else:
-                            full_response += chunk
-
-                        pass
-                    return full_response
-
                 with TraceSpan(name="gemini_diagnoser_call", ctx=self.ctx) as span:
                     span.payload = {
                         "context_components": {
@@ -331,7 +309,9 @@ class Diagnoser:
                             "diagnostic_query": prompt,
                         }
                     }
-                    response = await invoke_llm_with_timeout_message(run_stream())
+                    response = await invoke_llm_with_timeout_message(
+                        acomplete(llm, current_messages)
+                    )
                     span.result = (
                         response.content if hasattr(response, "content") else str(response)
                     )

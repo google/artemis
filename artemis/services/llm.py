@@ -25,7 +25,6 @@ from dataclasses import replace
 import functools
 import logging
 from pathlib import Path
-import random
 import re
 import sys
 import time
@@ -33,6 +32,7 @@ from typing import Any, Literal, TypeVar, overload
 from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from artemis.config import (
     PAUSE_FILE,
@@ -46,7 +46,22 @@ from artemis.config import (
 )
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandler
+from artemis.llm.reliability import (
+    CircuitBreaker,
+    FailureCategory,
+    LLMCallError,
+    LLMExhaustedError,
+    LLMPermanentError,
+    classify_failure,
+    retry_policy_for,
+)
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
+from artemis.llm.structured import (
+    ParseFailure,
+    StructuredOutputError,
+    content_to_text,
+    parse_structured,
+)
 from artemis.utils.logger import get_logger
 
 # Logger for internal messages
@@ -69,24 +84,30 @@ _ACTIVE_LLM_REQUEST: ContextVar[dict[str, Any] | None] = ContextVar(
 )
 
 
-def _provider_name_from_call(args: tuple[Any, ...]) -> str | None:
-    wrapper = args[0] if args else None
-    endpoint = getattr(wrapper, "endpoint", None)
-    provider = getattr(endpoint, "provider", None)
-    if provider is None:
-        return None
-    return str(getattr(provider, "value", provider))
-
-
-def _begin_llm_request(args: tuple[Any, ...]) -> Token:
+def _begin_llm_request(provider: str | None) -> Token:
     return _ACTIVE_LLM_REQUEST.set(
         {
             "request_id": str(uuid4()),
-            "provider": _provider_name_from_call(args),
+            "provider": provider,
             "started_at": time.time(),
             "retries": [],
         }
     )
+
+
+# Whether the current async context has a configured fallback model waiting
+# behind this call (set by with_fallback).  When a fallback exists, exhausting
+# retries hands over to it immediately instead of pausing the whole task.
+_FALLBACK_AVAILABLE: ContextVar[bool] = ContextVar("llm_fallback_available", default=False)
+
+# Shared circuit breaker keyed by "provider:model".  Transient failures open
+# it; while open, concurrent calls wait out the cooldown instead of hammering
+# a provider that is already melting down.
+_ENDPOINT_BREAKER = CircuitBreaker(threshold=3, cooldown_seconds=30.0)
+
+# Endpoints observed to not support streaming.  Detected once, loudly, then
+# remembered so subsequent calls go straight to non-streaming invocation.
+_NON_STREAMING_ENDPOINTS: set[str] = set()
 
 
 def _get_current_data_engine():
@@ -170,6 +191,52 @@ def _record_llm_retry(
         llm_logger.warning("Failed to publish LLM retry event: %s", publish_error)
 
 
+def _record_llm_event(name: str, payload: dict[str, Any], *, status: str = "retrying") -> None:
+    """Persist and publish one degradation/lifecycle event on the LLM IO path.
+
+    Every degradation (fallback, stream downgrade, stream reset, giving up)
+    must be observable: WARNING-level logging is handled by callers, this
+    records the structured trace + live event, best-effort.
+    """
+    request = _ACTIVE_LLM_REQUEST.get()
+    engine = _get_current_data_engine()
+    if not engine or not getattr(engine, "current_session_id", None):
+        return
+
+    full_payload = dict(payload)
+    if request is not None:
+        full_payload.setdefault("request_id", request.get("request_id"))
+        if request.get("provider"):
+            full_payload.setdefault("provider", request.get("provider"))
+    full_payload = {key: value for key, value in full_payload.items() if value is not None}
+
+    step_id = getattr(engine, "current_step_id", None)
+    trace_id = None
+    try:
+        trace_id = engine.record_trace(
+            type="llm_call",
+            name=name,
+            payload=full_payload,
+            step_id=step_id,
+            parent_trace_id=CURRENT_TRACE_ID.get(),
+            status=status,
+        )
+    except Exception as trace_error:
+        llm_logger.warning("Failed to persist LLM event trace %s: %s", name, trace_error)
+    try:
+        engine._publish(
+            name,
+            {
+                **full_payload,
+                "step_id": str(step_id) if step_id else None,
+                "trace_id": str(trace_id) if trace_id else None,
+                "timestamp": time.time(),
+            },
+        )
+    except Exception as publish_error:
+        llm_logger.warning("Failed to publish LLM event %s: %s", name, publish_error)
+
+
 class _ProviderRetryTelemetryHandler(logging.Handler):
     """Turn provider SDK retry log records into structured Artemis telemetry."""
 
@@ -217,8 +284,7 @@ class _ProviderRetryTelemetryHandler(logging.Handler):
 def _install_provider_retry_telemetry() -> None:
     provider_logger = logging.getLogger("google_genai._api_client")
     if any(
-        isinstance(handler, _ProviderRetryTelemetryHandler)
-        for handler in provider_logger.handlers
+        isinstance(handler, _ProviderRetryTelemetryHandler) for handler in provider_logger.handlers
     ):
         return
     provider_logger.addHandler(_ProviderRetryTelemetryHandler(level=logging.INFO))
@@ -285,126 +351,149 @@ def _handle_llm_pause_and_resume(last_error: Exception) -> Path:
     return pause_file
 
 
-def robust_retry_async(func: Callable) -> Callable:
-    """Decorator to add robust retry and pause/resume logic to an async LLM call."""
+async def _wait_for_resume(pause_file: Path) -> bool:
+    """Wait for the pause file to be cleared. Returns False on deadline."""
+    deadline = float(getattr(settings, "LLM_PAUSE_TIMEOUT_SECONDS", 0.0) or 0.0)
+    waited = 0.0
+    while pause_file.exists():
+        if deadline > 0 and waited >= deadline:
+            return False
+        await asyncio.sleep(1)
+        waited += 1
+    return True
 
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        while True:
-            request_token = _begin_llm_request(args)
-            max_retries = 3
-            retry_delay = 0.0
-            last_error = None
-            for attempt in range(max_retries):
+
+async def _wait_for_breaker(key: str) -> None:
+    """Wait out an open circuit instead of hammering a melting provider."""
+    waited = 0.0
+    warned = False
+    while not _ENDPOINT_BREAKER.allow(key):
+        if not warned:
+            warned = True
+            llm_logger.warning(f"LLM circuit open for {key}; waiting for cooldown...")
+        step = min(max(_ENDPOINT_BREAKER.open_remaining(key), 0.5), 2.0)
+        await asyncio.sleep(step)
+        waited += step
+        if waited >= 120.0:
+            # Never deadlock behind a stuck half-open trial; proceed anyway.
+            break
+
+
+async def _run_with_recovery[T](
+    call_once: Callable[[], Awaitable[T]],
+    *,
+    provider: str | None = None,
+    endpoint_key: str | None = None,
+) -> T:
+    """Execute one LLM call under the classified retry / pause / breaker policy.
+
+    Failure handling is decided per category (see artemis.llm.reliability):
+
+    - Retryable categories back off per policy; each retry is recorded for UI
+      transparency via _record_llm_retry.
+    - Non-retryable categories (auth, bad request) raise LLMPermanentError
+      immediately: retrying cannot help and pausing would hang the task.
+    - When retryable attempts are exhausted: if a fallback model is waiting
+      (with_fallback), raise LLMExhaustedError so it takes over immediately;
+      otherwise pause the task (bounded by settings.LLM_PAUSE_TIMEOUT_SECONDS)
+      and retry from scratch on resume.
+    """
+    while True:
+        request_token = _begin_llm_request(provider)
+        last_error: Exception | None = None
+        last_failure = None
+        attempts: dict[FailureCategory, int] = {}
+        pause_file: Path | None = None
+        try:
+            while True:
+                if endpoint_key:
+                    await _wait_for_breaker(endpoint_key)
                 try:
-                    result = await func(*args, **kwargs)
-                    _ACTIVE_LLM_REQUEST.reset(request_token)
-                    return result
-                except Exception as e:
-                    last_error = e
-                    err_str = str(e).lower()
-                    if attempt == max_retries - 1:
-                        break
-                    if attempt > 0:
-                        retry_delay = 0.5 * (2 ** (attempt - 1)) + random.uniform(0.1, 0.3)
-                    if any(
-                        err in err_str
-                        for err in [
-                            "503",
-                            "throttled",
-                            "overloaded",
-                            "429",
-                            "quota",
-                            "resource_exhausted",
-                        ]
-                    ):
-                        retry_delay = max(retry_delay, 10.0)
-                    if retry_delay > 0:
-                        llm_logger.warning(f"LLM call failed, retrying in {retry_delay:.2f}s...")
-
-                        await asyncio.sleep(retry_delay)
-                except BaseException:
-                    _ACTIVE_LLM_REQUEST.reset(request_token)
+                    result = await call_once()
+                except (KeyboardInterrupt, asyncio.CancelledError):
                     raise
-
-            try:
-                pause_file = _handle_llm_pause_and_resume(last_error)
-            finally:
-                _ACTIVE_LLM_REQUEST.reset(request_token)
-            while pause_file.exists():
-                await asyncio.sleep(1)
-
-            llm_logger.info("Resume signal received, retrying LLM call...")
-
-            current_engine = _get_current_data_engine()
-            if current_engine:
-                current_engine._publish("task_resumed", {})
-
-    return wrapper
-
-
-def robust_retry_astream(func: Callable) -> Callable:
-    """Decorator to add robust retry and pause/resume logic to an async stream LLM call."""
-
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        while True:
-            request_token = _begin_llm_request(args)
-            max_retries = 3
-            retry_delay = 0.0
-            last_error = None
-            for attempt in range(max_retries):
-                try:
-                    gen = func(*args, **kwargs)
-                    first = await gen.__anext__()
-                    yield first
-                    async for chunk in gen:
-                        yield chunk
-                    _ACTIVE_LLM_REQUEST.reset(request_token)
-                    return
+                except LLMCallError:
+                    # Already classified terminal by a nested recovery layer.
+                    raise
                 except Exception as e:
-                    last_error = e
-                    err_str = str(e).lower()
-                    if attempt == max_retries - 1:
-                        break
-                    if attempt > 0:
-                        retry_delay = 0.5 * (2 ** (attempt - 1)) + random.uniform(0.1, 0.3)
-                    if any(
-                        err in err_str
-                        for err in [
-                            "503",
-                            "throttled",
-                            "overloaded",
-                            "429",
-                            "quota",
-                            "resource_exhausted",
-                        ]
-                    ):
-                        retry_delay = max(retry_delay, 10.0)
-                    if retry_delay > 0:
+                    failure = classify_failure(e)
+                    if failure.category is FailureCategory.CANCELLED:
+                        raise
+                    if endpoint_key:
+                        _ENDPOINT_BREAKER.record_failure(endpoint_key, failure)
+                    if not failure.retryable:
                         llm_logger.warning(
-                            f"LLM stream handshake throttled, retrying in {retry_delay:.2f}s..."
+                            f"LLM call failed permanently ({failure.category.value}): {e}"
                         )
+                        _record_llm_event(
+                            "llm_gave_up",
+                            {
+                                "error": str(e)[:1000],
+                                "category": failure.category.value,
+                                "retryable": False,
+                            },
+                            status="failed",
+                        )
+                        raise LLMPermanentError(str(e), failure=failure, cause=e) from e
+                    last_error, last_failure = e, failure
+                    attempt = attempts.get(failure.category, 0) + 1
+                    attempts[failure.category] = attempt
+                    policy = retry_policy_for(failure.category)
+                    if attempt >= policy.max_attempts:
+                        break
+                    delay = policy.delay_for(attempt)
+                    _record_llm_retry(
+                        str(e),
+                        delay,
+                        attempt=attempt,
+                        max_retries=policy.max_attempts,
+                        provider=provider,
+                    )
+                    llm_logger.warning(
+                        f"LLM call failed ({failure.category.value}), retrying in {delay:.2f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    if endpoint_key:
+                        _ENDPOINT_BREAKER.record_success(endpoint_key)
+                    return result
 
-                        await asyncio.sleep(retry_delay)
-                except BaseException:
-                    _ACTIVE_LLM_REQUEST.reset(request_token)
-                    raise
+            # Retryable attempts exhausted.
+            if _FALLBACK_AVAILABLE.get():
+                _record_llm_event(
+                    "llm_gave_up",
+                    {
+                        "error": str(last_error)[:1000],
+                        "category": last_failure.category.value,
+                        "retryable": True,
+                        "handover": "fallback",
+                    },
+                    status="failed",
+                )
+                raise LLMExhaustedError(
+                    str(last_error), failure=last_failure, cause=last_error
+                ) from last_error
+            pause_file = _handle_llm_pause_and_resume(last_error)
+        finally:
+            _ACTIVE_LLM_REQUEST.reset(request_token)
 
+        if not await _wait_for_resume(pause_file):
+            llm_logger.error(
+                "LLM pause deadline"
+                f" ({settings.LLM_PAUSE_TIMEOUT_SECONDS:.0f}s) exceeded; giving up."
+            )
             try:
-                pause_file = _handle_llm_pause_and_resume(last_error)
-            finally:
-                _ACTIVE_LLM_REQUEST.reset(request_token)
-            while pause_file.exists():
-                await asyncio.sleep(1)
+                pause_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise LLMExhaustedError(
+                str(last_error), failure=last_failure, cause=last_error
+            ) from last_error
 
-            llm_logger.info("Resume signal received, retrying LLM stream...")
-
-            current_engine = _get_current_data_engine()
-            if current_engine:
-                current_engine._publish("task_resumed", {})
-
-    return wrapper
+        llm_logger.info("Resume signal received, retrying LLM call...")
+        current_engine = _get_current_data_engine()
+        if current_engine:
+            current_engine._publish("task_resumed", {})
 
 
 def _inject_parent_trace_id(trace_id, *args, **kwargs):
@@ -524,49 +613,229 @@ class RobustChatModelWrapper:
             self.base_model.__ror__(other), self.ctx, endpoint=self.endpoint
         )
 
-    @robust_retry_async
+    def _provider_value(self) -> str | None:
+        provider = getattr(self.endpoint, "provider", None)
+        if provider is None:
+            return None
+        return str(getattr(provider, "value", provider))
+
+    def _endpoint_key(self) -> str:
+        if self.endpoint is not None:
+            return f"{self._provider_value()}:{self.endpoint.model_name}"
+        return type(self.base_model).__name__
+
+    def _traced_call(self, args: tuple, kwargs: dict) -> tuple[tuple, dict, Any]:
+        trace_id = None
+        if self.ctx and self.ctx.data_engine:
+            trace_id = CURRENT_TRACE_ID.get()
+        if trace_id:
+            args, kwargs = _inject_parent_trace_id(trace_id, *args, **kwargs)
+        return args, kwargs, trace_id
+
     async def ainvoke(self, *args, **kwargs):
-        trace_id = None
-        if self.ctx and self.ctx.data_engine:
-            trace_id = CURRENT_TRACE_ID.get()
-        if trace_id:
-            args, kwargs = _inject_parent_trace_id(trace_id, *args, **kwargs)
-        return await self.base_model.ainvoke(*args, **kwargs)
+        args, kwargs, _ = self._traced_call(args, kwargs)
+        return await _run_with_recovery(
+            functools.partial(self.base_model.ainvoke, *args, **kwargs),
+            provider=self._provider_value(),
+            endpoint_key=self._endpoint_key(),
+        )
 
-    @robust_retry_astream
-    async def astream(self, *args, **kwargs):
-        trace_id = None
-        if self.ctx and self.ctx.data_engine:
-            trace_id = CURRENT_TRACE_ID.get()
+    async def complete(self, *args, **kwargs):
+        """Single completion entry point: returns the full final message.
 
-        if trace_id:
-            args, kwargs = _inject_parent_trace_id(trace_id, *args, **kwargs)
+        Streaming is a transport detail handled internally — provider chunks
+        are forwarded to the live UI as deltas and accumulated here, so
+        downstream consumers only ever see one complete message (or a typed
+        LLMCallError).  A mid-stream failure discards the partial output,
+        signals the UI to drop it, and retries the whole call per policy;
+        partial or duplicated chunks can never reach message history.
+        """
+        args, kwargs, _ = self._traced_call(args, kwargs)
+        emit_deltas = bool(self.ctx and self.ctx.data_engine)
+        return await _run_with_recovery(
+            functools.partial(self._complete_attempt, emit_deltas, *args, **kwargs),
+            provider=self._provider_value(),
+            endpoint_key=self._endpoint_key(),
+        )
+
+    def _emit_stream_delta(self, stream_exec_id, chunk) -> None:
+        content = getattr(chunk, "content", None)
+        if not content:
+            return
+        text_to_stream = ""
+        thinking_to_stream = ""
+        if isinstance(content, str):
+            text_to_stream = content
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        text_to_stream += item.get("text", "")
+                    elif item.get("type") == "thinking":
+                        thinking_to_stream += item.get("thinking", "")
+        if text_to_stream:
+            self.ctx.data_engine.stream_output(stream_exec_id, text_to_stream, is_thinking=False)
+        if thinking_to_stream:
+            self.ctx.data_engine.stream_output(stream_exec_id, thinking_to_stream, is_thinking=True)
+
+    async def _complete_attempt(self, emit_deltas: bool, *args, **kwargs):
+        endpoint_key = self._endpoint_key()
+        if endpoint_key in _NON_STREAMING_ENDPOINTS:
+            return await self.base_model.ainvoke(*args, **kwargs)
 
         stream_exec_id = uuid4()
+        full_response = None
+        try:
+            async for chunk in self.base_model.astream(*args, **kwargs):
+                if full_response is None:
+                    full_response = chunk
+                else:
+                    full_response = full_response + chunk
+                if emit_deltas:
+                    self._emit_stream_delta(stream_exec_id, chunk)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            raise
+        except Exception as stream_error:
+            if full_response is not None:
+                # Mid-stream failure: the partial output must never reach
+                # message history. Tell the UI to discard it, then let the
+                # recovery policy retry the whole call with a fresh stream id.
+                llm_logger.warning(
+                    f"LLM stream broke mid-response ({stream_error}); discarding partial output."
+                )
+                _record_llm_event(
+                    "llm_stream_reset",
+                    {
+                        "stream_exec_id": str(stream_exec_id),
+                        "error": str(stream_error)[:500],
+                        "category": classify_failure(stream_error).category.value,
+                    },
+                )
+                raise
+            if _is_stream_unsupported_error(stream_error):
+                _NON_STREAMING_ENDPOINTS.add(endpoint_key)
+                llm_logger.warning(
+                    f"Endpoint {endpoint_key} does not support streaming"
+                    f" ({stream_error}); switching to non-streaming calls."
+                )
+                _record_llm_event(
+                    "llm_stream_downgrade",
+                    {"endpoint": endpoint_key, "error": str(stream_error)[:500]},
+                )
+                return await self.base_model.ainvoke(*args, **kwargs)
+            raise
+        if full_response is None:
+            llm_logger.warning("LLM stream yielded no chunks; using non-streaming call.")
+            return await self.base_model.ainvoke(*args, **kwargs)
+        return full_response
 
-        async for chunk in self.base_model.astream(*args, **kwargs):
-            if trace_id and self.ctx and self.ctx.data_engine and chunk.content:
-                text_to_stream = ""
-                thinking_to_stream = ""
-                if isinstance(chunk.content, str):
-                    text_to_stream = chunk.content
-                elif isinstance(chunk.content, list):
-                    for item in chunk.content:
-                        if isinstance(item, dict):
-                            if item.get("type") == "text":
-                                text_to_stream += item.get("text", "")
-                            elif item.get("type") == "thinking":
-                                thinking_to_stream += item.get("thinking", "")
+    async def astream(self, *args, **kwargs):
+        """Deprecated compatibility shim: yields exactly one final message.
 
-                if text_to_stream:
-                    self.ctx.data_engine.stream_output(
-                        stream_exec_id, text_to_stream, is_thinking=False
-                    )
-                if thinking_to_stream:
-                    self.ctx.data_engine.stream_output(
-                        stream_exec_id, thinking_to_stream, is_thinking=True
-                    )
-            yield chunk
+        The old chunk-level astream retry could re-deliver already-yielded
+        chunks after a mid-stream failure, corrupting accumulated message
+        history. Streaming now happens inside complete(); live token deltas
+        still reach the UI through the data engine.
+        """
+        yield await self.complete(*args, **kwargs)
+
+
+def _is_stream_unsupported_error(error: BaseException) -> bool:
+    """Detect 'this endpoint/model cannot stream' as opposed to a transient failure."""
+    if isinstance(error, (NotImplementedError, AttributeError, TypeError)):
+        return True
+    message = str(error).lower()
+    return "stream" in message and any(
+        marker in message
+        for marker in ("not support", "unsupported", "not implemented", "not available")
+    )
+
+
+async def acomplete(llm, *args, **kwargs):
+    """Get one complete response from any chat model object.
+
+    This is the single call-shape agents should use. For gateway-managed
+    models (RobustChatModelWrapper) it delegates to complete(), which owns
+    streaming, classified retries, and telemetry. For raw models and test
+    doubles it preserves the legacy accumulate-stream-else-ainvoke shape.
+    """
+    if isinstance(llm, RobustChatModelWrapper):
+        return await llm.complete(*args, **kwargs)
+
+    try:
+        full_response = None
+        async for chunk in llm.astream(*args, **kwargs):
+            if full_response is None:
+                full_response = chunk
+            else:
+                full_response = full_response + chunk
+        if full_response is not None:
+            return full_response
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        raise
+    except Exception as stream_error:
+        llm_logger.warning(
+            f"astream unavailable on {type(llm).__name__} ({stream_error}); using ainvoke."
+        )
+    return await llm.ainvoke(*args, **kwargs)
+
+
+async def acomplete_structured(
+    llm,
+    messages: list,
+    *,
+    schema=None,
+    correction_attempts: int = 1,
+):
+    """Complete and parse a JSON response, with one corrective re-ask.
+
+    On a parse failure the model is shown its own output's parse error and
+    asked to re-emit valid JSON (up to ``correction_attempts`` times) — giving
+    the model a chance to see its mistake instead of feeding garbage
+    downstream. If it still fails, raises StructuredOutputError (never
+    returns raw text masquerading as parsed data). Each repair round emits an
+    llm_parse_repair telemetry event.
+    """
+    response = await acomplete(llm, messages)
+    text = content_to_text(getattr(response, "content", ""))
+    parsed = parse_structured(text, schema=schema)
+    attempt = 0
+    while isinstance(parsed, ParseFailure) and attempt < correction_attempts:
+        attempt += 1
+        llm_logger.warning(
+            f"Structured output parse failed ({parsed.error});"
+            f" asking the model to correct itself (attempt {attempt})..."
+        )
+        _record_llm_event(
+            "llm_parse_repair",
+            {"error": parsed.error[:500], "attempt": attempt},
+        )
+        correction_messages = [
+            *messages,
+            response if isinstance(response, BaseMessage) else AIMessage(content=text),
+            HumanMessage(
+                content=(
+                    "Your previous reply could not be parsed as the required"
+                    f" JSON ({parsed.error}). Re-emit ONLY the corrected JSON"
+                    " payload, with no surrounding prose or code fences."
+                )
+            ),
+        ]
+        response = await acomplete(llm, correction_messages)
+        text = content_to_text(getattr(response, "content", ""))
+        parsed = parse_structured(text, schema=schema)
+    if isinstance(parsed, ParseFailure):
+        _record_llm_event(
+            "llm_gave_up",
+            {
+                "error": f"structured output unparseable: {parsed.error[:400]}",
+                "category": "bad_request",
+                "retryable": False,
+            },
+            status="failed",
+        )
+        raise StructuredOutputError(parsed)
+    return parsed
 
 
 async def invoke_llm_with_timeout_message[T](
@@ -578,9 +847,7 @@ async def invoke_llm_with_timeout_message[T](
     llm_task = asyncio.create_task(llm_call)
     waiter_task = asyncio.create_task(asyncio.sleep(timeout_seconds))
     try:
-        done, _ = await asyncio.wait(
-            {llm_task, waiter_task}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done, _ = await asyncio.wait({llm_task, waiter_task}, return_when=asyncio.FIRST_COMPLETED)
 
         if llm_task in done:
             return llm_task.result()
@@ -846,12 +1113,55 @@ async def with_fallback[T](
     fallback_call: Callable[[], Awaitable[T]],
     none_should_fallback: bool = True,
 ) -> T:
+    """Run main_call, switching to fallback_call only when it can actually help.
+
+    Falling back is an explicit, observed decision: the failure is classified
+    and only categories where a different endpoint might succeed trigger the
+    fallback (a bad request would just hide the bug inside a weaker model's
+    output). Every switch is logged at WARNING and recorded as an
+    llm_fallback telemetry event. While main_call runs, the recovery layer
+    knows a fallback exists and hands over immediately on retry exhaustion
+    instead of pausing the task.
+    """
+
+    def _switch(reason: str, category: str | None, error: str | None) -> None:
+        llm_logger.warning(
+            f"❗ Main LLM inference failed ({reason}"
+            f"{f': {error}' if error else ''}). Falling back..."
+        )
+        _record_llm_event(
+            "llm_fallback",
+            {
+                "reason": reason,
+                "category": category,
+                "error": error[:500] if error else None,
+            },
+        )
+
+    # The contextvar must be reset BEFORE fallback_call runs: the fallback has
+    # no further fallback behind it, so its own exhaustion should pause.
+    fallback_token = _FALLBACK_AVAILABLE.set(True)
     try:
         result = await main_call()
-        if result is None and none_should_fallback:
-            llm_logger.warning("Main LLM inference returned None. Falling back...")
-            return await fallback_call()
-        return result
-    except Exception as e:
-        llm_logger.warning(f"❗ Main LLM inference failed: {e}. Falling back...")
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        raise
+    except LLMCallError as e:
+        _FALLBACK_AVAILABLE.reset(fallback_token)
+        if not e.failure.should_fallback:
+            raise
+        _switch("terminal_error", e.failure.category.value, str(e))
         return await fallback_call()
+    except Exception as e:
+        _FALLBACK_AVAILABLE.reset(fallback_token)
+        failure = classify_failure(e)
+        if failure.category is FailureCategory.CANCELLED or not failure.should_fallback:
+            raise
+        _switch("error", failure.category.value, str(e))
+        return await fallback_call()
+    else:
+        _FALLBACK_AVAILABLE.reset(fallback_token)
+
+    if result is None and none_should_fallback:
+        _switch("empty_result", None, None)
+        return await fallback_call()
+    return result

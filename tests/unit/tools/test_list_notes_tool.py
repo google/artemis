@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolRegistry
@@ -28,7 +27,7 @@ from artemis.tools.scratchpad import (
     list_notes_wrapper,
 )
 from artemis.utils.notes import save_note_content
-from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 import pytest
 
 
@@ -95,13 +94,11 @@ async def test_list_notes_callable_execution(mock_ctx, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_list_notes_with_state_command(mock_ctx, tmp_path):
-    """Verify ListNotesTool.execute with state returns Command updating VALIDATOR_MESSAGES_KEY."""
+async def test_list_notes_with_state_tool_message(mock_ctx, tmp_path):
+    """Verify ListNotesTool.execute with state returns a ToolMessage directly."""
     save_note_content(tmp_path, "state_note", "content")
 
     mock_state = MagicMock(spec=State)
-    mock_state.current_agent = "operator"
-    mock_state.asanitize_update = AsyncMock(side_effect=lambda ctx, update, agent: update)
 
     result = await list_notes.execute(
         ctx=mock_ctx,
@@ -109,16 +106,11 @@ async def test_list_notes_with_state_command(mock_ctx, tmp_path):
         tool_call_id="call_list_999",
     )
 
-    assert isinstance(result, Command)
-    assert VALIDATOR_MESSAGES_KEY in result.update
-    tool_messages = result.update[VALIDATOR_MESSAGES_KEY]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].tool_call_id == "call_list_999"
-    assert "Here are all the notes:" in tool_messages[0].content
-    assert "- state_note (1 lines)" in tool_messages[0].content
-    assert tool_messages[0].status == "success"
-
-    mock_state.asanitize_update.assert_called_once()
+    assert isinstance(result, ToolMessage)
+    assert result.tool_call_id == "call_list_999"
+    assert "Here are all the notes:" in result.content
+    assert "- state_note (1 lines)" in result.content
+    assert result.status == "success"
 
 
 @pytest.mark.asyncio

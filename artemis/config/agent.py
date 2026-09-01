@@ -16,7 +16,7 @@
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -143,11 +143,22 @@ class CommitteeConfig(BaseModel):
 
 
 class CheckerConfig(BaseModel):
-    """Configuration specific to Checker subgoal verification and rollback."""
+    """Configuration for plan-driven checkpoint verification and the final review."""
 
     enabled: bool = Field(
         default=False,
-        description="Whether to enable visual verification and snapshot rollback by the Checker agent.",
+        description=(
+            "Master switch (compat alias): False disables BOTH midway"
+            " checkpoints and the final check."
+        ),
+    )
+    midway_checks: bool = Field(
+        default=True,
+        description="Whether plan-declared midway checkpoints run (requires enabled=True).",
+    )
+    final_check: bool = Field(
+        default=True,
+        description="Whether the exit final review runs (requires enabled=True).",
     )
     max_iterations: int = Field(
         default=20,
@@ -155,11 +166,41 @@ class CheckerConfig(BaseModel):
         le=50,
         description="Maximum verification iterations for Checker LLM reasoning and inspection.",
     )
-    max_chat_rounds: int = Field(
-        default=4,
+    final_check_max_attempts: int = Field(
+        default=3,
         ge=1,
         le=10,
-        description="Maximum debate/rebuttal rounds between Operator and Checker.",
+        description="Maximum final-review attempts before ending with a blocked outcome.",
+    )
+    checkpoint_max_repairs: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description="Per-checkpoint repair quota for failed verify criteria.",
+    )
+    max_concurrent_checkpoints: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum concurrently running checkpoint attempts.",
+    )
+    checkpoint_timeout: float = Field(
+        default=180.0,
+        gt=0,
+        description="Per-attempt timeout (seconds) for one checkpoint check.",
+    )
+    settlement_timeout: float = Field(
+        default=120.0,
+        gt=0,
+        description="Aggregate timeout (seconds) for the exit settlement barrier.",
+    )
+    assert_failure_policy: Literal["continue", "halt"] = Field(
+        default="continue",
+        description="Whether an assert failure lets execution continue or halts the run.",
+    )
+    device_probes: bool = Field(
+        default=True,
+        description="Whether the Checker's enumerated read-only device probes are registered.",
     )
     model_config = {"extra": "allow"}
 

@@ -1,0 +1,1443 @@
+{
+  "click": {
+    "description": "Tap at a 0-1000 normalized [x, y] coordinate.",
+    "inputSchema": {
+      "properties": {
+        "target": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Target",
+          "type": "array"
+        },
+        "times": {
+          "default": 1,
+          "title": "Times",
+          "type": "integer"
+        },
+        "delay_ms": {
+          "default": 100,
+          "title": "Delay Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "clickArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "click_sequence": {
+    "description": "Tap a series of 0-1000 normalized [x, y] points in one atomic burst.",
+    "inputSchema": {
+      "properties": {
+        "sequence": {
+          "items": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "title": "Sequence",
+          "type": "array"
+        },
+        "delay_ms": {
+          "default": 50,
+          "title": "Delay Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sequence"
+      ],
+      "title": "click_sequenceArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "long_press": {
+    "description": "Long-press at a 0-1000 normalized [x, y] coordinate.",
+    "inputSchema": {
+      "properties": {
+        "target": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Target",
+          "type": "array"
+        },
+        "duration_ms": {
+          "default": 1000,
+          "title": "Duration Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "long_pressArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "input_text": {
+    "description": "Type text, optionally focusing a 0-1000 normalized [x, y] target first.",
+    "inputSchema": {
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target"
+        },
+        "clear_exist": {
+          "default": true,
+          "title": "Clear Exist",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "input_textArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "swipe": {
+    "description": "Swipe between two 0-1000 normalized [x, y] points.",
+    "inputSchema": {
+      "properties": {
+        "start": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Start",
+          "type": "array"
+        },
+        "end": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "End",
+          "type": "array"
+        },
+        "duration_ms": {
+          "default": 800,
+          "title": "Duration Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "swipeArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "press_key": {
+    "description": "Press a device key (home, back, enter, delete, tab, search, menu, app_switch).",
+    "inputSchema": {
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "title": "press_keyArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "manage_app": {
+    "description": "Launch or stop an app by human-readable name or package.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "app_name": {
+          "title": "App Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "app_name"
+      ],
+      "title": "manage_appArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "wait_for_delay": {
+    "description": "Wait for a fixed number of milliseconds.",
+    "inputSchema": {
+      "properties": {
+        "time_in_ms": {
+          "title": "Time In Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "time_in_ms"
+      ],
+      "title": "wait_for_delayArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "wait_for_text": {
+    "description": "Wait for text to appear on or disappear from the screen.",
+    "inputSchema": {
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "wait_state": {
+          "default": "appear",
+          "title": "Wait State",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "default": 5000,
+          "title": "Timeout Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "wait_for_textArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "open_link": {
+    "description": "Open a URL on the device.",
+    "inputSchema": {
+      "properties": {
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "open_linkArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "erase_one_char": {
+    "description": "Erase a single character in the focused field.",
+    "inputSchema": {
+      "properties": {},
+      "title": "erase_one_charArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "focus_and_clear_text": {
+    "description": "Focus the field at a 0-1000 normalized [x, y] and clear its text.",
+    "inputSchema": {
+      "properties": {
+        "target": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Target",
+          "type": "array"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "focus_and_clear_textArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
+  },
+  "observe_screen": {
+    "description": "Capture and index the current screen (adapter-internal).",
+    "inputSchema": {
+      "properties": {
+        "settle_ms": {
+          "default": 400,
+          "title": "Settle Ms",
+          "type": "integer"
+        },
+        "include_image": {
+          "default": false,
+          "title": "Include Image",
+          "type": "boolean"
+        }
+      },
+      "title": "observe_screenArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Post-action observation: persisted screenshot plus the parsed element list.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode",
+          "default": "OK"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "screenshot_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Screenshot Path"
+        },
+        "image_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image Name"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Height"
+        },
+        "elements_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Elements Text"
+        },
+        "elements": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Elements",
+          "type": "array"
+        },
+        "hierarchy_ok": {
+          "default": true,
+          "title": "Hierarchy Ok",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "ObserveResult",
+      "type": "object"
+    }
+  },
+  "take_screenshot": {
+    "description": "Return the current screen as base64 (adapter-internal, no persistence).",
+    "inputSchema": {
+      "properties": {
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
+        }
+      },
+      "title": "take_screenshotArguments",
+      "type": "object"
+    },
+    "outputSchema": null
+  },
+  "get_ui_hierarchy": {
+    "description": "Return the raw UI element hierarchy (adapter-internal).",
+    "inputSchema": {
+      "properties": {
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
+        }
+      },
+      "title": "get_ui_hierarchyArguments",
+      "type": "object"
+    },
+    "outputSchema": null
+  }
+}

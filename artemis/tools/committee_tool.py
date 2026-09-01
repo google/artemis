@@ -198,13 +198,6 @@ async def _execute_committee(
                     logger.error(f"Failed to build plan and history in committee: {e}")
                     history_summary += f"Error building plan and history: {e}"
 
-                # Append immediate failure reason if present in state
-                replan_reason = (
-                    getattr(state, "operator_replan_reason", None) if state is not None else None
-                )
-                if replan_reason:
-                    history_summary += f"\n\n### Current Failure Reason\n{replan_reason}\n"
-
                 # Read failed plans history to ensure the committee avoids
                 # repeating failed strategies
                 failed_plans_history = ""

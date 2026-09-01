@@ -25,7 +25,9 @@ from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan, trace
 from artemis.graph.state import State
+from artemis.graph.visibility import strict_state
 from artemis.services.llm import (
+    acomplete,
     get_llm,
     invoke_llm_with_timeout_message,
     with_fallback,
@@ -44,9 +46,28 @@ from artemis.tools.tool_wrapper import (
 from artemis.utils.decorators import wrap_with_callbacks
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
+from artemis.utils.plan_grammar import render_plan_grammar_spec
 from artemis.utils.task_tree import build_plan_and_history
 
 logger = get_logger(__name__)
+
+
+def _checks_enabled(ctx: ArtemisContext) -> bool:
+    """Config-driven prompt assembly gate: with both check gates disabled, no
+    check-related instruction reaches any planner prompt."""
+    setup = getattr(ctx, "execution_setup", None)
+    return bool(setup and getattr(setup, "checks_enabled", False))
+
+
+def build_planner_system_blocks(prompts_data: dict, mode: str, include_checks: bool) -> list[str]:
+    """Assembly point for the planner prompt's component list (§1.3): the
+    check-related block mounts only while the checking feature is active."""
+    blocks = list(prompts_data["modes"][mode]["system"])
+    if include_checks:
+        extra = "check_generation" if mode == "initial_plan" else "check_audit"
+        if extra in prompts_data.get("blocks", {}):
+            blocks.append(extra)
+    return blocks
 
 
 class _CyFunctionDetectorMeta(type):
@@ -97,10 +118,13 @@ async def run_async_planner_validation(
         with open(prompts_path, encoding="utf-8") as f:
             prompts_data = json.load(f)
 
+        include_checks = _checks_enabled(ctx)
         mode_config = prompts_data["modes"]["validator"]
-        system_blocks = mode_config["system"]
+        system_blocks = build_planner_system_blocks(prompts_data, "validator", include_checks)
         system_content = "\n\n".join(prompts_data["blocks"][block] for block in system_blocks)
-        system_message = Template(system_content).render()
+        system_message = Template(system_content).render(
+            plan_grammar=render_plan_grammar_spec(include_checks)
+        )
 
         history_str = "No history available."
         if ctx.data_engine:
@@ -163,6 +187,7 @@ class PlannerNode:
     )
     @trace(type="agent", name="planner")
     async def __call__(self, state: State):
+        state = strict_state(state, "planner")
         prompts_path = Path(__file__).parent / "planner.json"
         with open(prompts_path, encoding="utf-8") as f:
             prompts_data = json.load(f)
@@ -170,10 +195,16 @@ class PlannerNode:
         mode = "initial_plan"
         mode_config = prompts_data["modes"][mode]
 
-        system_blocks = mode_config["system"]
+        include_checks = _checks_enabled(self.ctx)
+        # Assembly point (not in-template conditionals): check-generation
+        # instructions only mount while the checking feature is active, so a
+        # fully-disabled configuration yields a byte-identical planner prompt.
+        system_blocks = build_planner_system_blocks(prompts_data, mode, include_checks)
         system_content = "\n\n".join(prompts_data["blocks"][block] for block in system_blocks)
 
-        system_message = Template(system_content).render()
+        system_message = Template(system_content).render(
+            plan_grammar=render_plan_grammar_spec(include_checks)
+        )
 
         # Get screenshot
         screenshot_b64 = None
@@ -287,22 +318,14 @@ class PlannerNode:
         for validation_attempt in range(max_validation_attempts):
             tool_called = False
 
-            async def run_stream(llm_model):
-                full_response = None
-                trace_id = CURRENT_TRACE_ID.get()
-                async for chunk in llm_model.astream(current_messages):
-                    if full_response is None:
-                        full_response = chunk
-                    else:
-                        full_response += chunk
-
-                    pass
-                return full_response
-
             for _ in range(max_iterations):
                 response = await with_fallback(
-                    main_call=lambda: invoke_llm_with_timeout_message(run_stream(llm)),
-                    fallback_call=lambda: invoke_llm_with_timeout_message(run_stream(llm_fallback)),
+                    main_call=lambda: invoke_llm_with_timeout_message(
+                        acomplete(llm, current_messages)
+                    ),
+                    fallback_call=lambda: invoke_llm_with_timeout_message(
+                        acomplete(llm_fallback, current_messages)
+                    ),
                 )
 
                 if response is None or not response.tool_calls:
@@ -415,8 +438,4 @@ class PlannerNode:
                 f"Failed to generate a valid plan after {max_validation_attempts} attempts."
             )
 
-        return await state.asanitize_update(
-            ctx=self.ctx,
-            update={},
-            agent="planner",
-        )
+        return {}

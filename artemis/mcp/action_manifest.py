@@ -122,7 +122,6 @@ BACKEND_INDEPENDENT_TOOLS: frozenset[str] = frozenset(
         "run_adb_command",
         "manage_task",
         "analyze_task_output",
-        "reply_to_checker",
         "report_task_status",
         "report_failure_analysis",
     }
@@ -289,8 +288,7 @@ def filter_declarations(
         for decl in declarations
         # Only device actions are gated. Backend-independent tools and anything the
         # manifest does not classify (e.g. an agent's own bespoke tool) pass through.
-        if _declaration_name(decl) not in DEVICE_ACTIONS
-        or _declaration_name(decl) in available
+        if _declaration_name(decl) not in DEVICE_ACTIONS or _declaration_name(decl) in available
     ]
 
     for ext in actuator.extensions():

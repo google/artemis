@@ -185,7 +185,10 @@ def test_agent_config_loading():
     assert agent_cfg.committee.debate_rounds == 2
     assert agent_cfg.checker.enabled is False
     assert agent_cfg.checker.max_iterations == 20
-    assert agent_cfg.checker.max_chat_rounds == 4
+    assert agent_cfg.checker.midway_checks is True
+    assert agent_cfg.checker.final_check is True
+    assert agent_cfg.checker.assert_failure_policy == "continue"
+    assert agent_cfg.checker.device_probes is True
     assert agent_cfg.outputter.enabled is True
     assert agent_cfg.outputter.force_synthesis is False
     assert agent_cfg.flash.max_turns == 30
@@ -219,6 +222,7 @@ def test_output_config_and_recording():
 def test_runtime_state_and_ipc(tmp_path, monkeypatch):
     """Test IPC port and LS address state helpers."""
     import urllib.request
+
     monkeypatch.setattr(urllib.request, "urlopen", MagicMock(side_effect=Exception("offline")))
     ipc_state_file = tmp_path / ".artemis_ipc_port"
     monkeypatch.setattr("artemis.config.runtime.get_ipc_port_file", lambda: ipc_state_file)
@@ -247,9 +251,9 @@ def test_runtime_state_and_ipc(tmp_path, monkeypatch):
 
 
 def test_planner_validation_builder_and_milestones():
-    """Test AgentConfigBuilder methods for planner validation and validate_milestones threshold."""
+    """Test AgentConfigBuilder methods for planner validation and milestone drift detection."""
     from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
-    from artemis.graph.graph import validate_milestones
+    from artemis.utils.plan_grammar import milestones_changed, parse_plan
 
     # Default builder inherits from artemis.jsonc (enabled=False, similarity_threshold=0.85)
     builder = AgentConfigBuilder()
@@ -270,12 +274,13 @@ def test_planner_validation_builder_and_milestones():
     cfg_disabled = AgentConfigBuilder().with_disable_planner_validation(True).build()
     assert cfg_disabled.disable_planner_validation is True
 
-    # Test validate_milestones with custom thresholds
-    before = "- [ ] Tap Login button\n- [ ] Enter password"
-    after_minor = "- [ ] Tap the Login button\n- [ ] Enter password"
-    # Minor edit has ~0.94 similarity
-    assert validate_milestones(before, after_minor, similarity_threshold=0.85) is False
-    assert validate_milestones(before, after_minor, similarity_threshold=0.98) is True
+    # Milestone drift detection is threshold-free: any text change counts,
+    # status-only flips never do (see artemis.utils.plan_grammar)
+    before = parse_plan("- [ ] Tap Login button\n- [ ] Enter password")
+    after_minor = parse_plan("- [ ] Tap the Login button\n- [ ] Enter password")
+    after_status = parse_plan("- [x] Tap Login button\n- [/] Enter password")
+    assert milestones_changed(before, after_minor) is True
+    assert milestones_changed(before, after_status) is False
 
 
 @pytest.mark.asyncio
@@ -333,22 +338,35 @@ def test_checker_builder_and_context_propagation():
     from artemis.sdk.agent import Agent
     from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
 
-    # Default builder inherits from artemis.jsonc (enabled=False, max_iterations=20, max_chat_rounds=4)
+    # Default builder inherits from artemis.jsonc (enabled=False, max_iterations=20)
     builder = AgentConfigBuilder()
     cfg = builder.build()
     assert cfg.disable_checker is True
     assert cfg.checker_max_iterations == 20
-    assert cfg.checker_max_chat_rounds == 4
+    assert cfg.disable_midway_checks is False
+    assert cfg.disable_final_check is False
 
-    # Fluent enabling
+    # Fluent enabling with the new two-gate knobs
     cfg_enabled = (
         AgentConfigBuilder()
-        .with_checker(enabled=True, max_iterations=25, max_chat_rounds=5)
+        .with_checker(
+            enabled=True,
+            max_iterations=25,
+            midway_checks=True,
+            final_check=False,
+            checkpoint_max_repairs=1,
+            assert_failure_policy="halt",
+            device_probes=False,
+        )
         .build()
     )
     assert cfg_enabled.disable_checker is False
     assert cfg_enabled.checker_max_iterations == 25
-    assert cfg_enabled.checker_max_chat_rounds == 5
+    assert cfg_enabled.disable_midway_checks is False
+    assert cfg_enabled.disable_final_check is True
+    assert cfg_enabled.checkpoint_max_repairs == 1
+    assert cfg_enabled.assert_failure_policy == "halt"
+    assert cfg_enabled.disable_device_probes is True
 
     # Fluent disabling
     cfg_disabled = AgentConfigBuilder().with_disable_checker(True).build()
@@ -375,7 +393,13 @@ def test_checker_builder_and_context_propagation():
     assert ctx.execution_setup is not None
     assert ctx.execution_setup.disable_checker is False
     assert ctx.execution_setup.checker_max_iterations == 25
-    assert ctx.execution_setup.checker_max_chat_rounds == 5
+    assert ctx.execution_setup.disable_final_check is True
+    assert ctx.execution_setup.checkpoint_max_repairs == 1
+    assert ctx.execution_setup.assert_failure_policy == "halt"
+    assert ctx.execution_setup.disable_device_probes is True
+    # Effective gate semantics: master alias off + individual gates
+    assert ctx.execution_setup.midway_checks_enabled is True
+    assert ctx.execution_setup.final_check_enabled is False
 
 
 def test_explorer_builder_and_resolution(monkeypatch):
@@ -644,4 +668,3 @@ def test_admin_console_config_facade_backward_compatibility():
     assert DB_PATH == ac.DB_PATH
     assert TRACES_PATH == ac.TRACES_PATH
     assert callable(init_ls_address)
-

@@ -30,10 +30,7 @@ async def test_operator_node_fast_path():
 
     mock_state = MagicMock()
     mock_state.subagent_calls = []
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
-    mock_state.subgoal_plan = []
     mock_state.initial_goal = "Test goal"
-    mock_state.operator_tactical_plan = []
 
     # Mock controller and data
     mock_controller = MagicMock()
@@ -62,18 +59,15 @@ async def test_operator_node_fast_path():
     # Patch dependencies
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
         node = OperatorNode(mock_ctx)
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         # Verify state was updated with action
-        mock_state.asanitize_update.assert_called_once()
-        args, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
+        update_dict = node_update
 
         assert "structured_decisions" in update_dict
         decisions = json.loads(update_dict["structured_decisions"])
         assert decisions[0]["action"] == "tap"
         assert decisions[0]["coordinates"] == [54, 120]
-        assert update_dict["complete_subgoals_by_ids"] == []
 
 
 @pytest.mark.asyncio
@@ -241,8 +235,6 @@ async def test_operator_node_multiple_actions():
 
     mock_state = MagicMock()
     mock_state.subagent_calls = []
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
-    mock_state.subgoal_plan = []
     mock_state.initial_goal = "Test goal"
 
     mock_controller = MagicMock()
@@ -267,11 +259,9 @@ async def test_operator_node_multiple_actions():
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
         node = OperatorNode(mock_ctx)
-        await node(mock_state)
+        node_update = await node(mock_state)
 
-        mock_state.asanitize_update.assert_called_once()
-        args, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
+        update_dict = node_update
 
         assert "structured_decisions" in update_dict
         decisions = json.loads(update_dict["structured_decisions"])
@@ -296,7 +286,6 @@ async def test_operator_node_no_record_step():
 
     mock_state = MagicMock()
     mock_state.subagent_calls = []
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
     mock_state.initial_goal = "Test goal"
 
     mock_controller = MagicMock()
@@ -314,13 +303,11 @@ async def test_operator_node_no_record_step():
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
         node = OperatorNode(mock_ctx)
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         mock_ctx.data_engine.record_step.assert_not_called()
 
-        mock_state.asanitize_update.assert_called_once()
-        args, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
+        update_dict = node_update
         assert "structured_decisions" in update_dict
 
 
@@ -336,7 +323,6 @@ async def test_operator_dynamic_prompt():
     mock_state = MagicMock()
     mock_state.subagent_calls = []
     mock_state.initial_goal = "Test goal"
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
 
     class MockComponent(PromptComponent):
         async def __call__(self, builder, state, ctx, **kwargs):
@@ -367,7 +353,7 @@ async def test_operator_dynamic_prompt():
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
         node = OperatorNode(mock_ctx, prompt_components=[MockComponent()])
-        await node(mock_state)
+        node_update = await node(mock_state)
 
 
 @pytest.mark.asyncio
@@ -443,7 +429,6 @@ async def test_operator_history_compression():
     mock_state = MagicMock()
     mock_state.subagent_calls = []
     mock_state.initial_goal = "Test goal"
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
 
     mock_controller = MagicMock()
     mock_controller.take_screenshot = AsyncMock(return_value="YmFzZTY0X3NjcmVlbnNob3Q=")
@@ -462,10 +447,6 @@ async def test_operator_history_compression():
             return json.dumps(
                 {
                     "main_template": (
-                        "Goals: {{ initial_goal }}\nPlan:\n{{ plan_and_history"
-                        " }}\n# CURRENT OBSERVATION"
-                    ),
-                    "troubleshooter_template": (
                         "Goals: {{ initial_goal }}\nPlan:\n{{ plan_and_history"
                         " }}\n# CURRENT OBSERVATION"
                     ),
@@ -508,7 +489,7 @@ async def test_operator_history_compression():
         patch("pathlib.Path.read_text", mock_read_text),
     ):
         node = OperatorNode(mock_ctx, last_n_detailed=5)
-        await node(mock_state)
+        node_update = await node(mock_state)
 
 
 @pytest.mark.asyncio
@@ -528,7 +509,7 @@ async def test_operator_loop_detection():
     node = OperatorNode(mock_ctx)
 
     with pytest.raises(RuntimeError) as exc_info:
-        await node(mock_state)
+        node_update = await node(mock_state)
 
     assert "Infinite loop detected" in str(exc_info.value)
 
@@ -546,7 +527,6 @@ async def test_operator_tracks_subagent_calls():
     mock_state = MagicMock()
     mock_state.subagent_calls = ["ask_explorer"]
     mock_state.initial_goal = "Test goal"
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
 
     mock_controller = MagicMock()
     mock_controller.take_screenshot = AsyncMock(return_value="YmFzZTY0X3NjcmVlbnNob3Q=")
@@ -589,11 +569,9 @@ async def test_operator_tracks_subagent_calls():
         ),
     ):
         node = OperatorNode(mock_ctx, tools=[mock_diagnoser_tool])
-        await node(mock_state)
+        node_update = await node(mock_state)
 
-        mock_state.asanitize_update.assert_called_once()
-        args, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
+        update_dict = node_update
 
         assert "subagent_calls" in update_dict
         assert update_dict["subagent_calls"] == [
@@ -615,7 +593,6 @@ async def test_operator_defer_action_for_gathering():
 
     mock_state = MagicMock()
     mock_state.subagent_calls = []
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
     mock_state.initial_goal = "Test goal"
 
     mock_controller = MagicMock()
@@ -684,115 +661,19 @@ async def test_operator_defer_action_for_gathering():
         ),
     ):
         node = OperatorNode(mock_ctx, tools=[mock_diagnoser_tool])
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         # Subagent tool should have been executed
         mock_call_receiver.assert_called_once_with(query="check something", state=mock_state)
 
         # Verify final state has the action execution from the second response
-        mock_state.asanitize_update.assert_called_once()
-        args, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
+        update_dict = node_update
 
         assert "structured_decisions" in update_dict
         decisions = json.loads(update_dict["structured_decisions"])
         assert len(decisions) == 1
         assert decisions[0]["action"] == "tap"
         assert decisions[0]["coordinates"] == [54, 120]
-
-
-@pytest.mark.asyncio
-async def test_operator_defer_reply_to_checker_for_gathering():
-    from artemis.agents.operator.operator import OperatorNode
-    from artemis.context import ArtemisContext
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    mock_ctx = MagicMock(spec=ArtemisContext)
-    mock_ctx.execution_setup = None
-    from pathlib import Path
-
-    mock_ctx.data_engine = MagicMock()
-    mock_ctx.data_engine.base_dir = Path("/tmp/test_session")
-    mock_ctx.data_engine.get_agent_friendly_steps.return_value = []
-
-    mock_state = MagicMock()
-    mock_state.subagent_calls = []
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
-    mock_state.initial_goal = "Test goal"
-
-    mock_llm = MagicMock()
-
-    # First response calls ask_diagnoser and reply_to_checker
-    mock_response_1 = MagicMock()
-    mock_response_1.tool_calls = [
-        {"name": "ask_diagnoser", "args": {"query": "test"}, "id": "call_diag"},
-        {
-            "name": "reply_to_checker",
-            "args": {"reasoning": "I solved it"},
-            "id": "call_reply",
-        },
-    ]
-
-    # Second response stops without action tools
-    mock_response_2 = MagicMock()
-    mock_response_2.tool_calls = []
-
-    responses = [mock_response_1, mock_response_2]
-    call_count = 0
-
-    async def mock_ainvoke(*args, **kwargs):
-        nonlocal call_count
-        if call_count < len(responses):
-            res = responses[call_count]
-            call_count += 1
-            return res
-
-    mock_llm.ainvoke.side_effect = mock_ainvoke
-    mock_llm.bind_tools.return_value = mock_llm
-
-    from langgraph.prebuilt import InjectedState
-    from typing import Annotated
-
-    mock_diagnoser_tool = MagicMock()
-    mock_diagnoser_tool.name = "ask_diagnoser"
-    mock_diagnoser_tool.args = {"state": None}
-
-    mock_call_receiver = Mock()
-
-    async def dummy_diagnoser_func(query: str, state: Annotated[MagicMock, InjectedState]):
-        mock_call_receiver(query=query, state=state)
-        return "Diagnostics completed"
-
-    mock_diagnoser_tool.coroutine = dummy_diagnoser_func
-    mock_diagnoser_tool.func = None
-
-    with (
-        patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm),
-        patch(
-            "artemis.agents.operator.operator.trace_langchain_tool",
-            side_effect=lambda t, ctx: t,
-        ),
-        patch(
-            "artemis.agents.operator.operator.OperatorNode._has_checker_feedback",
-            return_value=True,
-        ),
-        patch(
-            "artemis.agents.operator.operator.OperatorNode._get_verification_chat_rounds",
-            return_value=(1, 1),
-        ),
-    ):
-        node = OperatorNode(mock_ctx, tools=[mock_diagnoser_tool])
-        await node(mock_state)
-
-        # Subagent was called
-        mock_call_receiver.assert_called_once()
-
-        # Verify reply to checker was NOT executed / flagged
-        mock_state.asanitize_update.assert_called_once()
-        args, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
-
-        assert update_dict.get("operator_replied") is False
 
 
 @pytest.mark.asyncio
@@ -907,7 +788,6 @@ async def test_operator_no_defer_for_note_updating():
 
     mock_state = MagicMock()
     mock_state.subagent_calls = []
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
     mock_state.initial_goal = "Test goal"
 
     mock_controller = MagicMock()
@@ -965,15 +845,13 @@ async def test_operator_no_defer_for_note_updating():
         ),
     ):
         node = OperatorNode(mock_ctx, tools=[mock_update_note_tool])
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         # The update_note tool should have been executed immediately
         mock_call_receiver.assert_called_once_with(key="progress", content="step 1")
 
         # The click action should NOT be deferred, so it should be in structured_decisions
-        mock_state.asanitize_update.assert_called_once()
-        args, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
+        update_dict = node_update
 
         assert "structured_decisions" in update_dict
         decisions = json.loads(update_dict["structured_decisions"])
@@ -995,7 +873,6 @@ async def test_operator_defer_for_note_reading():
 
     mock_state = MagicMock()
     mock_state.subagent_calls = []
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
     mock_state.initial_goal = "Test goal"
 
     mock_controller = MagicMock()
@@ -1058,7 +935,7 @@ async def test_operator_defer_for_note_reading():
         ),
     ):
         node = OperatorNode(mock_ctx, tools=[mock_read_note_tool])
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         # The read_note tool should have been executed
         mock_call_receiver.assert_called_once_with(key="progress")
@@ -1068,9 +945,7 @@ async def test_operator_defer_for_note_reading():
         # Total call_count should be 2.
         assert call_count == 2
 
-        mock_state.asanitize_update.assert_called_once()
-        args, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
+        update_dict = node_update
 
         assert "structured_decisions" in update_dict
         decisions = json.loads(update_dict["structured_decisions"])
@@ -1092,7 +967,6 @@ async def test_operator_no_defer_for_note_appending():
 
     mock_state = MagicMock()
     mock_state.subagent_calls = []
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
     mock_state.initial_goal = "Test goal"
 
     mock_controller = MagicMock()
@@ -1149,15 +1023,13 @@ async def test_operator_no_defer_for_note_appending():
         ),
     ):
         node = OperatorNode(mock_ctx, tools=[mock_append_note_tool])
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         # The append_note tool should have been executed immediately
         mock_call_receiver.assert_called_once_with(key="progress", content="step 1")
 
         # The click action should NOT be deferred, so it should be in structured_decisions
-        mock_state.asanitize_update.assert_called_once()
-        args, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
+        update_dict = node_update
 
         assert "structured_decisions" in update_dict
         decisions = json.loads(update_dict["structured_decisions"])
@@ -1180,7 +1052,6 @@ async def test_operator_background_tasks_prompt_injection():
     mock_state = MagicMock()
     mock_state.subagent_calls = []
     mock_state.initial_goal = "Test goal"
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
 
     mock_controller = MagicMock()
     mock_controller.take_screenshot = AsyncMock(return_value="YmFzZTY0X3NjcmVlbnNob3Q=")
@@ -1231,7 +1102,7 @@ async def test_operator_background_tasks_prompt_injection():
                 active_background_tasks=active_background_tasks,
             )
             captured_messages.extend(messages)
-            return [], False, None, None, False
+            return [], None, None, False
 
         with (
             patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm),
@@ -1241,7 +1112,7 @@ async def test_operator_background_tasks_prompt_injection():
             ),
         ):
             node = OperatorNode(mock_ctx)
-            await node(mock_state)
+            node_update = await node(mock_state)
 
             # Assert that the captured messages (prompts) contain the background tasks section
             full_content = ""
@@ -1276,7 +1147,6 @@ async def test_operator_task_plan_warning_prompt_injection():
     mock_state = MagicMock()
     mock_state.subagent_calls = []
     mock_state.initial_goal = "Test goal"
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
 
     mock_controller = MagicMock()
     mock_controller.take_screenshot = AsyncMock(return_value="YmFzZTY0X3NjcmVlbnNob3Q=")
@@ -1323,7 +1193,7 @@ async def test_operator_task_plan_warning_prompt_injection():
             task_plan="",
         )
         captured_messages_1.extend(messages)
-        return [], False, None, None, False
+        return [], None, None, False
 
     with (
         patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm),
@@ -1333,7 +1203,7 @@ async def test_operator_task_plan_warning_prompt_injection():
         ),
     ):
         node = OperatorNode(mock_ctx)
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         full_content_1 = ""
         for m in captured_messages_1:
@@ -1376,7 +1246,7 @@ async def test_operator_task_plan_warning_prompt_injection():
             task_plan="",
         )
         captured_messages_2.extend(messages)
-        return [], False, None, None, False
+        return [], None, None, False
 
     with (
         patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm),
@@ -1386,7 +1256,7 @@ async def test_operator_task_plan_warning_prompt_injection():
         ),
     ):
         node = OperatorNode(mock_ctx)
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         full_content_2 = ""
         for m in captured_messages_2:
@@ -1418,7 +1288,6 @@ async def test_operator_tool_limit_exceeded_warning():
     # Set the flag to True to simulate tool call limit exceeded in previous turn
     mock_state.operator_tool_limit_exceeded = True
     mock_state.initial_goal = "Test goal"
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
 
     mock_controller = MagicMock()
     mock_controller.take_screenshot = AsyncMock(return_value="YmFzZTY0X3NjcmVlbnNob3Q=")
@@ -1443,8 +1312,8 @@ async def test_operator_tool_limit_exceeded_warning():
             task_plan="",
         )
         captured_messages.extend(messages)
-        # Return 5 elements: action_result, requested_argue, raw_thinking, native_thinking, tool_limit_exceeded
-        return [], False, None, None, False
+        # Return 4 elements: action_result, raw_thinking, native_thinking, tool_limit_exceeded
+        return [], None, None, False
 
     with (
         patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm),
@@ -1454,7 +1323,7 @@ async def test_operator_tool_limit_exceeded_warning():
         ),
     ):
         node = OperatorNode(mock_ctx)
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         full_content = ""
         for m in captured_messages:
@@ -1469,9 +1338,7 @@ async def test_operator_tool_limit_exceeded_warning():
             "You did not execute any screen interaction actions in your last turn" in full_content
         )
 
-        mock_state.asanitize_update.assert_called_once()
-        _, kwargs = mock_state.asanitize_update.call_args
-        assert kwargs["update"].get("operator_tool_limit_exceeded") is False
+        assert node_update.get("operator_tool_limit_exceeded") is False
 
 
 @pytest.mark.asyncio
@@ -1488,7 +1355,6 @@ async def test_operator_fallback_function_call_parsing():
 
     mock_state = MagicMock()
     mock_state.subagent_calls = []
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
     mock_state.initial_goal = "Test goal"
 
     mock_controller = MagicMock()
@@ -1515,12 +1381,10 @@ async def test_operator_fallback_function_call_parsing():
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
         node = OperatorNode(mock_ctx)
-        await node(mock_state)
+        node_update = await node(mock_state)
 
         # Verify state was updated with parsed click action
-        mock_state.asanitize_update.assert_called_once()
-        _, kwargs = mock_state.asanitize_update.call_args
-        update_dict = kwargs["update"]
+        update_dict = node_update
 
         assert "structured_decisions" in update_dict
         decisions = json.loads(update_dict["structured_decisions"])

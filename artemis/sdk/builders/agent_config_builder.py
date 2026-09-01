@@ -88,7 +88,15 @@ class AgentConfigBuilder:
         self._committee_debate_rounds = agent_cfg.committee.debate_rounds
         self._disable_checker = not agent_cfg.checker.enabled
         self._checker_max_iterations = agent_cfg.checker.max_iterations
-        self._checker_max_chat_rounds = agent_cfg.checker.max_chat_rounds
+        self._disable_midway_checks = not agent_cfg.checker.midway_checks
+        self._disable_final_check = not agent_cfg.checker.final_check
+        self._final_check_max_attempts = agent_cfg.checker.final_check_max_attempts
+        self._checkpoint_max_repairs = agent_cfg.checker.checkpoint_max_repairs
+        self._max_concurrent_checkpoints = agent_cfg.checker.max_concurrent_checkpoints
+        self._checkpoint_timeout = agent_cfg.checker.checkpoint_timeout
+        self._settlement_timeout = agent_cfg.checker.settlement_timeout
+        self._assert_failure_policy = agent_cfg.checker.assert_failure_policy
+        self._disable_device_probes = not agent_cfg.checker.device_probes
         self._outputter = agent_cfg.outputter
         self._disable_outputter = not agent_cfg.outputter.enabled
         self._flash = agent_cfg.flash
@@ -162,9 +170,7 @@ class AgentConfigBuilder:
         """Target a specific Android device by its ADB serial number."""
         return self.for_device(DevicePlatform.ANDROID, device_serial)
 
-    def with_concurrency_mode(
-        self, mode: str
-    ) -> "AgentConfigBuilder":
+    def with_concurrency_mode(self, mode: str) -> "AgentConfigBuilder":
         """Configure concurrency mode: 'global' (1 task globally) or 'per_device' (1 task per device)."""
         self._concurrency_mode = str(mode).strip().lower()
         return self
@@ -244,20 +250,62 @@ class AgentConfigBuilder:
         self,
         enabled: bool = True,
         max_iterations: int | None = None,
-        max_chat_rounds: int | None = None,
+        midway_checks: bool | None = None,
+        final_check: bool | None = None,
+        final_check_max_attempts: int | None = None,
+        checkpoint_max_repairs: int | None = None,
+        max_concurrent_checkpoints: int | None = None,
+        checkpoint_timeout: float | None = None,
+        settlement_timeout: float | None = None,
+        assert_failure_policy: str | None = None,
+        device_probes: bool | None = None,
     ) -> "AgentConfigBuilder":
-        """Configure Checker subgoal verification and rollback settings.
+        """Configure plan-driven checkpoint verification and the final review.
 
         Args:
-            enabled: Whether checker visual verification is enabled
+            enabled: Master switch (compat alias); False disables both gates
             max_iterations: Optional maximum iterations for Checker reasoning (1-50)
-            max_chat_rounds: Optional maximum debate rounds with Operator (1-10)
+            midway_checks: Whether plan-declared midway checkpoints run
+            final_check: Whether the exit final review runs
+            final_check_max_attempts: Max final-review attempts before a blocked exit
+            checkpoint_max_repairs: Per-checkpoint verify-fail repair quota
+            max_concurrent_checkpoints: Concurrency cap for checkpoint attempts
+            checkpoint_timeout: Per-attempt timeout in seconds
+            settlement_timeout: Aggregate exit-settlement timeout in seconds
+            assert_failure_policy: 'continue' or 'halt' on assert failures
+            device_probes: Whether Checker read-only device probes are registered
         """
         self._disable_checker = not enabled
         if max_iterations is not None:
             self._checker_max_iterations = max_iterations
-        if max_chat_rounds is not None:
-            self._checker_max_chat_rounds = max_chat_rounds
+        if midway_checks is not None:
+            self._disable_midway_checks = not midway_checks
+        if final_check is not None:
+            self._disable_final_check = not final_check
+        if final_check_max_attempts is not None:
+            self._final_check_max_attempts = final_check_max_attempts
+        if checkpoint_max_repairs is not None:
+            self._checkpoint_max_repairs = checkpoint_max_repairs
+        if max_concurrent_checkpoints is not None:
+            self._max_concurrent_checkpoints = max_concurrent_checkpoints
+        if checkpoint_timeout is not None:
+            self._checkpoint_timeout = checkpoint_timeout
+        if settlement_timeout is not None:
+            self._settlement_timeout = settlement_timeout
+        if assert_failure_policy is not None:
+            self._assert_failure_policy = assert_failure_policy
+        if device_probes is not None:
+            self._disable_device_probes = not device_probes
+        return self
+
+    def with_midway_checks(self, enabled: bool = True) -> "AgentConfigBuilder":
+        """Enable or disable plan-declared midway checkpoints."""
+        self._disable_midway_checks = not enabled
+        return self
+
+    def with_final_check(self, enabled: bool = True) -> "AgentConfigBuilder":
+        """Enable or disable the exit final review."""
+        self._disable_final_check = not enabled
         return self
 
     def with_disable_planner_validation(self, disable: bool = True) -> "AgentConfigBuilder":
@@ -521,8 +569,16 @@ class AgentConfigBuilder:
             video_recording_tools_enabled=self._video_recording_tools_enabled,
             force_web_accessibility=self._force_web_accessibility,
             disable_checker=self._disable_checker,
+            disable_midway_checks=self._disable_midway_checks,
+            disable_final_check=self._disable_final_check,
             checker_max_iterations=self._checker_max_iterations,
-            checker_max_chat_rounds=self._checker_max_chat_rounds,
+            final_check_max_attempts=self._final_check_max_attempts,
+            checkpoint_max_repairs=self._checkpoint_max_repairs,
+            max_concurrent_checkpoints=self._max_concurrent_checkpoints,
+            checkpoint_timeout=self._checkpoint_timeout,
+            settlement_timeout=self._settlement_timeout,
+            assert_failure_policy=self._assert_failure_policy,
+            disable_device_probes=self._disable_device_probes,
             disable_planner_validation=self._disable_planner_validation,
             planner_validation_threshold=self._planner_validation_threshold,
             enable_committee=self._enable_committee,

@@ -22,6 +22,7 @@ from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
+from artemis.graph.visibility import strict_state
 from artemis.utils.logger import get_logger
 from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 from artemis.utils.ocr_xml_fusion import (
@@ -71,15 +72,23 @@ def _should_skip_settling(state: State) -> bool:
 
 
 @trace(type="agent", name="perception")
-def _check_injected_instruction_file(base_dir: str) -> str | None:
+def _check_injected_instruction_file(base_dir: str) -> dict | None:
+    """Consumes a pending injected-instruction payload, if any.
+
+    Returns the payload dict: `instruction` (str | None) plus the explicit
+    `release_loop` stop signal (bool) declared by the injecting caller.
+    """
     instruction_path = Path(base_dir) / "injected_instruction.json"
     if instruction_path.exists():
         with open(instruction_path, encoding="utf-8") as f:
             data = json.load(f)
-            injected_instruction = data.get("instruction")
         instruction_path.unlink()
-        logger.info(f"Read and deleted injected instruction: '{injected_instruction}'")
-        return injected_instruction
+        payload = {
+            "instruction": data.get("instruction"),
+            "release_loop": bool(data.get("release_loop")),
+        }
+        logger.info(f"Read and deleted injected instruction payload: {payload}")
+        return payload
     return None
 
 
@@ -88,6 +97,7 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
 
     Always executes at the start of an operator cycle.
     """
+    state = strict_state(state, "perception")
     logger.info("Entering Perception Node...")
 
     if not ctx.data_engine.current_step_id:
@@ -96,10 +106,14 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
 
     # Check for injected instruction without blocking event loop
     injected_instruction = None
+    user_stop_requested = False
     if ctx.data_engine and ctx.data_engine.base_dir:
-        injected_instruction = await asyncio.to_thread(
+        injected_payload = await asyncio.to_thread(
             _check_injected_instruction_file, str(ctx.data_engine.base_dir)
         )
+        if injected_payload:
+            injected_instruction = injected_payload.get("instruction")
+            user_stop_requested = bool(injected_payload.get("release_loop"))
 
     controller = UnifiedMobileController(ctx)
 
@@ -171,16 +185,6 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
         )
         logger.info(f"Offloaded perception data saving to background with image_name: {image_name}")
 
-    # Cache latest perception data on ArtemisContext for downstream zero-latency reuse (e.g. Checker)
-    ctx.latest_perception_data = {
-        "screenshot_b64": latest_screenshot_b64,
-        "latest_ui_hierarchy": fused_xml,
-        "xml_hierarchy": xml_hierarchy if xml_hierarchy is not None else [],
-        "ocr_results": ocr_results,
-        "width": device_data.width,
-        "height": device_data.height,
-    }
-
     # Return state update
     update = {
         "latest_screenshot": screenshot_path,
@@ -193,5 +197,7 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
             "height": device_data.height,
         },
         "injected_instruction": injected_instruction,
+        # sticky_or reducer: once latched True, later False updates keep it True
+        "user_stop_requested": user_stop_requested,
     }
     return update

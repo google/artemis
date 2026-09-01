@@ -37,17 +37,12 @@ class DummyState:
     def __init__(
         self,
         structured_decisions,
-        validator_messages=[],
         current_step_id=None,
         latest_screenshot=None,
     ):
         self.structured_decisions = structured_decisions
-        self.validator_messages = validator_messages
         self.current_step_id = current_step_id
         self.latest_screenshot = latest_screenshot
-
-    async def asanitize_update(self, ctx, update, agent):
-        return update
 
 
 class FakeActionSession:
@@ -145,6 +140,7 @@ async def test_validator_success(mock_mcp, mock_context, temp_screenshot):
 # guarded the stdio-subprocess handshake teardown, machinery this migration removed
 # entirely. Its hazard class (leaked AnyIO cancel scopes) is now pinned by
 # tests/unit/mcp/test_action_session.py against the in-process ActionSession.
+
 
 @pytest.mark.asyncio
 async def test_validator_failure_analysis(mock_mcp, mock_context, temp_screenshot):

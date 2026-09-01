@@ -13,11 +13,8 @@
 # limitations under the License.
 
 import json
-from pathlib import Path
 import re
-import shutil
 from typing import IO
-from unittest.mock import MagicMock
 
 
 def strip_json_comments(text: str) -> str:
@@ -28,28 +25,3 @@ def strip_json_comments(text: str) -> str:
 
 def load_jsonc(file: IO) -> dict:
     return json.loads(strip_json_comments(file.read()))
-
-
-def create_snapshot(src_dir: Path, snapshot_dir: Path):
-    """Creates a snapshot of a directory by copying it."""
-    if (
-        isinstance(src_dir, MagicMock)
-        or isinstance(snapshot_dir, MagicMock)
-        or "MagicMock" in str(src_dir)
-        or "MagicMock" in str(snapshot_dir)
-    ):
-        return
-    if not src_dir.exists():
-        return
-    if snapshot_dir.exists():
-        shutil.rmtree(snapshot_dir)
-    shutil.copytree(src_dir, snapshot_dir)
-
-
-def restore_snapshot(snapshot_dir: Path, dst_dir: Path):
-    """Restores a directory from a snapshot."""
-    if not snapshot_dir.exists():
-        raise FileNotFoundError(f"Snapshot directory {snapshot_dir} does not exist.")
-    if dst_dir.exists():
-        shutil.rmtree(dst_dir)
-    shutil.copytree(snapshot_dir, dst_dir)

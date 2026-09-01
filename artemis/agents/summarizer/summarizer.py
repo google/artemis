@@ -25,7 +25,8 @@ from langchain_core.messages import (
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import CURRENT_TRACE_ID, trace
 from artemis.graph.state import State
-from artemis.services.llm import get_llm
+from artemis.graph.visibility import strict_state
+from artemis.services.llm import acomplete, get_llm
 from artemis.utils.coordinates import normalize_any_structure
 from artemis.utils.logger import get_logger
 from artemis.utils.task_tree import (
@@ -42,6 +43,7 @@ class SummarizerNode:
 
     @trace(type="agent", name="summarizer")
     async def __call__(self, state: State):
+        state = strict_state(state, "summarizer")
         # 1. Trigger background task for summary and data engine update
         if self.ctx.data_engine and state.current_step_id:
             step_id = UUID(state.current_step_id)
@@ -179,26 +181,16 @@ class SummarizerNode:
                     HumanMessage(content="\n\n".join(content)),
                 ]
 
+                aggregated_chunk = await acomplete(llm, messages)
+
                 generated_text = ""
-                aggregated_chunk = None
-                async for chunk in llm.astream(messages):
-                    if aggregated_chunk is None:
-                        aggregated_chunk = chunk
-                    else:
-                        aggregated_chunk += chunk
-
-                    if chunk.content:
-                        text_to_stream = ""
-                        if isinstance(chunk.content, str):
-                            text_to_stream = chunk.content
-                        elif isinstance(chunk.content, list):
-                            for item in chunk.content:
-                                if isinstance(item, dict) and item.get("type") == "text":
-                                    text_to_stream += item.get("text", "")
-
-                        if text_to_stream:
-                            generated_text += text_to_stream
-                    pass
+                content = getattr(aggregated_chunk, "content", "") if aggregated_chunk else ""
+                if isinstance(content, str):
+                    generated_text = content
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            generated_text += item.get("text", "")
 
                 summary = generated_text.strip()
                 logger.info(f"Summary generated: {summary}")

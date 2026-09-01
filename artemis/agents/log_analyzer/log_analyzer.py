@@ -58,7 +58,7 @@ from artemis.data_engine.trace import (
     trace,
 )
 from artemis.graph.state import State
-from artemis.services.llm import get_llm, invoke_llm_with_timeout_message
+from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
 from artemis.tools.index import get_tool_by_name
 from artemis.tools.mobile.log_utils import fetch_and_filter_logs
 from artemis.tools.mobile.read_logs import get_read_logs_tool
@@ -220,19 +220,7 @@ class LogAnalyzerNode:
                     )
                 llm = base_llm.bind_tools(tools=tools_for_binding)
 
-            async def run_stream():
-                full_response = None
-                trace_id = CURRENT_TRACE_ID.get()
-                async for chunk in llm.astream(current_messages):
-                    if full_response is None:
-                        full_response = chunk
-                    else:
-                        full_response += chunk
-
-                    pass
-                return full_response
-
-            response = await invoke_llm_with_timeout_message(run_stream())
+            response = await invoke_llm_with_timeout_message(acomplete(llm, current_messages))
 
             if response.content:
                 outcome = response.content

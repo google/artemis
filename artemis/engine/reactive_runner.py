@@ -18,12 +18,10 @@ import time
 
 from artemis.agents.flash.runner import FlashRunner
 from artemis.config import load_agent_config
-from artemis.context import ArtemisContext, DeviceContext
 from artemis.core.state import ExecutionContextState, ExecutionStatus, StepRecord
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.engine.base_runner import BaseRunner
 from artemis.graph.state import State
-from artemis.platform import platform
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -54,21 +52,23 @@ class ReactiveRunner(BaseRunner):
 
         if not is_mock:
             try:
-                artemis_ctx = getattr(self.ctx, "artemis_context", None)
+                artemis_ctx = self.ctx.artemis_context
                 if artemis_ctx is None:
-                    artemis_ctx = ArtemisContext(
-                        device=DeviceContext(
-                            host_platform=platform.os_type.name,
-                            device_id=self.driver.device_id,
-                        )
+                    # Fail fast with a clear contract violation instead of
+                    # silently building an empty ArtemisContext that drops
+                    # data_engine/llm_config and dies later mid-run.
+                    raise RuntimeError(
+                        "ReactiveRunner requires ExecutionContext.artemis_context"
+                        " to be wired (data_engine, adb clients, execution"
+                        " setup) before running the live Flash path."
                     )
                 flash_runner = FlashRunner(
                     artemis_ctx, goal=self.ctx.task_goal, max_turns=max_turns
                 )
-                legacy_state = State(messages=[])
+                legacy_state = State.initial(self.ctx.task_goal)
                 result = await flash_runner.run(legacy_state)
 
-                state.current_turn = len(getattr(legacy_state, "messages", [])) or 1
+                state.current_turn = 1
                 if result.get("status") == "completed":
                     state.status = ExecutionStatus.SUCCESS
                 else:

@@ -13,11 +13,12 @@
 # limitations under the License.
 
 import ast
-import hashlib
 import json
 from pathlib import Path
 import re
 from typing import Any
+
+from artemis.utils.plan_grammar import parse_plan
 
 
 def format_action_clean(action_obj) -> str:
@@ -952,53 +953,26 @@ def get_active_subgoal_hashes(task_plan: str) -> tuple[str, str | None]:
         return "default", None
 
     try:
-        lines = task_plan.split("\n")
-        active_line_idx = -1
-        # Search from bottom to top to prioritize the most specific deeply nested active subgoal
-        for i in range(len(lines) - 1, -1, -1):
-            if lines[i].strip().startswith("- [/]"):
-                active_line_idx = i
-                break
+        snapshot = parse_plan(task_plan)
 
-        if active_line_idx != -1:
-            active_line = lines[active_line_idx]
-            active_text = active_line.strip()[5:].strip()
-
-            # Check if it is indented (sub-subgoal)
-            if active_line.startswith(" "):
-                # Find parent (first non-indented line above it)
-                parent_text = ""
-                for i in range(active_line_idx - 1, -1, -1):
-                    if not lines[i].startswith(" ") and lines[i].strip().startswith("- ["):
-                        parent_text = lines[i].strip()[5:].strip()
-                        break
-
-                # Consolidate under the parent Level 1 subgoal
-                if parent_text:
-                    parent_hash = hashlib.md5(parent_text.encode("utf-8")).hexdigest()
-                    return parent_hash, None
-
-            # If not indented, it is a top-level Level 1 subgoal
-            active_hash = hashlib.md5(active_text.encode("utf-8")).hexdigest()
-            return active_hash, None
+        # Bottom-most active item wins (most specific deeply nested subgoal)
+        active_item = snapshot.last_active()
+        if active_item is not None:
+            if not active_item.is_top_level:
+                parent = snapshot.parent_of(active_item)
+                if parent is not None:
+                    return parent.key, None
+            return active_item.key, None
 
         # No active subgoal found. Check if all are completed.
-        top_level_lines = [line for line in lines if line.strip().startswith("- [")]
-        all_done = all(line.strip().startswith("- [x]") for line in top_level_lines)
-        if all_done:
+        if all(item.is_done for item in snapshot.top_level):
             return "default", None
 
-        # SAFE FALLBACK: Check if all subgoals are not started (all are "[ ]")
-        all_pending = all(line.strip().startswith("- [ ]") for line in top_level_lines)
-        if all_pending:
-            # If all are pending, we are at the start of the task.
-            # The active subgoal is guaranteed to be the first one.
-            for line in lines:
-                stripped = line.strip()
-                if stripped.startswith("- [ ]"):
-                    first_pending_text = stripped[5:].strip()
-                    first_hash = hashlib.md5(first_pending_text.encode("utf-8")).hexdigest()
-                    return first_hash, None
+        # SAFE FALLBACK: if every item is untouched, the first pending one is active.
+        if all(item.is_pending for item in snapshot.top_level):
+            for item in snapshot.items:
+                if item.is_pending:
+                    return item.key, None
 
     except Exception:
         pass
@@ -1011,13 +985,7 @@ def get_completed_subgoal_hashes(task_plan: str) -> set[str]:
     if not task_plan:
         return set()
 
-    completed_hashes = set()
-
-    pattern = re.compile(r"^-\s*\[x\]\s*(.*)$", re.MULTILINE)
-    for match in pattern.findall(task_plan):
-        completed_hashes.add(hashlib.md5(match.strip().encode("utf-8")).hexdigest())
-
-    return completed_hashes
+    return {item.key for item in parse_plan(task_plan).top_level if item.is_done}
 
 
 def get_all_subgoal_aliases(target_hash: str, base_dir: str | Path | None = None) -> set[str]:

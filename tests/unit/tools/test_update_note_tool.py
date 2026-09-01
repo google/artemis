@@ -13,9 +13,8 @@
 # limitations under the License.
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolRegistry
@@ -29,7 +28,7 @@ from artemis.tools.scratchpad import (
     update_note_wrapper,
 )
 from artemis.utils.notes import save_note_content
-from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 import pytest
 
 
@@ -123,13 +122,11 @@ async def test_update_note_callable_execution(mock_ctx, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_update_note_with_state_command(mock_ctx, tmp_path):
-    """Verify UpdateNoteTool.execute with state returns Command updating VALIDATOR_MESSAGES_KEY."""
+async def test_update_note_with_state_tool_message(mock_ctx, tmp_path):
+    """Verify UpdateNoteTool.execute with state returns a ToolMessage directly."""
     save_note_content(tmp_path, "state_plan", "- [ ] Step 1")
 
     mock_state = MagicMock(spec=State)
-    mock_state.current_agent = "operator"
-    mock_state.asanitize_update = AsyncMock(side_effect=lambda ctx, update, agent: update)
 
     result = await update_note.execute(
         ctx=mock_ctx,
@@ -140,15 +137,10 @@ async def test_update_note_with_state_command(mock_ctx, tmp_path):
         tool_call_id="call_update_999",
     )
 
-    assert isinstance(result, Command)
-    assert VALIDATOR_MESSAGES_KEY in result.update
-    tool_messages = result.update[VALIDATOR_MESSAGES_KEY]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].tool_call_id == "call_update_999"
-    assert tool_messages[0].content == "Successfully updated note 'state_plan'."
-    assert tool_messages[0].status == "success"
-
-    mock_state.asanitize_update.assert_called_once()
+    assert isinstance(result, ToolMessage)
+    assert result.tool_call_id == "call_update_999"
+    assert result.content == "Successfully updated note 'state_plan'."
+    assert result.status == "success"
 
     note_path = Path(tmp_path) / "notes" / "state_plan.md"
     assert note_path.read_text(encoding="utf-8") == "- [x] Step 1"

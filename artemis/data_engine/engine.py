@@ -240,7 +240,9 @@ class DataEngine:
                 except ValueError:
                     pass
         else:
-            env_session_id = os.getenv("ARTEMIS_CLOUD_SESSION_ID") or os.getenv("ARTEMIS_SESSION_ID")
+            env_session_id = os.getenv("ARTEMIS_CLOUD_SESSION_ID") or os.getenv(
+                "ARTEMIS_SESSION_ID"
+            )
             if env_session_id:
                 try:
                     session_id = UUID(env_session_id)
@@ -293,7 +295,9 @@ class DataEngine:
         else:
             self._step_number_cache.clear()
             self.current_step_number = 0
-        logger.info(f"Session started: {session_id} (current step counter: {self.current_step_number})")
+        logger.info(
+            f"Session started: {session_id} (current step counter: {self.current_step_number})"
+        )
         self._publish("session_started", session.model_dump())
         return session_id
 
@@ -511,7 +515,9 @@ class DataEngine:
                     existing_steps = self.storage.get_steps(self.current_session_id) or []
                 except Exception:
                     existing_steps = []
-            max_existing = max([s.step_number for s in existing_steps], default=0) if existing_steps else 0
+            max_existing = (
+                max([s.step_number for s in existing_steps], default=0) if existing_steps else 0
+            )
             self.current_step_number = max(self.current_step_number, max_existing) + 1
             step_number = self.current_step_number
 
@@ -939,6 +945,31 @@ class DataEngine:
             except Exception:
                 pass
         return None
+
+    def get_step_record(self, step_number: int):
+        """Read-only lookup of a step record by its 1-based step number."""
+        if not self.current_session_id:
+            return None
+        try:
+            steps = self.storage.get_steps(self.current_session_id) or []
+        except Exception as e:
+            logger.error(f"Failed to fetch steps for step lookup: {e}")
+            return None
+        for s in steps:
+            if s.step_number == step_number:
+                return s
+        return None
+
+    def get_step_image_path(self, step_number: int, which: str = "pre") -> Path | None:
+        """Read-only path of a step's pre/post screenshot, if recorded."""
+        step = self.get_step_record(step_number)
+        if step is None:
+            return None
+        image_name = step.pre_image_name if which == "pre" else step.post_image_name
+        if not image_name:
+            return None
+        path = self.get_image_path(image_name)
+        return path if path.exists() else None
 
     def update_step_summary(self, step_id: UUID | int | str, summary: str):
         """Update the step with a concise summary in background."""

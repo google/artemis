@@ -15,7 +15,6 @@
 import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
@@ -30,7 +29,7 @@ from artemis.tools.mobile.ocr import (
     ocr_recognition,
     ocr_recognition_wrapper,
 )
-from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 import pytest
 
 
@@ -61,11 +60,6 @@ def mock_state(tmp_path):
 
     state = MagicMock(spec=State)
     state.latest_screenshot = str(screenshot_file)
-
-    async def _mock_asanitize_update(ctx, update, agent):
-        return update
-
-    state.asanitize_update = AsyncMock(side_effect=_mock_asanitize_update)
     return state
 
 
@@ -125,8 +119,9 @@ async def test_ocr_direct_execution_with_state(mock_ctx, tmp_path):
         return_value=mock_results,
     ):
         result = await ocr_recognition.execute(ctx=mock_ctx, state=simple_state)
-        assert "OCR Recognition successful." in result
-        assert "Submit" in result
+        assert isinstance(result, ToolMessage)
+        assert "OCR Recognition successful." in result.content
+        assert "Submit" in result.content
 
 
 @pytest.mark.asyncio
@@ -164,12 +159,13 @@ async def test_ocr_no_text_detected(mock_ctx, tmp_path):
         return_value=[],
     ):
         result = await ocr_recognition.execute(ctx=mock_ctx, state=simple_state)
-        assert "No text detected on the screen." in result
+        assert isinstance(result, ToolMessage)
+        assert "No text detected on the screen." in result.content
 
 
 @pytest.mark.asyncio
 async def test_ocr_with_state_command(mock_ctx, mock_state):
-    """Verify OcrRecognitionTool returns Command when state is provided."""
+    """Verify OcrRecognitionTool returns ToolMessage when state is provided."""
     mock_results = [{"text": "Hello", "position": [{"x": 100, "y": 100}]}]
     with patch(
         "artemis.tools.mobile.ocr.perform_ocr",
@@ -181,13 +177,10 @@ async def test_ocr_with_state_command(mock_ctx, mock_state):
             tool_call_id="call_ocr_1",
             state=mock_state,
         )
-        assert isinstance(cmd, Command)
-        assert VALIDATOR_MESSAGES_KEY in cmd.update
-        messages = cmd.update[VALIDATOR_MESSAGES_KEY]
-        assert len(messages) == 1
-        assert messages[0].tool_call_id == "call_ocr_1"
-        assert messages[0].status == "success"
-        assert "Hello" in messages[0].content
+        assert isinstance(cmd, ToolMessage)
+        assert cmd.tool_call_id == "call_ocr_1"
+        assert cmd.status == "success"
+        assert "Hello" in cmd.content
 
 
 @pytest.mark.asyncio
@@ -195,17 +188,15 @@ async def test_ocr_failure_missing_screenshot(mock_ctx):
     """Verify error handling when screenshot path is missing."""
     empty_state = MagicMock(spec=State)
     empty_state.latest_screenshot = None
-    empty_state.asanitize_update = AsyncMock(side_effect=lambda ctx, update, agent: update)
 
     cmd = await ocr_recognition.execute(
         ctx=mock_ctx,
         tool_call_id="call_ocr_err",
         state=empty_state,
     )
-    assert isinstance(cmd, Command)
-    messages = cmd.update[VALIDATOR_MESSAGES_KEY]
-    assert messages[0].status == "error"
-    assert "OCR Recognition failed" in messages[0].content
+    assert isinstance(cmd, ToolMessage)
+    assert cmd.status == "error"
+    assert "OCR Recognition failed" in cmd.content
 
 
 @pytest.mark.asyncio

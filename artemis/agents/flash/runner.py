@@ -49,9 +49,11 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import trace
 from artemis.graph.perception import _check_injected_instruction_file
 from artemis.graph.state import State
+from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.mcp.action_executor import McpActionExecutor
 from artemis.services.llm import (
     RobustChatModelWrapper,
+    acomplete,
     get_google_llm,
     get_llm,
     invoke_llm_with_timeout_message,
@@ -182,20 +184,23 @@ class FlashRunner:
             # Check for real-time injected instructions
             if self.ctx.data_engine and self.ctx.data_engine.base_dir:
                 try:
-                    injected_instruction = await asyncio.to_thread(
+                    injected_payload = await asyncio.to_thread(
                         _check_injected_instruction_file,
                         str(self.ctx.data_engine.base_dir),
                     )
-                    if injected_instruction:
-                        messages.append(
-                            HumanMessage(
-                                content=(
-                                    "[REAL-TIME INJECTED INSTRUCTION from user]:"
-                                    f" {injected_instruction}\nYou MUST immediately follow"
-                                    " this instruction and adjust your plan/actions."
-                                )
-                            )
+                    if injected_payload and injected_payload.get("instruction"):
+                        injected_text = (
+                            "[REAL-TIME INJECTED INSTRUCTION from user]:"
+                            f" {injected_payload['instruction']}\nYou MUST immediately"
+                            " follow this instruction and adjust your plan/actions."
                         )
+                        if injected_payload.get("release_loop"):
+                            injected_text += (
+                                "\nThe user has explicitly authorized stopping any"
+                                " ongoing monitoring loop; you may now wrap up and"
+                                " complete the task."
+                            )
+                        messages.append(HumanMessage(content=injected_text))
                 except Exception as e:
                     logger.warning(f"Failed to check injected instruction in FlashRunner: {e}")
 
@@ -224,61 +229,12 @@ class FlashRunner:
             # Bind active tools
             bound_llm = llm.bind_tools(current_tools)
 
-            # Invoke Model with Streaming & Retry
-            response = None
-            max_retries = 3
-
-            for attempt in range(max_retries):
-                try:
-                    stream_exec_id = uuid.uuid4()
-
-                    async def run_stream():
-                        full_response = None
-                        async for chunk in bound_llm.astream(messages):
-                            if full_response is None:
-                                full_response = chunk
-                            else:
-                                full_response += chunk
-
-                            # Real-time token streaming to DataEngine for live UI display
-                            if (
-                                getattr(self, "ctx", None)
-                                and getattr(self.ctx, "data_engine", None)
-                                and getattr(chunk, "content", None)
-                            ):
-                                text_to_stream = ""
-                                thinking_to_stream = ""
-                                if isinstance(chunk.content, str):
-                                    text_to_stream = chunk.content
-                                elif isinstance(chunk.content, list):
-                                    for item in chunk.content:
-                                        if isinstance(item, str):
-                                            text_to_stream += item
-                                        elif isinstance(item, dict):
-                                            if item.get("type") == "text":
-                                                text_to_stream += item.get("text", "")
-                                            elif item.get("type") == "thinking":
-                                                thinking_to_stream += item.get("thinking", "")
-                                if text_to_stream:
-                                    self.ctx.data_engine.stream_output(
-                                        stream_exec_id, text_to_stream, is_thinking=False
-                                    )
-                                if thinking_to_stream:
-                                    self.ctx.data_engine.stream_output(
-                                        stream_exec_id, thinking_to_stream, is_thinking=True
-                                    )
-                        return full_response
-
-                    response = await invoke_llm_with_timeout_message(
-                        run_stream(), timeout_seconds=10, hard_timeout=180
-                    )
-                    if response:
-                        break
-                except Exception as e:
-                    logger.warning(f"FlashRunner LLM turn failed on attempt {attempt + 1}: {e}")
-                    if attempt == max_retries - 1:
-                        raise e
-                    await asyncio.sleep(2.0**attempt)
+            # Invoke Model. Streaming, live-token UI deltas, classified
+            # retries, and pause/resume are all owned by the LLM gateway
+            # (acomplete); a typed LLMCallError propagates if it gives up.
+            response = await invoke_llm_with_timeout_message(
+                acomplete(bound_llm, messages), timeout_seconds=10, hard_timeout=180
+            )
 
             if response is None:
                 break
@@ -372,19 +328,20 @@ class FlashRunner:
 
             # Fallback text parsing if tool_calls not parsed natively
             if not tool_calls and "```json" in raw_text:
-                try:
-                    snippet = raw_text.split("```json")[1].split("```")[0].strip()
-                    parsed = json.loads(snippet)
-                    if isinstance(parsed, dict) and "name" in parsed:
-                        tool_calls = [
-                            {
-                                "name": parsed["name"],
-                                "args": parsed.get("args", {}),
-                                "id": str(uuid.uuid4()),
-                            }
-                        ]
-                except Exception:
-                    pass
+                parsed = parse_structured(raw_text)
+                if isinstance(parsed, ParseFailure):
+                    logger.warning(
+                        "FlashRunner response contained a JSON block that could"
+                        f" not be parsed: {parsed.error}"
+                    )
+                elif isinstance(parsed, dict) and "name" in parsed:
+                    tool_calls = [
+                        {
+                            "name": parsed["name"],
+                            "args": parsed.get("args", {}),
+                            "id": str(uuid.uuid4()),
+                        }
+                    ]
 
             if not tool_calls:
                 logger.info(

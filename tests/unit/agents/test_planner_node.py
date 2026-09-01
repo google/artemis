@@ -32,9 +32,6 @@ class DummyState:
         self.operator_raw_data = operator_raw_data
         self.operator_replan_reason = operator_replan_reason
 
-    async def asanitize_update(self, ctx, update, agent):
-        return update
-
 
 @pytest.fixture
 def mock_context():

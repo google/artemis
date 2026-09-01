@@ -30,6 +30,7 @@ from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.core.tool_declaration import ToolDeclaration
 from artemis.data_engine.trace import trace
+from artemis.mcp.action_specs import tool_declaration
 from artemis.mcp.action_types import ActionCode
 from artemis.mcp.actuators.adb import AdbActuator
 from artemis.mcp.observation import observe
@@ -187,9 +188,7 @@ async def capture_screenshot_and_parse_ui(
     Thin adapter over :func:`artemis.mcp.observation.observe` that adds the LangGraph
     ``State`` write-back (indexed points/elements) the agents rely on.
     """
-    obs, screenshot_bytes = await observe(
-        ctx, controller, settle_ms=0 if skip_settling else 400
-    )
+    obs, screenshot_bytes = await observe(ctx, controller, settle_ms=0 if skip_settling else 400)
     if not obs.ok:
         return None, None, None
 
@@ -473,7 +472,7 @@ class MobileActionExecutor:
                     direction=target,
                     target=swipe_input.get("target"),
                     indexed_elements=getattr(state, "indexed_elements", None) if state else None,
-                    ui_hierarchy=getattr(state, "ui_tree", None) if state else None,
+                    ui_hierarchy=getattr(state, "latest_ui_hierarchy", None) if state else None,
                     width=width,
                     height=height,
                     duration=final_duration,
@@ -753,189 +752,19 @@ class MobileActionExecutor:
         )
 
 
-CLICK_TOOL = ToolDeclaration(
-    name="click",
-    description=(
-        "[ACTION] Tap/click on the target coordinate on the screen. The screen"
-        " after click will be returned automatically. For buttons, checkboxes,"
-        " tabs, icons, items in a list, tap ON the element. For text fields /"
-        " search bars / input boxes, tap INSIDE the input box to focus it."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "target": {
-                "type": "array",
-                "items": {"type": "integer"},
-                "description": "Normalized coordinates [x, y] in 0-1000 scale.",
-            },
-            "times": {
-                "type": "integer",
-                "description": "Number of taps to perform (default 1). Set to 2 for double click.",
-            },
-            "delay_ms": {
-                "type": "integer",
-                "description": "Delay between taps in milliseconds (default 100).",
-            },
-        },
-        "required": ["target"],
-    },
-)
+# Device-action declarations are generated from the canonical manifest
+# (artemis/mcp/action_specs.py); the historical constant names remain the public API.
+CLICK_TOOL = tool_declaration("click")
 
-CLICK_SEQUENCE_TOOL = ToolDeclaration(
-    name="click_sequence",
-    description=(
-        "[ACTION] Executes a sequence of taps one by one in order on the"
-        " specified targets (e.g. [[500, 280], [885, 362]]). The screen will be returned ONLY after all clicks"
-        " in the sequence have completed."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "sequence": {
-                "type": "array",
-                "items": {
-                    "type": "array",
-                    "items": {"type": "integer"},
-                    "description": (
-                        "Normalized coordinates [x, y] in 0-1000 scale (e.g., [500, 280]),"
-                        " or a single integer element index."
-                    ),
-                },
-                "description": "List of targets to tap in sequence, e.g. [[500, 280], [885, 362]].",
-            },
-            "delay_ms": {
-                "type": "integer",
-                "description": "Delay between consecutive taps in milliseconds (default 50ms).",
-            },
-        },
-        "required": ["sequence"],
-    },
-)
+CLICK_SEQUENCE_TOOL = tool_declaration("click_sequence")
 
-LONG_PRESS_TOOL = ToolDeclaration(
-    name="long_press",
-    description=(
-        "[ACTION] Long press on a target coordinate on the screen. The screen"
-        " after long pressing will be returned automatically."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "target": {
-                "type": "array",
-                "items": {"type": "integer"},
-                "description": "Normalized coordinates [x, y] in 0-1000 scale.",
-            },
-            "duration_ms": {
-                "type": "integer",
-                "description": "Duration of press in milliseconds (default 1000ms).",
-            },
-        },
-        "required": ["target"],
-    },
-)
+LONG_PRESS_TOOL = tool_declaration("long_press")
 
-INPUT_TEXT_TOOL = ToolDeclaration(
-    name="input_text",
-    description=(
-        "[ACTION] Type text into an input field on the screen. The screen after"
-        " typing will be returned automatically. Automatically taps inside the"
-        " input box at target [x, y] to focus before typing."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": "Text to type into the focused input field.",
-            },
-            "target": {
-                "type": "array",
-                "items": {"type": "integer"},
-                "description": "Coordinates [x, y] of the input box in 0-1000 scale.",
-            },
-            "clear_exist": {
-                "type": "boolean",
-                "description": (
-                    "Whether to clear existing text in the input box before typing (default True)."
-                ),
-            },
-        },
-        "required": ["text", "target"],
-    },
-)
+INPUT_TEXT_TOOL = tool_declaration("input_text")
 
-SWIPE_TOOL = ToolDeclaration(
-    name="swipe",
-    description=(
-        "[ACTION] Perform a swipe, drag, or slider-adjustment gesture on the screen. The screen and UI hierarchy after swipe will be returned automatically.\n\n"
-        "• Directional Scrolling ('direction' or 'action'): Recommended for general browsing and standard page scrolling in most scenarios. Automatically computes safe swipe vectors and adaptive duration, retains a ~40% visual overlap anchor for zero-omission traversal, and prevents inertial flings. Supports scoping to a sub-container via 'target'. If it fails on certain custom layouts, fall back to specifying exact coordinates ('start' and 'end') directly.\n"
-        "• Precise Coordinate Gestures ('start', 'end' or coordinates list): Best for local, fine-grained interactions such as adjusting sliders/SeekBars (e.g., volume, brightness, progress bars), drag-and-drop / list reordering, or as a reliable fallback when directional scrolling fails on specific containers. Always drag slightly PAST the target position to overcome touch slop and reliably trigger the update. When setting a slider to Maximum (100%) or Minimum (0%), swipe fully to the extreme boundary."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "direction": {
-                "type": "string",
-                "enum": ["up", "down", "left", "right"],
-                "description": (
-                    "Direction for scrolling and swiping: 'up' (drags bottom-to-top, scrolling down to reveal content below),"
-                    " 'down' (drags top-to-bottom, scrolling up to reveal content above),"
-                    " 'left' (drags right-to-left, scrolling right),"
-                    " 'right' (drags left-to-right, scrolling left)."
-                ),
-            },
-            "start": {
-                "type": "array",
-                "items": {"type": "integer"},
-                "description": "Start normalized coordinates [start_x, start_y] in 0-1000 scale.",
-            },
-            "end": {
-                "type": "array",
-                "items": {"type": "integer"},
-                "description": "End normalized coordinates [end_x, end_y] in 0-1000 scale.",
-            },
-            "target": {
-                "description": "Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within.",
-            },
-            "action": {
-                "description": (
-                    "Backward-compatible swipe gesture: smart direction string ('up', 'down', 'left', 'right')"
-                    " OR precise custom coordinates [start_x, start_y, end_x, end_y] in 0-1000 scale."
-                ),
-            },
-            "duration": {
-                "type": "integer",
-                "description": (
-                    "Optional swipe/drag duration in milliseconds (default 800). For drag-and-drop,"
-                    " list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars),"
-                    " set duration >= 1000 (e.g. 1500). If omitted for directional swipe, duration is computed automatically."
-                ),
-            },
-        },
-    },
-)
+SWIPE_TOOL = tool_declaration("swipe")
 
-PRESS_KEY_TOOL = ToolDeclaration(
-    name="press_key",
-    description=(
-        "[ACTION] Press a physical or virtual system button. The screen after"
-        " pressing will be returned automatically."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "key": {
-                "type": "string",
-                "description": (
-                    "Standard Android system button name (ENTER, BACK, HOME, APP_SWITCH)."
-                ),
-            }
-        },
-        "required": ["key"],
-    },
-)
+PRESS_KEY_TOOL = tool_declaration("press_key")
 
 READ_NOTE_TOOL = ToolDeclaration(
     name="read_note",
@@ -966,49 +795,9 @@ LIST_NOTES_TOOL = ToolDeclaration(
     parameters={"type": "object", "properties": {}},
 )
 
-MANAGE_APP_TOOL = ToolDeclaration(
-    name="manage_app",
-    description=(
-        "[ACTION] Launch or force stop a specified application. The screen"
-        " after launch/stop will be returned automatically."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "description": "The action type ('launch' or 'stop').",
-            },
-            "app_name": {
-                "type": "string",
-                "description": "Display name or package name of the application.",
-            },
-        },
-        "required": ["action", "app_name"],
-    },
-)
+MANAGE_APP_TOOL = tool_declaration("manage_app")
 
-WAIT_FOR_DELAY_TOOL = ToolDeclaration(
-    name="wait_for_delay",
-    description=(
-        "[ACTION] Pause execution and wait for a specified duration in milliseconds."
-        " The screen after pause will be returned automatically."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "time_in_ms": {
-                "type": "integer",
-                "description": (
-                    "The exact duration to pause in milliseconds (e.g., 2000 for 2s,"
-                    " 60000 for 1 min, 180000 for 3 mins, 300000 for 5 mins)."
-                    " Convert any required waiting duration into milliseconds."
-                ),
-            }
-        },
-        "required": ["time_in_ms"],
-    },
-)
+WAIT_FOR_DELAY_TOOL = tool_declaration("wait_for_delay")
 
 REPORT_FAILURE_ANALYSIS_TOOL = ToolDeclaration(
     name="report_failure_analysis",

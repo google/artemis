@@ -12,21 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
 import json
-from pathlib import Path
 import re
-from typing import Annotated, Any, Literal
+from typing import Any
 from uuid import uuid4
 
 from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_core.tools import BaseTool, tool
-from langgraph.types import Command
+from langchain_core.tools import BaseTool
 
-from artemis.constants import (
-    OPERATOR_MAX_CHAT_ROUNDS,
-    VALIDATOR_MESSAGES_KEY,
-)
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import (
     TraceSpan,
@@ -34,7 +27,9 @@ from artemis.data_engine.trace import (
     trace_langchain_tool,
 )
 from artemis.graph.state import State
-from artemis.services.llm import get_llm, invoke_llm_with_timeout_message
+from artemis.graph.visibility import strict_state
+from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER, operator_shell_tool
+from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
 from artemis.tools.command_tool import (
     _BACKGROUND_TASKS,
     _FINISHED_TASKS_LOGS,
@@ -51,18 +46,11 @@ from artemis.utils.coordinates import (
     parse_swipe_parameters,
 )
 from artemis.utils.decorators import wrap_with_callbacks
-from artemis.utils.file import create_snapshot
 from artemis.utils.logger import get_logger
-from artemis.utils.notes import get_note_file_path, get_notes_dir
+from artemis.utils.notes import get_note_file_path
 from artemis.utils.task_tree import (
     build_plan_and_history,
     get_active_subgoal_hashes,
-)
-from artemis.utils.verification import (
-    append_verification_chat,
-    get_verification_chat_path,
-    get_verification_chat_rounds,
-    read_verification_chat,
 )
 from artemis.utils.visualization import format_minimal_list_with_elements
 
@@ -86,7 +74,8 @@ from artemis.agents.operator.prompts import (
     TemplatePromptComponent,
     ObservationPromptComponent,
     ScreenshotSimilarityPromptComponent,
-    CheckerFeedbackPromptComponent,
+    FeedbackPromptComponent,
+    CheckItemsExplainerPromptComponent,
     BackgroundTasksPromptComponent,
     ShortTermMemoryPromptComponent,
     TaskPlanWarningPromptComponent,
@@ -169,56 +158,6 @@ class OperatorNode:
 
         return steps, task_plan
 
-    def _get_verification_chat_rounds(self) -> tuple[int, int]:
-        if not self.ctx.data_engine:
-            return 0, 0
-
-        subgoal_hash = self._get_active_subgoal_hash()
-        chat_path = get_verification_chat_path(self.ctx.data_engine.base_dir, subgoal_hash)
-        turns = read_verification_chat(chat_path)
-        return get_verification_chat_rounds(turns)
-
-    def _has_checker_feedback(self) -> bool:
-        if not self.ctx.data_engine:
-            return False
-
-        subgoal_hash = self._get_active_subgoal_hash()
-        chat_path = get_verification_chat_path(self.ctx.data_engine.base_dir, subgoal_hash)
-        return chat_path.exists()
-
-    def _get_reply_to_checker_tool(self) -> BaseTool:
-        @tool
-        def reply_to_checker(
-            reasoning: Annotated[
-                str,
-                "Your reasoning or observations regarding the verification feedback.",
-            ],
-        ):
-            """[TERMINAL] Use this tool to reply to the verification feedback with your reasoning or observations.
-
-            This ends your turn.
-            """
-
-            if self.ctx.data_engine:
-                subgoal_hash = self._get_active_subgoal_hash()
-                chat_path = get_verification_chat_path(self.ctx.data_engine.base_dir, subgoal_hash)
-
-                turns = read_verification_chat(chat_path)
-                max_op, max_chk = get_verification_chat_rounds(turns)
-
-                round_num = max(max_op + 1, max_chk)
-                if round_num == 0:
-                    round_num = 1
-
-                if append_verification_chat(chat_path, "operator", reasoning, round_num):
-                    return "Successfully recorded your reply to the Checker."
-                else:
-                    return "Failed to save reply."
-            else:
-                return "Error: DataEngine not available."
-
-        return reply_to_checker
-
     async def _build_prompt(
         self,
         state: State,
@@ -235,39 +174,26 @@ class OperatorNode:
 
         builder = PromptBuilder()
 
-        has_feedback = self._has_checker_feedback()
-
+        # One constant component list: the prompt template is never switched by
+        # verification results. Check-related components are append-only and
+        # render nothing when there is nothing to say.
         components = self.prompt_components
         if not components:
-            if has_feedback:
-                components = [
-                    (
-                        TemplatePromptComponent(),
-                        {"template_name": "troubleshooter_template"},
-                    ),
-                    (ObservationPromptComponent(), {}),
-                    (ScreenshotSimilarityPromptComponent(), {}),
-                    (InjectedInstructionPromptComponent(), {}),
-                    (ShortTermMemoryPromptComponent(), {}),
-                    (BackgroundTasksPromptComponent(), {}),
-                    (CheckerFeedbackPromptComponent(), {}),
-                    (TaskPlanWarningPromptComponent(), {}),
-                    (ToolLimitWarningPromptComponent(), {}),
-                ]
-            else:
-                components = [
-                    (
-                        TemplatePromptComponent(),
-                        {"template_name": "main_template"},
-                    ),
-                    (ObservationPromptComponent(), {}),
-                    (ScreenshotSimilarityPromptComponent(), {}),
-                    (InjectedInstructionPromptComponent(), {}),
-                    (ShortTermMemoryPromptComponent(), {}),
-                    (BackgroundTasksPromptComponent(), {}),
-                    (TaskPlanWarningPromptComponent(), {}),
-                    (ToolLimitWarningPromptComponent(), {}),
-                ]
+            components = [
+                (
+                    TemplatePromptComponent(),
+                    {"template_name": "main_template"},
+                ),
+                (CheckItemsExplainerPromptComponent(), {}),
+                (ObservationPromptComponent(), {}),
+                (ScreenshotSimilarityPromptComponent(), {}),
+                (InjectedInstructionPromptComponent(), {}),
+                (ShortTermMemoryPromptComponent(), {}),
+                (BackgroundTasksPromptComponent(), {}),
+                (FeedbackPromptComponent(), {}),
+                (TaskPlanWarningPromptComponent(), {}),
+                (ToolLimitWarningPromptComponent(), {}),
+            ]
         else:
             components = [(c, {}) for c in components] + [(ToolLimitWarningPromptComponent(), {})]
 
@@ -298,30 +224,12 @@ class OperatorNode:
         traced_tools: list,
         new_subagent_calls: list,
         state: State,
-    ) -> tuple[list[dict] | None, bool, str | None, str | None, bool]:
+    ) -> tuple[list[dict] | None, str | None, str | None, bool]:
         max_iterations = 20
         action_result = None
-        requested_argue = False
         raw_thoughts = []
         native_thoughts = []
         tool_limit_exceeded = False
-
-        async def read_stream_and_accumulate(target_llm, msgs):
-            try:
-                full_response = None
-                has_chunks = False
-                async for chunk in target_llm.astream(msgs):
-                    has_chunks = True
-                    if full_response is None:
-                        full_response = chunk
-                    else:
-                        full_response += chunk
-                if has_chunks and full_response is not None:
-                    return full_response
-            except Exception as e:
-                logger.debug(f"astream failed or not supported: {e}. Falling back to ainvoke.")
-
-            return await target_llm.ainvoke(msgs)
 
         for iteration in range(max_iterations):
             if iteration == max_iterations - 1:
@@ -340,9 +248,7 @@ class OperatorNode:
                 )
 
             bound_llm = base_llm.bind_tools(tools=traced_tools)
-            response = await invoke_llm_with_timeout_message(
-                read_stream_and_accumulate(bound_llm, current_messages)
-            )
+            response = await invoke_llm_with_timeout_message(acomplete(bound_llm, current_messages))
 
             if hasattr(response, "response_metadata") and response.response_metadata:
                 usage = (
@@ -420,23 +326,19 @@ class OperatorNode:
             action_calls = [
                 tc for tc in response.tool_calls if normalize_name(tc["name"]) in action_tool_names
             ]
-            reply_to_checker_calls = [
-                tc for tc in response.tool_calls if normalize_name(tc["name"]) == "reply_to_checker"
-            ]
             other_calls = [
                 tc
                 for tc in response.tool_calls
-                if normalize_name(tc["name"]) not in action_tool_names + ["reply_to_checker"]
+                if normalize_name(tc["name"]) not in action_tool_names
             ]
 
             tool_outputs = []
             validation_errors = False
-            requested_argue = False
 
             other_tool_failed = False
             other_tool_failure_msg = ""
 
-            has_terminal_calls = bool(action_calls or reply_to_checker_calls)
+            has_terminal_calls = bool(action_calls)
 
             if other_calls:
                 results = []
@@ -478,12 +380,8 @@ class OperatorNode:
                                 content = get_tool_result_content(result_obj)
                                 status = "success"
 
-                                if isinstance(result_obj, Command):
-                                    updates = result_obj.update
-                                    if VALIDATOR_MESSAGES_KEY in updates:
-                                        msgs = updates[VALIDATOR_MESSAGES_KEY]
-                                        if msgs and hasattr(msgs[0], "status"):
-                                            status = msgs[0].status
+                                if isinstance(result_obj, ToolMessage) and result_obj.status:
+                                    status = result_obj.status
 
                                 is_err = status == "error"
                                 if not is_err:
@@ -567,29 +465,6 @@ class OperatorNode:
                             )
                         action_calls = []
 
-                    if reply_to_checker_calls:
-                        logger.warning(
-                            "Scratchpad/helper tool call failed. Deferring"
-                            f" reply to checker: {other_tool_failure_msg}"
-                        )
-                        for tc in reply_to_checker_calls:
-                            tool_outputs.append(
-                                ToolMessage(
-                                    tool_call_id=tc["id"],
-                                    content=(
-                                        "Your reply to the checker was"
-                                        " rejected because an accompanying"
-                                        " tool call failed. Error:"
-                                        f" {other_tool_failure_msg}. Currently,"
-                                        " no response has been sent to the"
-                                        " checker. Please correct the error"
-                                        " and try again."
-                                    ),
-                                    status="error",
-                                )
-                            )
-                        reply_to_checker_calls = []
-
                 elif has_terminal_calls:
                     has_deferring_calls = any(
                         normalize_name(tc["name"]) in DEFERRING_TOOLS for tc in other_calls
@@ -623,28 +498,7 @@ class OperatorNode:
                                 )
                             )
 
-                        for tc in reply_to_checker_calls:
-                            tool_outputs.append(
-                                ToolMessage(
-                                    tool_call_id=tc["id"],
-                                    content=(
-                                        "Your pre-decision tools have been"
-                                        " successfully processed. However, your"
-                                        " response to the checker was rejected"
-                                        " because you are not allowed to"
-                                        " simultaneously use result-dependent"
-                                        " pre-decision tools and reply to the"
-                                        " checker. Currently, no response has been"
-                                        " sent to the checker. Please review"
-                                        " your updated context and re-output"
-                                        " your reply."
-                                    ),
-                                    status="success",
-                                )
-                            )
-
                         action_calls = []
-                        reply_to_checker_calls = []
 
             if action_calls:
                 logger.info(
@@ -676,32 +530,10 @@ class OperatorNode:
                 if not validation_errors:
                     action_result = actions_list
 
-            if reply_to_checker_calls:
-                logger.info("Operator replied to checker.")
-                tc = reply_to_checker_calls[0]
-                requested_argue = True
-
-                # Execute it immediately
-                result = await self._run_other_tool(
-                    tc,
-                    traced_tools,
-                    new_subagent_calls,
-                    state,
-                    raw_thoughts,
-                    native_thoughts,
-                )
-                tool_outputs.append(
-                    ToolMessage(
-                        tool_call_id=tc["id"],
-                        content=result,
-                        status="success" if not result.startswith("Error") else "error",
-                    )
-                )
-
             for tm in tool_outputs:
                 current_messages.append(tm)
 
-            if (action_calls and not validation_errors) or requested_argue:
+            if action_calls and not validation_errors:
                 break
 
             if validation_errors:
@@ -714,7 +546,6 @@ class OperatorNode:
         native_thinking = "\n".join(native_thoughts) if native_thoughts else None
         return (
             action_result,
-            requested_argue,
             raw_thinking,
             native_thinking,
             tool_limit_exceeded,
@@ -765,17 +596,9 @@ class OperatorNode:
     )
     @trace(type="agent", name="operator")
     async def __call__(self, state: State):
+        state = strict_state(state, "operator")
         # 1. Check for infinite loops
         self._check_infinite_loop(state)
-
-        # Create snapshot for optimistic execution
-        if self.ctx.data_engine:
-            notes_dir = get_notes_dir(self.ctx.data_engine.base_dir)
-            if notes_dir.exists():
-                snapshot_dir = notes_dir.with_name("notes_snapshot")
-                await asyncio.to_thread(create_snapshot, notes_dir, snapshot_dir)
-                self.ctx.task_plan_snapshot = snapshot_dir
-                logger.info(f"Created snapshot of notes at {snapshot_dir}")
 
         # 2. Get perception data from state (populated by Perception node)
         operator_raw_data = getattr(state, "operator_raw_data", {}) or {}
@@ -822,44 +645,15 @@ class OperatorNode:
 
         current_step_num = len(steps) + 1
 
-        # 5. Prepare Tools. Device-action declarations are assembled against the
-        # installed actuator backend's capabilities: an action the backend does not
-        # implement is simply never declared (and the prompt assembly drops its
-        # teaching segments in lockstep).
+        # 5. Prepare Tools. Device-action shells come from the canonical manifest
+        # (artemis/mcp/action_specs.py) and are assembled against the installed
+        # actuator backend's capabilities: an action the backend does not implement
+        # is simply never declared (and the prompt assembly drops its teaching
+        # segments in lockstep).
         available_actions = self._available_device_actions()
-        action_tool_factories = {
-            "click": self._get_click_tool,
-            "input_text": self._get_input_text_tool,
-            "swipe": self._get_swipe_tool,
-            "press_key": self._get_press_key_tool,
-            "manage_app": self._get_manage_app_tool,
-            "wait_for_delay": self._get_wait_for_delay_tool,
-            "long_press": self._get_long_press_tool,
-        }
         all_tools = [
-            factory()
-            for name, factory in action_tool_factories.items()
-            if name in available_actions
+            operator_shell_tool(name) for name in OPERATOR_SHELL_ORDER if name in available_actions
         ] + self.tools
-
-        if self._has_checker_feedback():
-            max_op, max_chk = self._get_verification_chat_rounds()
-            max_rounds = (
-                getattr(
-                    getattr(self.ctx, "execution_setup", None),
-                    "checker_max_chat_rounds",
-                    OPERATOR_MAX_CHAT_ROUNDS,
-                )
-                if self.ctx and getattr(self.ctx, "execution_setup", None)
-                else OPERATOR_MAX_CHAT_ROUNDS
-            )
-            if max_op < max_rounds:
-                reply_to_checker_tool = self._get_reply_to_checker_tool()
-                all_tools.append(reply_to_checker_tool)
-            else:
-                logger.info(
-                    f"Maximum chat rounds ({max_rounds}) reached. Removing reply_to_checker tool."
-                )
 
         # 5. Evaluate dynamic tools and prepare background tasks
         has_long_output = False
@@ -924,7 +718,6 @@ class OperatorNode:
         new_subagent_calls = []
         (
             action_result,
-            requested_argue,
             raw_thinking,
             native_thinking,
             tool_limit_exceeded,
@@ -955,22 +748,17 @@ class OperatorNode:
             if stm_match:
                 short_term_memory = stm_match.group(1).strip()
 
-        return await state.asanitize_update(
-            ctx=self.ctx,
-            update={
-                "structured_decisions": structured_decisions,
-                "operator_raw_thinking": raw_thinking,
-                "operator_native_thinking": native_thinking,
-                "short_term_memory": short_term_memory,
-                "indexed_points": state.indexed_points,
-                "complete_subgoals_by_ids": [],
-                "current_step_id": state.current_step_id,
-                "subagent_calls": ((state.subagent_calls or []) + new_subagent_calls),
-                "operator_replied": requested_argue,
-                "operator_tool_limit_exceeded": tool_limit_exceeded,
-            },
-            agent="operator",
-        )
+        return {
+            "structured_decisions": structured_decisions,
+            "operator_raw_thinking": raw_thinking,
+            "operator_native_thinking": native_thinking,
+            "short_term_memory": short_term_memory,
+            "indexed_points": state.indexed_points,
+            "indexed_elements": state.indexed_elements,
+            "current_step_id": state.current_step_id,
+            "subagent_calls": ((state.subagent_calls or []) + new_subagent_calls),
+            "operator_tool_limit_exceeded": tool_limit_exceeded,
+        }
 
     def _get_active_subgoal_hash(self) -> str:
         """Parses task_plan.md to find the active top-level subgoal hash."""
@@ -1006,198 +794,6 @@ class OperatorNode:
             recent_window_size=3,
             chronological_last_step=True,
         )
-
-    def _get_long_press_tool(self) -> BaseTool:
-        @tool
-        def long_press(
-            target: Annotated[
-                int | list[int],
-                "Long press target. Can be an element index number (int, e.g."
-                " 3) OR normalized coordinates (list of 2 integers, e.g. [500,"
-                " 600]).",
-            ],
-            duration: Annotated[int, "Long press duration in milliseconds (default 1000)."] = 1000,
-        ):
-            """[ACTION] Long press on the target location on the screen (supports element index or absolute normalized coordinates)."""
-            return "Action Recorded"
-
-        return long_press
-
-    def _get_click_tool(self) -> BaseTool:
-        @tool
-        def click(
-            target: Annotated[
-                int | list[int],
-                "Click target. Can be an element index number (int, e.g. 3) OR"
-                " normalized coordinates (list of 2 integers, e.g. [500,"
-                " 600]).",
-            ],
-            times: Annotated[
-                int,
-                "Number of consecutive clicks on this target. Use this for"
-                " double-clicks or multi-clicks (e.g. 7 to enter developer"
-                " mode). Default is 1.",
-            ] = 1,
-            delay_ms: Annotated[
-                int,
-                "Delay in milliseconds between consecutive clicks. Default is 100.",
-            ] = 100,
-        ):
-            """[ACTION] Click on the target location on the screen (supports element index or absolute normalized coordinates)."""
-            return "Action Recorded"
-
-        return click
-
-    def _get_input_text_tool(self) -> BaseTool:
-        @tool
-        def input_text(
-            text: Annotated[
-                str,
-                "The text content to input. Supports multi-line content with '\\n'.",
-            ],
-            target: Annotated[
-                int | list[int],
-                "Input target field. Can be an input box element index number"
-                " (int, e.g. 3) OR normalized coordinates (list of 2 integers,"
-                " e.g. [500, 600]).",
-            ],
-            clear_exist: Annotated[
-                bool,
-                "Whether to clear existing text before typing. True (default):"
-                " clear/replace entire text. False: append at the end of"
-                " existing content.",
-            ] = True,
-        ):
-            """[ACTION] Type text into the target input field (supports replacing whole text or appending to the end, and multi-line strings with '\\n')."""
-            return "Action Recorded"
-
-        return input_text
-
-    def _get_swipe_tool(self) -> BaseTool:
-        @tool
-        def swipe(
-            direction: Annotated[
-                Literal["up", "down", "left", "right"] | None,
-                "Direction for scrolling and swiping: 'up' (drags bottom-to-top, scrolling down to reveal content below),"
-                " 'down' (drags top-to-bottom, scrolling up to reveal content above),"
-                " 'left' (drags right-to-left, scrolling right),"
-                " 'right' (drags left-to-right, scrolling left).",
-            ] = None,
-            start: Annotated[
-                list[int] | None,
-                "Start normalized coordinates [start_x, start_y] in 0-1000 scale for precise,"
-                " local interactions (e.g. adjusting sliders, SeekBars, fine range selection, or drag-and-drop).",
-            ] = None,
-            end: Annotated[
-                list[int] | None,
-                "End normalized coordinates [end_x, end_y] in 0-1000 scale for precise,"
-                " local interactions (e.g. adjusting sliders, SeekBars, fine range selection, or drag-and-drop).",
-            ] = None,
-            target: Annotated[
-                int | list[int] | str | None,
-                "Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within.",
-            ] = None,
-            gesture: Annotated[
-                Literal["up", "down", "left", "right"] | list[int] | None,
-                "Backward-compatible swipe gesture: smart direction string ('up', 'down', 'left', 'right')"
-                " OR precise custom coordinates [start_x, start_y, end_x, end_y] in 0-1000 scale.",
-            ] = None,
-            duration: Annotated[
-                int | None,
-                "Optional swipe/drag duration in milliseconds (default 800). For drag-and-drop,"
-                " list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars),"
-                " set duration >= 1000 (e.g. 1500). If omitted for directional swipe, duration is computed automatically.",
-            ] = None,
-        ):
-            """[ACTION] Perform a swipe, drag, or slider-adjustment gesture on the screen.
-
-            • Directional Scrolling ('direction'): Recommended for general browsing and standard page scrolling in most scenarios. Automatically computes safe swipe vectors and adaptive duration, retains a ~40% visual overlap anchor for zero-omission traversal, and prevents inertial flings. Supports scoping to a sub-container via 'target'. If it fails on certain custom layouts, fall back to specifying exact coordinates ('start' and 'end') directly.
-            • Precise Coordinate Gestures ('start', 'end'): Best for local, fine-grained interactions such as adjusting sliders/SeekBars (e.g., volume, brightness, progress bars), drag-and-drop / list reordering, or as a reliable fallback when directional scrolling fails on specific containers. Always drag slightly PAST the target position to overcome touch slop and reliably trigger the update. When setting a slider to Maximum (100%) or Minimum (0%), swipe fully to the extreme boundary.
-
-            Args:
-                direction: Smart directional scrolling ('up', 'down', 'left', 'right'). Automatically computes safe swipe vectors, retaining 40% visual overlap: 'up' (reveal content below), 'down' (reveal content above), 'left', 'right'.
-                start: Start normalized coordinates [start_x, start_y] in 0-1000 scale.
-                end: End normalized coordinates [end_x, end_y] in 0-1000 scale.
-                target: Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within.
-                gesture: Backward-compatible parameter: direction string OR custom coordinates list [start_x, start_y, end_x, end_y] in 0-1000 scale.
-                duration: Optional gesture duration in milliseconds (default 800).
-            """
-            return "Action Recorded"
-
-        return swipe
-
-    def _get_press_key_tool(self) -> BaseTool:
-        @tool
-        def press_key(
-            key: Annotated[
-                Literal["ENTER", "BACK", "HOME", "APP_SWITCH"],
-                "Standard Android system button name (ENTER, BACK, HOME, APP_SWITCH).",
-            ],
-        ):
-            """[ACTION] Press a physical or virtual system button (e.g.
-
-            ENTER, BACK, HOME, APP_SWITCH).
-            """
-            return "Action Recorded"
-
-        return press_key
-
-    def _get_manage_app_tool(self) -> BaseTool:
-        @tool
-        def manage_app(
-            action: Annotated[Literal["launch", "stop"], "The action type."],
-            app_name: Annotated[str, "Display name or package name of the application."],
-        ):
-            """[ACTION] Launch or force stop a specified application."""
-            return "Action Recorded"
-
-        return manage_app
-
-    def _get_wait_for_delay_tool(self) -> BaseTool:
-        @tool
-        def wait_for_delay(
-            time_in_ms: Annotated[
-                int,
-                "The exact duration to wait in milliseconds. Accurately convert the"
-                " required time duration into milliseconds based on your objective"
-                " or plan (e.g., 2000 for 2s, 5000 for 5s, 60000 for 1 minute,"
-                " 180000 for 3 minutes, 300000 for 5 minutes).",
-            ],
-        ):
-            """[ACTION] Pause execution and wait for a specified duration in milliseconds.
-
-            Use this whenever you need time to elapse—whether for UI loading, animations,
-            screen transitions, or longer scheduled delays and intervals specified in the task.
-            """
-            return "Action Recorded"
-
-        return wait_for_delay
-
-    def _get_wait_for_text_tool(self) -> BaseTool:
-        @tool
-        def wait_for_text(
-            text: Annotated[
-                str,
-                "A simple, distinct keyword (e.g., 'Success', 'Done',"
-                " 'Loading') to watch on the screen. Try to pass a clean word"
-                " without trailing punctuation (e.g. 'Loading' instead of"
-                " 'Loading...') for optimal matching reliability.",
-            ],
-            state: Annotated[
-                Literal["visible", "hidden"],
-                "Wait for the keyword to appear ('visible') or disappear"
-                " ('hidden') from the screen.",
-            ] = "visible",
-            timeout_ms: Annotated[int, "Maximum timeout in milliseconds (default 5000)."] = 5000,
-        ):
-            """[ACTION] Pause execution and wait intelligently for a specific, distinct text or keyword to appear or disappear on the screen.
-
-            Use this when waiting for a specific loading screen to finish or a
-            specific success/confirmation state to appear.
-            """
-            return "Action Recorded"
-
-        return wait_for_text
 
     def _translate_and_validate_tool(self, tc: dict, state: State) -> tuple[list[dict], str | None]:
         actions, err = self._translate_and_validate_tool_inner(tc, state)
@@ -1384,7 +980,7 @@ class OperatorNode:
                     direction=target,
                     target=args.get("target"),
                     indexed_elements=getattr(state, "indexed_elements", None),
-                    ui_hierarchy=getattr(state, "ui_tree", None),
+                    ui_hierarchy=getattr(state, "latest_ui_hierarchy", None),
                     width=width,
                     height=height,
                     duration=duration,

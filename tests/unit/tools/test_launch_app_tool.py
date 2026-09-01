@@ -14,7 +14,6 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
@@ -27,7 +26,7 @@ from artemis.tools.mobile.launch_app import (
     launch_app,
     launch_app_wrapper,
 )
-from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 import pytest
 
 
@@ -47,13 +46,7 @@ def mock_driver():
 
 @pytest.fixture
 def mock_state():
-    state = MagicMock(spec=State)
-
-    async def _mock_asanitize_update(ctx, update, agent):
-        return update
-
-    state.asanitize_update = AsyncMock(side_effect=_mock_asanitize_update)
-    return state
+    return MagicMock(spec=State)
 
 
 def test_launch_app_tool_subclass_and_registry():
@@ -144,7 +137,7 @@ async def test_launch_app_execution_failure(mock_ctx):
 
 @pytest.mark.asyncio
 async def test_launch_app_with_state_command(mock_ctx, mock_state):
-    """Verify LaunchAppTool returns Command when state is provided."""
+    """Verify LaunchAppTool returns ToolMessage when state is provided."""
     with (
         patch(
             "artemis.tools.mobile.launch_app.find_package",
@@ -163,13 +156,10 @@ async def test_launch_app_with_state_command(mock_ctx, mock_state):
             tool_call_id="call_la_1",
             state=mock_state,
         )
-        assert isinstance(cmd, Command)
-        assert VALIDATOR_MESSAGES_KEY in cmd.update
-        messages = cmd.update[VALIDATOR_MESSAGES_KEY]
-        assert len(messages) == 1
-        assert messages[0].tool_call_id == "call_la_1"
-        assert messages[0].status == "success"
-        assert "App 'State App' launched successfully." in messages[0].content
+        assert isinstance(cmd, ToolMessage)
+        assert cmd.tool_call_id == "call_la_1"
+        assert cmd.status == "success"
+        assert "App 'State App' launched successfully." in cmd.content
 
 
 @pytest.mark.asyncio

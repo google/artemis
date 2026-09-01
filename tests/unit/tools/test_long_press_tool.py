@@ -14,7 +14,6 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
@@ -27,7 +26,7 @@ from artemis.tools.mobile.exec_tools import (
     long_press,
     long_press_wrapper,
 )
-from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 import pytest
 
 
@@ -50,13 +49,7 @@ def mock_driver():
 
 @pytest.fixture
 def mock_state():
-    state = MagicMock(spec=State)
-
-    async def _mock_asanitize_update(ctx, update, agent):
-        return update
-
-    state.asanitize_update = AsyncMock(side_effect=_mock_asanitize_update)
-    return state
+    return MagicMock(spec=State)
 
 
 def test_long_press_tool_subclass_and_registry():
@@ -111,7 +104,7 @@ async def test_long_press_direct_execution_with_ctx(mock_ctx):
 
 @pytest.mark.asyncio
 async def test_long_press_with_state_command(mock_ctx, mock_state):
-    """Verify LongPressTool returns Command when state is provided."""
+    """Verify LongPressTool returns ToolMessage when state is provided."""
     with patch("artemis.tools.mobile.exec_tools.UnifiedMobileController") as mock_controller_cls:
         mock_controller_inst = MagicMock()
         mock_controller_inst.tap_at = AsyncMock(return_value=MagicMock(error=None))
@@ -124,13 +117,10 @@ async def test_long_press_with_state_command(mock_ctx, mock_state):
             tool_call_id="call_lp_1",
             state=mock_state,
         )
-        assert isinstance(cmd, Command)
-        assert VALIDATOR_MESSAGES_KEY in cmd.update
-        messages = cmd.update[VALIDATOR_MESSAGES_KEY]
-        assert len(messages) == 1
-        assert messages[0].tool_call_id == "call_lp_1"
-        assert messages[0].status == "success"
-        assert "Long pressed at [100, 200]" in messages[0].content
+        assert isinstance(cmd, ToolMessage)
+        assert cmd.tool_call_id == "call_lp_1"
+        assert cmd.status == "success"
+        assert "Long pressed at [100, 200]" in cmd.content
 
 
 @pytest.mark.asyncio

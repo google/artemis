@@ -20,9 +20,13 @@ from artemis.agents.video_analyzer.video_analyzer import VideoAnalyzer
 
 
 @pytest.mark.asyncio
-async def test_video_analyzer_tools(artemis_context, mock_state, inputs_dir):
+async def test_video_analyzer_tools(artemis_context, mock_state, inputs_dir, tmp_path):
     artemis_context.device.mobile_platform = "android"
     artemis_context.adb_client = artemis_context.ui_adb_client
+    # A leaked MagicMock video_analyzer config coerces every numeric setting to
+    # 1 (float(MagicMock()) == 1.0), e.g. a 1s model-call timeout. None makes
+    # VideoAnalyzer fall back to its real defaults.
+    artemis_context.agent_config.video_analyzer = None
 
     agent = VideoAnalyzer(ctx=artemis_context)
 
@@ -70,6 +74,9 @@ async def test_video_analyzer_tools(artemis_context, mock_state, inputs_dir):
     )
     artemis_context._genai_client = agent.client
 
+    import shutil
+    import uuid
+
     mock_session = MagicMock()
     mock_session.local_video_path = Path(inputs_dir) / "recording.mp4"
     mock_session.start_time = 0.0
@@ -78,17 +85,40 @@ async def test_video_analyzer_tools(artemis_context, mock_state, inputs_dir):
     mock_session.process.returncode = None
     mock_session.android_video_segments = []
     mock_session.android_segment_index = 0
+    # Real-typed fields consumed by UnifiedMobileController.extract_segment_metadata
+    # and the pydantic VideoRecordingResult; leaked MagicMock attributes fail
+    # validation or produce invalid paths.
+    mock_session.android_segment_records = []
+    mock_session.android_segment_started_at = None
+    mock_session.video_id = uuid.uuid4()
+    mock_session.generation = 0
+    mock_session.sealed_until = None
 
     from unittest.mock import AsyncMock
 
     sample_video = Path(inputs_dir) / "recording.mp4"
     mock_driver = MagicMock()
     mock_driver.stop_video_recording = AsyncMock(return_value=sample_video)
+    # A bare MagicMock attribute is truthy, which would trip the mock-driver
+    # short-circuit in extract_segment_metadata and return a nonexistent path.
+    mock_driver.is_mock = False
     artemis_context._active_driver = mock_driver
 
-    with patch(
-        "artemis.controllers.android_controller.get_active_session",
-        return_value=mock_session,
+    # Screen-recording segments carry no audio track (render_timeline_clip maps
+    # only the video stream), so real audio extraction can never succeed here.
+    # Substitute the fixture mp3 as the extracted audio for the audio sub-agent.
+    audio_copy = tmp_path / "audio_recording.mp3"
+    shutil.copyfile(Path(inputs_dir) / "audio_recording.mp3", audio_copy)
+
+    with (
+        patch(
+            "artemis.controllers.unified_controller.get_active_session",
+            return_value=mock_session,
+        ),
+        patch(
+            "artemis.agents.video_analyzer.video_analyzer.extract_audio_from_video",
+            AsyncMock(return_value=audio_copy),
+        ),
     ):
         result = await agent.exec_extract_segment_metadata(start_time=0.0, end_time=1.0)
         assert isinstance(result, str)

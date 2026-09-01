@@ -167,11 +167,19 @@
         "enabled": false,
         "debate_rounds": 2
       },
-      // 🔎 Checker: Visual subgoal verification and automatic checkpoint rollback
+      // 🔎 Checker: Plan-declared checkpoint verification (optimistic async) + exit final review
       "checker": {
-        "enabled": false,
+        "enabled": false, // Master switch (compat alias): false disables both gates below
+        "midway_checks": true, // Plan-declared midway checkpoints (verify/assert on subgoal completion)
+        "final_check": true, // Exit final review against the user's original goal
         "max_iterations": 20,
-        "max_chat_rounds": 4
+        "final_check_max_attempts": 3,
+        "checkpoint_max_repairs": 2,
+        "max_concurrent_checkpoints": 3,
+        "checkpoint_timeout": 180.0,
+        "settlement_timeout": 120.0,
+        "assert_failure_policy": "continue", // 'continue' or 'halt' on assert failures
+        "device_probes": true // Checker's enumerated read-only device probes
       },
       // 🎬 Video Analyzer & Screen Recording: Continuous screen recording via scrcpy and temporal analysis
       "video_analyzer": {

@@ -35,7 +35,6 @@ import uuid
 from adbutils import AdbClient
 from dotenv import load_dotenv
 from google import genai
-from langchain_core.messages import AIMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from PIL import Image
 from pydantic import BaseModel
@@ -117,14 +116,13 @@ class Agent:
         session_id: str | None = None,
     ):
         raw_sid = (
-            session_id
-            or os.getenv("ARTEMIS_SESSION_ID")
-            or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+            session_id or os.getenv("ARTEMIS_SESSION_ID") or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
         )
         self._session_id: str | None = str(raw_sid).strip() if raw_sid else None
         target_dev = device_serial or device_id
         if config is None:
             from artemis.sdk.builders import Builders
+
             builder = Builders.AgentConfig
             if target_dev:
                 builder.for_device(DevicePlatform.ANDROID, target_dev)
@@ -203,7 +201,9 @@ class Agent:
             raise DeviceNotFoundError(error_msg)
 
         # Initialize clients
-        publish_startup_progress("device_check", "Checking the Android device", session_id=self._session_id)
+        publish_startup_progress(
+            "device_check", "Checking the Android device", session_id=self._session_id
+        )
         if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
             self._init_clients(
                 device_id=device_id,
@@ -222,7 +222,9 @@ class Agent:
             device_id=device_id, platform=platform
         )
         logger.info(self._device_context.to_str())
-        publish_startup_progress("device_ready", "Android device connected", session_id=self._session_id)
+        publish_startup_progress(
+            "device_ready", "Android device connected", session_id=self._session_id
+        )
 
         # Asynchronously pre-warm LLM connection pools in the background
         asyncio.create_task(self._prewarm_llm_connections(api_key))
@@ -236,9 +238,13 @@ class Agent:
         """Pre-warms the HTTP2/gRPC connection pools for both Native GenAI and LangChain clients in the background."""
         if os.environ.get("ARTEMIS_FAKE_LLM") == "1":
             logger.info("ARTEMIS_FAKE_LLM=1 — skipping real LLM connection pre-warming.")
-            publish_startup_progress("model_ready", "Model connection is ready (fake LLM)", session_id=self._session_id)
+            publish_startup_progress(
+                "model_ready", "Model connection is ready (fake LLM)", session_id=self._session_id
+            )
             return
-        publish_startup_progress("model_warmup", "Warming the model connection", session_id=self._session_id)
+        publish_startup_progress(
+            "model_warmup", "Warming the model connection", session_id=self._session_id
+        )
         logger.info("Starting background pre-warming of Gemini API connection pools...")
         try:
             key = api_key
@@ -248,7 +254,9 @@ class Agent:
             if not key:
                 logger.warning("Skipping LLM pre-warming: No API key available.")
                 publish_startup_progress(
-                    "model_ready", "Model connection will initialize on first use", session_id=self._session_id
+                    "model_ready",
+                    "Model connection will initialize on first use",
+                    session_id=self._session_id,
                 )
                 return
 
@@ -265,11 +273,15 @@ class Agent:
                 return_exceptions=True,
             )
             logger.success("Gemini API connection pools successfully pre-warmed.")
-            publish_startup_progress("model_ready", "Model connection is ready", session_id=self._session_id)
+            publish_startup_progress(
+                "model_ready", "Model connection is ready", session_id=self._session_id
+            )
         except Exception as e:
             logger.warning(f"Failed to pre-warm LLM connections: {e}")
             publish_startup_progress(
-                "model_ready", "Model connection will initialize on first use", session_id=self._session_id
+                "model_ready",
+                "Model connection will initialize on first use",
+                session_id=self._session_id,
             )
 
     async def install_apk(self, apk_path: str | Path) -> None:
@@ -549,13 +561,17 @@ class Agent:
                     or active_owner.token == self._device_context.device_id
                 )
             )
-            device_lock = None if already_held else DeviceExecutionLock(
-                self._device_context.device_id,
-                description=f"{request.goal[:120]}",
-                concurrency_mode=effective_mode,
-                max_concurrency=effective_max,
-                session_id=str(sess_id) if sess_id else None,
-                ingress=os.getenv("ARTEMIS_TASK_INGRESS") or "agent",
+            device_lock = (
+                None
+                if already_held
+                else DeviceExecutionLock(
+                    self._device_context.device_id,
+                    description=f"{request.goal[:120]}",
+                    concurrency_mode=effective_mode,
+                    max_concurrency=effective_max,
+                    session_id=str(sess_id) if sess_id else None,
+                    ingress=os.getenv("ARTEMIS_TASK_INGRESS") or "agent",
+                )
             )
             try:
                 if device_lock is not None and os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
@@ -707,7 +723,6 @@ class Agent:
                                     context.data_engine.end_session("failed")
                                 return None
 
-                            print_ai_response_to_stderr(graph_result=last_state)
                             output = await self._extract_output(
                                 task_name=task_name,
                                 ctx=context,
@@ -715,7 +730,43 @@ class Agent:
                                 output_config=output_config,
                                 state=last_state,
                             )
-                            logger.info(f"✅ Automation '{task_name}' is success ✅")
+                            # Run outcome (goal axis x test axis) drives the
+                            # wrap-up instead of an unconditional success path.
+                            run_outcome = getattr(last_state, "run_outcome", None)
+                            context.run_outcome = run_outcome
+                            output = attach_test_summary(output, run_outcome)
+                            task_status_axis = (
+                                run_outcome.get("task_status") if run_outcome else None
+                            )
+                            tests_failed = (
+                                int((run_outcome.get("tests") or {}).get("failed", 0))
+                                if run_outcome
+                                else 0
+                            )
+                            if task_status_axis == "blocked":
+                                err = (
+                                    f"[{task_name}] Task ended blocked: verify"
+                                    " criteria unmet after exhausting the final"
+                                    " check budget."
+                                )
+                                logger.warning(err)
+                                await task.finalize(
+                                    content=output,
+                                    state=last_state_snapshot,
+                                    error=err,
+                                )
+                                if context.data_engine:
+                                    context.data_engine.end_session("failed")
+                                return output
+
+                            if tests_failed > 0:
+                                logger.warning(
+                                    f"[{task_name}] Task completed, but"
+                                    f" {tests_failed} assertion(s) failed —"
+                                    " see the test summary."
+                                )
+                            else:
+                                logger.info(f"✅ Automation '{task_name}' is success ✅")
                             await task.finalize(content=output, state=last_state_snapshot)
                             if context.data_engine:
                                 context.data_engine.end_session("completed")
@@ -723,13 +774,18 @@ class Agent:
                             return output
                     finally:
                         if recording_started:
+
                             async def _safe_stop_recording():
                                 try:
-                                    logger.info(f"[{task_name}] Stopping automated screen recording...")
+                                    logger.info(
+                                        f"[{task_name}] Stopping automated screen recording..."
+                                    )
                                     controller = get_controller(context)
                                     return await controller.stop_video_recording()
                                 except Exception as e:
-                                    logger.error(f"[{task_name}] Error stopping screen recording: {e}")
+                                    logger.error(
+                                        f"[{task_name}] Error stopping screen recording: {e}"
+                                    )
                                     return None
 
                             stop_task = asyncio.create_task(_safe_stop_recording())
@@ -982,8 +1038,16 @@ class Agent:
             else False,
             video_recording_tools_enabled=self._config.video_recording_tools_enabled,
             disable_checker=self._config.disable_checker,
+            disable_midway_checks=self._config.disable_midway_checks,
+            disable_final_check=self._config.disable_final_check,
             checker_max_iterations=self._config.checker_max_iterations,
-            checker_max_chat_rounds=self._config.checker_max_chat_rounds,
+            final_check_max_attempts=self._config.final_check_max_attempts,
+            checkpoint_max_repairs=self._config.checkpoint_max_repairs,
+            max_concurrent_checkpoints=self._config.max_concurrent_checkpoints,
+            checkpoint_timeout=self._config.checkpoint_timeout,
+            settlement_timeout=self._config.settlement_timeout,
+            assert_failure_policy=self._config.assert_failure_policy,
+            disable_device_probes=self._config.disable_device_probes,
             disable_planner_validation=self._config.disable_planner_validation,
             planner_validation_threshold=self._config.planner_validation_threshold,
             enable_committee=self._config.enable_committee,
@@ -1058,7 +1122,7 @@ class Agent:
                 logger.error(f"[{task_name}] Failed to clean up temp trace folder: {e}")
             return
 
-        status = "_PASS" if task.status == "completed" else "_FAIL"
+        status = resolve_trace_suffix(task.status, getattr(context, "run_outcome", None))
         ts = task.created_at.strftime("%Y-%m-%dT%H-%M-%S")
         new_name = f"{exec_setup_ctx.trace_name}{status}_{ts}"
 
@@ -1133,28 +1197,10 @@ class Agent:
             except Exception as e:
                 logger.error(f"[{task_name}] Failed to generate structured output: {e}")
                 return None
-        if state and state.messages:
-            for msg in reversed(state.messages):
-                if msg.content:
-                    logger.info(f"Fallback output from message: {msg.content}")
-                    record_events(output_path=request.llm_output_path, events=msg.content)
-                    return msg.content
         return None
 
     def _get_graph_state(self, task: Task):
-        return State(
-            messages=[],
-            initial_goal=task.request.goal,
-            subgoal_plan=[],
-            latest_ui_hierarchy=None,
-            latest_screenshot=None,
-            focused_app_info=None,
-            device_date=None,
-            structured_decisions=None,
-            complete_subgoals_by_ids=[],
-            remaining_steps=task.request.max_steps,
-            validator_messages=[],
-        )
+        return State.initial(task.request.goal)
 
     def _init_clients(
         self,
@@ -1229,8 +1275,44 @@ def _validate_and_prepare_file(file_path: Path):
         raise AgentTaskRequestError(f"Error creating file '{file_path}': {e}")
 
 
-def print_ai_response_to_stderr(graph_result: State):
-    for msg in reversed(graph_result.messages):
-        if isinstance(msg, AIMessage):
-            print(msg.content, file=sys.stderr)
-            return
+def attach_test_summary(output, run_outcome: dict | None):
+    """Surfaces the machine-readable test summary in the task's return value.
+
+    Only applies when the run actually had check items (the summary carries at
+    least one counted item) — otherwise the historical return shape is kept
+    untouched. String outputs are wrapped into a dict so that callers such as
+    ``mobile_run_task`` receive the summary without parsing report prose.
+    """
+    if not run_outcome:
+        return output
+    tests = run_outcome.get("tests") or {}
+    total = (
+        int(tests.get("passed", 0))
+        + int(tests.get("failed", 0))
+        + int(tests.get("inconclusive", 0))
+        + int(tests.get("unchecked", 0))
+    )
+    if total <= 0:
+        return output
+    summary = {"task_status": run_outcome.get("task_status"), **tests}
+    if isinstance(output, dict):
+        merged = dict(output)
+        merged.setdefault("test_summary", summary)
+        return merged
+    if output is None:
+        return {"test_summary": summary}
+    if isinstance(output, str):
+        return {"result": output, "test_summary": summary}
+    # Typed/structured outputs keep their shape; the summary stays available in
+    # run_outcome.json and the session state.
+    return output
+
+
+def resolve_trace_suffix(task_status: str, run_outcome: dict | None) -> str:
+    """Trace naming: assertion failures must be distinguishable from _PASS."""
+    if task_status != "completed":
+        return "_FAIL"
+    tests = (run_outcome or {}).get("tests") or {}
+    if int(tests.get("failed", 0)) > 0:
+        return "_TESTFAIL"
+    return "_PASS"

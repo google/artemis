@@ -42,6 +42,7 @@ from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import TraceSpan
 from artemis.mcp.action_manifest import OPTIONAL_ACTIONS, REQUIRED_ACTIONS
+from artemis.mcp.action_specs import exception_prefix
 from artemis.mcp.action_session import ActionSession, get_action_session
 from artemis.mcp.action_types import ActionCode, ActionResult
 from artemis.mcp.actuators.adb import AdbActuator
@@ -66,19 +67,6 @@ logger = get_logger(__name__)
 
 __all__ = ["McpActionExecutor"]
 
-# Wording for wrapped exceptions; matches the historical executor `except` arms.
-_EXCEPTION_PREFIX = {
-    "click": "Error during click",
-    "click_sequence": "Error executing click sequence",
-    "long_press": "Error during long press",
-    "input_text": "Error during input text",
-    "swipe": "Error during swipe",
-    "press_key": "Error during press_key",
-    "manage_app": "Error during manage_app",
-    "wait_for_delay": "Error during wait_for_delay",
-    "wait_for_text": "Error during wait_for_text",
-}
-
 
 class _ArgError(ValueError):
     """Argument-translation failure whose message is already fully formatted."""
@@ -94,19 +82,14 @@ class McpActionExecutor:
         actuator: AdbActuator | None = None,
     ):
         self.ctx = ctx
-        self.actuator = (
-            actuator or getattr(ctx, "actuator", None) or AdbActuator(ctx, controller)
-        )
+        self.actuator = actuator or getattr(ctx, "actuator", None) or AdbActuator(ctx, controller)
         self.controller = self.actuator.controller
         self._session: ActionSession | None = None
 
     @property
     def action_tool_names(self) -> frozenset[str]:
         """Device actions plus backend extension names -- the dynamic dispatch set."""
-        return (
-            (REQUIRED_ACTIONS | OPTIONAL_ACTIONS)
-            | {e.name for e in self.actuator.extensions()}
-        )
+        return (REQUIRED_ACTIONS | OPTIONAL_ACTIONS) | {e.name for e in self.actuator.extensions()}
 
     async def _session_or_start(self) -> ActionSession:
         if self._session is None or not self._session.started:
@@ -129,9 +112,7 @@ class McpActionExecutor:
             return await self._execute_agent_tool(raw_name, name, args, tool_call_id, state)
 
         if raw_name in self.action_tool_names:
-            return await self._execute_device_action(
-                raw_name, name, args, tool_call_id, state
-            )
+            return await self._execute_device_action(raw_name, name, args, tool_call_id, state)
 
         return ToolExecutionResult(
             tool_call_id=tool_call_id,
@@ -188,15 +169,12 @@ class McpActionExecutor:
                             try:
                                 img_bytes = Path(shot_path).read_bytes()
                             except Exception as read_err:
-                                logger.warning(
-                                    f"Failed to read observed screenshot: {read_err}"
-                                )
+                                logger.warning(f"Failed to read observed screenshot: {read_err}")
             except _ArgError as e:
                 res = ActionResult.failure(raw_name, str(e), code=ActionCode.INVALID_ARGS)
                 message = str(e)
             except Exception as e:
-                prefix = _EXCEPTION_PREFIX.get(raw_name, f"Error during {raw_name}")
-                message = f"{prefix}: {e}"
+                message = f"{exception_prefix(raw_name)}: {e}"
                 res = ActionResult.failure(raw_name, message, detail=repr(e))
 
             if shot_path:
@@ -365,9 +343,7 @@ class McpActionExecutor:
                     pass
 
         if not isinstance(sequence, (list, tuple)):
-            raise _ArgError(
-                f"Error during click sequence: Invalid sequence format: {sequence}"
-            )
+            raise _ArgError(f"Error during click sequence: Invalid sequence format: {sequence}")
 
         width = getattr(self.ctx.device, "device_width", 1080) if self.ctx.device else 1080
         height = getattr(self.ctx.device, "device_height", 2400) if self.ctx.device else 2400
@@ -389,15 +365,11 @@ class McpActionExecutor:
             elif isinstance(target, (list, tuple)) and len(target) == 2:
                 nx, ny = int(target[0]), int(target[1])
             else:
-                raise _ArgError(
-                    f"Error during click sequence: Invalid target format: {raw_target}"
-                )
+                raise _ArgError(f"Error during click sequence: Invalid target format: {raw_target}")
             resolved.append([nx, ny])
         return resolved
 
-    def _translate_swipe(
-        self, args: dict[str, Any], state: Any
-    ) -> tuple[str, dict[str, Any], Any]:
+    def _translate_swipe(self, args: dict[str, Any], state: Any) -> tuple[str, dict[str, Any], Any]:
         width = getattr(self.ctx.device, "device_width", 1080) if self.ctx.device else 1080
         height = getattr(self.ctx.device, "device_height", 2400) if self.ctx.device else 2400
         default_duration = args.get("duration", 400)
@@ -411,7 +383,7 @@ class McpActionExecutor:
                 direction=target,
                 target=args.get("target"),
                 indexed_elements=getattr(state, "indexed_elements", None) if state else None,
-                ui_hierarchy=getattr(state, "ui_tree", None) if state else None,
+                ui_hierarchy=getattr(state, "latest_ui_hierarchy", None) if state else None,
                 width=width,
                 height=height,
                 duration=final_duration,
@@ -441,10 +413,7 @@ class McpActionExecutor:
             def finalize(res: ActionResult) -> str:
                 if not res.ok:
                     return f"Error dragging: {res.detail}"
-                return (
-                    "Swipe completed successfully. Swiped from"
-                    f" [{x1}, {y1}] to [{x2}, {y2}]."
-                )
+                return f"Swipe completed successfully. Swiped from [{x1}, {y1}] to [{x2}, {y2}]."
 
             return (
                 "swipe",
@@ -494,9 +463,7 @@ class McpActionExecutor:
             text_summary=text,
         )
 
-    async def _read_note(
-        self, key: str, start_line: int | None, end_line: int | None
-    ) -> str:
+    async def _read_note(self, key: str, start_line: int | None, end_line: int | None) -> str:
         try:
             base_dir = self.ctx.data_engine.base_dir if self.ctx.data_engine else None
             if not base_dir:
@@ -514,9 +481,7 @@ class McpActionExecutor:
         except Exception as e:
             return format_list_notes_failure(str(e))
 
-    async def _ask_explorer(
-        self, query: str, context_feedback: str | None, state: Any
-    ) -> str:
+    async def _ask_explorer(self, query: str, context_feedback: str | None, state: Any) -> str:
         # Imported lazily: the explorer stack is heavy and recursive (it spawns an LLM
         # sub-agent), which is also why it must never live behind the action server.
         from artemis.tools.explorer_tool import _run_explorer_logic

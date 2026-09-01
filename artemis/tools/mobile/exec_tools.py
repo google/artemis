@@ -17,10 +17,8 @@ from typing import Any, Literal
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
-from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import trace_langchain_tool
@@ -206,18 +204,11 @@ class ClickTool(ArtemisTool):
             success = False
             outcome = f"Error during click: {e}"
 
-        if st and callable(getattr(st, "asanitize_update", None)):
-            tool_message = ToolMessage(
+        if st is not None:
+            return ToolMessage(
                 tool_call_id=tcid or "",
                 content=outcome,
                 status="success" if success else "error",
-            )
-            return Command(
-                update=await st.asanitize_update(
-                    ctx=ctx,
-                    update={VALIDATOR_MESSAGES_KEY: [tool_message]},
-                    agent="validator",
-                )
             )
 
         return outcome
@@ -306,18 +297,11 @@ class LongPressTool(ArtemisTool):
             success = False
             outcome = f"Error during long press: {e}"
 
-        if st and callable(getattr(st, "asanitize_update", None)):
-            tool_message = ToolMessage(
+        if st is not None:
+            return ToolMessage(
                 tool_call_id=tcid or "",
                 content=outcome,
                 status="success" if success else "error",
-            )
-            return Command(
-                update=await st.asanitize_update(
-                    ctx=ctx,
-                    update={VALIDATOR_MESSAGES_KEY: [tool_message]},
-                    agent="validator",
-                )
             )
 
         return outcome
@@ -414,18 +398,11 @@ class InputTextTool(ArtemisTool):
             success = False
             outcome = f"Error during input text: {e}"
 
-        if st and callable(getattr(st, "asanitize_update", None)):
-            tool_message = ToolMessage(
+        if st is not None:
+            return ToolMessage(
                 tool_call_id=tcid or "",
                 content=outcome,
                 status="success" if success else "error",
-            )
-            return Command(
-                update=await st.asanitize_update(
-                    ctx=ctx,
-                    update={VALIDATOR_MESSAGES_KEY: [tool_message]},
-                    agent="validator",
-                )
             )
 
         return outcome
@@ -545,7 +522,7 @@ class SwipeTool(ArtemisTool):
 
                 if kind == "direction" and isinstance(target, str):
                     indexed_elems = getattr(state, "indexed_elements", None) if state else None
-                    ui_hier = getattr(state, "ui_tree", None) if state else None
+                    ui_hier = getattr(state, "latest_ui_hierarchy", None) if state else None
                     start_x, start_y, end_x, end_y, smart_dur = compute_smart_swipe_coordinates(
                         direction=target,
                         target=params.get("target"),
@@ -575,18 +552,11 @@ class SwipeTool(ArtemisTool):
             success = False
             outcome = f"Error during swipe: {e}"
 
-        if st and callable(getattr(st, "asanitize_update", None)):
-            tool_message = ToolMessage(
+        if st is not None:
+            return ToolMessage(
                 tool_call_id=tcid or "",
                 content=outcome,
                 status="success" if success else "error",
-            )
-            return Command(
-                update=await st.asanitize_update(
-                    ctx=ctx,
-                    update={VALIDATOR_MESSAGES_KEY: [tool_message]},
-                    agent="validator",
-                )
             )
 
         return outcome
@@ -664,18 +634,11 @@ class PressKeyTool(ArtemisTool):
             success = False
             outcome = f"Error during press key: {e}"
 
-        if st and callable(getattr(st, "asanitize_update", None)):
-            tool_message = ToolMessage(
+        if st is not None:
+            return ToolMessage(
                 tool_call_id=tcid or "",
                 content=outcome,
                 status="success" if success else "error",
-            )
-            return Command(
-                update=await st.asanitize_update(
-                    ctx=ctx,
-                    update={VALIDATOR_MESSAGES_KEY: [tool_message]},
-                    agent="validator",
-                )
             )
 
         return outcome

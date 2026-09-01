@@ -37,6 +37,11 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, ImageContent, TextContent
 
 from artemis.mcp.action_manifest import validate_actuator
+from artemis.mcp.action_specs import (
+    exception_prefix,
+    make_wire_handler,
+    wire_dialects,
+)
 from artemis.mcp.action_types import ActionCode, ActionResult, ObserveResult
 from artemis.mcp.actuators.base import Actuator
 from artemis.mcp.observation import observe as observe_impl
@@ -45,19 +50,6 @@ from artemis.utils.logger import get_logger
 logger = get_logger(__name__)
 
 __all__ = ["build_action_server"]
-
-# Exception wrapping per tool; wording matches the historical executor `except` arms.
-_EXCEPTION_PREFIX = {
-    "click": "Error during click",
-    "click_sequence": "Error executing click sequence",
-    "long_press": "Error during long press",
-    "input_text": "Error during input text",
-    "swipe": "Error during swipe",
-    "press_key": "Error during press_key",
-    "manage_app": "Error during manage_app",
-    "wait_for_delay": "Error during wait_for_delay",
-    "wait_for_text": "Error during wait_for_text",
-}
 
 
 def _wrap(res: ActionResult) -> CallToolResult:
@@ -69,9 +61,8 @@ def _wrap(res: ActionResult) -> CallToolResult:
 
 
 def _wrap_exception(action: str, exc: Exception) -> CallToolResult:
-    prefix = _EXCEPTION_PREFIX.get(action, f"Error during {action}")
     return _wrap(
-        ActionResult.failure(action, f"{prefix}: {exc}", detail=repr(exc))
+        ActionResult.failure(action, f"{exception_prefix(action)}: {exc}", detail=repr(exc))
     )
 
 
@@ -86,166 +77,17 @@ def build_action_server(actuator: Actuator, name: str = "artemis_actions") -> Fa
     mcp = FastMCP(name)
 
     # --- Device actions (registered only when implemented) ---------------------------
+    # Declarations and argument conversion both come from the canonical manifest
+    # (artemis/mcp/action_specs.py); this server contributes only the transport
+    # wrapping, so the served schema cannot drift from the manifest.
 
-    if "click" in caps:
-
-        @mcp.tool()
-        async def click(
-            target: list[int], times: int = 1, delay_ms: int = 100
-        ) -> Annotated[CallToolResult, ActionResult]:
-            """Tap at a 0-1000 normalized [x, y] coordinate."""
-            try:
-                return _wrap(
-                    await actuator.click(
-                        int(target[0]), int(target[1]), times=times, delay_ms=delay_ms
-                    )
-                )
-            except Exception as e:
-                return _wrap_exception("click", e)
-
-    if "click_sequence" in caps:
-
-        @mcp.tool()
-        async def click_sequence(
-            sequence: list[list[int]], delay_ms: int = 50
-        ) -> Annotated[CallToolResult, ActionResult]:
-            """Tap a series of 0-1000 normalized [x, y] points in one atomic burst."""
-            try:
-                points = [(int(p[0]), int(p[1])) for p in sequence]
-                return _wrap(await actuator.click_sequence(points, delay_ms=delay_ms))
-            except Exception as e:
-                return _wrap_exception("click_sequence", e)
-
-    if "long_press" in caps:
-
-        @mcp.tool()
-        async def long_press(
-            target: list[int], duration_ms: int = 1000
-        ) -> Annotated[CallToolResult, ActionResult]:
-            """Long-press at a 0-1000 normalized [x, y] coordinate."""
-            try:
-                return _wrap(
-                    await actuator.long_press(
-                        int(target[0]), int(target[1]), duration_ms=duration_ms
-                    )
-                )
-            except Exception as e:
-                return _wrap_exception("long_press", e)
-
-    if "input_text" in caps:
-
-        @mcp.tool()
-        async def input_text(
-            text: str,
-            target: list[int] | None = None,
-            clear_exist: bool = True,
-        ) -> Annotated[CallToolResult, ActionResult]:
-            """Type text, optionally focusing a 0-1000 normalized [x, y] target first."""
-            try:
-                norm = (int(target[0]), int(target[1])) if target else None
-                return _wrap(
-                    await actuator.input_text(text, norm, clear_exist=clear_exist)
-                )
-            except Exception as e:
-                return _wrap_exception("input_text", e)
-
-    if "swipe" in caps:
-
-        @mcp.tool()
-        async def swipe(
-            start: list[int], end: list[int], duration_ms: int = 800
-        ) -> Annotated[CallToolResult, ActionResult]:
-            """Swipe between two 0-1000 normalized [x, y] points."""
-            try:
-                return _wrap(
-                    await actuator.swipe(
-                        (int(start[0]), int(start[1])),
-                        (int(end[0]), int(end[1])),
-                        duration_ms,
-                    )
-                )
-            except Exception as e:
-                return _wrap_exception("swipe", e)
-
-    if "press_key" in caps:
-
-        @mcp.tool()
-        async def press_key(key: str) -> Annotated[CallToolResult, ActionResult]:
-            """Press a device key (home, back, enter, delete, tab, search, menu, app_switch)."""
-            try:
-                return _wrap(await actuator.press_key(key))
-            except Exception as e:
-                return _wrap_exception("press_key", e)
-
-    if "manage_app" in caps:
-
-        @mcp.tool()
-        async def manage_app(
-            action: str, app_name: str
-        ) -> Annotated[CallToolResult, ActionResult]:
-            """Launch or stop an app by human-readable name or package."""
-            try:
-                return _wrap(await actuator.manage_app(action, app_name))
-            except Exception as e:
-                return _wrap_exception("manage_app", e)
-
-    if "wait_for_delay" in caps:
-
-        @mcp.tool()
-        async def wait_for_delay(
-            time_in_ms: int,
-        ) -> Annotated[CallToolResult, ActionResult]:
-            """Wait for a fixed number of milliseconds."""
-            try:
-                return _wrap(await actuator.wait_for_delay(time_in_ms))
-            except Exception as e:
-                return _wrap_exception("wait_for_delay", e)
-
-    if "wait_for_text" in caps:
-
-        @mcp.tool()
-        async def wait_for_text(
-            text: str, wait_state: str = "appear", timeout_ms: int = 5000
-        ) -> Annotated[CallToolResult, ActionResult]:
-            """Wait for text to appear on or disappear from the screen."""
-            try:
-                return _wrap(await actuator.wait_for_text(text, wait_state, timeout_ms))
-            except Exception as e:
-                return _wrap_exception("wait_for_text", e)
-
-    if "open_link" in caps:
-
-        @mcp.tool()
-        async def open_link(url: str) -> Annotated[CallToolResult, ActionResult]:
-            """Open a URL on the device."""
-            try:
-                return _wrap(await actuator.open_link(url))
-            except Exception as e:
-                return _wrap_exception("open_link", e)
-
-    if "erase_one_char" in caps:
-
-        @mcp.tool()
-        async def erase_one_char() -> Annotated[CallToolResult, ActionResult]:
-            """Erase a single character in the focused field."""
-            try:
-                return _wrap(await actuator.erase_one_char())
-            except Exception as e:
-                return _wrap_exception("erase_one_char", e)
-
-    if "focus_and_clear_text" in caps:
-
-        @mcp.tool()
-        async def focus_and_clear_text(
-            target: list[int],
-        ) -> Annotated[CallToolResult, ActionResult]:
-            """Focus the field at a 0-1000 normalized [x, y] and clear its text."""
-            try:
-                return _wrap(
-                    await actuator.focus_and_clear_text(int(target[0]), int(target[1]))
-                )
-            except Exception as e:
-                return _wrap_exception("focus_and_clear_text", e)
+    for spec in wire_dialects():
+        if spec.name in caps:
+            mcp.add_tool(
+                make_wire_handler(spec, actuator, _wrap, _wrap_exception),
+                name=spec.name,
+                description=spec.wire.description,
+            )
 
     # --- Internal observation tools (never declared to an LLM) -----------------------
 
@@ -315,7 +157,9 @@ def build_action_server(actuator: Actuator, name: str = "artemis_actions") -> Fa
             except Exception as e:
                 payload = {"ok": False, "error": str(e)}
             return CallToolResult(
-                content=[TextContent(type="text", text="screenshot" if payload["ok"] else str(payload))],
+                content=[
+                    TextContent(type="text", text="screenshot" if payload["ok"] else str(payload))
+                ],
                 structuredContent=payload,
                 isError=False,
             )
@@ -332,11 +176,16 @@ def build_action_server(actuator: Actuator, name: str = "artemis_actions") -> Fa
                 elements = await coro
                 payload: dict[str, Any] = {"ok": True, "elements": elements}
             except TimeoutError:
-                payload = {"ok": False, "error": f"ui hierarchy fetch timed out after {timeout_ms}ms"}
+                payload = {
+                    "ok": False,
+                    "error": f"ui hierarchy fetch timed out after {timeout_ms}ms",
+                }
             except Exception as e:
                 payload = {"ok": False, "error": str(e)}
             return CallToolResult(
-                content=[TextContent(type="text", text="ui_hierarchy" if payload["ok"] else str(payload))],
+                content=[
+                    TextContent(type="text", text="ui_hierarchy" if payload["ok"] else str(payload))
+                ],
                 structuredContent=payload,
                 isError=False,
             )

@@ -192,7 +192,10 @@ def _mark_liveness_failure(trace_id: str, status_data: dict[str, Any]) -> None:
 
 @mcp.tool()
 def mobile_manage_task(
-    action: str, trace_id: str, instruction: str | None = None
+    action: str,
+    trace_id: str,
+    instruction: str | None = None,
+    release_loop: bool = False,
 ) -> dict[str, Any]:
     """Manages the lifecycle and retrieves the status of a background mobile automation task.
 
@@ -204,23 +207,35 @@ def mobile_manage_task(
     ### Actions
     - **'status'**: Returns `trace_id`, `status` ('running'/'completed'/'failed'/
       'cancelled'), `device_serial` (which phone owns this task in multi-device
-      setups), `task_desc`, `model`, `elapsed_seconds`, and `progress` (Flash:
+      setups), `task_desc`, `model`, `elapsed_seconds`, a `test_summary` (when
+      the run declared verification check items: machine-readable
+      passed/failed/inconclusive/unchecked counts plus failed-item details —
+      no need to parse report prose), and `progress` (Flash:
       current turn, latest thought/action — intervene if turns climb without
       progress or the thought indicates it is stuck; Pro: the active task plan
       — check it still aligns with your goal).
     - **'inject_instruction'**: Injects real-time guidance mid-flight when the
       subagent errs, stalls, or loops. Applied at the start of the next
       planning turn (Pro) or the next reactive loop (Flash). Requires
-      `instruction`.
+      `instruction` (unless `release_loop=True`). To end a continuous
+      monitoring task ([Loop:continuous] milestone) gracefully, you MUST pass
+      `release_loop=True` — this is the only signal that unlocks the
+      milestone's completion; natural-language "please stop" phrasing in
+      `instruction` is NOT interpreted as a stop signal.
     - **'stop'**: Forcefully terminates the subagent, immediately halting
       device interactions and releasing the device. Use when the task is done,
-      irreparably broken, or running out of control.
+      irreparably broken, or running out of control. Prefer
+      `inject_instruction` with `release_loop=True` when a monitoring task
+      should wind down cleanly instead of being killed.
 
     Args:
         action: `"status"`, `"inject_instruction"`, or `"stop"`.
         trace_id: The task's session identifier from `mobile_run_task`.
-        instruction: Guidance string; required for `inject_instruction`, omit
-          otherwise.
+        instruction: Guidance string; required for `inject_instruction`
+          (optional when `release_loop=True`), omit otherwise.
+        release_loop: With `inject_instruction`: explicit user stop signal
+          that authorizes the subagent to complete continuous monitoring
+          loops and finish the task gracefully.
     """
     status_data = trace_store.read_status(trace_id)
     if not status_data:
@@ -297,6 +312,25 @@ def mobile_manage_task(
             response["error"] = status_data.get("error")
         elif current_status == "completed":
             response["result"] = status_data.get("result")
+
+        # Machine-readable test summary (written by exit settlement): callers
+        # get assertion results without parsing report prose.
+        for candidate in (
+            os.path.join(trace_store.TRACES_DIR, trace_id, "run_outcome.json"),
+            os.path.join(trace_dir, "run_outcome.json"),
+        ):
+            if os.path.exists(candidate):
+                try:
+                    with open(candidate, encoding="utf-8") as f:
+                        run_outcome = json.load(f)
+                    tests = run_outcome.get("tests") or {}
+                    response["test_summary"] = {
+                        "task_status": run_outcome.get("task_status"),
+                        **tests,
+                    }
+                except Exception:
+                    pass
+                break
 
         if current_status in ("running", "pending") and is_alive:
             progress: dict[str, Any] = {}
@@ -491,6 +525,11 @@ def mobile_manage_task(
         }
 
     elif action == "inject_instruction":
+        if not instruction and release_loop:
+            instruction = (
+                "The user has requested to stop the continuous monitoring loop."
+                " Wrap up gracefully and complete the task."
+            )
         if not instruction:
             return {
                 "trace_id": trace_id,
@@ -518,16 +557,18 @@ def mobile_manage_task(
                 json.dump(
                     {
                         "instruction": instruction,
+                        "release_loop": bool(release_loop),
                         "timestamp": time.time(),
                         "status": "pending",
                     },
                     f,
                     indent=2,
                 )
+            suffix = " (with release_loop stop signal)" if release_loop else ""
             return {
                 "trace_id": trace_id,
                 "status": current_status,
-                "message": f"Successfully injected instruction: '{instruction}'",
+                "message": f"Successfully injected instruction{suffix}: '{instruction}'",
             }
         except Exception as e:
             return {

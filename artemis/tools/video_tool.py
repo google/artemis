@@ -23,11 +23,9 @@ from typing import Any, Literal
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
-from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from artemis.agents.video_analyzer.video_analyzer import VideoAnalyzer
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
@@ -148,20 +146,11 @@ class VideoAnalyzerTool(ArtemisTool):
             agent_outcome = f"Error running video analyzer: {e}"
             status = "error"
 
-        if st and callable(getattr(st, "asanitize_update", None)):
-            tool_message = ToolMessage(
+        if st is not None:
+            return ToolMessage(
                 tool_call_id=tcid or "",
                 content=agent_outcome,
                 status=status,
-            )
-            return Command(
-                update=await st.asanitize_update(
-                    ctx=ctx,
-                    update={
-                        VALIDATOR_MESSAGES_KEY: [tool_message],
-                    },
-                    agent="validator",
-                ),
             )
 
         if status == "failed":

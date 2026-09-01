@@ -13,56 +13,27 @@
 # limitations under the License.
 
 from langchain_core.tools import BaseTool
-from artemis.agents.operator.operator import OperatorNode
 import pytest
+
+from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER, operator_shell_tool
 
 
 @pytest.mark.asyncio
-async def test_operator_tools(artemis_context, mock_state):
-    """Test all tools exposed by the OperatorNode."""
-    node = OperatorNode(ctx=artemis_context)
+async def test_operator_shell_tools():
+    """Every manifest-generated Operator shell is a declaration-only LangChain tool."""
+    sample_args = {
+        "click": {"target": 1, "times": 1, "delay_ms": 100},
+        "input_text": {"text": "hello", "target": 1, "clear_exist": True},
+        "swipe": {"gesture": "up"},
+        "press_key": {"key": "ENTER"},
+        "manage_app": {"action": "launch", "app_name": "Settings"},
+        "wait_for_delay": {"time_in_ms": 1000},
+        "long_press": {"target": 1, "duration": 1000},
+    }
+    assert set(sample_args) == set(OPERATOR_SHELL_ORDER)
 
-    click_tool = node._get_click_tool()
-    assert isinstance(click_tool, BaseTool)
-    res = click_tool.invoke({"target": 1, "times": 1, "delay_ms": 100})
-    assert res == "Action Recorded"
-
-    input_text_tool = node._get_input_text_tool()
-    assert isinstance(input_text_tool, BaseTool)
-    res = input_text_tool.invoke({"text": "hello", "target": 1, "clear_exist": True})
-    assert res == "Action Recorded"
-
-    swipe_tool = node._get_swipe_tool()
-    assert isinstance(swipe_tool, BaseTool)
-    res = swipe_tool.invoke({"gesture": "up"})
-    assert res == "Action Recorded"
-
-    press_key_tool = node._get_press_key_tool()
-    assert isinstance(press_key_tool, BaseTool)
-    res = press_key_tool.invoke({"key": "ENTER"})
-    assert res == "Action Recorded"
-
-    manage_app_tool = node._get_manage_app_tool()
-    assert isinstance(manage_app_tool, BaseTool)
-    res = manage_app_tool.invoke({"action": "launch", "app_name": "Settings"})
-    assert res == "Action Recorded"
-
-    wait_for_delay_tool = node._get_wait_for_delay_tool()
-    assert isinstance(wait_for_delay_tool, BaseTool)
-    res = wait_for_delay_tool.invoke({"time_in_ms": 1000})
-    assert res == "Action Recorded"
-
-    long_press_tool = node._get_long_press_tool()
-    assert isinstance(long_press_tool, BaseTool)
-    res = long_press_tool.invoke({"target": 1, "duration": 1000})
-    assert res == "Action Recorded"
-
-    wait_for_text_tool = node._get_wait_for_text_tool()
-    assert isinstance(wait_for_text_tool, BaseTool)
-    res = wait_for_text_tool.invoke({"text": "Success", "state": "visible", "timeout_ms": 5000})
-    assert res == "Action Recorded"
-
-    reply_tool = node._get_reply_to_checker_tool()
-    assert isinstance(reply_tool, BaseTool)
-    res = reply_tool.invoke({"reasoning": "This is a test reply."})
-    assert isinstance(res, str)
+    for name in OPERATOR_SHELL_ORDER:
+        tool = operator_shell_tool(name)
+        assert isinstance(tool, BaseTool)
+        assert tool.name == name
+        assert tool.invoke(sample_args[name]) == "Action Recorded"

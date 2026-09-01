@@ -14,14 +14,11 @@
 
 """Pro Graph Runner orchestrating multi-agent state machines with self-healing."""
 
-from langchain_core.messages import HumanMessage
-
-from artemis.context import ArtemisContext, DeviceContext
 from artemis.core.state import ExecutionContextState, ExecutionStatus, StepRecord
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.engine.base_runner import BaseRunner
 from artemis.graph.graph import get_graph
-from artemis.platform import platform
+from artemis.graph.state import State
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -45,16 +42,18 @@ class GraphRunner(BaseRunner):
 
         if not is_mock:
             try:
-                artemis_ctx = getattr(self.ctx, "artemis_context", None)
+                artemis_ctx = self.ctx.artemis_context
                 if artemis_ctx is None:
-                    artemis_ctx = ArtemisContext(
-                        device=DeviceContext(
-                            host_platform=platform.os_type.name,
-                            device_id=self.driver.device_id,
-                        )
+                    # Fail fast with a clear contract violation instead of
+                    # silently building an empty ArtemisContext that drops
+                    # data_engine/llm_config and dies later in perception.
+                    raise RuntimeError(
+                        "GraphRunner requires ExecutionContext.artemis_context"
+                        " to be wired (data_engine, adb clients, execution"
+                        " setup) before running the live graph path."
                     )
                 graph = await get_graph(artemis_ctx)
-                graph_input = {"messages": [HumanMessage(content=self.ctx.task_goal)]}
+                graph_input = State.initial(self.ctx.task_goal)
                 async for _ in graph.astream(
                     input=graph_input, config={"recursion_limit": max_turns}
                 ):

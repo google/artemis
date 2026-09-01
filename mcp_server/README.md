@@ -69,7 +69,7 @@ When you run `uv run artemis mcp --install all` (or target a specific IDE like `
 ## 🛠️ MCP Tools Overview
 
 * **`mobile_run_task`**: Asynchronously launches an autonomous mobile automation task (`Flash` or `Pro` model) with optional `device_serial` targeting.
-* **`mobile_manage_task`**: Manages task lifecycle (`status`, `stop`, `inject_instruction`), returning task state and assigned `device_serial`.
+* **`mobile_manage_task`**: Manages task lifecycle (`status`, `stop`, `inject_instruction`), returning task state and assigned `device_serial`. Pass `release_loop=True` with `inject_instruction` to gracefully end a `[Loop:continuous]` monitoring task — this explicit signal (not "please stop" wording) is what unlocks the loop milestone's completion.
 * **`mobile_get_device_state`**: Real-time observer (`screenshot` or OCR+XML `hierarchy`) with optional `device_serial`.
 * **`mobile_inspect_trace`**: Granular trace inspection, visual action overlays, agent reasoning, and `device_serial` tracking.
 

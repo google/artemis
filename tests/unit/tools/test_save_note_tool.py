@@ -13,9 +13,8 @@
 # limitations under the License.
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolRegistry
@@ -28,7 +27,7 @@ from artemis.tools.scratchpad import (
     save_note,
     save_note_wrapper,
 )
-from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 import pytest
 
 
@@ -98,11 +97,9 @@ async def test_save_note_callable_execution(mock_ctx, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_save_note_with_state_command(mock_ctx, tmp_path):
-    """Verify SaveNoteTool.execute with state returns Command updating VALIDATOR_MESSAGES_KEY."""
+async def test_save_note_with_state_tool_message(mock_ctx, tmp_path):
+    """Verify SaveNoteTool.execute with state returns a ToolMessage directly."""
     mock_state = MagicMock(spec=State)
-    mock_state.current_agent = "operator"
-    mock_state.asanitize_update = AsyncMock(side_effect=lambda ctx, update, agent: update)
 
     result = await save_note.execute(
         ctx=mock_ctx,
@@ -112,15 +109,10 @@ async def test_save_note_with_state_command(mock_ctx, tmp_path):
         tool_call_id="call_save_999",
     )
 
-    assert isinstance(result, Command)
-    assert VALIDATOR_MESSAGES_KEY in result.update
-    tool_messages = result.update[VALIDATOR_MESSAGES_KEY]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].tool_call_id == "call_save_999"
-    assert tool_messages[0].content == "Successfully saved note to state_note.md."
-    assert tool_messages[0].status == "success"
-
-    mock_state.asanitize_update.assert_called_once()
+    assert isinstance(result, ToolMessage)
+    assert result.tool_call_id == "call_save_999"
+    assert result.content == "Successfully saved note to state_note.md."
+    assert result.status == "success"
 
     note_path = Path(tmp_path) / "notes" / "state_note.md"
     assert note_path.exists()

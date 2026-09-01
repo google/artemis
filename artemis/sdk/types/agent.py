@@ -112,8 +112,16 @@ class AgentConfig(BaseModel):
     video_recording_tools_enabled: bool = Field(default_factory=detect_video_tools_enabled)
     force_web_accessibility: bool = False
     disable_checker: bool = True
+    disable_midway_checks: bool = False
+    disable_final_check: bool = False
     checker_max_iterations: int = 20
-    checker_max_chat_rounds: int = 4
+    final_check_max_attempts: int = 3
+    checkpoint_max_repairs: int = 2
+    max_concurrent_checkpoints: int = 3
+    checkpoint_timeout: float = 180.0
+    settlement_timeout: float = 120.0
+    assert_failure_policy: Literal["continue", "halt"] = "continue"
+    disable_device_probes: bool = False
     disable_planner_validation: bool = True
     planner_validation_threshold: float = 0.85
     enable_committee: bool = False

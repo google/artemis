@@ -25,7 +25,7 @@ from langchain_core.messages import (
 from langchain_core.tools import BaseTool, tool
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan, trace
-from artemis.services.llm import get_llm, invoke_llm_with_timeout_message
+from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
 from artemis.tools.scratchpad import (
     get_list_notes_tool_pure,
     get_read_note_tool_pure,
@@ -164,19 +164,7 @@ class HistoryAnalyzer:
         for turn in range(max_turns):
             logger.info(f"HistoryAnalyzer ReAct turn {turn + 1}")
 
-            async def run_stream():
-                full_response = None
-                trace_id = CURRENT_TRACE_ID.get()
-                async for chunk in llm.astream(messages):
-                    if full_response is None:
-                        full_response = chunk
-                    else:
-                        full_response += chunk
-
-                    pass
-                return full_response
-
-            response = await invoke_llm_with_timeout_message(run_stream())
+            response = await invoke_llm_with_timeout_message(acomplete(llm, messages))
             messages.append(response)
 
             if not response.tool_calls:

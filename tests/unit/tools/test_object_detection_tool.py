@@ -17,6 +17,8 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from langchain_core.messages import ToolMessage
+
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolRegistry
@@ -110,13 +112,12 @@ async def test_object_detection_direct_execution_success():
 
 @pytest.mark.asyncio
 async def test_operator_object_detection_direct_execution_with_state():
-    """Verify operator_object_detection reads screenshot from state."""
+    """Verify operator_object_detection reads screenshot from state and returns a ToolMessage."""
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_ctx.data_engine = None
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/path/to/state_screen.jpg"
-    mock_state.asanitize_update = None  # Non-langgraph direct call
 
     expected_result = {
         "detected": [{"label": "search bar", "point": [500, 100]}],
@@ -137,7 +138,13 @@ async def test_operator_object_detection_direct_execution_with_state():
         # Verify it used the latest_screenshot from state
         call_args = mock_run.call_args[0]
         assert call_args[1] == "/path/to/state_screen.jpg"
-        assert json.loads(result) == expected_result
+
+        # With state, the tool returns a ToolMessage directly
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert "Object Detection successful." in result.content
+        json_payload = result.content.split("Results:\n", 1)[1]
+        assert json.loads(json_payload) == expected_result
 
 
 @pytest.mark.asyncio

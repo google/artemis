@@ -16,11 +16,9 @@ from typing import Any
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
-from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from artemis.agents.hopper.hopper import HopperOutput, hopper
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.controllers.platform_specific_commands_controller import (
     list_packages_async,
@@ -176,22 +174,13 @@ class LaunchAppTool(ArtemisTool):
             outcome = f"Error during launch app: {e}"
             error_msg = str(e)
 
-        if st and callable(getattr(st, "asanitize_update", None)):
+        if st is not None:
             additional_kwargs = {} if success else ({"error": error_msg} if error_msg else {})
-            tool_message = ToolMessage(
+            return ToolMessage(
                 tool_call_id=tcid or "",
                 content=outcome,
                 additional_kwargs=additional_kwargs,
                 status="success" if success else "error",
-            )
-            return Command(
-                update=await st.asanitize_update(
-                    ctx=ctx,
-                    update={
-                        VALIDATOR_MESSAGES_KEY: [tool_message],
-                    },
-                    agent="validator",
-                )
             )
 
         return outcome

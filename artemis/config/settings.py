@@ -131,6 +131,16 @@ class Settings(BaseSettings):
         description="Enable context caching when running multi-turn pro/ultra Explorer",
     )
 
+    # LLM Reliability
+    LLM_PAUSE_TIMEOUT_SECONDS: float = Field(
+        default=900.0,
+        description=(
+            "How long a task waits in the paused state after exhausting LLM"
+            " retries before failing with LLMExhaustedError. <= 0 waits"
+            " forever (legacy interactive behavior)."
+        ),
+    )
+
     # Paths & Storage
     TRACES_PATH: Path = Field(default_factory=get_default_traces_path)
     DATA_ENGINE_DB_PATH: Path = Field(default_factory=get_data_engine_db_path)

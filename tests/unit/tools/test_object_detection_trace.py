@@ -27,7 +27,6 @@ async def test_object_detection_trace():
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/path/to/screenshot.jpg"
-    mock_state.asanitize_update = AsyncMock(return_value={"status": "success"})
 
     # We need to mock the decorator in object_detection_tool.py if we want to avoid it calling real get_llm
     # Or we can just mock get_llm.

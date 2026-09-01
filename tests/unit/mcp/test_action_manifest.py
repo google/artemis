@@ -54,9 +54,11 @@ SCOPED_PROMPT_FILES = [
     "artemis/agents/validator/pixel_safety_net.md",
 ]
 
-# Backtick-quoted identifiers in scoped prompts that are not tools: parameter names and
-# note keys. Anything new landing here should be a conscious decision.
-NON_TOOL_IDENTIFIERS = frozenset({"analysis", "task_plan"})
+# Backtick-quoted identifiers in scoped prompts that are not tools: parameter names,
+# note keys, and the availability-slot template helper rendered by
+# apply_operator_prompt_contract. Anything new landing here should be a conscious
+# decision.
+NON_TOOL_IDENTIFIERS = frozenset({"analysis", "task_plan", "tool_enum"})
 
 _TOOL_REF = re.compile(r"(?:`([a-z][a-z0-9_]{2,})`|\b([a-z][a-z0-9_]{2,})\()")
 
@@ -68,18 +70,11 @@ def _scoped_prompt_sources() -> dict[str, str]:
         path = REPO_ROOT / rel
         sources[path.name] = path.read_text(encoding="utf-8")
 
+    # The operator templates carry all operator prompt prose (teaching segments are
+    # gated in-template by availability slots; prompts.py holds no prompt text).
     operator_json = REPO_ROOT / "artemis/agents/operator/operator.json"
     for key, text in json.loads(operator_json.read_text(encoding="utf-8")).items():
         sources[f"operator.json:{key}"] = text
-
-    # Only the prompt string constants from prompts.py -- scanning the module as text
-    # would pick up Python code (`len(`, `getattr(` ...).
-    from artemis.agents.operator import prompts as operator_prompts
-
-    for name in dir(operator_prompts):
-        value = getattr(operator_prompts, name)
-        if name.startswith("_") and isinstance(value, str) and len(value) > 80:
-            sources[f"prompts.py:{name}"] = value
 
     return sources
 
@@ -102,8 +97,6 @@ def test_scan_finds_prompt_sources():
     sources = _scoped_prompt_sources()
     assert "flash_runner.md" in sources
     assert "operator.json:main_template" in sources
-    assert "operator.json:troubleshooter_template" in sources
-    assert any(label.startswith("prompts.py:") for label in sources)
 
 
 def test_every_prompt_tool_reference_is_classified():
@@ -194,7 +187,7 @@ def test_minimal_actuator_passes_validation():
 
 
 def test_missing_required_action_fails_fast():
-    caps = (DEVICE_ACTIONS - {"click_sequence"})
+    caps = DEVICE_ACTIONS - {"click_sequence"}
     with pytest.raises(ActuatorContractError, match="click_sequence"):
         validate_actuator(_StubActuator(caps=caps))
 
@@ -258,9 +251,9 @@ def test_filter_drops_unimplemented_optional_actions():
 def test_filter_passes_through_unclassified_agent_tools():
     """Agent-specific tools the manifest does not know must never be gated."""
     actuator = _StubActuator(caps=REQUIRED_ACTIONS | INTERNAL_ACTIONS)
-    decls = _declarations("click_sequence", "reply_to_checker", "some_bespoke_tool")
+    decls = _declarations("click_sequence", "submit_findings", "some_bespoke_tool")
     kept = [d.name for d in filter_declarations(decls, actuator, agent="operator")]
-    assert kept == ["click_sequence", "reply_to_checker", "some_bespoke_tool"]
+    assert kept == ["click_sequence", "submit_findings", "some_bespoke_tool"]
 
 
 def test_filter_appends_extensions_for_targeted_agents_only():

@@ -29,15 +29,14 @@ def test_operator_prompt_contract_matches_note_runtime_semantics():
     assert "memory note tools (`read_note`, `list_notes`, `save_note`, `update_note`" not in prompt
 
 
-def test_troubleshooter_prompt_has_mutually_exclusive_recovery_branches():
-    prompt = apply_operator_prompt_contract(load_operator_prompts()["troubleshooter_template"])
-
-    assert "invoke `reply_to_checker` directly" in prompt
-    assert "This branch takes precedence over diagnosis" in prompt
-    assert "perform that correction directly" in prompt
-    assert "also takes precedence over generic diagnosis triggers" in prompt
-    assert "A Checker rejection alone is not a mandatory diagnosis trigger" in prompt
-    assert "**Validation/Checker Rejection**" not in prompt
+def test_operator_prompt_is_single_template_without_checker_dialogue():
+    """The prompt is never switched by verification results: main_template is
+    the only template, and no checker-dialogue machinery is advertised."""
+    prompts = load_operator_prompts()
+    assert set(prompts) == {"main_template"}
+    prompt = apply_operator_prompt_contract(prompts["main_template"])
+    assert "reply_to_checker" not in prompt
+    assert "Checker" not in prompt
 
 
 def test_operator_prompt_omits_environment_trust_and_explorer_directives():

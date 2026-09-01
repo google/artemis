@@ -22,9 +22,8 @@ from pathlib import Path
 import re
 
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.types import Command
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
+from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.services.llm import get_llm
 from artemis.utils.logger import get_logger
 
@@ -78,22 +77,24 @@ async def _detect_single_label(
                 )
             logger.info(f"Received response for '{label}' (Attempt {i + 1})")
 
-            cleaned_initial = output.strip()
-            code_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned_initial)
-            if code_block_match:
-                cleaned_initial = code_block_match.group(1).strip()
-
-            try:
-                res_json = json.loads(cleaned_initial)
-                if isinstance(res_json, list):
-                    valid_results = []
-                    for item in res_json:
-                        if isinstance(item, dict):
-                            item["label"] = label
-                            valid_results.append(item)
-                    return valid_results
-            except json.JSONDecodeError:
-                pass
+            res_json = parse_structured(output)
+            if isinstance(res_json, list):
+                valid_results = []
+                for item in res_json:
+                    if isinstance(item, dict):
+                        item["label"] = label
+                        valid_results.append(item)
+                return valid_results
+            if isinstance(res_json, ParseFailure):
+                logger.warning(
+                    f"Object detector response for '{label}' was not valid"
+                    f" JSON (attempt {i + 1}): {res_json.error}"
+                )
+            else:
+                logger.warning(
+                    f"Object detector response for '{label}' parsed to"
+                    f" {type(res_json).__name__} instead of a list (attempt {i + 1})."
+                )
 
         except Exception as e:
             logger.warning(f"Detection attempt {i + 1} failed for '{label}': {e}")
@@ -194,35 +195,17 @@ async def _run_object_detection(
 
 
 async def _create_error_command(ctx, state, tool_call_id, error_message, wrapper):
-    tool_message = ToolMessage(
+    return ToolMessage(
         tool_call_id=tool_call_id or "default_tool_call",
         content=wrapper.on_failure_fn(error_message),
         additional_kwargs={"error": error_message},
         status="error",
     )
-    return Command(
-        update=await state.asanitize_update(
-            ctx=ctx,
-            update={
-                VALIDATOR_MESSAGES_KEY: [tool_message],
-            },
-            agent="validator",
-        ),
-    )
 
 
 async def _create_success_command(ctx, state, tool_call_id, output, wrapper):
-    tool_message = ToolMessage(
+    return ToolMessage(
         tool_call_id=tool_call_id or "default_tool_call",
         content=wrapper.on_success_fn(output),
         status="success",
-    )
-    return Command(
-        update=await state.asanitize_update(
-            ctx=ctx,
-            update={
-                VALIDATOR_MESSAGES_KEY: [tool_message],
-            },
-            agent="validator",
-        ),
     )

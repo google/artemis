@@ -1,0 +1,303 @@
+{
+  "click": {
+    "type": "function",
+    "function": {
+      "name": "click",
+      "description": "[ACTION] Click on the target location on the screen (supports element index or absolute normalized coordinates).",
+      "parameters": {
+        "properties": {
+          "target": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              }
+            ],
+            "description": "Click target. Can be an element index number (int, e.g. 3) OR normalized coordinates (list of 2 integers, e.g. [500, 600])."
+          },
+          "times": {
+            "default": 1,
+            "description": "Number of consecutive clicks on this target. Use this for double-clicks or multi-clicks (e.g. 7 to enter developer mode). Default is 1.",
+            "type": "integer"
+          },
+          "delay_ms": {
+            "default": 100,
+            "description": "Delay in milliseconds between consecutive clicks. Default is 100.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "input_text": {
+    "type": "function",
+    "function": {
+      "name": "input_text",
+      "description": "[ACTION] Type text into the target input field (supports replacing whole text or appending to the end, and multi-line strings with '\\n').",
+      "parameters": {
+        "properties": {
+          "text": {
+            "description": "The text content to input. Supports multi-line content with '\\n'.",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              }
+            ],
+            "description": "Input target field. Can be an input box element index number (int, e.g. 3) OR normalized coordinates (list of 2 integers, e.g. [500, 600])."
+          },
+          "clear_exist": {
+            "default": true,
+            "description": "Whether to clear existing text before typing. True (default): clear/replace entire text. False: append at the end of existing content.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text",
+          "target"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "swipe": {
+    "type": "function",
+    "function": {
+      "name": "swipe",
+      "description": "[ACTION] Perform a swipe, drag, or slider-adjustment gesture on the screen.\n\n• Directional Scrolling ('direction'): Recommended for general browsing and standard page scrolling in most scenarios. Automatically computes safe swipe vectors and adaptive duration, retains a ~40% visual overlap anchor for zero-omission traversal, and prevents inertial flings. Supports scoping to a sub-container via 'target'. If it fails on certain custom layouts, fall back to specifying exact coordinates ('start' and 'end') directly.\n• Precise Coordinate Gestures ('start', 'end'): Best for local, fine-grained interactions such as adjusting sliders/SeekBars (e.g., volume, brightness, progress bars), drag-and-drop / list reordering, or as a reliable fallback when directional scrolling fails on specific containers. Always drag slightly PAST the target position to overcome touch slop and reliably trigger the update. When setting a slider to Maximum (100%) or Minimum (0%), swipe fully to the extreme boundary.\n\nArgs:\n    direction: Smart directional scrolling ('up', 'down', 'left', 'right'). Automatically computes safe swipe vectors, retaining 40% visual overlap: 'up' (reveal content below), 'down' (reveal content above), 'left', 'right'.\n    start: Start normalized coordinates [start_x, start_y] in 0-1000 scale.\n    end: End normalized coordinates [end_x, end_y] in 0-1000 scale.\n    target: Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within.\n    gesture: Backward-compatible parameter: direction string OR custom coordinates list [start_x, start_y, end_x, end_y] in 0-1000 scale.\n    duration: Optional gesture duration in milliseconds (default 800).",
+      "parameters": {
+        "properties": {
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "up",
+                  "down",
+                  "left",
+                  "right"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Direction for scrolling and swiping: 'up' (drags bottom-to-top, scrolling down to reveal content below), 'down' (drags top-to-bottom, scrolling up to reveal content above), 'left' (drags right-to-left, scrolling right), 'right' (drags left-to-right, scrolling left)."
+          },
+          "start": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Start normalized coordinates [start_x, start_y] in 0-1000 scale for precise, local interactions (e.g. adjusting sliders, SeekBars, fine range selection, or drag-and-drop)."
+          },
+          "end": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "End normalized coordinates [end_x, end_y] in 0-1000 scale for precise, local interactions (e.g. adjusting sliders, SeekBars, fine range selection, or drag-and-drop)."
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within."
+          },
+          "gesture": {
+            "anyOf": [
+              {
+                "enum": [
+                  "up",
+                  "down",
+                  "left",
+                  "right"
+                ],
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Backward-compatible swipe gesture: smart direction string ('up', 'down', 'left', 'right') OR precise custom coordinates [start_x, start_y, end_x, end_y] in 0-1000 scale."
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional swipe/drag duration in milliseconds (default 800). For drag-and-drop, list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars), set duration >= 1000 (e.g. 1500). If omitted for directional swipe, duration is computed automatically."
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  "press_key": {
+    "type": "function",
+    "function": {
+      "name": "press_key",
+      "description": "[ACTION] Press a physical or virtual system button (e.g.\n\nENTER, BACK, HOME, APP_SWITCH).",
+      "parameters": {
+        "properties": {
+          "key": {
+            "description": "Standard Android system button name (ENTER, BACK, HOME, APP_SWITCH).",
+            "enum": [
+              "ENTER",
+              "BACK",
+              "HOME",
+              "APP_SWITCH"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "manage_app": {
+    "type": "function",
+    "function": {
+      "name": "manage_app",
+      "description": "[ACTION] Launch or force stop a specified application.",
+      "parameters": {
+        "properties": {
+          "action": {
+            "description": "The action type.",
+            "enum": [
+              "launch",
+              "stop"
+            ],
+            "type": "string"
+          },
+          "app_name": {
+            "description": "Display name or package name of the application.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "app_name"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "wait_for_delay": {
+    "type": "function",
+    "function": {
+      "name": "wait_for_delay",
+      "description": "[ACTION] Pause execution and wait for a specified duration in milliseconds.\n\nUse this whenever you need time to elapse—whether for UI loading, animations,\nscreen transitions, or longer scheduled delays and intervals specified in the task.",
+      "parameters": {
+        "properties": {
+          "time_in_ms": {
+            "description": "The exact duration to wait in milliseconds. Accurately convert the required time duration into milliseconds based on your objective or plan (e.g., 2000 for 2s, 5000 for 5s, 60000 for 1 minute, 180000 for 3 minutes, 300000 for 5 minutes).",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "time_in_ms"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "long_press": {
+    "type": "function",
+    "function": {
+      "name": "long_press",
+      "description": "[ACTION] Long press on the target location on the screen (supports element index or absolute normalized coordinates).",
+      "parameters": {
+        "properties": {
+          "target": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              }
+            ],
+            "description": "Long press target. Can be an element index number (int, e.g. 3) OR normalized coordinates (list of 2 integers, e.g. [500, 600])."
+          },
+          "duration": {
+            "default": 1000,
+            "description": "Long press duration in milliseconds (default 1000).",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

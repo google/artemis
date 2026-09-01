@@ -51,6 +51,9 @@ def artemis_context(inputs_dir, mock_adb_client):
 
     ctx.execution_setup = MagicMock()
     ctx.execution_setup.traces_path = str(inputs_dir)
+    # A bare MagicMock trace_name yields a repr with '<>' characters, which is an
+    # invalid path component on Windows once it flows into trace dir construction.
+    ctx.execution_setup.trace_name = "trace_output"
 
     # Initialize real DataEngine if the fixture database exists
     db_path = inputs_dir / "data_engine.db"

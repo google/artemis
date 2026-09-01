@@ -26,6 +26,7 @@ from artemis.config import OutputConfig
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
+from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.services.llm import get_llm, invoke_llm_with_timeout_message, with_fallback
 from artemis.tools.scratchpad import (
     get_append_note_tool_pure,
@@ -141,6 +142,47 @@ async def outputter(
     )
 
     human_message_content = [{"type": "text", "text": human_message}]
+
+    # Verification material (only present when the run declared check items):
+    # the full append-only verdict sequence plus the four-state test summary.
+    if ctx.data_engine:
+        try:
+            from artemis.graph.checkpoints import read_ledger, read_run_outcome
+
+            ledger_records = read_ledger(ctx.data_engine.base_dir)
+            run_outcome = read_run_outcome(ctx.data_engine.base_dir) or getattr(
+                graph_output, "run_outcome", None
+            )
+            if ledger_records or run_outcome:
+                lines = ["--- Verification Verdict Ledger (append-only) ---"]
+                for r in ledger_records:
+                    lines.append(
+                        f"- attempt {r.get('attempt_id')} [{r.get('kind')}]"
+                        f" '{r.get('item_text')}' -> {r.get('status')}:"
+                        f" {r.get('evidence', '')}"
+                    )
+                if run_outcome:
+                    tests = run_outcome.get("tests") or {}
+                    lines.append(
+                        "--- Test Summary ---\n"
+                        f"task_status={run_outcome.get('task_status')},"
+                        f" passed={tests.get('passed', 0)},"
+                        f" failed={tests.get('failed', 0)},"
+                        f" inconclusive={tests.get('inconclusive', 0)},"
+                        f" unchecked={tests.get('unchecked', 0)}"
+                    )
+                lines.append(
+                    "Report every declared check item with its final state"
+                    " (passed / failed / inconclusive / unchecked) and include"
+                    " the complete verdict sequence above. A failed assertion"
+                    " is a test result to report verbatim, not something to"
+                    " explain away. Items reported unchecked were never"
+                    " judged — never present them as passed."
+                )
+                human_message_content.append({"type": "text", "text": "\n".join(lines)})
+        except Exception as e:
+            logger.error(f"Failed to attach verdict ledger to outputter: {e}")
+
     if screenshot_b64:
         human_message_content.append(
             {
@@ -306,16 +348,15 @@ async def outputter(
     # Fallback to old behavior if it didn't match the template
     if isinstance(raw_answer, str):
         raw_answer_stripped = raw_answer.strip()
-        if raw_answer_stripped.startswith("{") and raw_answer_stripped.endswith("}"):
-            try:
-                return json.loads(raw_answer_stripped)
-            except Exception:
-                pass
-        elif raw_answer_stripped.startswith("```json") and raw_answer_stripped.endswith("```"):
-            try:
-                content = raw_answer_stripped[7:-3].strip()
-                return json.loads(content)
-            except Exception:
-                pass
+        if raw_answer_stripped.startswith(("{", "[", "```")):
+            parsed = parse_structured(raw_answer_stripped)
+            if not isinstance(parsed, ParseFailure):
+                return parsed
+            # The raw text is a legitimate final answer; the miss is only
+            # noteworthy because the answer *looked* like JSON.
+            logger.warning(
+                "Outputter answer looked like JSON but could not be parsed"
+                f" ({parsed.error}); returning it as plain text."
+            )
 
     return raw_answer

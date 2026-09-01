@@ -14,7 +14,6 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolRegistry
@@ -27,7 +26,7 @@ from artemis.tools.video_tool import (
     get_video_analyzer_tool_pure,
     video_analyzer,
 )
-from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 import pytest
 
 
@@ -38,14 +37,8 @@ def mock_ctx():
 
 
 @pytest.fixture
-def mock_state(mock_ctx):
-    state = MagicMock(spec=State)
-
-    async def _mock_asanitize_update(ctx, update, agent):
-        return update
-
-    state.asanitize_update = AsyncMock(side_effect=_mock_asanitize_update)
-    return state
+def mock_state():
+    return MagicMock(spec=State)
 
 
 def test_video_analyzer_tool_subclass_and_registry():
@@ -104,7 +97,7 @@ async def test_video_analyzer_direct_execution_failed(mock_ctx):
 
 @pytest.mark.asyncio
 async def test_video_analyzer_with_state_command(mock_ctx, mock_state):
-    """Verify execute returns a Command with ToolMessage when state is provided."""
+    """Verify execute returns a ToolMessage when state is provided."""
     with patch(
         "artemis.tools.video_tool.VideoAnalyzer.run",
         new_callable=AsyncMock,
@@ -117,13 +110,10 @@ async def test_video_analyzer_with_state_command(mock_ctx, mock_state):
             tool_call_id="call_video_123",
             state=mock_state,
         )
-        assert isinstance(cmd, Command)
-        assert VALIDATOR_MESSAGES_KEY in cmd.update
-        messages = cmd.update[VALIDATOR_MESSAGES_KEY]
-        assert len(messages) == 1
-        assert messages[0].tool_call_id == "call_video_123"
-        assert messages[0].content == "Action verified in video"
-        assert messages[0].status == "success"
+        assert isinstance(cmd, ToolMessage)
+        assert cmd.tool_call_id == "call_video_123"
+        assert cmd.content == "Action verified in video"
+        assert cmd.status == "success"
 
 
 @pytest.mark.asyncio
@@ -150,11 +140,9 @@ async def test_video_analyzer_exception_handling(mock_ctx, mock_state):
             tool_call_id="call_err",
             state=mock_state,
         )
-        assert isinstance(cmd, Command)
-        assert VALIDATOR_MESSAGES_KEY in cmd.update
-        messages = cmd.update[VALIDATOR_MESSAGES_KEY]
-        assert messages[0].status == "error"
-        assert "Error running video analyzer" in messages[0].content
+        assert isinstance(cmd, ToolMessage)
+        assert cmd.status == "error"
+        assert "Error running video analyzer" in cmd.content
 
 
 @pytest.mark.asyncio

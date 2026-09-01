@@ -12,13 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Annotated, Any
-from langchain_core.messages import AnyMessage
-from langgraph.graph import add_messages
-from artemis.config import AgentNode
-from artemis.context import ArtemisContext
-from artemis.utils.logger import get_logger
+from typing import Annotated
+
 from pydantic import BaseModel, ConfigDict
+
+from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -28,38 +26,91 @@ def take_last(a, b):
     return b
 
 
+def sticky_or(a, b):
+    """Reducer that latches True: once set, the flag survives later updates."""
+    return bool(a) or bool(b)
+
+
 class State(BaseModel):
+    """Graph channel state.
+
+    Every field is explicit (``extra="forbid"``): an undeclared write or an
+    unknown constructor key fails loudly instead of becoming a silent ghost
+    key. Undeclared *reads* (``getattr(state, k, default)``) are guarded by the
+    node visibility manifest in ``artemis.graph.visibility`` instead.
+    """
+
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
-        extra="allow",
+        extra="forbid",
     )
 
-    messages: Annotated[list[AnyMessage], "Sequential messages", add_messages]
-
-    remaining_steps: Annotated[int | None, "Remaining steps before the task is completed"] = None
-
-    # planner related keys
+    # ── Control plane (cross-turn signals & routing) ─────────────────────
     initial_goal: Annotated[str, "Initial goal given by the user"]
     injected_instruction: Annotated[
         str | None,
         "Injected instruction from user for micro-adjustment",
         take_last,
     ] = None
+    user_stop_requested: Annotated[
+        bool,
+        "Latched True once the user externally signals stop (release_loop),"
+        " unlocking completion of [Loop:continuous] milestones",
+        sticky_or,
+    ] = False
+    checker_success: Annotated[
+        bool | None,
+        "True if checker succeeded or not triggered, False if failed",
+        take_last,
+    ] = None
+    operator_feedback: Annotated[
+        list[str] | None,
+        "Source-tagged findings ([checker]/[planner]/[final check]) injected"
+        " append-only into the Operator's next prompt (never switches the"
+        " prompt template)",
+        take_last,
+    ] = None
+    run_outcome: Annotated[
+        dict | None,
+        "Machine-readable run outcome (task_status + test summary), populated"
+        " by exit settlement before END",
+        take_last,
+    ] = None
+    exit_settlement_route: Annotated[
+        str | None,
+        "Routing decision produced by exit_settlement_node ('continue' | 'end')",
+        take_last,
+    ] = None
 
-    # operator related keys (perception)
+    # ── Perception (moves behind PerceptionStore in Phase 2) ─────────────
     latest_ui_hierarchy: Annotated[
         list[dict] | None, "Latest UI hierarchy of the device", take_last
-    ]
-    latest_screenshot: Annotated[str | None, "Path to the latest screenshot", take_last]
-    focused_app_info: Annotated[str | None, "Focused app info", take_last]
-    device_date: Annotated[str | None, "Date of the device", take_last]
+    ] = None
+    latest_screenshot: Annotated[str | None, "Path to the latest screenshot", take_last] = None
+    operator_raw_data: Annotated[
+        dict | None,
+        "Raw perception data from operator (screenshot, xml, ocr)",
+        take_last,
+    ] = None
+    indexed_points: Annotated[
+        list[list[int]] | None,
+        "Active coordinate mappings matching indexed text elements",
+        take_last,
+    ] = None
+    indexed_elements: Annotated[
+        list[dict] | None,
+        "Active interactable elements matching indexed text elements,"
+        " containing text, bounds, class, and center coordinates.",
+        take_last,
+    ] = None
 
-    # operator related keys (decisions)
+    # ── Turn products (previous turn's decisions & results) ──────────────
+    current_step_id: Annotated[str | None, "Current step ID from data engine", take_last] = None
     structured_decisions: Annotated[
         str | None,
         "Structured decisions made by the operator, for the validator to follow",
         take_last,
-    ]
+    ] = None
     operator_raw_thinking: Annotated[
         str | None,
         "Raw thinking process of the operator",
@@ -75,60 +126,23 @@ class State(BaseModel):
         "Short term memory / scratchpad for the operator",
         take_last,
     ] = None
-    complete_subgoals_by_ids: Annotated[
-        list[str],
-        "List of subgoal IDs to complete",
-        take_last,
-    ]
-    current_agent: Annotated[str | None, "Current active agent", take_last] = None
-    operator_replan_reason: Annotated[str | None, "Reason for operator replan", take_last] = None
-    subgoal_plan: Annotated[list[Any] | None, "Subgoal plan", take_last] = None
-    operator_tactical_plan: Annotated[list[Any] | None, "Operator tactical plan", take_last] = None
-
-    # validator related keys
-    validator_messages: Annotated[list[AnyMessage], "Sequential Validator messages", add_messages]
     last_execution_result: Annotated[
         dict | None, "Last execution result from validator", take_last
-    ] = None
-    current_step_id: Annotated[str | None, "Current step ID from data engine", take_last] = None
-    operator_raw_data: Annotated[
-        dict | None,
-        "Raw perception data from operator (screenshot, xml, ocr)",
-        take_last,
-    ] = None
-    checker_success: Annotated[
-        bool | None,
-        "True if checker succeeded or not triggered, False if failed",
-        take_last,
     ] = None
     subagent_calls: Annotated[
         list[str], "List of sub-agent calls in current session", take_last
     ] = []
-    operator_replied: Annotated[bool | None, "True if operator replied to checker", take_last] = (
-        None
-    )
     operator_tool_limit_exceeded: Annotated[
         bool | None,
         "True if operator exceeded tool call limit in the previous turn",
         take_last,
     ] = None
-    indexed_points: Annotated[
-        list[list[int]] | None,
-        "Active coordinate mappings matching indexed text elements",
-        take_last,
-    ] = None
-    indexed_elements: Annotated[
-        list[dict] | None,
-        "Active interactable elements matching indexed text elements,"
-        " containing text, bounds, class, and center coordinates.",
-        take_last,
-    ] = None
 
-    async def asanitize_update(
-        self,
-        ctx: ArtemisContext,
-        update: dict,
-        agent: AgentNode | None = None,
-    ):
-        """Sanitizes the state update to ensure it is valid and apply side effect logic where required."""
-        return update
+    @classmethod
+    def initial(cls, goal: str) -> "State":
+        """Single source for the graph's initial state.
+
+        Every entrypoint (SDK, engine runners, tests) must construct the
+        first State through here so required fields stay in one place.
+        """
+        return cls(initial_goal=goal)

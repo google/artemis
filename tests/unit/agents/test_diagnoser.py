@@ -14,9 +14,7 @@
 
 from unittest.mock import AsyncMock, Mock, patch
 from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.types import Command
 from artemis.agents.diagnoser.diagnoser import Diagnoser
-from artemis.constants import VALIDATOR_MESSAGES_KEY
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 import pytest
@@ -148,14 +146,9 @@ async def test_diagnostic_agent_tool_calls(
         "purpose": None,
         "state": None,
     }
-    mock_command = Command(
-        update={
-            VALIDATOR_MESSAGES_KEY: [
-                ToolMessage(content="Video shows UI loading.", tool_call_id="call_2")
-            ]
-        }
+    mock_video_tool.ainvoke.return_value = ToolMessage(
+        content="Video shows UI loading.", tool_call_id="call_2"
     )
-    mock_video_tool.ainvoke.return_value = mock_command
     mock_get_video_tool.return_value = mock_video_tool
 
     agent = Diagnoser(mock_context)
@@ -272,12 +265,6 @@ async def test_diagnoser_background_job_lifecycle(
 
     mock_llm.astream.side_effect = mock_astream
     mock_get_llm.return_value = mock_llm
-
-    # Mock asanitize_update on mock_state
-    async def mock_asanitize_update(ctx, update, agent):
-        return update
-
-    mock_state.asanitize_update = mock_asanitize_update
 
     # Instantiate the Diagnoser
     agent = Diagnoser(ctx)
