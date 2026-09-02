@@ -42,7 +42,6 @@ from typing import Any, Callable
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from artemis.agents.flash.context_compressor import ScrubEdgeCompressor
 from artemis.memory.step_memory import StepMemoryService
 from artemis.utils.logger import get_logger
 
@@ -109,6 +108,11 @@ class TranscriptLedger:
         # id(message) -> summary-job key (DataEngine step id). A side map keeps
         # the key out of the serialized message payload entirely.
         self._step_keys: dict[int, str] = {}
+
+        # Imported here, not at module level: context_compressor imports
+        # artemis.memory.step_memory, so a top-level import forms a cycle
+        # whose failure depends on which side is imported first.
+        from artemis.agents.flash.context_compressor import ScrubEdgeCompressor
 
         self._compressor = ScrubEdgeCompressor(
             summarizer=step_memory,
