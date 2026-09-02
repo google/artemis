@@ -12,18 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dynamic LLM Routing and Provider Integration layer."""
+"""LLM provider integration layer (endpoint descriptors and model factory)."""
 
 from artemis.llm.router import (
     ModelEndpoint,
     ModelProvider,
-    ModelRouter,
-    default_router,
 )
 
 __all__ = [
-    "ModelRouter",
     "ModelEndpoint",
     "ModelProvider",
-    "default_router",
 ]

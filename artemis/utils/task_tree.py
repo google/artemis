@@ -820,10 +820,8 @@ def build_plan_and_history(
     # 1. Plan Checklist Section
     output_parts = []
 
-    # Check if task_plan has actual subgoals (e.g. starts with '- [')
-    has_subgoals = task_plan and any(
-        line.strip().startswith("- [") for line in task_plan.split("\n")
-    )
+    # Check if task_plan has actual subgoals (single-source checkbox grammar).
+    has_subgoals = bool(task_plan) and bool(parse_plan(task_plan).items)
 
     if has_subgoals:
         output_parts.append("--- Task Plan ---")
