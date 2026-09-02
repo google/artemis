@@ -878,6 +878,84 @@ $text-muted: #a1a1aa;
             }
           }
         }
+
+        .milestone-checks-container {
+          margin-top: 8px;
+          padding-left: 28px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+      }
+
+      .verification-card {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        padding: 8px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+
+        &.standalone {
+          margin-top: 8px;
+          margin-bottom: 8px;
+        }
+
+        .card-header {
+          display: flex;
+          align-items: center;
+
+          .card-tag {
+            font-family: 'Google Sans Text', 'Inter', -apple-system, sans-serif;
+            font-size: 10.5px;
+            font-weight: 600;
+            line-height: 1;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            color: #64748b;
+
+            &.assert {
+              color: #0284c7;
+            }
+          }
+        }
+
+        .card-body {
+          font-family: inherit;
+          font-size: 13.5px;
+          line-height: 1.6;
+          color: #334155;
+          word-break: break-word;
+
+          .bold-segment {
+            font-weight: 600;
+            color: #1e293b;
+          }
+
+          .code-segment {
+            font-family: 'Fira Code', 'Roboto Mono', Consolas, monospace;
+            font-size: 12px;
+            background: #f1f5f9;
+            color: #0f172a;
+            padding: 1.5px 6px;
+            border-radius: 4px;
+            border: 1px solid #e2e8f0;
+          }
+        }
+
+        &.finding {
+          background: #fffbeb;
+          border-color: #fef3c7;
+
+          .card-header .card-tag {
+            color: #b45309;
+          }
+
+          .card-body {
+            color: #92400e;
+          }
+        }
       }
 
       .other-lines-container {

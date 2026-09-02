@@ -72,6 +72,31 @@ export function parseNoteLines(content: string): MarkdownLine[] {
       const rawText = trimmed.substring(6);
       return { type: 'unchecked', segments: parseMarkdownSegments(rawText), indent };
     }
+    // Check lines (- verify: / - assert: / - verify@end: / - assert@end:)
+    const checkMatch = trimmed.match(/^[-*]\s*(verify|assert)(@end)?\s*:\s*(.*)$/i);
+    if (checkMatch) {
+      const kind = checkMatch[1].toLowerCase() as 'verify' | 'assert';
+      const atEnd = Boolean(checkMatch[2]);
+      const rawText = checkMatch[3].trim();
+      return {
+        type: 'verify',
+        checkKind: kind,
+        atEnd,
+        segments: parseMarkdownSegments(rawText),
+        indent
+      };
+    }
+    // System findings (- finding:)
+    const findingMatch = trimmed.match(/^[-*]\s*finding\s*:\s*(.*)$/i);
+    if (findingMatch) {
+      const rawText = findingMatch[1].trim();
+      return {
+        type: 'finding',
+        checkKind: 'finding',
+        segments: parseMarkdownSegments(rawText),
+        indent
+      };
+    }
     // Regular list item
     if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
       const rawText = trimmed.substring(2);
@@ -125,12 +150,17 @@ export function parseNote(content: string): ParsedNote {
         type: line.type as 'checked' | 'progress' | 'unchecked',
         segments: line.segments,
         subSteps: [],
+        checks: [],
         _indent: line.indent
       };
       milestones.push(currentMilestone);
     } else if (currentMilestone) {
       if (line.indent > (currentMilestone._indent ?? 0)) {
-        currentMilestone.subSteps.push(line);
+        if (line.type === 'verify' || line.type === 'assert' || line.type === 'finding') {
+          currentMilestone.checks.push(line);
+        } else {
+          currentMilestone.subSteps.push(line);
+        }
       } else {
         otherLines.push(line);
       }
@@ -297,8 +327,22 @@ export function renderMarkdownToHtml(text: string): string {
       const subLevel = Math.max(0, Math.floor((spaces - 2) / 2));
       const indent = subLevel * 12;
       const style = indent ? ` style="margin-left: ${indent}px"` : '';
-      const itemContent = formatInlineMarkdown(ulMatch[3]);
-      result.push(`<li${style}>${itemContent}</li>`);
+      const itemText = ulMatch[3];
+      const checkMatch = itemText.match(/^(verify|assert)(@end)?\s*:\s*(.*)$/i);
+      const findingMatch = itemText.match(/^finding\s*:\s*(.*)$/i);
+      if (checkMatch) {
+        const kind = checkMatch[1].toLowerCase();
+        const atEnd = checkMatch[2] ? '@end' : '';
+        const assertClass = kind === 'assert' ? ' assert' : '';
+        const itemContent = formatInlineMarkdown(checkMatch[3].trim());
+        result.push(`<li${style} class="md-verify-item"><span class="verify-badge${assertClass}">${kind}${atEnd}</span>${itemContent}</li>`);
+      } else if (findingMatch) {
+        const itemContent = formatInlineMarkdown(findingMatch[1].trim());
+        result.push(`<li${style} class="md-finding-item"><span class="finding-badge">finding</span>${itemContent}</li>`);
+      } else {
+        const itemContent = formatInlineMarkdown(itemText);
+        result.push(`<li${style}>${itemContent}</li>`);
+      }
       continue;
     }
 

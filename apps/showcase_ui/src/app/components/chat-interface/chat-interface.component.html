@@ -290,6 +290,30 @@ limitations under the License.
                         }
                       </div>
                     }
+                    <!-- Verification Box (Pulled out into a minimalist framed card) -->
+                    @if (milestone.checks.length > 0) {
+                      <div class="milestone-checks-container">
+                        @for (check of milestone.checks; track trackMarkdownLine($index, check)) {
+                          <div
+                            class="verification-card"
+                            [ngClass]="check.type"
+                            [style.margin-left.px]="(check.indent > 2 ? (check.indent - 2) * 12 : 0)"
+                            >
+                            <div class="card-header">
+                              <span class="card-tag" [class.assert]="check.checkKind === 'assert'">{{ check.checkKind || 'verify' }}{{ check.atEnd ? ' @end' : '' }}</span>
+                            </div>
+                            <div class="card-body">
+                              @for (seg of check.segments; track seg) {
+                                <span
+                                  [class.bold-segment]="seg.bold"
+                                  [class.code-segment]="seg.code"
+                                >{{ seg.text }}</span>
+                              }
+                            </div>
+                          </div>
+                        }
+                      </div>
+                    }
                   </div>
                 }
               </div>
@@ -298,36 +322,52 @@ limitations under the License.
             @if (parsedNote().otherLines.length > 0) {
               <div class="other-lines-container">
                 @for (line of parsedNote().otherLines; track trackMarkdownLine($index, line)) {
-                  <div
-                    class="md-line"
-                    [ngClass]="line.type"
-                    [style.margin-left.px]="line.indent * 12"
-                    >
-                    @switch (line.type) {
-                      @case ('checked') {
-                        <span class="material-symbols-outlined check-icon checked">check_box</span>
-                      }
-                      @case ('progress') {
-                        <span class="material-symbols-outlined check-icon progress">indeterminate_check_box</span>
-                      }
-                      @case ('unchecked') {
-                        <span class="material-symbols-outlined check-icon unchecked">check_box_outline_blank</span>
-                      }
-                      @case ('list-item') {
-                        <span class="bullet">•</span>
-                      }
-                    }
-                    @if (line.type !== 'empty') {
-                      <span class="line-text">
+                  @if (line.type === 'verify' || line.type === 'finding') {
+                    <div class="verification-card standalone" [ngClass]="line.type" [style.margin-left.px]="line.indent * 12">
+                      <div class="card-header">
+                        <span class="card-tag" [class.assert]="line.checkKind === 'assert'">{{ line.checkKind || 'verify' }}{{ line.atEnd ? ' @end' : '' }}</span>
+                      </div>
+                      <div class="card-body">
                         @for (seg of line.segments; track seg) {
                           <span
                             [class.bold-segment]="seg.bold"
                             [class.code-segment]="seg.code"
                           >{{ seg.text }}</span>
                         }
-                      </span>
-                    }
-                  </div>
+                      </div>
+                    </div>
+                  } @else {
+                    <div
+                      class="md-line"
+                      [ngClass]="line.type"
+                      [style.margin-left.px]="line.indent * 12"
+                      >
+                      @switch (line.type) {
+                        @case ('checked') {
+                          <span class="material-symbols-outlined check-icon checked">check_box</span>
+                        }
+                        @case ('progress') {
+                          <span class="material-symbols-outlined check-icon progress">indeterminate_check_box</span>
+                        }
+                        @case ('unchecked') {
+                          <span class="material-symbols-outlined check-icon unchecked">check_box_outline_blank</span>
+                        }
+                        @case ('list-item') {
+                          <span class="bullet">•</span>
+                        }
+                      }
+                      @if (line.type !== 'empty') {
+                        <span class="line-text">
+                          @for (seg of line.segments; track seg) {
+                            <span
+                              [class.bold-segment]="seg.bold"
+                              [class.code-segment]="seg.code"
+                            >{{ seg.text }}</span>
+                          }
+                        </span>
+                      }
+                    </div>
+                  }
                 }
               </div>
             }

@@ -21,9 +21,11 @@ export interface MarkdownSegment {
 }
 
 export interface MarkdownLine {
-  type: 'h1' | 'h2' | 'h3' | 'checked' | 'progress' | 'unchecked' | 'list-item' | 'text' | 'empty';
+  type: 'h1' | 'h2' | 'h3' | 'checked' | 'progress' | 'unchecked' | 'list-item' | 'verify' | 'assert' | 'finding' | 'text' | 'empty';
   segments: MarkdownSegment[];
   indent: number;
+  checkKind?: 'verify' | 'assert' | 'finding';
+  atEnd?: boolean;
 }
 
 export interface NoteMilestone {
@@ -31,6 +33,7 @@ export interface NoteMilestone {
   type: 'checked' | 'progress' | 'unchecked';
   segments: MarkdownSegment[];
   subSteps: MarkdownLine[];
+  checks: MarkdownLine[];
 }
 
 export interface ParsedNote {
