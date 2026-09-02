@@ -78,7 +78,8 @@ async def get_trace(trace_id: str, session_id: str = None, step_number: int = No
             try:
                 payload_obj = json.loads(trace_dict["payload"])
                 trace_dict["payload"] = media_service.unwrap_payload(payload_obj)
-            except Exception:
+            except (ValueError, TypeError, KeyError, AttributeError):
+                # Non-JSON or unexpectedly shaped payload: serve it raw.
                 pass
 
         return trace_dict

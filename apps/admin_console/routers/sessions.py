@@ -83,7 +83,8 @@ def _list_sessions_sync():
                 d_info = json.loads(d_info_raw) if isinstance(d_info_raw, str) else d_info_raw
                 if isinstance(d_info, dict):
                     device_id = d_info.get("device_id") or d_info.get("device_serial")
-            except Exception:
+            except (ValueError, TypeError):
+                # Malformed device_info JSON: fall back to the recording's device_id.
                 pass
         if not device_id and recording:
             device_id = recording.get("device_id")
@@ -157,8 +158,10 @@ def _list_sessions_sync():
                             "failed",
                             error="Process terminated unexpectedly (auto-harvested).",
                         )
-            except Exception:
-                pass
+            except OSError as e:
+                # read_status never raises; this guards the lock/write side
+                # of update_trace_status.
+                print(f"[list_sessions] Could not mark harvested traces failed: {e}")
         except Exception as e:
             print(f"[list_sessions] Failed to update orphaned sessions: {e}")
 

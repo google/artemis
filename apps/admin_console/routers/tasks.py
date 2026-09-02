@@ -209,7 +209,8 @@ async def stop_task(
                 target_sid = str(body["session_id"])
             if body.get("device_id"):
                 target_dev = str(body["device_id"])
-    except Exception:
+    except ValueError:
+        # Empty or non-JSON body: fall back to the query parameters.
         pass
 
     stopped = task_queue_service.stop_tasks(

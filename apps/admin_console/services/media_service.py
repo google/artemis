@@ -15,6 +15,7 @@
 import base64
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -24,6 +25,8 @@ import urllib.parse
 from fastapi import HTTPException
 
 from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
+
+logger = logging.getLogger(__name__)
 
 
 class MediaService:
@@ -76,7 +79,9 @@ class MediaService:
                         str(result),
                     )
                     return result
-        except Exception:
+        except OSError:
+            # Filesystem probe failed (missing/locked file): serve the
+            # original path and let the media endpoint report the error.
             pass
         return p
 
@@ -167,8 +172,9 @@ class MediaService:
                         url = cls.path_to_video_url(item)
                         idx[item.stem] = url
                         idx[item.name] = url
-            except Exception:
-                pass
+            except OSError as exc:
+                # Unreadable directory entry: index the rest of the tree.
+                logger.warning("Video index scan failed under %s: %s", d, exc)
         return idx
 
     @classmethod
@@ -219,7 +225,8 @@ class MediaService:
                                 item = cls.ensure_browser_playable_video(item)
                                 v_url = cls.path_to_video_url(item)
                                 break
-                    except Exception:
+                    except OSError:
+                        # Unreadable session dir: no recording to resolve.
                         pass
 
         if not v_url and row_dict.get("initial_goal"):
@@ -274,7 +281,8 @@ class MediaService:
                     obj.startswith("[") and obj.endswith("]")
                 ):
                     return MediaService.unwrap_payload(json.loads(obj))
-            except Exception:
+            except ValueError:
+                # Looks like JSON but is not: treat it as a plain string.
                 pass
 
             # Check if the string is a Base64 image
@@ -284,7 +292,8 @@ class MediaService:
                 try:
                     _, base64_data = obj.split(";base64,", 1)
                     is_base64_img = True
-                except Exception:
+                except ValueError:
+                    # Malformed data URI: fall through to plain-string handling.
                     pass
             elif obj.startswith("iVBORw0KGgo") or obj.startswith("/9j/"):
                 is_base64_img = True
@@ -301,8 +310,10 @@ class MediaService:
                         image_path.write_bytes(image_bytes)
 
                     return f"image://{image_hash}"
-                except Exception:
-                    pass
+                except (ValueError, OSError) as exc:
+                    # Invalid base64 or image cache write failure: fall back
+                    # to the truncated raw string below.
+                    logger.debug("Could not persist inline image: %s", exc)
 
             if len(obj) > 2000:
                 preview_start = obj[:100].replace("\n", " ")

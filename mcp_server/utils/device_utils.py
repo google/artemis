@@ -167,7 +167,8 @@ def ensure_emulator(
             if "1" in res.stdout:
                 time.sleep(2)  # Stabilization
                 return True
-        except Exception:
+        except (subprocess.SubprocessError, OSError):
+            # adb not ready yet while the emulator boots: keep polling.
             pass
         time.sleep(2)
 

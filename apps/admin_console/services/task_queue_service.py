@@ -15,6 +15,7 @@
 import asyncio
 import codecs
 from datetime import datetime
+import logging
 import os
 import psutil
 import shutil
@@ -48,6 +49,8 @@ from artemis.runtime import (
     trace_store,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class TaskQueueService:
     """Service managing FIFO task execution, background worker, subprocess lifecycle,
@@ -76,7 +79,14 @@ class TaskQueueService:
             try:
                 cb(event_type, data)
             except Exception:
-                pass
+                # One broken subscriber must not block the others, but a
+                # silent drop hides it entirely.
+                logger.warning(
+                    "Event subscriber %r failed for event %s",
+                    cb,
+                    event_type,
+                    exc_info=True,
+                )
 
     @classmethod
     def _broadcast_startup_progress(
@@ -194,7 +204,9 @@ class TaskQueueService:
             if log_file is not None:
                 try:
                     log_file.write(text)
-                except Exception:
+                except (OSError, ValueError):
+                    # Best-effort tee into stdout.log; console output above
+                    # already carried the text.
                     pass
 
         try:
@@ -214,7 +226,8 @@ class TaskQueueService:
             if log_file is not None:
                 try:
                     log_file.close()
-                except Exception:
+                except OSError:
+                    # Flush-on-close of the best-effort tee failed; nothing to do.
                     pass
 
     @staticmethod
@@ -265,7 +278,8 @@ class TaskQueueService:
                             return proc.returncode if proc.returncode is not None else -15
                     except (psutil.NoSuchProcess, ProcessLookupError):
                         return proc.returncode if proc.returncode is not None else -15
-                    except Exception:
+                    except psutil.Error:
+                        # Transient probe failure (e.g. AccessDenied): keep waiting.
                         pass
                 else:
                     return proc.returncode if proc.returncode is not None else -15
@@ -279,7 +293,9 @@ class TaskQueueService:
                 state.worker_task = loop.create_task(cls.queue_worker())
                 try:
                     state.wake_event.set()
-                except Exception:
+                except AttributeError:
+                    # Partially initialized state (unit tests): the worker
+                    # loop polls anyway.
                     pass
         except RuntimeError:
             pass
@@ -515,8 +531,11 @@ class TaskQueueService:
                     if st:
                         st["pid"] = proc.pid
                         trace_store.write_status(str(sess_id), st)
-                except Exception:
-                    pass
+                except OSError as exc:
+                    # Status probes fall back to DB PID bookkeeping, but note it.
+                    print(
+                        f"[QueueWorker] Could not record worker pid in status.json for {sess_id}: {exc}"
+                    )
             cls._broadcast_startup_progress(
                 sess_id, "process_ready", "Execution process started"
             )
@@ -583,8 +602,12 @@ class TaskQueueService:
                             str(sess_id),
                             canonical_mcp_status,
                         )
-                except Exception:
-                    pass
+                except OSError as exc:
+                    # A stale status.json would leave MCP pollers seeing
+                    # "running" forever, so surface the failure.
+                    print(
+                        f"[QueueWorker] Could not persist terminal MCP status for {sess_id}: {exc}"
+                    )
                 rec_info = session_repo.get_video_recording_for_session(sess_id)
                 rec_status = (rec_info or {}).get("status")
                 recovered_video_path = None
@@ -848,8 +871,9 @@ class TaskQueueService:
             active_owners: dict[str, Any] = {}
             try:
                 active_owners = DeviceExecutionLock.get_active_owners()
-            except Exception:
-                pass
+            except OSError as exc:
+                # Unreadable lock dir: fall back to the single-owner probe below.
+                print(f"[stop_tasks] Could not enumerate device owners: {exc}")
             fallback = DeviceExecutionLock.get_active_owner()
             if fallback and not active_owners:
                 active_owners["default"] = fallback
@@ -872,8 +896,10 @@ class TaskQueueService:
                                     "cancelled",
                                     error="Task stopped from the Artemis frontend.",
                                 )
-                        except Exception:
-                            pass
+                        except OSError as exc:
+                            print(
+                                f"[stop_tasks] Could not persist cancelled MCP status for {sid}: {exc}"
+                            )
                         cls._broadcast_event(
                             "session_ended",
                             {
@@ -895,7 +921,8 @@ class TaskQueueService:
                 if run_proc is not None and run_proc.returncode is None:
                     try:
                         run_proc.kill()
-                    except Exception:
+                    except (ProcessLookupError, OSError):
+                        # Process already exited between the check and the kill.
                         pass
             # active_runs entries are popped by each run's finalizer once the
             # process exit is observed; clearing them here would free the device
@@ -903,7 +930,8 @@ class TaskQueueService:
             if state.current_process:
                 try:
                     state.current_process.kill()
-                except Exception:
+                except (ProcessLookupError, OSError):
+                    # Process already exited between the check and the kill.
                     pass
                 state.current_process = None
 
@@ -915,7 +943,9 @@ class TaskQueueService:
             if PAUSE_FILE.exists():
                 try:
                     PAUSE_FILE.unlink()
-                except Exception:
+                except OSError:
+                    # Best-effort cleanup of the pause marker; a leftover file
+                    # only pauses until the next resume request.
                     pass
 
             cls.ensure_worker_running()
@@ -926,8 +956,9 @@ class TaskQueueService:
         active_owners = {}
         try:
             active_owners = DeviceExecutionLock.get_active_owners()
-        except Exception:
-            pass
+        except OSError as exc:
+            # Unreadable lock dir: the local-process fallbacks below still apply.
+            print(f"[stop_tasks] Could not enumerate device owners: {exc}")
 
         owner = None
         if target_sid:
@@ -1066,7 +1097,8 @@ class TaskQueueService:
             try:
                 local_proc.kill()
                 stopped = True
-            except Exception:
+            except (ProcessLookupError, OSError):
+                # Process already exited; terminate_tree above may have got it.
                 pass
             stopped = True
             is_local_owner = True
@@ -1097,8 +1129,11 @@ class TaskQueueService:
                     if row_pid and session_repo.process_is_alive(row_pid):
                         try:
                             process_supervisor.terminate_tree(int(row_pid))
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            # Report it: a surviving worker keeps the device busy.
+                            print(
+                                f"[stop_tasks] Could not terminate worker pid {row_pid}: {exc}"
+                            )
                     DeviceExecutionLock.cleanup_stale_locks()
                     stopped = True
 
@@ -1176,7 +1211,9 @@ class TaskQueueService:
         if PAUSE_FILE.exists():
             try:
                 PAUSE_FILE.unlink()
-            except Exception:
+            except OSError:
+                # Best-effort cleanup of the pause marker; a leftover file
+                # only pauses until the next resume request.
                 pass
 
         cls.ensure_worker_running()
