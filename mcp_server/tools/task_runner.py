@@ -302,9 +302,24 @@ def mobile_run_task(
                         "stderr_log": stderr_log,
                     }
 
-                # Check if the task was already enqueued despite a slow or None response:
-                try:
-                    queued_tasks = DeviceExecutionLock.get_queued_tasks()
+                # Check if the task was already enqueued despite a slow or None
+                # response. The probe reads a shared lock file, so transient
+                # read failures get a few retries; if it never succeeds the
+                # verdict is "unknown" -- reporting "failed" here for a task
+                # that did land in the queue would invite a duplicate submit.
+                probe_failed = False
+                for probe_attempt in range(3):
+                    try:
+                        queued_tasks = DeviceExecutionLock.get_queued_tasks()
+                    except Exception as exc:
+                        if probe_attempt < 2:
+                            time.sleep(0.5)
+                            continue
+                        probe_failed = True
+                        logging.getLogger("mcp_server").warning(
+                            f"Could not verify daemon queue for '{trace_id}': {exc}"
+                        )
+                        break
                     for q in queued_tasks:
                         if str(q.get("session_id")) == str(trace_id):
                             trace_store.update_trace_status(
@@ -323,12 +338,24 @@ def mobile_run_task(
                                 "stdout_log": str(trace_store.get_trace_stdout_log_path(trace_id)),
                                 "stderr_log": str(trace_store.get_trace_stderr_log_path(trace_id)),
                             }
-                except Exception as exc:
-                    # The queue probe is a rescue path for a slow daemon reply;
-                    # its failure downgrades the verdict to "failed" below.
-                    logging.getLogger("mcp_server").warning(
-                        f"Could not verify daemon queue for '{trace_id}': {exc}"
-                    )
+                    break
+
+                if probe_failed:
+                    # The task may or may not have been enqueued; do not mark
+                    # the trace failed and do not let the caller resubmit
+                    # blindly.
+                    return {
+                        "trace_id": trace_id,
+                        "status": "unknown",
+                        "message": (
+                            f"Artemis Daemon gave no enqueue confirmation for task "
+                            f"'{task_desc}' and the queue could not be inspected. The "
+                            f"task may still have been enqueued. Poll "
+                            f"mobile_manage_task(action='status', trace_id='{trace_id}') "
+                            f"before resubmitting; if it still reports 'pending' after "
+                            f"about a minute, treat it as not enqueued."
+                        ),
+                    }
 
                 # When Daemon is running, refuse to launch a conflicting standalone runner on the same device
                 logging.getLogger("mcp_server").warning(

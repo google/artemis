@@ -172,7 +172,8 @@ class AgentApiNotifier(BaseNotifier):
                                 env["ANTIGRAVITY_CSRF_TOKEN"],
                             )
                         )
-                except (psutil.AccessDenied, psutil.NoSuchProcess, Exception):
+                except psutil.Error:
+                    # This process vanished or denies access: scan the rest.
                     continue
         except ImportError:
             import glob

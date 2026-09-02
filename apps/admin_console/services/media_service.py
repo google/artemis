@@ -156,7 +156,13 @@ class MediaService:
             if not d.exists():
                 continue
             try:
-                for item in d.iterdir():
+                entries = list(d.iterdir())
+            except OSError as exc:
+                logger.warning("Video index scan failed under %s: %s", d, exc)
+                continue
+            for item in entries:
+                # One unreadable entry must not abort the rest of the directory.
+                try:
                     if item.is_dir():
                         for ext in [".mp4", ".mkv", ".webm"]:
                             vfile = item / f"recording{ext}"
@@ -172,9 +178,8 @@ class MediaService:
                         url = cls.path_to_video_url(item)
                         idx[item.stem] = url
                         idx[item.name] = url
-            except OSError as exc:
-                # Unreadable directory entry: index the rest of the tree.
-                logger.warning("Video index scan failed under %s: %s", d, exc)
+                except OSError as exc:
+                    logger.warning("Skipping unindexable video entry %s: %s", item, exc)
         return idx
 
     @classmethod

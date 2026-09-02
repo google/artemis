@@ -332,6 +332,9 @@ class SessionRepository:
                 conn.commit()
                 return count
         except Exception:
+            # Reconciliation is best-effort at startup, but a silent abort
+            # would leave every orphaned "running" row untouched -- log it.
+            logger.warning("Orphan-session reconciliation aborted", exc_info=True)
             return 0
 
     def cleanup_orphans_on_startup(self) -> int:

@@ -58,23 +58,31 @@ def _pid_alive(pid: int | None) -> bool:
     return pid_is_alive(pid_int)
 
 
-def _session_tracked_by_lock(trace_id: str) -> bool:
-    """True when the device-lock layer still tracks this session (queued or active owner)."""
+def _session_tracked_by_lock(trace_id: str) -> bool | None:
+    """Whether the device-lock layer still tracks this session (queued or active owner).
+
+    Returns ``True`` when tracked, ``False`` when both probes succeeded and the
+    session is definitively absent, and ``None`` when a probe failed — an
+    unreadable queue or lock dir may hide a live session, so the caller must
+    not treat a failed probe as evidence of death (same "uncertain defaults to
+    alive" stance as ``pid_is_alive``).
+    """
+    uncertain = False
     try:
         for q_item in DeviceExecutionLock.get_queued_tasks():
             if str(q_item.get("session_id")) == trace_id:
                 return True
     except Exception as exc:
-        # An unreadable queue may hide a live session; the caller then leans
-        # on DB/pid evidence, so surface the probe failure.
+        uncertain = True
         print(f"Could not read device queue for {trace_id}: {exc}", file=sys.stderr)
     try:
         for owner in DeviceExecutionLock.get_active_owners().values():
             if owner.session_id and str(owner.session_id) == trace_id:
                 return True
     except Exception as exc:
+        uncertain = True
         print(f"Could not read device owners for {trace_id}: {exc}", file=sys.stderr)
-    return False
+    return None if uncertain else False
 
 
 def _reconcile_task_state(
@@ -154,8 +162,11 @@ def _reconcile_task_state(
         else:
             is_alive = _pid_alive(pid)
         if not is_alive:
-            if _session_tracked_by_lock(trace_id):
-                # Still queued for a device or owned by a live lock holder.
+            tracked = _session_tracked_by_lock(trace_id)
+            if tracked or tracked is None:
+                # Still queued for a device or owned by a live lock holder --
+                # or the lock probe failed, in which case the session may be
+                # hidden and must not be declared dead on this poll.
                 is_alive = True
             elif db_status in ("running", "pending") and db_pid:
                 # The runner registered itself and its process is gone: truly dead.

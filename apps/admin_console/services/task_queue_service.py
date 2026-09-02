@@ -588,26 +588,46 @@ class TaskQueueService:
                     manual_stop,
                 )
                 if should_persist:
-                    session_repo.update_session_status(sess_id, new_status, time.time())
-                    print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
+                    if session_repo.update_session_status(sess_id, new_status, time.time()):
+                        print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
+                    else:
+                        # The DB row is the fallback MCP pollers reconcile
+                        # against when status.json is stale, so a failed DB
+                        # write must not pass silently.
+                        logger.error(
+                            "[QueueWorker] Could not persist terminal DB status "
+                            "'%s' for session %s",
+                            new_status,
+                            sess_id,
+                        )
                 else:
                     print(
                         f"[QueueWorker] Preserved authoritative session {sess_id} "
                         f"status '{new_status}'"
                     )
-                try:
-                    if trace_store.read_status(str(sess_id)):
-                        canonical_mcp_status = "completed" if new_status in ("completed", "success") else new_status
-                        trace_store.update_trace_status(
-                            str(sess_id),
-                            canonical_mcp_status,
+                # A stale status.json would leave MCP pollers seeing "running"
+                # until their next DB reconcile, so retry transient write
+                # failures before giving up.
+                for attempt in range(3):
+                    try:
+                        if trace_store.read_status(str(sess_id)):
+                            canonical_mcp_status = "completed" if new_status in ("completed", "success") else new_status
+                            trace_store.update_trace_status(
+                                str(sess_id),
+                                canonical_mcp_status,
+                            )
+                        break
+                    except OSError as exc:
+                        if attempt < 2:
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                            continue
+                        logger.error(
+                            "[QueueWorker] Could not persist terminal MCP status "
+                            "for %s after %d attempts: %s",
+                            sess_id,
+                            attempt + 1,
+                            exc,
                         )
-                except OSError as exc:
-                    # A stale status.json would leave MCP pollers seeing
-                    # "running" forever, so surface the failure.
-                    print(
-                        f"[QueueWorker] Could not persist terminal MCP status for {sess_id}: {exc}"
-                    )
                 rec_info = session_repo.get_video_recording_for_session(sess_id)
                 rec_status = (rec_info or {}).get("status")
                 recovered_video_path = None
