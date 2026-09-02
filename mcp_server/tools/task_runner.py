@@ -117,6 +117,8 @@ def _watch_spawn(
                 payload={"trace_id": trace_id, "error": error_text},
             )
         except Exception:
+            # Notification dispatch is best-effort; the failure verdict is
+            # already persisted in status.json.
             pass
     return False
 
@@ -321,8 +323,12 @@ def mobile_run_task(
                                 "stdout_log": str(trace_store.get_trace_stdout_log_path(trace_id)),
                                 "stderr_log": str(trace_store.get_trace_stderr_log_path(trace_id)),
                             }
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # The queue probe is a rescue path for a slow daemon reply;
+                    # its failure downgrades the verdict to "failed" below.
+                    logging.getLogger("mcp_server").warning(
+                        f"Could not verify daemon queue for '{trace_id}': {exc}"
+                    )
 
                 # When Daemon is running, refuse to launch a conflicting standalone runner on the same device
                 logging.getLogger("mcp_server").warning(
@@ -392,7 +398,8 @@ def mobile_run_task(
             ipc_port = read_ipc_port()
             if ipc_port:
                 env["ARTEMIS_IPC_PORT"] = str(ipc_port)
-        except Exception:
+        except (OSError, ValueError):
+            # No readable IPC port file: the runner works without live telemetry.
             pass
 
         proc_kwargs = env_utils.get_detached_process_kwargs()

@@ -64,14 +64,16 @@ def _session_tracked_by_lock(trace_id: str) -> bool:
         for q_item in DeviceExecutionLock.get_queued_tasks():
             if str(q_item.get("session_id")) == trace_id:
                 return True
-    except Exception:
-        pass
+    except Exception as exc:
+        # An unreadable queue may hide a live session; the caller then leans
+        # on DB/pid evidence, so surface the probe failure.
+        print(f"Could not read device queue for {trace_id}: {exc}", file=sys.stderr)
     try:
         for owner in DeviceExecutionLock.get_active_owners().values():
             if owner.session_id and str(owner.session_id) == trace_id:
                 return True
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"Could not read device owners for {trace_id}: {exc}", file=sys.stderr)
     return False
 
 
@@ -115,8 +117,9 @@ def _reconcile_task_state(
             if row:
                 db_status = row["status"]
                 db_pid = row["pid"]
-        except Exception:
-            pass
+        except sqlite3.Error as exc:
+            # Reconciliation then relies on status.json and lock evidence only.
+            print(f"Could not read DB session row for {trace_id}: {exc}", file=sys.stderr)
 
     if db_pid and db_pid != pid:
         pid = db_pid
@@ -188,6 +191,8 @@ def _mark_liveness_failure(trace_id: str, status_data: dict[str, Any]) -> None:
                 payload={"trace_id": trace_id, "error": _LIVENESS_FAILURE_ERROR},
             )
         except Exception:
+            # Notification dispatch is best-effort; the failure verdict is
+            # already persisted in status.json.
             pass
 
 
@@ -278,10 +283,13 @@ def mobile_manage_task(
                             device_serial = d_info["device_id"]
                             status_data["device_serial"] = device_serial
                             trace_store.write_status(trace_id, status_data)
-                    except Exception:
+                    except (ValueError, TypeError, OSError):
+                        # Malformed device_info or failed cache write: the
+                        # serial simply stays unknown for this poll.
                         pass
                 conn_dev.close()
-            except Exception:
+            except sqlite3.Error:
+                # DB probe for the serial is optional enrichment.
                 pass
 
         if not device_serial and pid:
@@ -293,7 +301,8 @@ def mobile_manage_task(
                         status_data["device_serial"] = device_serial
                         trace_store.write_status(trace_id, status_data)
                         break
-            except Exception:
+            except OSError:
+                # Lock-owner probe / cache write failed: serial stays unknown.
                 pass
 
         response: dict[str, Any] = {
@@ -329,7 +338,8 @@ def mobile_manage_task(
                         "task_status": run_outcome.get("task_status"),
                         **tests,
                     }
-                except Exception:
+                except (OSError, ValueError, TypeError):
+                    # Unreadable or malformed run_outcome.json: omit the summary.
                     pass
                 break
 
@@ -394,7 +404,8 @@ def mobile_manage_task(
                                             progress["latest_thought"] = p_obj["response"][0].get(
                                                 "text", ""
                                             )
-                                except Exception:
+                                except (ValueError, TypeError, AttributeError):
+                                    # Unparseable thought payload: omit it.
                                     pass
 
                             cur2.execute(
@@ -411,7 +422,9 @@ def mobile_manage_task(
                                         act_payload = json.loads(row_action["payload"]).get(
                                             "args", {}
                                         )
-                                    except Exception:
+                                    except (ValueError, TypeError, AttributeError):
+                                        # Unparseable action payload: show the
+                                        # bare action name.
                                         pass
                                 progress["latest_action"] = (
                                     f"{act_name}({act_payload})" if act_payload else act_name
@@ -433,7 +446,8 @@ def mobile_manage_task(
                         try:
                             with open(plan_path, encoding="utf-8") as f:
                                 plan_content = f.read()
-                        except Exception:
+                        except OSError:
+                            # Unreadable plan file: progress omits the plan.
                             pass
                     progress["task_plan"] = plan_content
             else:
@@ -458,16 +472,18 @@ def mobile_manage_task(
             try:
                 if is_daemon_running():
                     stopped_via_daemon = stop_task_on_daemon(trace_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Fall through to direct process termination below.
+                print(f"Daemon stop attempt failed for {trace_id}: {exc}", file=sys.stderr)
 
         # 2. Cancel queue reservation if present
         queue_ticket = status_data.get("queue_ticket")
         if queue_ticket:
             try:
                 DeviceExecutionLock.cancel_reservation(queue_ticket)
-            except Exception:
-                pass
+            except OSError as exc:
+                # A stale reservation expires on its own; note the failure.
+                print(f"Could not cancel reservation {queue_ticket}: {exc}", file=sys.stderr)
 
         # 3. If process PID is missing, try to resolve from active device owners
         if not pid:
@@ -479,8 +495,10 @@ def mobile_manage_task(
                         status_data["pid"] = pid
                         trace_store.write_status(trace_id, status_data)
                         break
-            except Exception:
-                pass
+            except OSError as exc:
+                # Without a resolved pid the stop falls back to the
+                # daemon/queue outcome, so surface the probe failure.
+                print(f"Could not resolve owner pid for {trace_id}: {exc}", file=sys.stderr)
 
         # 4. If process PID could not be determined and not stopped via daemon or queue
         if not pid and not stopped_via_daemon and not queue_ticket:

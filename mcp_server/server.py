@@ -36,7 +36,8 @@ def _rotate_log(path: str, max_bytes: int = _LOG_MAX_BYTES) -> None:
             if os.path.exists(old_path):
                 os.remove(old_path)
             os.replace(path, old_path)
-    except Exception:
+    except OSError:
+        # Best-effort rotation; a locked or vanished log file is tolerable.
         pass
 
 
@@ -74,6 +75,8 @@ try:
 
     sys.stderr = StderrTee(sys.stderr, os.path.join(_mcp_log_dir, "mcp_stderr.log"))
 except Exception:
+    # Debug logging and the stderr tee are optional diagnostics; they must
+    # never prevent the MCP stdio server from starting.
     pass
 
 # 1. Import shared FastMCP instance

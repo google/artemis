@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import json
+import logging
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class ModelService:
@@ -44,8 +47,10 @@ class ModelService:
             elif llm_cfg and llm_cfg.default:
                 provider = str(llm_cfg.default.provider)
                 model_id = str(llm_cfg.default.model)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Unreadable/invalid LLM config: fall back to display defaults
+            # (cached for the TTL, so this logs at most once per window).
+            logger.warning("Could not resolve LLM config for display: %s", exc)
         cls._llm_info_cache = (now, provider, model_id)
         return provider, model_id
 
@@ -94,7 +99,8 @@ class ModelService:
                             return "pro"
                         elif "flash" in p_str:
                             return "flash"
-            except Exception:
+            except (ValueError, TypeError):
+                # Malformed device_info JSON: try the other profile sources.
                 pass
 
         if (row_dict.get("status") == "running") and running_profile:
@@ -132,7 +138,8 @@ class ModelService:
                                 for x in ("planner", "validator", "operator", "checker")
                             ):
                                 return "pro"
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # Malformed trace payload JSON: skip this trace.
                         pass
 
         return None
