@@ -210,15 +210,14 @@ def test_operator_verbs_lower_onto_manifest_actions():
 
 
 def test_registry_wait_for_delay_seconds_drift_stays_dead():
-    """Guards the removal of the duplicate device-action registration.
+    """Guards against re-growing a shadow device-action registration.
 
     ``artemis/tools/actions/device_actions.py`` used to shadow-register a second
-    ``wait_for_delay`` taking *seconds* while every prompt teaches milliseconds. The
-    registry (a direct-execution SDK surface, artemis/tools/mobile/exec_tools.py)
-    must never again carry a ``wait_for_delay`` whose unit disagrees with the
-    manifest's ``time_in_ms``.
+    ``wait_for_delay`` taking *seconds* while every prompt teaches milliseconds
+    (the last such surface, ``artemis/tools/mobile/exec_tools.py``, is deleted).
+    The ToolRegistry must never again carry a ``wait_for_delay`` whose unit
+    disagrees with the manifest's ``time_in_ms``.
     """
-    import artemis.tools.mobile.exec_tools  # noqa: F401 - registration side effect
     from artemis.tools.base import ToolRegistry
 
     tool = ToolRegistry.get("wait_for_delay")

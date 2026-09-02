@@ -106,7 +106,8 @@ class StepRepository:
         if isinstance(payload_raw, str):
             try:
                 payload_obj = json.loads(payload_raw)
-            except Exception:
+            except (ValueError, TypeError):
+                # Non-JSON payload: the isinstance(dict) guard below bails out.
                 pass
         if not isinstance(payload_obj, dict):
             return 0, 0, 0
@@ -175,7 +176,8 @@ class StepRepository:
         if isinstance(payload_raw, str):
             try:
                 payload_obj = json.loads(payload_raw)
-            except Exception:
+            except (ValueError, TypeError):
+                # Non-JSON payload: the isinstance(dict) guard below bails out.
                 pass
 
         if not isinstance(payload_obj, dict):
@@ -308,7 +310,8 @@ class StepRepository:
                     if step_dict.get(json_col):
                         try:
                             step_dict[json_col] = json.loads(step_dict[json_col])
-                        except Exception:
+                        except (ValueError, TypeError):
+                            # Non-JSON column value: keep the raw string.
                             pass
 
                 # If post_image_name is identical to pre_image_name, normalize to None
@@ -471,7 +474,8 @@ class StepRepository:
                                     p_raw_th.append(str(th_text).strip())
                                 elif thr["type"] == "thinking" and th_text:
                                     p_nat_th.append(str(th_text).strip())
-                            except Exception:
+                            except (ValueError, TypeError, AttributeError):
+                                # Unparseable or non-dict thinking payload: skip it.
                                 pass
 
                     virtual_step = {

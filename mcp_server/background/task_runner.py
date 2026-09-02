@@ -93,7 +93,7 @@ def resolve_profile_file() -> str | None:
                 os.path.join(app_dir, "llm-config.json"),
             ]
         )
-    except Exception:
+    except (ImportError, OSError):
         pass
 
     candidates.extend(

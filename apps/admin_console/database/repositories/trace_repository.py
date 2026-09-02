@@ -52,7 +52,8 @@ class TraceRepository:
             if row_dict.get("payload"):
                 try:
                     row_dict["payload"] = json.loads(row_dict["payload"])
-                except Exception:
+                except (ValueError, TypeError):
+                    # Non-JSON payload: keep the raw string for display.
                     pass
             nodes[row_dict["trace_id"]] = {**row_dict, "children": []}
 
@@ -94,7 +95,8 @@ class TraceRepository:
             if row_dict.get("payload"):
                 try:
                     row_dict["payload"] = json.loads(row_dict["payload"])
-                except Exception:
+                except (ValueError, TypeError):
+                    # Non-JSON payload: keep the raw string for display.
                     pass
             nodes[row_dict["trace_id"]] = {**row_dict, "children": []}
 

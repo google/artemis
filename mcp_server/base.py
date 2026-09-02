@@ -21,6 +21,8 @@ try:
 
     FastMCPSettings.model_rebuild()
 except Exception:
+    # Version-compat shim: older/newer FastMCP releases may not expose
+    # Settings or need the rebuild; the server works without it.
     pass
 
 # Define the shared FastMCP instance for external IDE and agent clients.

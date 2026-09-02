@@ -15,7 +15,10 @@
 import asyncio
 from contextlib import suppress
 import json
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 try:
     from admin_console.core.state import state
@@ -76,7 +79,8 @@ class IPCService:
             if isinstance(payload, str):
                 try:
                     payload = json.loads(payload)
-                except Exception:
+                except ValueError:
+                    # Non-JSON payload string: cleaned as-is below.
                     pass
 
             if tr_type in ("tool", "action") and isinstance(payload, dict):
@@ -102,7 +106,8 @@ class IPCService:
                     if isinstance(pl, str):
                         try:
                             pl = json.loads(pl)
-                        except Exception:
+                        except ValueError:
+                            # Non-JSON payload string: cleaned as-is below.
                             pass
 
                     if tr_dict.get("type") == "llm_call":
@@ -190,7 +195,14 @@ class IPCService:
                             try:
                                 cb(event_type, data)
                             except Exception:
-                                pass
+                                # One broken subscriber must not block the
+                                # others, but a silent drop hides it entirely.
+                                logger.warning(
+                                    "IPC subscriber %r failed for event %s",
+                                    cb,
+                                    event_type,
+                                    exc_info=True,
+                                )
                     except (ValueError, UnicodeDecodeError, TypeError) as e:
                         print(f"IPC parse error: {e}")
             except asyncio.CancelledError:

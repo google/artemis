@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import time
 from typing import Any
 
 from artemis.runtime import trace_store
+
+logger = logging.getLogger(__name__)
 
 try:
     from admin_console.database.connection import db_session
@@ -317,8 +320,15 @@ class SessionRepository:
                                 "failed",
                                 error="Process terminated prior to server startup.",
                             )
-                    except Exception:
-                        pass
+                    except OSError as exc:
+                        # read_status itself never raises; this guards the
+                        # lock/write side of update_trace_status.
+                        logger.warning(
+                            "Could not mark trace %s failed during orphan "
+                            "reconciliation: %s",
+                            row["session_id"],
+                            exc,
+                        )
                 conn.commit()
                 return count
         except Exception:

@@ -121,7 +121,8 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
             try:
                 with open(plan_path, encoding="utf-8") as f:
                     plan_content = f.read()
-            except Exception:
+            except OSError:
+                # Unreadable plan file: the summary just omits the plan.
                 pass
 
         try:
@@ -149,7 +150,8 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                     if step_dict.get(col):
                         try:
                             step_dict[col] = json.loads(step_dict[col])
-                        except Exception:
+                        except (ValueError, TypeError):
+                            # Non-JSON column value: keep the raw string.
                             pass
 
                 cursor.execute(
@@ -163,7 +165,8 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                     if t_dict.get("payload"):
                         try:
                             t_dict["payload"] = json.loads(t_dict["payload"])
-                        except Exception:
+                        except (ValueError, TypeError):
+                            # Non-JSON payload: keep the raw string.
                             pass
                     events.append(t_dict)
                 step_dict["interleaved_events"] = events
@@ -200,10 +203,12 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                         d_info = json.loads(row_dev["device_info"])
                         if isinstance(d_info, dict) and d_info.get("device_id"):
                             device_serial = d_info["device_id"]
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # Malformed device_info JSON: leave the serial unset.
                         pass
                 conn_dev.close()
-            except Exception:
+            except sqlite3.Error:
+                # The serial enriches the summary header only; skip it.
                 pass
 
         device_info_str = f" | **Device Serial:** `{device_serial}`" if device_serial else ""
@@ -314,7 +319,8 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                 if step_dict.get(col):
                     try:
                         step_dict[col] = json.loads(step_dict[col])
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # Non-JSON column value: keep the raw string.
                         pass
 
             cursor.execute(
@@ -335,7 +341,8 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                 if t_dict.get("payload"):
                     try:
                         t_dict["payload"] = json.loads(t_dict["payload"])
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # Non-JSON payload: keep the raw string.
                         pass
                 events.append(t_dict)
             step_dict["interleaved_events"] = events

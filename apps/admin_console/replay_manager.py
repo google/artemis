@@ -485,7 +485,8 @@ class ReplayManager:
                 if td.get("payload"):
                     try:
                         td["payload"] = json.loads(td["payload"])
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # Non-JSON payload: keep the raw string.
                         pass
                 traces.append(td)
             conn.close()
@@ -721,8 +722,11 @@ class ReplayManager:
                 with open(traces_json_path, encoding="utf-8") as f:
                     traces = json.load(f)
                 return {str(t.get("trace_id")).lower() for t in traces if t.get("trace_id")}
-            except Exception:
-                pass
+            except (OSError, ValueError) as e:
+                print(
+                    f"Warning: Failed to read preloaded trace ids from {traces_json_path}: {e}",
+                    file=sys.stderr,
+                )
         return set()
 
     def load_traces_from_db(self, db_path: Path, step_num: int, preloaded_trace_ids: set) -> list:
@@ -747,7 +751,8 @@ class ReplayManager:
                 if td.get("payload"):
                     try:
                         td["payload"] = json.loads(td["payload"])
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # Non-JSON payload: normalized to {} just below.
                         pass
                 if not isinstance(td.get("payload"), dict):
                     td["payload"] = {}
@@ -808,7 +813,8 @@ class ReplayManager:
         session_id = None
         try:
             session_id = temp_db_path.parents[1].name.split("_")[0]
-        except Exception:
+        except IndexError:
+            # Path too shallow to carry a session dir: fall back to the DB probe.
             pass
 
         if not session_id:
@@ -820,7 +826,8 @@ class ReplayManager:
                 if row:
                     session_id = str(row[0])
                 conn.close()
-            except Exception:
+            except sqlite3.Error:
+                # Unreadable sandbox DB: fall back to single-step trace loading.
                 pass
 
         if not session_id:
@@ -890,8 +897,11 @@ class ReplayManager:
                     with open(step_json_path, encoding="utf-8") as f:
                         step_data = json.load(f)
                         current_step_id = step_data.get("step_id")
-                except Exception:
-                    pass
+                except (OSError, ValueError) as e:
+                    print(
+                        f"Warning: Failed to read step id from {step_json_path}: {e}",
+                        file=sys.stderr,
+                    )
 
             current_step_id_str = str(current_step_id).lower() if current_step_id else None
 
@@ -995,7 +1005,9 @@ class ReplayManager:
                                 sid = step_data.get("step_id")
                                 if sid:
                                     step_dirs[str(sid).lower()] = subdir
-                        except Exception:
+                        except (OSError, ValueError):
+                            # Unreadable step.json: screenshots for this step
+                            # simply are not linked into the trace payloads.
                             pass
 
         for td in all_traces:
@@ -1043,7 +1055,8 @@ class ReplayManager:
                     return (
                         f"file://{abs_path}" if abs_path.startswith("/") else f"file:///{abs_path}"
                     )
-            except Exception:
+            except (OSError, ValueError):
+                # Not a resolvable filesystem path: return the value verbatim.
                 pass
         return val
 
@@ -1104,7 +1117,8 @@ class ReplayManager:
                 if r["payload"]:
                     try:
                         payload = json.loads(r["payload"])
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # Non-JSON payload: treated as an empty tool payload.
                         pass
 
                 response_val = payload.get("result")
@@ -1116,7 +1130,8 @@ class ReplayManager:
                     ):
                         try:
                             response_val = json.loads(response_val)
-                        except Exception:
+                        except ValueError:
+                            # Looks like JSON but is not: keep the raw string.
                             pass
 
                 args = payload.get("args", {})
@@ -1682,7 +1697,8 @@ class ReplayManager:
         if row and row[0]:
             try:
                 device_info = json.loads(row[0])
-            except Exception:
+            except (ValueError, TypeError):
+                # Malformed device_info: simulate with the defaults below.
                 pass
 
         sim_device_id = device_info.get("device_id", "replay-device")
@@ -2294,8 +2310,11 @@ class ReplayManager:
                     res_data = json.load(f)
                     replay_outcome = res_data.get("result")
                     replay_id = res_data.get("replay_id")
-            except Exception:
-                pass
+            except (OSError, ValueError) as e:
+                print(
+                    f"Warning: Failed to read replay result from {result_json_path}: {e}",
+                    file=sys.stderr,
+                )
 
         # Update virtual tool trace result with the actual formatted outcome if available
         if replay_outcome is not None:
@@ -2464,8 +2483,11 @@ class ReplayManager:
                     llm_calls_log = res_data.get("llm_calls") or []
                     replay_outcome = res_data.get("result")
                     replay_id = res_data.get("replay_id")
-            except Exception:
-                pass
+            except (OSError, ValueError) as e:
+                print(
+                    f"Warning: Failed to read replay result from {result_json_path}: {e}",
+                    file=sys.stderr,
+                )
 
         # Update virtual tool trace result with the actual formatted outcome if available
         if replay_outcome is not None:

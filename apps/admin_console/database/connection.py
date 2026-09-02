@@ -13,11 +13,13 @@
 # limitations under the License.
 
 from contextlib import contextmanager
+import logging
 from pathlib import Path
 import sqlite3
 
 from artemis.config import DB_PATH
 
+logger = logging.getLogger(__name__)
 
 _initialized_dbs = set()
 
@@ -33,14 +35,17 @@ def get_db(db_path: Path | None = None) -> sqlite3.Connection:
 
             StorageManager(db_path=path, base_trace_dir=path.parent)
             _initialized_dbs.add(path_key)
-        except Exception:
-            pass
+        except (ImportError, OSError, sqlite3.Error) as exc:
+            # Schema bootstrap is best-effort here; queries against a missing
+            # schema will surface their own errors, but log the root cause.
+            logger.warning("Schema bootstrap failed for %s: %s", path, exc)
     conn = sqlite3.connect(path, timeout=10.0)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
-    except Exception:
+    except sqlite3.Error:
+        # Optional performance PRAGMAs; the connection works without them.
         pass
     return conn
 

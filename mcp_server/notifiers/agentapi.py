@@ -37,6 +37,8 @@ class AgentApiNotifier(BaseNotifier):
             if addr and token:
                 self._save_shared_env(addr, token)
         except Exception:
+            # Environment recovery is opportunistic; notifier construction
+            # must never fail because of it.
             pass
 
     @property
@@ -59,7 +61,8 @@ class AgentApiNotifier(BaseNotifier):
             for cand in candidates:
                 if os.path.exists(cand) and os.access(cand, os.X_OK):
                     return cand
-        except Exception:
+        except OSError:
+            # Filesystem probe failed: report the binary as absent.
             pass
         return None
 
@@ -70,7 +73,8 @@ class AgentApiNotifier(BaseNotifier):
                 return True
             if "ANTIGRAVITY_LS_ADDRESS" in os.environ:
                 return True
-        except Exception:
+        except OSError:
+            # Filesystem probe failed: report the notifier as unavailable.
             pass
         return False
 
@@ -85,7 +89,8 @@ class AgentApiNotifier(BaseNotifier):
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             )
             shared_candidates.append(os.path.join(parent_dir, ".jetski_env"))
-        except Exception:
+        except OSError:
+            # Repo-relative candidate is optional; the home-dir ones remain.
             pass
 
         data = {
@@ -128,7 +133,8 @@ class AgentApiNotifier(BaseNotifier):
                     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 )
                 shared_candidates.append(os.path.join(parent_dir, ".jetski_env"))
-            except Exception:
+            except OSError:
+                # Repo-relative candidate is optional; the home-dir ones remain.
                 pass
 
             for shared_file in shared_candidates:
@@ -190,7 +196,8 @@ class AgentApiNotifier(BaseNotifier):
                             )
                     if local_addr and local_token:
                         proc_matches.append((mtime, local_addr, local_token))
-                except Exception:
+                except OSError:
+                    # /proc entries vanish or deny access as processes exit.
                     pass
 
         # Sort matches descending by creation timestamp so active/newest sessions come first
