@@ -127,13 +127,17 @@ class FlashRunner:
         """Prunes binary screenshot blocks from intermediate observation messages."""
         prune_intermediate_screenshots(messages)
 
-    @trace(type="agent", name="FlashRunner")
-    async def run(self, state: State) -> dict:
-        logger.info(f"Starting Artemis Flash reactive loop for goal: {self.goal}")
+    # ------------------------------------------------------------------
+    # run() setup helpers
+    # ------------------------------------------------------------------
 
-        # Fresh scrub-edge ledger per run: the frozen/watermark bookkeeping is
-        # execution state bound to this run's append-only message list.
-        compressor = ScrubEdgeCompressor(
+    def _build_compressor(self) -> ScrubEdgeCompressor:
+        """Builds the per-run scrub-edge compressor.
+
+        Fresh scrub-edge ledger per run: the frozen/watermark bookkeeping is
+        execution state bound to this run's append-only message list.
+        """
+        return ScrubEdgeCompressor(
             summarizer=self.summarizer,
             prune_history_xml=self.step_summarizer_cfg.prune_history_xml,
             image_scrub_depth=self.transcript_cfg.image_scrub_depth,
@@ -141,22 +145,17 @@ class FlashRunner:
             xml_scrub_depth=self.transcript_cfg.xml_scrub_depth,
         )
 
-        # 1. Initialize Universal LLM via Service Layer
+    def _init_llm(self):
+        """Initializes the Universal LLM via the Service Layer."""
         try:
-            llm = get_llm(self.ctx, name="operator")
+            return get_llm(self.ctx, name="operator")
         except Exception as e:
             logger.warning(f"Failed to get operator LLM from config, using default: {e}")
 
-            llm = RobustChatModelWrapper(get_google_llm(model_name="gemini-2.5-flash"), self.ctx)
+            return RobustChatModelWrapper(get_google_llm(model_name="gemini-2.5-flash"), self.ctx)
 
-        tools_declaration = self._get_tools()
-
-        # 2. Capture Initial State (Screenshot + UI Tree)
-        shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
-            self.ctx, state, self.controller, skip_settling=False
-        )
-        state.latest_screenshot = shot_path
-
+    def _build_initial_user_content(self, img_bytes, xml_list) -> list[dict]:
+        """Builds the first HumanMessage content (goal + screenshot + UI tree)."""
         user_content: list[dict] = [
             {"type": "text", "text": f"Your objective is: {self.goal}"},
         ]
@@ -184,21 +183,498 @@ class FlashRunner:
                 ),
             }
         )
+        return user_content
 
-        # Render System Prompt. Tool-teaching segments are gated on the available
-        # tool set so an absent tool leaves no trace in the prompt; until an actuator
-        # is wired in, the full manifest set reproduces the historical prompt.
+    def _render_system_prompt(self, tools_declaration: list) -> str:
+        """Renders the system prompt from the flash_runner.md template.
+
+        Tool-teaching segments are gated on the available tool set so an absent
+        tool leaves no trace in the prompt; until an actuator is wired in, the
+        full manifest set reproduces the historical prompt.
+        """
         prompt_path = Path(__file__).parent / "flash_runner.md"
         prompt_template = prompt_path.read_text(encoding="utf-8")
         available_tools = frozenset(t.name for t in tools_declaration)
-        system_prompt = Template(prompt_template).render(
+        return Template(prompt_template).render(
             goal=self.goal, available_tools=available_tools
         )
 
+    # ------------------------------------------------------------------
+    # Per-turn helpers (observe / think)
+    # ------------------------------------------------------------------
+
+    async def _append_injected_instruction(self, messages: list[BaseMessage]) -> None:
+        """Checks for real-time injected instructions and appends them."""
+        if self.ctx.data_engine and self.ctx.data_engine.base_dir:
+            try:
+                injected_payload = await asyncio.to_thread(
+                    _check_injected_instruction_file,
+                    str(self.ctx.data_engine.base_dir),
+                )
+                if injected_payload and injected_payload.get("instruction"):
+                    injected_text = (
+                        "[REAL-TIME INJECTED INSTRUCTION from user]:"
+                        f" {injected_payload['instruction']}\nYou MUST immediately"
+                        " follow this instruction and adjust your plan/actions."
+                    )
+                    if injected_payload.get("release_loop"):
+                        injected_text += (
+                            "\nThe user has explicitly authorized stopping any"
+                            " ongoing monitoring loop; you may now wrap up and"
+                            " complete the task."
+                        )
+                    messages.append(HumanMessage(content=injected_text))
+            except Exception as e:
+                logger.warning(f"Failed to check injected instruction in FlashRunner: {e}")
+
+    def _select_turn_tools(
+        self, turns: int, tools_declaration: list, messages: list[BaseMessage]
+    ) -> list:
+        """Applies the tool restriction on the final turn."""
+        if turns == self.max_turns:
+            messages.append(
+                HumanMessage(
+                    content=(
+                        "[WARNING] This is your final turn; only"
+                        " 'report_task_status' is available."
+                    )
+                )
+            )
+            return [t for t in tools_declaration if t.name == "report_task_status"]
+        return tools_declaration
+
+    def _extract_response_text(self, response) -> str:
+        """Extracts the natural-language thought text from the model response."""
+        raw_text = response.content if isinstance(response.content, str) else ""
+        if isinstance(response.content, list):
+            raw_text = "".join(
+                b.get("text", "")
+                for b in response.content
+                if isinstance(b, dict) and "text" in b
+            )
+        return raw_text
+
+    def _token_usage_from_response(self, response) -> dict | None:
+        """Extracts token usage metadata from the model response, if present."""
+        step_token_usage = None
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            u = response.usage_metadata
+            pr = u.get("input_tokens") or u.get("prompt_tokens") or 0
+            co = u.get("output_tokens") or u.get("completion_tokens") or 0
+            to = u.get("total_tokens") or (pr + co)
+            if to > 0:
+                step_token_usage = {
+                    "prompt_tokens": int(pr),
+                    "completion_tokens": int(co),
+                    "total_tokens": int(to),
+                }
+        elif hasattr(response, "response_metadata") and isinstance(
+            response.response_metadata, dict
+        ):
+            u = response.response_metadata.get(
+                "usage_metadata"
+            ) or response.response_metadata.get("token_usage")
+            if isinstance(u, dict):
+                pr = (
+                    u.get("input_tokens")
+                    or u.get("prompt_tokens")
+                    or u.get("prompt_token_count")
+                    or 0
+                )
+                co = (
+                    u.get("output_tokens")
+                    or u.get("completion_tokens")
+                    or u.get("candidates_token_count")
+                    or 0
+                )
+                to = u.get("total_tokens") or u.get("total_token_count") or (pr + co)
+                if to > 0:
+                    step_token_usage = {
+                        "prompt_tokens": int(pr),
+                        "completion_tokens": int(co),
+                        "total_tokens": int(to),
+                    }
+        return step_token_usage
+
+    def _estimate_token_usage(self, messages: list[BaseMessage], raw_text: str) -> dict:
+        """Approximates token usage from message sizes when metadata is absent."""
+        calc_prompt_chars = 0
+        calc_images = 0
+        for msg in messages:
+            c = getattr(msg, "content", "")
+            if isinstance(c, str):
+                calc_prompt_chars += len(c)
+            elif isinstance(c, list):
+                for block in c:
+                    if isinstance(block, dict):
+                        if block.get("type") == "image_url" or "image_url" in block:
+                            calc_images += 1
+                        else:
+                            calc_prompt_chars += len(str(block.get("text", "")))
+                    else:
+                        calc_prompt_chars += len(str(block))
+        prompt_tokens = (calc_prompt_chars // 4) + (calc_images * 258)
+        completion_tokens = len(raw_text) // 4
+        return {
+            "prompt_tokens": max(1, prompt_tokens),
+            "completion_tokens": max(1, completion_tokens),
+            "total_tokens": max(1, prompt_tokens + completion_tokens),
+        }
+
+    def _resolve_token_usage(
+        self, response, messages: list[BaseMessage], raw_text: str
+    ) -> dict:
+        """Extracts token usage from response metadata, estimating as fallback."""
+        step_token_usage = self._token_usage_from_response(response)
+        if not step_token_usage or step_token_usage.get("total_tokens", 0) <= 0:
+            step_token_usage = self._estimate_token_usage(messages, raw_text)
+        return step_token_usage
+
+    def _record_llm_trace(self, step_token_usage: dict, raw_text: str) -> None:
+        """Records the llm_call trace for this turn in the DataEngine."""
+        if self.ctx.data_engine:
+            current_step_id = getattr(self.ctx.data_engine, "current_step_id", None)
+            self.ctx.data_engine.record_trace(
+                type="llm_call",
+                name="FlashRunner",
+                payload={"token_usage": step_token_usage, "response": raw_text},
+                step_id=current_step_id,
+                status="success",
+            )
+
+    def _resolve_tool_calls(self, response, raw_text: str) -> list:
+        """Returns native tool calls, falling back to text parsing if absent."""
+        tool_calls = response.tool_calls or []
+
+        # Fallback text parsing if tool_calls not parsed natively
+        if not tool_calls and "```json" in raw_text:
+            parsed = parse_structured(raw_text)
+            if isinstance(parsed, ParseFailure):
+                logger.warning(
+                    "FlashRunner response contained a JSON block that could"
+                    f" not be parsed: {parsed.error}"
+                )
+            elif isinstance(parsed, dict) and "name" in parsed:
+                tool_calls = [
+                    {
+                        "name": parsed["name"],
+                        "args": parsed.get("args", {}),
+                        "id": str(uuid.uuid4()),
+                    }
+                ]
+        return tool_calls
+
+    # ------------------------------------------------------------------
+    # Per-tool-call helpers (act / record / report)
+    # ------------------------------------------------------------------
+
+    async def _finalize_task_report(
+        self,
+        name: str,
+        args: dict,
+        tc_id: str,
+        raw_text: str,
+        step_token_usage: dict,
+        pre_screenshot_bytes,
+        xml_list,
+        messages: list[BaseMessage],
+    ) -> dict:
+        """Records the final step, acknowledges the tool call, and flushes."""
+        final_report = args
+        if self.ctx.data_engine:
+            try:
+                if self.ctx.data_engine.current_step_id is None:
+                    self.ctx.data_engine.allocate_step_id()
+                self.ctx.data_engine.record_step(
+                    pre_screenshot_bytes=pre_screenshot_bytes,
+                    ui_tree=xml_list,
+                    action_taken={"action": "report_task_status", "args": args},
+                    operator_raw_thinking=raw_text,
+                    last_execution_result={
+                        "result": "Task completed with final report."
+                    },
+                    extra_metadata={"token_usage": step_token_usage},
+                )
+            except Exception as step_err:
+                logger.warning(f"Error recording final step in FlashRunner: {step_err}")
+        messages.append(
+            ToolMessage(
+                tool_call_id=tc_id,
+                name=name,
+                content=json.dumps({"status": "acknowledged"}),
+                status="success",
+            )
+        )
+        if self.summarizer:
+            await self.summarizer.flush()
+        return final_report
+
+    async def _capture_post_screenshot(self, exec_result, name: str, action_names):
+        """Returns the post-action screenshot, capturing a fallback if needed."""
+        post_img_bytes = exec_result.screenshot_bytes
+        if not post_img_bytes and name in action_names:
+            try:
+                controller = UnifiedMobileController(self.ctx)
+                screen_data = await controller.get_screen_data()
+                post_img_bytes = base64.b64decode(screen_data.base64)
+                if not exec_result.ui_elements_text:
+                    exec_result.ui_elements_text = screen_data.elements
+            except Exception as shot_err:
+                logger.warning(
+                    f"Failed to capture fallback screenshot in FlashRunner: {shot_err}"
+                )
+        return post_img_bytes
+
+    def _extract_normalized_coordinates(self, name: str, args: dict):
+        """Extracts and enriches coordinate metadata for the recorded action."""
+        norm_coords = None
+        norm_start = None
+        norm_end = None
+        if name == "swipe":
+            kind, target_val, _ = parse_swipe_parameters(args)
+            if (
+                kind == "coords"
+                and isinstance(target_val, list)
+                and len(target_val) == 4
+            ):
+                norm_coords = target_val
+                norm_start = target_val[:2]
+                norm_end = target_val[2:]
+            elif kind == "direction" and isinstance(target_val, str):
+                g_lower = target_val.lower()
+                if "up" in g_lower:
+                    norm_coords = [600, 700, 600, 300]
+                elif "down" in g_lower:
+                    norm_coords = [600, 300, 600, 700]
+                elif "left" in g_lower:
+                    norm_coords = [750, 500, 250, 500]
+                elif "right" in g_lower:
+                    norm_coords = [250, 500, 750, 500]
+                if norm_coords:
+                    norm_start = norm_coords[:2]
+                    norm_end = norm_coords[2:]
+        elif name in ("click", "tap", "long_press", "input_text"):
+            target = args.get("target") or args.get("coordinates")
+            if isinstance(target, (list, tuple)) and len(target) == 2:
+                norm_coords = list(target)
+            elif isinstance(target, str):
+                nums = re.findall(r"-?\d+(?:\.\d+)?", target)
+                if len(nums) == 2:
+                    norm_coords = [int(float(nums[0])), int(float(nums[1]))]
+        return norm_coords, norm_start, norm_end
+
+    def _record_action_step(
+        self,
+        name: str,
+        args: dict,
+        exec_result,
+        raw_text: str,
+        step_token_usage: dict,
+        pre_screenshot_bytes,
+        xml_list,
+        post_img_bytes,
+    ):
+        """Records telemetry / step in DataEngine; returns the step id or None."""
+        recorded_step_id = None
+        try:
+            if self.ctx.data_engine.current_step_id is None:
+                self.ctx.data_engine.allocate_step_id()
+
+            norm_coords, norm_start, norm_end = self._extract_normalized_coordinates(
+                name, args
+            )
+
+            action_dict = {
+                "action": name,
+                "coordinates": (
+                    args.get("target")
+                    or args.get("coordinates")
+                    or args.get("sequence")
+                    or norm_coords
+                ),
+                "args": args,
+            }
+            if norm_coords:
+                action_dict["normalized_coordinates"] = norm_coords
+            if norm_start and norm_end:
+                action_dict["normalized_start_coordinates"] = norm_start
+                action_dict["normalized_end_coordinates"] = norm_end
+
+            # Record-time enrichment computed by the executor from
+            # the pre-action frame (target_text / target_class /
+            # target_resource_id / target_label_source).
+            target_semantics = (exec_result.metadata or {}).get(
+                "target_semantics"
+            )
+            if isinstance(target_semantics, dict):
+                action_dict.update(target_semantics)
+
+            recorded_step_id = self.ctx.data_engine.record_step(
+                pre_screenshot_bytes=pre_screenshot_bytes,
+                post_screenshot_bytes=post_img_bytes,
+                ui_tree=(exec_result.ui_elements_text or xml_list),
+                action_taken=action_dict,
+                operator_raw_thinking=raw_text,
+                last_execution_result={"result": exec_result.text_summary},
+                extra_metadata={"token_usage": step_token_usage},
+            )
+        except Exception as step_err:
+            logger.warning(f"Error recording step in FlashRunner: {step_err}")
+        return recorded_step_id
+
+    async def _execute_and_record_action(
+        self,
+        name: str,
+        args: dict,
+        tc_id: str,
+        state: State,
+        messages: list[BaseMessage],
+        raw_text: str,
+        step_token_usage: dict,
+        pre_screenshot_bytes,
+        xml_list,
+        action_sequence: int,
+    ):
+        """Executes one action tool call, records it, and updates loop state.
+
+        Returns the (possibly updated) pre_screenshot_bytes, xml_list, and
+        action_sequence for the next iteration.
+        """
+        try:
+            exec_result = await self.executor.execute(name, args, tc_id, state)
+
+            # Dynamic dispatch set: manifest device actions plus any backend
+            # extension tools, so extension steps are recorded like actions.
+            action_names = self.executor.action_tool_names
+
+            post_img_bytes = await self._capture_post_screenshot(
+                exec_result, name, action_names
+            )
+
+            # Record telemetry / step in DataEngine
+            recorded_step_id = None
+            if self.ctx.data_engine and name in action_names:
+                recorded_step_id = self._record_action_step(
+                    name,
+                    args,
+                    exec_result,
+                    raw_text,
+                    step_token_usage,
+                    pre_screenshot_bytes,
+                    xml_list,
+                    post_img_bytes,
+                )
+
+            # ⚡ Non-blocking dispatch of objective visual transition summarizer
+            if self.summarizer and name in action_names:
+                action_sequence += 1
+                self.summarizer.dispatch(
+                    step_number=action_sequence,
+                    action_name=name,
+                    action_args=args,
+                    pre_img_bytes=pre_screenshot_bytes,
+                    post_img_bytes=post_img_bytes,
+                    exec_outcome=exec_result.text_summary,
+                    action_key=str(tc_id),
+                    data_engine_step_id=recorded_step_id,
+                )
+
+            if post_img_bytes:
+                pre_screenshot_bytes = post_img_bytes
+            if exec_result.ui_elements_text:
+                xml_list = exec_result.ui_elements_text
+
+            messages.append(exec_result.to_langchain_tool_message())
+
+        except Exception as e:
+            logger.error(f"Error executing tool {name}: {e}")
+            messages.append(
+                ToolMessage(
+                    tool_call_id=tc_id,
+                    name=name,
+                    content=f"Error executing tool {name}: {e}",
+                    status="error",
+                )
+            )
+        return pre_screenshot_bytes, xml_list, action_sequence
+
+    async def _invoke_model(self, llm, current_tools: list, messages: list[BaseMessage]):
+        """Binds the active tools and invokes the model through the LLM gateway."""
+        # Bind active tools
+        bound_llm = llm.bind_tools(current_tools)
+
+        # Invoke Model. Streaming, live-token UI deltas, classified
+        # retries, and pause/resume are all owned by the LLM gateway
+        # (acomplete); a typed LLMCallError propagates if it gives up.
+        return await invoke_llm_with_timeout_message(
+            acomplete(bound_llm, messages), timeout_seconds=10, hard_timeout=180
+        )
+
+    async def _process_tool_calls(
+        self,
+        tool_calls: list,
+        state: State,
+        messages: list[BaseMessage],
+        raw_text: str,
+        step_token_usage: dict,
+        pre_screenshot_bytes,
+        xml_list,
+        action_sequence: int,
+    ):
+        """Dispatches the turn's tool calls.
+
+        Returns (final_report, pre_screenshot_bytes, xml_list, action_sequence);
+        final_report is non-None only when 'report_task_status' was called.
+        """
+        for tc in tool_calls:
+            name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
+            args = tc.get("args") or {}
+            tc_id = tc.get("id") or str(uuid.uuid4())
+            logger.info(f"Executing Flash tool: {name}({args})")
+
+            if name == "report_task_status":
+                final_report = await self._finalize_task_report(
+                    name, args, tc_id, raw_text, step_token_usage,
+                    pre_screenshot_bytes, xml_list, messages,
+                )
+                return final_report, pre_screenshot_bytes, xml_list, action_sequence
+
+            pre_screenshot_bytes, xml_list, action_sequence = (
+                await self._execute_and_record_action(
+                    name, args, tc_id, state, messages, raw_text, step_token_usage,
+                    pre_screenshot_bytes, xml_list, action_sequence,
+                )
+            )
+        return None, pre_screenshot_bytes, xml_list, action_sequence
+
+    async def _prepare_conversation(self, state: State, tools_declaration: list):
+        """Captures the initial device state and builds the seed messages."""
+        # 2. Capture Initial State (Screenshot + UI Tree)
+        shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
+            self.ctx, state, self.controller, skip_settling=False
+        )
+        state.latest_screenshot = shot_path
+
         messages: list[BaseMessage] = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_content),
+            SystemMessage(content=self._render_system_prompt(tools_declaration)),
+            HumanMessage(content=self._build_initial_user_content(img_bytes, xml_list)),
         ]
+        return messages, img_bytes, xml_list
+
+    @trace(type="agent", name="FlashRunner")
+    async def run(self, state: State) -> dict:
+        logger.info(f"Starting Artemis Flash reactive loop for goal: {self.goal}")
+
+        compressor = self._build_compressor()
+
+        # 1. Initialize Universal LLM via Service Layer
+        llm = self._init_llm()
+
+        tools_declaration = self._get_tools()
+
+        messages, img_bytes, xml_list = await self._prepare_conversation(
+            state, tools_declaration
+        )
 
         turns = 0
         action_sequence = 0
@@ -214,27 +690,7 @@ class FlashRunner:
                 self.ctx.data_engine.allocate_step_id()
 
             # Check for real-time injected instructions
-            if self.ctx.data_engine and self.ctx.data_engine.base_dir:
-                try:
-                    injected_payload = await asyncio.to_thread(
-                        _check_injected_instruction_file,
-                        str(self.ctx.data_engine.base_dir),
-                    )
-                    if injected_payload and injected_payload.get("instruction"):
-                        injected_text = (
-                            "[REAL-TIME INJECTED INSTRUCTION from user]:"
-                            f" {injected_payload['instruction']}\nYou MUST immediately"
-                            " follow this instruction and adjust your plan/actions."
-                        )
-                        if injected_payload.get("release_loop"):
-                            injected_text += (
-                                "\nThe user has explicitly authorized stopping any"
-                                " ongoing monitoring loop; you may now wrap up and"
-                                " complete the task."
-                            )
-                        messages.append(HumanMessage(content=injected_text))
-                except Exception as e:
-                    logger.warning(f"Failed to check injected instruction in FlashRunner: {e}")
+            await self._append_injected_instruction(messages)
 
             # Advance the scrub edge even when visual summarization is
             # disabled, so screenshot and historical XML pruning keep one
@@ -242,28 +698,9 @@ class FlashRunner:
             compressor.compress(messages)
 
             # Tool restriction on the final turn
-            if turns == self.max_turns:
-                messages.append(
-                    HumanMessage(
-                        content=(
-                            "[WARNING] This is your final turn; only"
-                            " 'report_task_status' is available."
-                        )
-                    )
-                )
-                current_tools = [t for t in tools_declaration if t.name == "report_task_status"]
-            else:
-                current_tools = tools_declaration
+            current_tools = self._select_turn_tools(turns, tools_declaration, messages)
 
-            # Bind active tools
-            bound_llm = llm.bind_tools(current_tools)
-
-            # Invoke Model. Streaming, live-token UI deltas, classified
-            # retries, and pause/resume are all owned by the LLM gateway
-            # (acomplete); a typed LLMCallError propagates if it gives up.
-            response = await invoke_llm_with_timeout_message(
-                acomplete(bound_llm, messages), timeout_seconds=10, hard_timeout=180
-            )
+            response = await self._invoke_model(llm, current_tools, messages)
 
             if response is None:
                 break
@@ -271,106 +708,14 @@ class FlashRunner:
             messages.append(response)
 
             # Extract thought and tool calls
-            raw_text = response.content if isinstance(response.content, str) else ""
-            if isinstance(response.content, list):
-                raw_text = "".join(
-                    b.get("text", "")
-                    for b in response.content
-                    if isinstance(b, dict) and "text" in b
-                )
+            raw_text = self._extract_response_text(response)
 
             # Extract token usage metadata from response
-            step_token_usage = None
-            if hasattr(response, "usage_metadata") and response.usage_metadata:
-                u = response.usage_metadata
-                pr = u.get("input_tokens") or u.get("prompt_tokens") or 0
-                co = u.get("output_tokens") or u.get("completion_tokens") or 0
-                to = u.get("total_tokens") or (pr + co)
-                if to > 0:
-                    step_token_usage = {
-                        "prompt_tokens": int(pr),
-                        "completion_tokens": int(co),
-                        "total_tokens": int(to),
-                    }
-            elif hasattr(response, "response_metadata") and isinstance(
-                response.response_metadata, dict
-            ):
-                u = response.response_metadata.get(
-                    "usage_metadata"
-                ) or response.response_metadata.get("token_usage")
-                if isinstance(u, dict):
-                    pr = (
-                        u.get("input_tokens")
-                        or u.get("prompt_tokens")
-                        or u.get("prompt_token_count")
-                        or 0
-                    )
-                    co = (
-                        u.get("output_tokens")
-                        or u.get("completion_tokens")
-                        or u.get("candidates_token_count")
-                        or 0
-                    )
-                    to = u.get("total_tokens") or u.get("total_token_count") or (pr + co)
-                    if to > 0:
-                        step_token_usage = {
-                            "prompt_tokens": int(pr),
-                            "completion_tokens": int(co),
-                            "total_tokens": int(to),
-                        }
+            step_token_usage = self._resolve_token_usage(response, messages, raw_text)
 
-            if not step_token_usage or step_token_usage.get("total_tokens", 0) <= 0:
-                calc_prompt_chars = 0
-                calc_images = 0
-                for msg in messages:
-                    c = getattr(msg, "content", "")
-                    if isinstance(c, str):
-                        calc_prompt_chars += len(c)
-                    elif isinstance(c, list):
-                        for block in c:
-                            if isinstance(block, dict):
-                                if block.get("type") == "image_url" or "image_url" in block:
-                                    calc_images += 1
-                                else:
-                                    calc_prompt_chars += len(str(block.get("text", "")))
-                            else:
-                                calc_prompt_chars += len(str(block))
-                prompt_tokens = (calc_prompt_chars // 4) + (calc_images * 258)
-                completion_tokens = len(raw_text) // 4
-                step_token_usage = {
-                    "prompt_tokens": max(1, prompt_tokens),
-                    "completion_tokens": max(1, completion_tokens),
-                    "total_tokens": max(1, prompt_tokens + completion_tokens),
-                }
+            self._record_llm_trace(step_token_usage, raw_text)
 
-            if self.ctx.data_engine:
-                current_step_id = getattr(self.ctx.data_engine, "current_step_id", None)
-                self.ctx.data_engine.record_trace(
-                    type="llm_call",
-                    name="FlashRunner",
-                    payload={"token_usage": step_token_usage, "response": raw_text},
-                    step_id=current_step_id,
-                    status="success",
-                )
-
-            tool_calls = response.tool_calls or []
-
-            # Fallback text parsing if tool_calls not parsed natively
-            if not tool_calls and "```json" in raw_text:
-                parsed = parse_structured(raw_text)
-                if isinstance(parsed, ParseFailure):
-                    logger.warning(
-                        "FlashRunner response contained a JSON block that could"
-                        f" not be parsed: {parsed.error}"
-                    )
-                elif isinstance(parsed, dict) and "name" in parsed:
-                    tool_calls = [
-                        {
-                            "name": parsed["name"],
-                            "args": parsed.get("args", {}),
-                            "id": str(uuid.uuid4()),
-                        }
-                    ]
+            tool_calls = self._resolve_tool_calls(response, raw_text)
 
             if not tool_calls:
                 logger.info(
@@ -391,173 +736,17 @@ class FlashRunner:
                 continue
 
             # Process tool calls
-            for tc in tool_calls:
-                name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
-                args = tc.get("args") or {}
-                tc_id = tc.get("id") or str(uuid.uuid4())
-                logger.info(f"Executing Flash tool: {name}({args})")
-
-                if name == "report_task_status":
-                    final_report = args
-                    if self.ctx.data_engine:
-                        try:
-                            if self.ctx.data_engine.current_step_id is None:
-                                self.ctx.data_engine.allocate_step_id()
-                            self.ctx.data_engine.record_step(
-                                pre_screenshot_bytes=current_pre_screenshot_bytes,
-                                ui_tree=current_xml_list,
-                                action_taken={"action": "report_task_status", "args": args},
-                                operator_raw_thinking=raw_text,
-                                last_execution_result={
-                                    "result": "Task completed with final report."
-                                },
-                                extra_metadata={"token_usage": step_token_usage},
-                            )
-                        except Exception as step_err:
-                            logger.warning(f"Error recording final step in FlashRunner: {step_err}")
-                    messages.append(
-                        ToolMessage(
-                            tool_call_id=tc_id,
-                            name=name,
-                            content=json.dumps({"status": "acknowledged"}),
-                            status="success",
-                        )
-                    )
-                    if self.summarizer:
-                        await self.summarizer.flush()
-                    return final_report
-
-                try:
-                    exec_result = await self.executor.execute(name, args, tc_id, state)
-
-                    # Dynamic dispatch set: manifest device actions plus any backend
-                    # extension tools, so extension steps are recorded like actions.
-                    action_names = self.executor.action_tool_names
-
-                    post_img_bytes = exec_result.screenshot_bytes
-                    if not post_img_bytes and name in action_names:
-                        try:
-                            controller = UnifiedMobileController(self.ctx)
-                            screen_data = await controller.get_screen_data()
-                            post_img_bytes = base64.b64decode(screen_data.base64)
-                            if not exec_result.ui_elements_text:
-                                exec_result.ui_elements_text = screen_data.elements
-                        except Exception as shot_err:
-                            logger.warning(
-                                f"Failed to capture fallback screenshot in FlashRunner: {shot_err}"
-                            )
-
-                    # Record telemetry / step in DataEngine
-                    recorded_step_id = None
-                    if self.ctx.data_engine and name in action_names:
-                        try:
-                            if self.ctx.data_engine.current_step_id is None:
-                                self.ctx.data_engine.allocate_step_id()
-
-                            # Extract and enrich coordinate metadata
-                            norm_coords = None
-                            norm_start = None
-                            norm_end = None
-                            if name == "swipe":
-                                kind, target_val, _ = parse_swipe_parameters(args)
-                                if (
-                                    kind == "coords"
-                                    and isinstance(target_val, list)
-                                    and len(target_val) == 4
-                                ):
-                                    norm_coords = target_val
-                                    norm_start = target_val[:2]
-                                    norm_end = target_val[2:]
-                                elif kind == "direction" and isinstance(target_val, str):
-                                    g_lower = target_val.lower()
-                                    if "up" in g_lower:
-                                        norm_coords = [600, 700, 600, 300]
-                                    elif "down" in g_lower:
-                                        norm_coords = [600, 300, 600, 700]
-                                    elif "left" in g_lower:
-                                        norm_coords = [750, 500, 250, 500]
-                                    elif "right" in g_lower:
-                                        norm_coords = [250, 500, 750, 500]
-                                    if norm_coords:
-                                        norm_start = norm_coords[:2]
-                                        norm_end = norm_coords[2:]
-                            elif name in ("click", "tap", "long_press", "input_text"):
-                                target = args.get("target") or args.get("coordinates")
-                                if isinstance(target, (list, tuple)) and len(target) == 2:
-                                    norm_coords = list(target)
-                                elif isinstance(target, str):
-                                    nums = re.findall(r"-?\d+(?:\.\d+)?", target)
-                                    if len(nums) == 2:
-                                        norm_coords = [int(float(nums[0])), int(float(nums[1]))]
-
-                            action_dict = {
-                                "action": name,
-                                "coordinates": (
-                                    args.get("target")
-                                    or args.get("coordinates")
-                                    or args.get("sequence")
-                                    or norm_coords
-                                ),
-                                "args": args,
-                            }
-                            if norm_coords:
-                                action_dict["normalized_coordinates"] = norm_coords
-                            if norm_start and norm_end:
-                                action_dict["normalized_start_coordinates"] = norm_start
-                                action_dict["normalized_end_coordinates"] = norm_end
-
-                            # Record-time enrichment computed by the executor from
-                            # the pre-action frame (target_text / target_class /
-                            # target_resource_id / target_label_source).
-                            target_semantics = (exec_result.metadata or {}).get(
-                                "target_semantics"
-                            )
-                            if isinstance(target_semantics, dict):
-                                action_dict.update(target_semantics)
-
-                            recorded_step_id = self.ctx.data_engine.record_step(
-                                pre_screenshot_bytes=current_pre_screenshot_bytes,
-                                post_screenshot_bytes=post_img_bytes,
-                                ui_tree=(exec_result.ui_elements_text or current_xml_list),
-                                action_taken=action_dict,
-                                operator_raw_thinking=raw_text,
-                                last_execution_result={"result": exec_result.text_summary},
-                                extra_metadata={"token_usage": step_token_usage},
-                            )
-                        except Exception as step_err:
-                            logger.warning(f"Error recording step in FlashRunner: {step_err}")
-
-                    # ⚡ Non-blocking dispatch of objective visual transition summarizer
-                    if self.summarizer and name in action_names:
-                        action_sequence += 1
-                        self.summarizer.dispatch(
-                            step_number=action_sequence,
-                            action_name=name,
-                            action_args=args,
-                            pre_img_bytes=current_pre_screenshot_bytes,
-                            post_img_bytes=post_img_bytes,
-                            exec_outcome=exec_result.text_summary,
-                            action_key=str(tc_id),
-                            data_engine_step_id=recorded_step_id,
-                        )
-
-                    if post_img_bytes:
-                        current_pre_screenshot_bytes = post_img_bytes
-                    if exec_result.ui_elements_text:
-                        current_xml_list = exec_result.ui_elements_text
-
-                    messages.append(exec_result.to_langchain_tool_message())
-
-                except Exception as e:
-                    logger.error(f"Error executing tool {name}: {e}")
-                    messages.append(
-                        ToolMessage(
-                            tool_call_id=tc_id,
-                            name=name,
-                            content=f"Error executing tool {name}: {e}",
-                            status="error",
-                        )
-                    )
+            (
+                final_report_from_calls,
+                current_pre_screenshot_bytes,
+                current_xml_list,
+                action_sequence,
+            ) = await self._process_tool_calls(
+                tool_calls, state, messages, raw_text, step_token_usage,
+                current_pre_screenshot_bytes, current_xml_list, action_sequence,
+            )
+            if final_report_from_calls is not None:
+                return final_report_from_calls
 
         if self.summarizer:
             await self.summarizer.flush()
