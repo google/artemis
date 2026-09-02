@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import difflib
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,6 +20,7 @@ import re
 
 from artemis.data_engine.engine import _CURRENT_DATA_ENGINE
 from artemis.utils.logger import get_logger
+from artemis.utils.plan_grammar import parse_plan
 
 logger = get_logger(__name__)
 
@@ -411,23 +411,24 @@ def record_subgoal_hash_chain(
     if not content_before or not content_after:
         return
 
-    # Helper to get the active subgoal hash from task_plan string
+    # Helper to get the active subgoal hash from task_plan string.
+    # Parsing goes through the plan-grammar single source; the hash is
+    # ``PlanItem.key`` (= ``plan_grammar.subgoal_hash``, md5 of the stripped
+    # subgoal text) -- byte-identical to the historical inline md5, so anchors
+    # already persisted in subgoal_hash_chain.json stay valid.
     def get_active_hash(task_plan: str) -> str | None:
         try:
-            lines = task_plan.splitlines()
-            for line in reversed(lines):
-                if line.strip().startswith("- [/]"):
-                    text = line.strip()[5:].strip()
-                    return hashlib.md5(text.encode("utf-8")).hexdigest()
-
-            # Fallback to first pending [ ] if no [/]
-            for line in lines:
-                if line.strip().startswith("- [ ]"):
-                    text = line.strip()[5:].strip()
-                    return hashlib.md5(text.encode("utf-8")).hexdigest()
+            snapshot = parse_plan(task_plan)
+            # Last active [/] item wins (its own key, not the parent's) --
+            # matches the historical reversed-scan behavior of this helper.
+            item = snapshot.last_active()
+            if item is None:
+                # Fallback to the first pending [ ] item if no [/].
+                item = next((i for i in snapshot.items if i.is_pending), None)
+            return item.key if item is not None else None
         except Exception as exc:
-            # Pure string/hash operations; a failure here is unexpected and
-            # silently disables subgoal rename tracking.
+            # A failure here is unexpected and silently disables subgoal
+            # rename tracking.
             logger.warning("Failed to compute active subgoal hash: %s", exc)
         return None
 

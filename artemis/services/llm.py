@@ -1025,17 +1025,7 @@ def _resolve_endpoint(
     is_utils: bool = False,
     use_fallback: bool = False,
 ) -> ModelEndpoint:
-    """Cleanly resolves a ModelEndpoint from context router or llm_config."""
-    # 1. Prefer dynamic ModelRouter if attached to context
-    if getattr(ctx, "model_router", None) is not None:
-        role_name = str(name).lower()
-        if use_fallback:
-            fallbacks = ctx.model_router.get_fallbacks(role_name)
-            if fallbacks:
-                return fallbacks[0]
-        return ctx.model_router.get_endpoint(role_name)
-
-    # 2. Fall back to context llm_config
+    """Cleanly resolves a ModelEndpoint from context llm_config."""
     if getattr(ctx, "llm_config", None) is None:
         try:
             ctx.llm_config = get_default_llm_config()

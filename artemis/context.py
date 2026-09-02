@@ -179,7 +179,6 @@ class ArtemisContext(BaseModel):
 
     device: DeviceContext
     llm_config: LLMConfig | None = None
-    model_router: Any | None = None
     agent_config: Any = None
     adb_client: Any | None = None
     ui_adb_client: Any | None = None

@@ -12,80 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for Dynamic Model Router."""
+"""Unit tests for ModelFactory instantiation and grounding tool wiring."""
 
-from artemis.llm.router import ModelEndpoint, ModelProvider, ModelRouter
-
-
-def test_model_router_default_routes():
-    """Verify default role routing returns expected models."""
-    router = ModelRouter()
-
-    # Planner route
-    planner_ep = router.get_endpoint("planner")
-    assert planner_ep.provider == ModelProvider.GEMINI
-    assert "pro" in planner_ep.model_name
-
-    # Operator route
-    operator_ep = router.get_endpoint("operator")
-    assert operator_ep.provider == ModelProvider.GEMINI
-    assert "flash" in operator_ep.model_name
+from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
 
 
-def test_model_router_custom_route_override():
-    """Verify dynamic role route override."""
-    router = ModelRouter()
-    custom_ep = ModelEndpoint(
-        provider=ModelProvider.OPENAI,
-        model_name="gpt-4o",
-        api_base="https://custom.api.endpoint/v1",
-    )
-    router.set_role_route("operator", custom_ep)
-
-    ep = router.get_endpoint("operator")
-    assert ep.provider == ModelProvider.OPENAI
-    assert ep.model_name == "gpt-4o"
-    assert ep.api_base == "https://custom.api.endpoint/v1"
-
-
-def test_model_router_fallbacks():
-    """Verify fallback endpoint configuration."""
-    router = ModelRouter()
-    fallbacks = [
-        ModelEndpoint(provider=ModelProvider.GEMINI, model_name="gemini-2.5-flash"),
-        ModelEndpoint(provider=ModelProvider.OPENAI, model_name="gpt-4o-mini"),
-    ]
-    router.set_role_route("custom_worker", "gemini-2.5-pro", fallbacks=fallbacks)
-    fb = router.get_fallbacks("custom_worker")
-    assert len(fb) == 2
-    assert fb[0].model_name == "gemini-2.5-flash"
-    assert fb[1].model_name == "gpt-4o-mini"
-
-
-def test_model_router_anthropic_instantiation():
+def test_model_factory_anthropic_instantiation():
     """Verify Anthropic Claude model instantiation with thinking budget."""
-    router = ModelRouter()
     anth_ep = ModelEndpoint(
         provider=ModelProvider.ANTHROPIC,
         model_name="claude-3-7-sonnet-20250219",
         api_key="sk-ant-test-key",
         reasoning_effort="high",
     )
-    model = router.instantiate_model(anth_ep)
+    model = ModelFactory.create_model(anth_ep)
     assert model.model == "claude-3-7-sonnet-20250219"
     assert getattr(model, "thinking", None) == {"type": "enabled", "budget_tokens": 32768}
 
 
-def test_model_router_openai_instantiation():
+def test_model_factory_openai_instantiation():
     """Verify OpenAI model instantiation with reasoning effort."""
-    router = ModelRouter()
     oai_ep = ModelEndpoint(
         provider=ModelProvider.OPENAI,
         model_name="o3-mini",
         api_key="sk-test-key",
         reasoning_effort="medium",
     )
-    model = router.instantiate_model(oai_ep)
+    model = ModelFactory.create_model(oai_ep)
     assert model.model_name == "o3-mini"
     assert getattr(model, "reasoning_effort", None) == "medium"
 
