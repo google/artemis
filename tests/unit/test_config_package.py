@@ -179,13 +179,13 @@ def test_agent_config_loading():
     assert agent_cfg.explorer.caching is True
     assert "explorer" in agent_cfg.denylisted_tools
     assert agent_cfg.video_analyzer.enable_ledger is True
-    assert agent_cfg.planner_validation.enabled is False
+    assert agent_cfg.planner_validation.enabled is True
     assert agent_cfg.planner_validation.similarity_threshold == 0.85
     assert agent_cfg.committee.enabled is False
     assert agent_cfg.committee.debate_rounds == 2
-    assert agent_cfg.checker.enabled is False
+    assert agent_cfg.checker.enabled is True
     assert agent_cfg.checker.max_iterations == 20
-    assert agent_cfg.checker.midway_checks is True
+    assert agent_cfg.checker.midway_checks is False
     assert agent_cfg.checker.final_check is True
     assert agent_cfg.checker.assert_failure_policy == "continue"
     assert agent_cfg.checker.device_probes is True
@@ -194,9 +194,9 @@ def test_agent_config_loading():
     assert agent_cfg.flash.max_turns == 30
     assert agent_cfg.flash.explorer_mode == "flash"
     assert agent_cfg.pro.explorer.mode == "flash"
-    assert agent_cfg.pro.checker.enabled is False
+    assert agent_cfg.pro.checker.enabled is True
     assert agent_cfg.pro.committee.enabled is False
-    assert agent_cfg.pro.planner_validation.enabled is False
+    assert agent_cfg.pro.planner_validation.enabled is True
     assert agent_cfg.pro.video_analyzer.enable_ledger is True
 
 
@@ -255,10 +255,10 @@ def test_planner_validation_builder_and_milestones():
     from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
     from artemis.utils.plan_grammar import milestones_changed, parse_plan
 
-    # Default builder inherits from artemis.jsonc (enabled=False, similarity_threshold=0.85)
+    # Default builder inherits from artemis.jsonc (enabled=True, similarity_threshold=0.85)
     builder = AgentConfigBuilder()
     cfg = builder.build()
-    assert cfg.disable_planner_validation is True
+    assert cfg.disable_planner_validation is False
     assert cfg.planner_validation_threshold == 0.85
 
     # Fluent enabling
@@ -338,12 +338,12 @@ def test_checker_builder_and_context_propagation():
     from artemis.sdk.agent import Agent
     from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
 
-    # Default builder inherits from artemis.jsonc (enabled=False, max_iterations=20)
+    # Default builder inherits from artemis.jsonc (enabled=True, midway off, final on)
     builder = AgentConfigBuilder()
     cfg = builder.build()
-    assert cfg.disable_checker is True
+    assert cfg.disable_checker is False
     assert cfg.checker_max_iterations == 20
-    assert cfg.disable_midway_checks is False
+    assert cfg.disable_midway_checks is True
     assert cfg.disable_final_check is False
 
     # Fluent enabling with the new two-gate knobs
@@ -400,6 +400,47 @@ def test_checker_builder_and_context_propagation():
     # Effective gate semantics: master alias off + individual gates
     assert ctx.execution_setup.midway_checks_enabled is True
     assert ctx.execution_setup.final_check_enabled is False
+
+
+def test_factory_default_verification_layering():
+    """Contract: out of the box, the verification stack is layered as
+    final check ON / planner validation (ratchet) ON / midway checks OFF."""
+    from artemis.config.agent import AgentGlobalConfig, CheckerConfig, PlannerValidationConfig
+    from artemis.context import ExecutionSetup
+    from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
+
+    # Config-model factory defaults
+    assert CheckerConfig().enabled is True
+    assert CheckerConfig().midway_checks is False
+    assert CheckerConfig().final_check is True
+    assert PlannerValidationConfig().enabled is True
+
+    # Bare ExecutionSetup carries the same layering, including the effective
+    # gate semantics (master on + midway off => final review runs, no midway
+    # checkpoint ever spawns).
+    setup = ExecutionSetup()
+    assert setup.disable_checker is False
+    assert setup.disable_midway_checks is True
+    assert setup.disable_final_check is False
+    assert setup.disable_planner_validation is False
+    assert setup.final_check_enabled is True
+    assert setup.midway_checks_enabled is False
+    assert setup.checks_enabled is True
+
+    # Builder default (fed by config/artemis.jsonc) agrees
+    cfg = AgentConfigBuilder().build()
+    assert cfg.disable_checker is False
+    assert cfg.disable_midway_checks is True
+    assert cfg.disable_final_check is False
+    assert cfg.disable_planner_validation is False
+
+    # Shipped artemis.jsonc agrees with the model factory defaults
+    agent_cfg = load_agent_config()
+    assert agent_cfg.checker.enabled is True
+    assert agent_cfg.checker.midway_checks is False
+    assert agent_cfg.checker.final_check is True
+    assert agent_cfg.planner_validation.enabled is True
+    assert AgentGlobalConfig().checker.enabled is True
 
 
 def test_explorer_builder_and_resolution(monkeypatch):

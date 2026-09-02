@@ -159,7 +159,7 @@
       },
       // 🎯 Planner Validation: Async verification when task plan milestones change
       "planner_validation": {
-        "enabled": false,
+        "enabled": true, // On by default: ratchet-baseline milestone validation
         "similarity_threshold": 0.85
       },
       // 🏛️ Committee: Multi-Agent Council debate tool for Operator
@@ -169,9 +169,9 @@
       },
       // 🔎 Checker: Plan-declared checkpoint verification (optimistic async) + exit final review
       "checker": {
-        "enabled": false, // Master switch (compat alias): false disables both gates below
-        "midway_checks": true, // Plan-declared midway checkpoints (verify/assert on subgoal completion)
-        "final_check": true, // Exit final review against the user's original goal
+        "enabled": true, // Master switch (compat alias): false disables both gates below
+        "midway_checks": false, // Plan-declared midway checkpoints (off in the factory layering)
+        "final_check": true, // Exit final review against the user's original goal (on by default)
         "max_iterations": 20,
         "final_check_max_attempts": 3,
         "checkpoint_max_repairs": 2,

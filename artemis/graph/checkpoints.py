@@ -41,11 +41,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from artemis.utils.logger import get_logger
-from artemis.utils.notes import get_note_file_path
+from artemis.utils.notes import append_note_content, get_note_file_path
 from artemis.utils.plan_grammar import (
     CHECKBOX_LINE_RE,
+    STATUS_ACTIVE,
+    STATUS_DONE,
     CheckItem,
     PlanSnapshot,
+    apply_finding_lines,
     parse_plan,
     subgoal_hash,
 )
@@ -220,8 +223,12 @@ def revert_subgoal_status(ctx, subgoal_key: str) -> bool:
             if not match or match.group("indent"):
                 continue
             if subgoal_hash(match.group("text").strip()) == subgoal_key:
-                if match.group("status") == "x":
-                    lines[idx] = re.sub(r"^(\s*-\s*\[)x(\])", r"\g<1>/\g<2>", line)
+                if match.group("status") == STATUS_DONE:
+                    lines[idx] = re.sub(
+                        r"^(\s*-\s*\[)" + re.escape(STATUS_DONE) + r"(\])",
+                        lambda m: m.group(1) + STATUS_ACTIVE + m.group(2),
+                        line,
+                    )
                     changed = True
                 break
         if changed:
@@ -230,6 +237,127 @@ def revert_subgoal_status(ctx, subgoal_key: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to revert subgoal status: {e}")
         return False
+
+
+# --- Verify-finding persistence (four layers; redesign "verify finding") -------------
+#
+# Layer 1: the append-only ledger above (single source of truth — unchanged).
+# Layer 2: `- finding:` plan lines — a single-direction projection rendered by
+#          :func:`sync_finding_lines`; harness code never reads them back.
+# Layer 3: the system-authored `checker-<checkpoint_id>` note — full details on
+#          first failure, then one appended section per attempt verdict.
+# Layer 4: single-turn ``operator_feedback`` findings (unchanged).
+
+#: Reserved note-key prefixes for system-authored checker repair logs. The
+#: model-side note tool wrappers reject writes to these keys. ``checker-`` is
+#: the prefix actually used for storage (a colon is not a legal filename
+#: character on Windows/NTFS); ``checker:`` is reserved alongside it so the
+#: conceptual spelling can never be squatted either.
+CHECKER_NOTE_PREFIXES = ("checker-", "checker:")
+
+_FINDING_HEADLINE_EVIDENCE_LIMIT = 160
+
+
+def checker_note_key(checkpoint_id: str) -> str:
+    """Note key of the system-authored detail/repair log for one checkpoint."""
+    return f"checker-{checkpoint_id}"
+
+
+def is_checker_note_key(key: str) -> bool:
+    """True when a note key is reserved for system-authored checker logs."""
+    return str(key or "").strip().lower().startswith(CHECKER_NOTE_PREFIXES)
+
+
+def _finding_registry(ctx) -> dict:
+    """checkpoint_id -> rendered headline of the unresolved verify finding.
+
+    Kept as a dynamic context attribute (``ArtemisContext`` allows extras) so
+    the registry lives exactly as long as the run.
+    """
+    registry = getattr(ctx, "checker_findings", None)
+    if not isinstance(registry, dict):
+        registry = {}
+        try:
+            ctx.checker_findings = registry
+        except Exception:
+            pass
+    return registry
+
+
+def _render_finding_headline(checkpoint_id: str, verify_failures: list) -> str:
+    first = verify_failures[0]
+    evidence = str(getattr(first, "evidence", "") or "").strip()
+    if len(evidence) > _FINDING_HEADLINE_EVIDENCE_LIMIT:
+        evidence = evidence[: _FINDING_HEADLINE_EVIDENCE_LIMIT - 1] + "…"
+    detail = f": {evidence}" if evidence else ""
+    return (
+        f"verify failed — '{first.item_text}'{detail}"
+        f" (details & repair log: note '{checker_note_key(checkpoint_id)}')"
+    )
+
+
+def sync_finding_lines(ctx) -> None:
+    """Re-projects the unresolved verify findings into ``task_plan.md``.
+
+    Deterministic merge-back protection for the ``- finding:`` channel: every
+    call strips all finding lines and re-renders one per unresolved checkpoint
+    under its subgoal, so a model deletion grows back and a resolved finding
+    disappears. Pure projection — nothing is ever parsed back out of the plan.
+    """
+    if not getattr(ctx, "data_engine", None):
+        return
+    path = get_note_file_path(ctx.data_engine.base_dir, "task_plan")
+    if not path.exists():
+        return
+    try:
+        content = path.read_text(encoding="utf-8")
+        registry = getattr(ctx, "checker_findings", None)
+        findings = dict(registry) if isinstance(registry, dict) else {}
+        projected = apply_finding_lines(content, findings)
+        if projected != content:
+            path.write_text(projected, encoding="utf-8")
+    except Exception as e:
+        logger.error(f"Failed to project finding lines into task plan: {e}")
+
+
+def _log_checker_note(ctx, run: CheckpointRun, verdicts: list) -> None:
+    """Appends this attempt's verdicts to the checkpoint's system note.
+
+    The note starts at the FIRST failed verify (full criterion/evidence/
+    suggestion detail) and afterwards accumulates one section per attempt —
+    including the eventually passing one — as a persistent repair log. It is
+    written through the notes storage API directly (never the model tool
+    path), stays on disk after resolution, and is discoverable via read_note /
+    recall_history under the key returned by :func:`checker_note_key`.
+    """
+    try:
+        base_dir = ctx.data_engine.base_dir
+        cid = run.checkpoint.checkpoint_id
+        key = checker_note_key(cid)
+        note_path = get_note_file_path(base_dir, key)
+        verify_failures = [v for v in verdicts if v.kind == "verify" and v.status == "failed"]
+        if not note_path.exists() and not verify_failures:
+            return  # the log only starts once a verify criterion has failed
+
+        blocks: list[str] = []
+        if not note_path.exists():
+            blocks.append(
+                f"# Checker findings — subgoal: {run.checkpoint.subgoal_text}\n"
+                "System-authored verification log (append-only). Each section"
+                " records one checkpoint attempt's verdicts."
+            )
+        outcome = "failed" if verify_failures else "passed"
+        lines = [f"## attempt {run.attempt_id} — verify {outcome}"]
+        for v in verdicts:
+            line = f"- [{v.kind}] '{v.item_text}': {v.status} — {v.evidence}"
+            suggestion = str(getattr(v, "suggestion", "") or "")
+            if suggestion:
+                line += f"\n  suggestion: {suggestion}"
+            lines.append(line)
+        blocks.append("\n".join(lines))
+        append_note_content(base_dir, key, "\n\n".join(blocks))
+    except Exception as e:
+        logger.error(f"Failed to append checker note for {run.attempt_id}: {e}")
 
 
 # --- Queueing (called from _process_plan_write; never spawns) ------------------------
@@ -390,6 +518,8 @@ def harvest_run(
     verdicts = list(getattr(report, "verdicts", []) or [])
     _record_verdicts(ctx, run, verdicts, anchor_step_id)
     _annotate_history_chunks(ctx, run, verdicts)
+    # Layer 3: the per-checkpoint repair log accumulates every booked attempt.
+    _log_checker_note(ctx, run, verdicts)
 
     # Applicability gate for side effects: the verdict must belong to the
     # current attempt of its checkpoint AND the anchored subgoal's text must be
@@ -400,12 +530,21 @@ def harvest_run(
     verify_failures = [v for v in verdicts if v.kind == "verify" and v.status == "failed"]
     assert_failures = [v for v in verdicts if v.kind == "assert" and v.status == "failed"]
 
+    registry = _finding_registry(ctx)
+    registry_changed = False
+
     if verify_failures and applicable and not user_stopped:
         max_repairs = int(_setting(ctx, "checkpoint_max_repairs", 2))
         repairs = ctx.checkpoint_repairs.get(checkpoint.checkpoint_id, 0)
         if repairs < max_repairs:
             ctx.checkpoint_repairs[checkpoint.checkpoint_id] = repairs + 1
             reverted = revert_subgoal_status(ctx, checkpoint.checkpoint_id)
+            # Layer 2: register the standing plan headline for this unresolved
+            # finding; the projection below renders it under the subgoal.
+            registry[checkpoint.checkpoint_id] = _render_finding_headline(
+                checkpoint.checkpoint_id, verify_failures
+            )
+            registry_changed = True
             for v in verify_failures:
                 suggestion = getattr(v, "suggestion", "") or ""
                 findings.append(
@@ -420,11 +559,22 @@ def harvest_run(
                     " it again."
                 )
         else:
+            # Quota exhausted: the run is settled for this checkpoint — the
+            # standing headline is retired (the ledger and the checker note
+            # keep the full record).
+            registry_changed = registry.pop(checkpoint.checkpoint_id, None) is not None
             logger.warning(
                 f"Checkpoint {checkpoint.checkpoint_id} exhausted its repair"
                 f" quota ({max_repairs}); verdict stays failed, no further"
                 " repair loop."
             )
+    elif not verify_failures:
+        # A booked attempt without failed verify criteria resolves (or
+        # releases) the checkpoint: its standing headline is retired.
+        registry_changed = registry.pop(checkpoint.checkpoint_id, None) is not None
+
+    if registry_changed:
+        sync_finding_lines(ctx)
 
     if assert_failures:
         policy = str(_setting(ctx, "assert_failure_policy", "continue"))

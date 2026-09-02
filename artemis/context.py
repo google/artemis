@@ -105,10 +105,13 @@ class ExecutionSetup(BaseModel):
     enable_remote_tracing: bool = False
     app_lock_status: AppLaunchResult | None = None
     video_recording_tools_enabled: bool = Field(default_factory=detect_video_tools_enabled)
-    disable_checker: bool = True
+    disable_checker: bool = False
     """Legacy master switch (compat alias): ``True`` disables BOTH the midway
-    checkpoints and the final check, regardless of the individual gates below."""
-    disable_midway_checks: bool = False
+    checkpoints and the final check, regardless of the individual gates below.
+    Factory default is ``False``: the exit final review runs out of the box."""
+    disable_midway_checks: bool = True
+    """Midway checkpoints are OFF by default (factory layering: final check on,
+    planner validation on, midway checks off)."""
     disable_final_check: bool = False
     checker_max_iterations: int = 20
     final_check_max_attempts: int = 3
@@ -118,7 +121,7 @@ class ExecutionSetup(BaseModel):
     settlement_timeout: float = 120.0
     assert_failure_policy: Literal["continue", "halt"] = "continue"
     disable_device_probes: bool = False
-    disable_planner_validation: bool = True
+    disable_planner_validation: bool = False
     planner_validation_threshold: float = 0.85
     enable_committee: bool = False
     committee_debate_rounds: int = 2

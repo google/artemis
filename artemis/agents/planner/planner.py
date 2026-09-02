@@ -46,10 +46,40 @@ from artemis.tools.tool_wrapper import (
 from artemis.utils.decorators import wrap_with_callbacks
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
-from artemis.utils.plan_grammar import render_plan_grammar_spec
+from artemis.utils.plan_grammar import (
+    CHECKBOX_LINE_RE,
+    STATUS_CHARS,
+    parse_plan,
+    render_plan_grammar_spec,
+)
 from artemis.memory.context_policy import build_history_for
 
 logger = get_logger(__name__)
+
+
+def validate_plan_format(content: str) -> tuple[bool, str]:
+    """Validates a freshly written plan against the machine-channel grammar.
+
+    Single-sourced from :mod:`artemis.utils.plan_grammar`: any status character
+    the grammar accepts (including in-progress ``[/]``) is legal here too, so
+    the Planner can never reject a line the rest of the harness would parse.
+    """
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- [") and not CHECKBOX_LINE_RE.match(stripped):
+            allowed = ", ".join(f"'[{c}]'" for c in STATUS_CHARS)
+            return (
+                False,
+                f"Invalid task status in line: {line}. Must be one of {allowed}.",
+            )
+
+    if not parse_plan(content).items:
+        return (
+            False,
+            "Plan must contain at least one subgoal starting with '- [ ]'.",
+        )
+
+    return True, ""
 
 
 def _checks_enabled(ctx: ArtemisContext) -> bool:
@@ -275,38 +305,6 @@ class PlannerNode:
         if all_tools:
             llm = llm.bind_tools(all_tools)
             llm_fallback = llm_fallback.bind_tools(all_tools)
-
-        def validate_plan_format(content: str) -> tuple[bool, str]:
-            lines = content.splitlines()
-            has_subgoal = False
-            for line in lines:
-                stripped = line.strip()
-                if stripped.startswith("- ["):
-                    has_subgoal = True
-                    if not (
-                        stripped.startswith("- [ ]")
-                        or stripped.startswith("- [x]")
-                        or stripped.startswith("- [!]")
-                    ):
-                        return (
-                            False,
-                            (
-                                f"Invalid task status in line: {line}. Must be"
-                                " '[ ]', '[x]', or '[!]'."
-                            ),
-                        )
-                elif stripped.startswith("#") or not stripped:
-                    continue
-                else:
-                    continue
-
-            if not has_subgoal:
-                return (
-                    False,
-                    ("Plan must contain at least one subgoal starting with '- [ ]'."),
-                )
-
-            return True, ""
 
         current_messages = messages
         max_validation_attempts = 3

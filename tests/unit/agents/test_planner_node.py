@@ -84,3 +84,29 @@ async def test_planner_initial_plan(mock_context):
         assert isinstance(human_msg_content, list)
         assert human_msg_content[0]["type"] == "text"
         assert "Goal: Test Goal" in human_msg_content[0]["text"]
+
+
+def test_validate_plan_format_single_sourced_status_alphabet():
+    """Regression: the Planner's format gate is single-sourced from
+    plan_grammar — a legal in-progress '[/]' line must never be rejected."""
+    from artemis.agents.planner.planner import validate_plan_format
+
+    valid, err = validate_plan_format(
+        "- [x] Done milestone\n- [/] In-progress milestone\n  - [ ] Sub\n- [!] Blocked\n"
+    )
+    assert valid is True and err == ""
+
+    # Every grammar status char is accepted; unknown ones are still rejected.
+    from artemis.utils.plan_grammar import STATUS_CHARS
+
+    for c in STATUS_CHARS:
+        ok, _ = validate_plan_format(f"- [{c}] Milestone\n")
+        assert ok is True
+
+    bad, message = validate_plan_format("- [z] Bogus status\n")
+    assert bad is False
+    assert "Invalid task status" in message
+
+    empty, message = validate_plan_format("# just prose\n")
+    assert empty is False
+    assert "at least one subgoal" in message

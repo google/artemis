@@ -62,6 +62,15 @@ CHECK_LINE_RE = re.compile(
     r"^(?P<indent>\s*)-\s*(?P<kind>verify|assert)(?P<at_end>@end)?\s*:\s*(?P<text>\S.*?)\s*$"
 )
 
+#: Finding lines are SYSTEM-authored standing headlines for unresolved verify
+#: failures, indented under the affected subgoal. They are a single-direction
+#: projection of the checkpoint repair state: harness code re-renders them on
+#: every plan write and NEVER reads their text back. They match neither
+#: :data:`CHECKBOX_LINE_RE` nor :data:`CHECK_LINE_RE`, so they can never
+#: contribute to milestone hashing, ratchet drift detection, check-item
+#: multisets, or completion triggers.
+FINDING_LINE_RE = re.compile(r"^(?P<indent>\s*)-\s*finding\s*:\s*(?P<text>.*)$")
+
 
 def subgoal_hash(text: str) -> str:
     """Stable identity hash for a subgoal text (used for per-subgoal artifacts)."""
@@ -305,6 +314,58 @@ def restore_missing_check_items(content_before: str, content_after: str) -> str 
     return "\n".join(merged) + ("\n" if (content_after or "").endswith("\n") else "")
 
 
+def render_finding_line(text: str, indent: int = 2) -> str:
+    return f"{' ' * indent}- finding: {text}"
+
+
+def strip_finding_lines(content: str) -> str:
+    """Removes every finding line (system channel hygiene before re-projection)."""
+    if not content:
+        return content
+    lines = [line for line in content.splitlines() if not FINDING_LINE_RE.match(line)]
+    return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+
+
+def apply_finding_lines(content: str, findings_by_parent_key: dict[str, str]) -> str:
+    """Deterministic single-direction projection of unresolved verify findings.
+
+    Removes ALL existing ``- finding:`` lines, then re-inserts one rendered
+    line per entry directly under its parent top-level subgoal (matched by
+    content hash). Entries whose parent subgoal no longer exists in the plan
+    are dropped silently — a rewritten subgoal supersedes its stale finding.
+    The projection is content-driven and idempotent: the model deleting a
+    finding line simply makes it grow back on the next write, and harness code
+    never reads the rendered text back.
+    """
+    stripped = strip_finding_lines(content or "")
+    if not findings_by_parent_key:
+        return stripped
+
+    snapshot = parse_plan(stripped)
+    line_by_key: dict[str, int] = {}
+    for item in snapshot.items:
+        if item.is_top_level:
+            line_by_key.setdefault(item.key, item.line_no)
+
+    inserts: dict[int, list[str]] = {}
+    for parent_key, text in findings_by_parent_key.items():
+        line_no = line_by_key.get(parent_key)
+        if line_no is None:
+            continue
+        inserts.setdefault(line_no, []).append(render_finding_line(text))
+
+    if not inserts:
+        return stripped
+
+    lines = stripped.splitlines()
+    merged: list[str] = []
+    for line_no, line in enumerate(lines):
+        merged.append(line)
+        if line_no in inserts:
+            merged.extend(inserts[line_no])
+    return "\n".join(merged) + ("\n" if stripped.endswith("\n") else "")
+
+
 def new_top_level_completions(before: PlanSnapshot, after: PlanSnapshot) -> list[str]:
     """Top-level texts newly marked done, in plan order."""
     before_done = {i.text for i in before.top_level if i.is_done}
@@ -343,7 +404,8 @@ A top-level milestone may carry indented check lines, and the plan may end with 
 - `  - verify: <expected state>` — an acceptance criterion for its parent milestone. It is judged by an independent Checker at the moment the milestone is marked completed; a failed verify triggers a repair loop.
 - `  - assert: <expected observation>` — a test assertion. It is judged by the independent Checker and a failure is recorded verbatim as a legitimate test result; assertions are NEVER repaired, worked around, or satisfied by constructing state.
 - `- verify@end: ...` / `- assert@end: ...` — the `@end` suffix defers judgment to task exit, using the final device state. Items without `@end` are judged with the evidence available when their anchored milestone completes.
-- Capability boundary (declare honestly, never promise more): all checks are POST-HOC audits over recorded evidence. They detect and record violations after the fact; they CANNOT block an action from happening, so "B must not run before A is confirmed" ordering rules are verified retroactively, not enforced. Transient prompts that were never captured in the execution history cannot be recovered — prefer expressing expectations as persistently probeable state."""
+- Capability boundary (declare honestly, never promise more): all checks are POST-HOC audits over recorded evidence. They detect and record violations after the fact; they CANNOT block an action from happening, so "B must not run before A is confirmed" ordering rules are verified retroactively, not enforced. Transient prompts that were never captured in the execution history cannot be recovered — prefer expressing expectations as persistently probeable state.
+- `  - finding: ...` — a SYSTEM-authored standing headline pinned under a milestone whose verify criterion failed. You never author these lines: the system re-renders them on every plan write (deleting one only makes it reappear) and removes them automatically once the verify passes again or its repair budget is exhausted. Each finding names a `checker-...` note holding the full details and repair log — read it with `read_note`; note keys with the `checker-` prefix are reserved for the system and are read-only for you."""
 
 
 def render_plan_grammar_spec(include_checks: bool) -> str:

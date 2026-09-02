@@ -111,8 +111,8 @@ class AgentConfig(BaseModel):
     graph_config_callbacks: Callbacks = None
     video_recording_tools_enabled: bool = Field(default_factory=detect_video_tools_enabled)
     force_web_accessibility: bool = False
-    disable_checker: bool = True
-    disable_midway_checks: bool = False
+    disable_checker: bool = False
+    disable_midway_checks: bool = True
     disable_final_check: bool = False
     checker_max_iterations: int = 20
     final_check_max_attempts: int = 3
@@ -122,7 +122,7 @@ class AgentConfig(BaseModel):
     settlement_timeout: float = 120.0
     assert_failure_policy: Literal["continue", "halt"] = "continue"
     disable_device_probes: bool = False
-    disable_planner_validation: bool = True
+    disable_planner_validation: bool = False
     planner_validation_threshold: float = 0.85
     enable_committee: bool = False
     committee_debate_rounds: int = 2
