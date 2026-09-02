@@ -365,7 +365,7 @@ def test_build_plan_and_history_concatenates_thoughts():
     assert "    - Raw thought" in output
 
 
-def test_build_plan_and_history_chronological_last_step():
+def test_build_plan_and_history_interleaved_decision_loop():
     plan = "- [ ] Subgoal 1"
     steps = [
         {
@@ -390,9 +390,7 @@ def test_build_plan_and_history_chronological_last_step():
             ],
         }
     ]
-    output = build_plan_and_history(
-        plan, steps, "default", last_n_detailed=1, chronological_last_step=True
-    )
+    output = build_plan_and_history(plan, steps, "default", last_n_detailed=1)
 
     assert plan in output
     assert "--- Execution History ---" in output
@@ -464,9 +462,7 @@ def test_build_plan_and_history_safety_net_and_failure_analyzer():
             ],
         }
     ]
-    output = build_plan_and_history(
-        plan, steps, "default", last_n_detailed=1, chronological_last_step=True
-    )
+    output = build_plan_and_history(plan, steps, "default", last_n_detailed=1)
 
     assert "- **Step 1 (Most Recent Step, Start: 5.0s)**" in output
     assert "* [Operator Decision Loop]:" in output

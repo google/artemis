@@ -27,6 +27,7 @@ from uuid import UUID
 from artemis.data_engine.models import (
     BackgroundTaskRecord,
     FailedOutputRecord,
+    HistoryChunkRecord,
     ImageRecord,
     SessionMetadata,
     StepRecord,
@@ -202,6 +203,26 @@ class StorageManager:
                     end_time REAL,
                     trace_id TEXT,
                     logs TEXT,
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS history_chunks (
+                    chunk_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    start_step_id TEXT,
+                    end_step_id TEXT,
+                    start_step_number INTEGER,
+                    end_step_number INTEGER,
+                    source_step_ids TEXT,
+                    subgoal_hash TEXT,
+                    version INTEGER,
+                    status TEXT,
+                    band1 TEXT,
+                    band2 TEXT,
+                    band3 TEXT,
+                    rendered_text TEXT,
+                    created_at REAL,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 )
             """)
@@ -534,21 +555,178 @@ class StorageManager:
             )
             conn.commit()
 
-    def update_step_summary(self, step_id: UUID, summary: str):
-        """Update the summary for a step."""
+    def update_step_summary(
+        self,
+        step_id: UUID,
+        summary: str | None,
+        *,
+        source: str | None = None,
+        version: int | None = None,
+        model: str | None = None,
+        status: str = "ready",
+    ) -> bool:
+        """Versioned, status-carrying summary write (replaces the blind overwrite).
+
+        Writes ``summary_status`` / ``summary_source`` / ``summary_version`` /
+        ``summary_model`` into the step's ``extra_metadata``. Concurrent writes
+        to the same step are ordered by version: an explicit ``version`` lower
+        than the stored one is dropped; ``version=None`` auto-increments the
+        stored version. Status downgrades are refused without a newer explicit
+        version: ``pending`` never overwrites ``ready``/``failed``, and
+        ``failed`` never overwrites ``ready``. The ``summary`` column itself is
+        only touched by a ``ready`` write with a non-None summary.
+
+        Returns True when the write was applied, False when it was dropped as
+        stale (or the step does not exist).
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT extra_metadata FROM steps WHERE step_id = ?",
+                (str(step_id),),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False
+
+            try:
+                meta = json.loads(row["extra_metadata"]) if row["extra_metadata"] else {}
+                if not isinstance(meta, dict):
+                    meta = {}
+            except Exception:
+                meta = {}
+
+            current_version = meta.get("summary_version")
+            current_version = current_version if isinstance(current_version, int) else 0
+            current_status = meta.get("summary_status")
+
+            if version is not None:
+                if version < current_version:
+                    return False
+                new_version = version
+                is_newer = version > current_version
+            else:
+                new_version = current_version + 1
+                is_newer = False
+
+            # Status downgrades require an explicitly newer version.
+            if not is_newer:
+                if status == "pending" and current_status in ("ready", "failed"):
+                    return False
+                if status == "failed" and current_status == "ready":
+                    return False
+
+            meta["summary_status"] = status
+            meta["summary_version"] = new_version
+            if source is not None:
+                meta["summary_source"] = source
+            if model is not None:
+                meta["summary_model"] = model
+
+            if status == "ready" and summary is not None:
+                conn.execute(
+                    "UPDATE steps SET summary = ?, extra_metadata = ? WHERE step_id = ?",
+                    (summary, json.dumps(meta), str(step_id)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE steps SET extra_metadata = ? WHERE step_id = ?",
+                    (json.dumps(meta), str(step_id)),
+                )
+            conn.commit()
+            return True
+
+    def create_history_chunk(self, chunk: HistoryChunkRecord):
+        """Insert one history-chunk version row (append-only; never updates)."""
         with self._get_connection() as conn:
             conn.execute(
                 """
-                UPDATE steps 
-                SET summary = ?
-                WHERE step_id = ?
+                INSERT INTO history_chunks (
+                    chunk_id, session_id, start_step_id, end_step_id,
+                    start_step_number, end_step_number, source_step_ids,
+                    subgoal_hash, version, status, band1, band2, band3,
+                    rendered_text, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    summary,
-                    str(step_id),
+                    str(chunk.chunk_id),
+                    str(chunk.session_id),
+                    chunk.start_step_id,
+                    chunk.end_step_id,
+                    chunk.start_step_number,
+                    chunk.end_step_number,
+                    json.dumps(chunk.source_step_ids),
+                    chunk.subgoal_hash,
+                    chunk.version,
+                    chunk.status,
+                    json.dumps(chunk.band1, ensure_ascii=False, cls=SafeJSONEncoder),
+                    chunk.band2,
+                    chunk.band3,
+                    chunk.rendered_text,
+                    chunk.created_at,
                 ),
             )
             conn.commit()
+
+    def get_history_chunks(
+        self, session_id: UUID | str, *, all_versions: bool = False
+    ) -> list[HistoryChunkRecord]:
+        """History chunks of a session ordered by step range.
+
+        By default only the newest version per step range is returned; pass
+        ``all_versions=True`` for the full append-only trail (audit/tests).
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM history_chunks WHERE session_id = ?
+                ORDER BY start_step_number ASC, version ASC, created_at ASC
+                """,
+                (str(session_id),),
+            )
+            rows = cursor.fetchall()
+
+        records: list[HistoryChunkRecord] = []
+        for row in rows:
+            try:
+                source_ids = json.loads(row["source_step_ids"]) if row["source_step_ids"] else []
+            except Exception:
+                source_ids = []
+            try:
+                band1 = json.loads(row["band1"]) if row["band1"] else {}
+                if not isinstance(band1, dict):
+                    band1 = {}
+            except Exception:
+                band1 = {}
+            records.append(
+                HistoryChunkRecord(
+                    chunk_id=row["chunk_id"],
+                    session_id=row["session_id"],
+                    start_step_id=row["start_step_id"],
+                    end_step_id=row["end_step_id"],
+                    start_step_number=row["start_step_number"],
+                    end_step_number=row["end_step_number"],
+                    source_step_ids=source_ids,
+                    subgoal_hash=row["subgoal_hash"],
+                    version=row["version"],
+                    status=row["status"],
+                    band1=band1,
+                    band2=row["band2"],
+                    band3=row["band3"],
+                    rendered_text=row["rendered_text"],
+                    created_at=row["created_at"],
+                )
+            )
+        if all_versions:
+            return records
+
+        latest: dict[tuple[int, int], HistoryChunkRecord] = {}
+        for rec in records:
+            key = (rec.start_step_number, rec.end_step_number)
+            current = latest.get(key)
+            if current is None or rec.version >= current.version:
+                latest[key] = rec
+        return sorted(latest.values(), key=lambda r: r.start_step_number)
 
     def update_step_thinking(self, step_id: UUID, operator_raw_thinking: str):
         """Update the raw thinking process for a step."""

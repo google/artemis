@@ -56,6 +56,7 @@ from artemis.llm.reliability import (
     retry_policy_for,
 )
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
+from artemis.services.token_meter import record_llm_usage
 from artemis.llm.structured import (
     ParseFailure,
     StructuredOutputError,
@@ -632,13 +633,22 @@ class RobustChatModelWrapper:
             args, kwargs = _inject_parent_trace_id(trace_id, *args, **kwargs)
         return args, kwargs, trace_id
 
+    def _meter_usage(self, response) -> None:
+        """Record measured token usage for this call (M0 metering, best-effort)."""
+        engine = self.ctx.data_engine if self.ctx else None
+        if engine is None:
+            engine = _get_current_data_engine()
+        record_llm_usage(engine, response, source=self._endpoint_key())
+
     async def ainvoke(self, *args, **kwargs):
         args, kwargs, _ = self._traced_call(args, kwargs)
-        return await _run_with_recovery(
+        response = await _run_with_recovery(
             functools.partial(self.base_model.ainvoke, *args, **kwargs),
             provider=self._provider_value(),
             endpoint_key=self._endpoint_key(),
         )
+        self._meter_usage(response)
+        return response
 
     async def complete(self, *args, **kwargs):
         """Single completion entry point: returns the full final message.
@@ -652,11 +662,13 @@ class RobustChatModelWrapper:
         """
         args, kwargs, _ = self._traced_call(args, kwargs)
         emit_deltas = bool(self.ctx and self.ctx.data_engine)
-        return await _run_with_recovery(
+        response = await _run_with_recovery(
             functools.partial(self._complete_attempt, emit_deltas, *args, **kwargs),
             provider=self._provider_value(),
             endpoint_key=self._endpoint_key(),
         )
+        self._meter_usage(response)
+        return response
 
     def _emit_stream_delta(self, stream_exec_id, chunk) -> None:
         content = getattr(chunk, "content", None)

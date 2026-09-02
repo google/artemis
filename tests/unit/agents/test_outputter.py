@@ -286,6 +286,9 @@ async def test_outputter_builds_concise_history(mock_get_llm):
         }
     ]
     mock_data_engine.get_agent_friendly_steps.return_value = steps
+    # M5: the transcript flag defaults on, so the outputter's compiled view
+    # consults the chunk store; no persisted chunks keeps the classic path.
+    mock_data_engine.get_history_chunks.return_value = []
     mock_data_engine.base_dir = "/tmp/mock_session"
     ctx.data_engine = mock_data_engine
 

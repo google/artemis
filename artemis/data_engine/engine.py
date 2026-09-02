@@ -14,6 +14,7 @@
 
 import asyncio
 from collections.abc import Callable
+import functools
 import hashlib
 import json
 import os
@@ -29,6 +30,7 @@ from artemis.context import ArtemisContext
 from artemis.data_engine.models import (
     BackgroundTaskRecord,
     FailedOutputRecord,
+    HistoryChunkRecord,
     ImageRecord,
     SessionMetadata,
     StepRecord,
@@ -47,6 +49,43 @@ from artemis.utils.text import safe_extract_text
 logger = get_logger(__name__)
 
 _CURRENT_DATA_ENGINE = None
+
+# Overlay packages that never identify the app the user is working in.
+_FOREGROUND_APP_IGNORED = {"com.android.systemui"}
+
+
+def _derive_foreground_app(ui_tree: Any | None) -> str | None:
+    """Best-effort foreground package from a perception UI tree (M5).
+
+    Counts ``package``/``packageName`` attributes across the node list
+    (recursing into ``children``), ignores system-overlay packages, and
+    returns the most frequent value. Pure string work — never raises, never
+    touches the device.
+    """
+    counts: dict[str, int] = {}
+
+    def _visit(node: Any, depth: int = 0) -> None:
+        if depth > 50:
+            return
+        if isinstance(node, dict):
+            pkg = node.get("package") or node.get("packageName")
+            if isinstance(pkg, str) and pkg and pkg not in _FOREGROUND_APP_IGNORED:
+                counts[pkg] = counts.get(pkg, 0) + 1
+            children = node.get("children")
+            if isinstance(children, (list, tuple)):
+                for child in children:
+                    _visit(child, depth + 1)
+        elif isinstance(node, (list, tuple)):
+            for child in node:
+                _visit(child, depth + 1)
+
+    try:
+        _visit(ui_tree)
+    except Exception:
+        return None
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
 class DataEngine:
@@ -538,6 +577,33 @@ class DataEngine:
         if pre_image_name and post_image_name and pre_image_name == post_image_name:
             post_image_name = None
 
+        # M5: persist the foreground app for the recall search surface (the
+        # parameter was historically accepted but never stored). The explicit
+        # parameter wins; otherwise it is derived best-effort from the UI
+        # tree's package attributes — a pure string scan, no device call.
+        extra_metadata = dict(extra_metadata or {})
+        try:
+            app = foreground_app or _derive_foreground_app(ui_tree)
+            if app:
+                extra_metadata.setdefault("foreground_app", app)
+        except Exception:
+            pass
+
+        # M4: stamp perceptual hashes for the local screen-similarity hint
+        # (pure PIL dHash; best-effort, computed synchronously to keep the
+        # record immutable once handed to the background writer).
+        try:
+            from artemis.utils.image_hash import dhash_hex
+
+            pre_dhash = dhash_hex(pre_screenshot_bytes)
+            if pre_dhash:
+                extra_metadata.setdefault("pre_image_dhash", pre_dhash)
+            post_dhash = dhash_hex(post_screenshot_bytes) if post_image_name else pre_dhash
+            if post_dhash:
+                extra_metadata.setdefault("post_image_dhash", post_dhash)
+        except Exception:
+            pass
+
         step = StepRecord(
             step_id=step_id,
             session_id=self.current_session_id,
@@ -550,7 +616,7 @@ class DataEngine:
             operator_raw_thinking=operator_raw_thinking,
             operator_native_thinking=operator_native_thinking,
             last_execution_result=last_execution_result,
-            extra_metadata=extra_metadata or {},
+            extra_metadata=extra_metadata,
         )
 
         def _run_background_storage():
@@ -971,8 +1037,24 @@ class DataEngine:
         path = self.get_image_path(image_name)
         return path if path.exists() else None
 
-    def update_step_summary(self, step_id: UUID | int | str, summary: str):
-        """Update the step with a concise summary in background."""
+    def update_step_summary(
+        self,
+        step_id: UUID | int | str,
+        summary: str | None,
+        *,
+        source: str | None = None,
+        version: int | None = None,
+        model: str | None = None,
+        status: str = "ready",
+    ):
+        """Update the step summary in background, with status/version metadata.
+
+        Writes ``summary_status`` / ``summary_source`` / ``summary_version`` /
+        ``summary_model`` into the step's ``extra_metadata`` alongside the
+        summary text; concurrent same-step writes are ordered by version in the
+        storage layer. ``status`` may be ``pending`` / ``ready`` / ``failed`` /
+        ``stale``; only ``ready`` writes carry summary text and publish SSE.
+        """
         target_uuid = None
         if isinstance(step_id, int):
             if self.current_session_id:
@@ -993,7 +1075,19 @@ class DataEngine:
             logger.debug(f"Could not resolve step_id for {step_id} to update summary.")
             return
 
-        self._run_in_background(self.storage.update_step_summary, target_uuid, summary)
+        self._run_in_background(
+            functools.partial(
+                self.storage.update_step_summary,
+                target_uuid,
+                summary,
+                source=source,
+                version=version,
+                model=model,
+                status=status,
+            )
+        )
+        if status != "ready" or summary is None:
+            return
         step_num = self.get_step_number(target_uuid if not isinstance(step_id, int) else step_id)
         payload = {
             "step_id": str(target_uuid),
@@ -1003,6 +1097,60 @@ class DataEngine:
         if step_num is not None:
             payload["step_number"] = step_num
         self._publish("step_updated", payload)
+
+    def record_history_chunk(
+        self,
+        *,
+        start_step_number: int,
+        end_step_number: int,
+        version: int,
+        status: str,
+        start_step_id: str | None = None,
+        end_step_id: str | None = None,
+        source_step_ids: list[str] | None = None,
+        subgoal_hash: str | None = None,
+        band1: dict[str, Any] | None = None,
+        band2: str | None = None,
+        band3: str | None = None,
+        rendered_text: str | None = None,
+    ) -> UUID | None:
+        """Persist one history-chunk version row in the background (append-only).
+
+        Chunk identity is the step range; callers own version numbering (a
+        newer version for the same range supersedes older ones at read time).
+        """
+        if not self.current_session_id:
+            return None
+        chunk = HistoryChunkRecord(
+            chunk_id=uuid4(),
+            session_id=self.current_session_id,
+            start_step_id=start_step_id,
+            end_step_id=end_step_id,
+            start_step_number=start_step_number,
+            end_step_number=end_step_number,
+            source_step_ids=source_step_ids or [],
+            subgoal_hash=subgoal_hash,
+            version=version,
+            status=status,
+            band1=band1 or {},
+            band2=band2,
+            band3=band3,
+            rendered_text=rendered_text,
+        )
+        self._run_in_background(self.storage.create_history_chunk, chunk)
+        return chunk.chunk_id
+
+    def get_history_chunks(self, *, all_versions: bool = False) -> list[HistoryChunkRecord]:
+        """History chunks of the active session (newest version per step range)."""
+        if not self.current_session_id:
+            return []
+        try:
+            return self.storage.get_history_chunks(
+                self.current_session_id, all_versions=all_versions
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch history chunks: {e}")
+            return []
 
     def update_step_thinking(self, step_id: UUID, operator_raw_thinking: str):
         """Update step's thinking in SQLite in background."""

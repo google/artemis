@@ -13,7 +13,6 @@
 # limitations under the License.
 
 RECURSION_LIMIT = 30000
-MAX_MESSAGES_IN_HISTORY = 25
 
 # Optimization Constants
 CHECKER_MAX_ITERATIONS = 20

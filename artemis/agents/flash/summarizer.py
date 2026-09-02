@@ -16,7 +16,13 @@
 
 Processes Before/After screenshot pairs and action metadata in the background
 to generate high-density, strictly objective visual state transition summaries.
-Ensures zero blocking latency for the main runner and independently retries failed jobs.
+
+Scheduling (zero-blocking dispatch, bounded retry, bounded flush, step_id
+keying with tool_call_id aliases) lives in the shared
+:class:`artemis.memory.step_memory.StepMemoryService`; this class contributes
+only the visual-transition lens: red action-marker overlay on the BEFORE
+frame, the ``flash_summarizer.md`` neutral-wording contract, and versioned
+``summary_status`` writes to the DataEngine.
 """
 
 import asyncio
@@ -29,32 +35,61 @@ from jinja2 import Template
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from artemis.context import ArtemisContext
-from artemis.services.llm import get_google_llm, get_llm
+from artemis.memory.step_memory import JobKey, StepMemoryService
+from artemis.services.llm import RobustChatModelWrapper, get_google_llm, get_llm
+from artemis.services.token_meter import record_llm_usage
 from artemis.utils.logger import get_logger
 from artemis.utils.visualization import draw_action_overlay_on_image
 
 logger = get_logger(__name__)
 
+# Degenerate-output guard (§5 echo validation): a summary that echoes the
+# input's section markers, or falls outside sane length bounds, fails the
+# attempt so the bounded service retry regenerates it.
+SUMMARY_ECHO_MARKER = "--- ["
+SUMMARY_MIN_CHARS = 15
+SUMMARY_MAX_CHARS = 1500
 
-class VisualStepSummarizer:
-    """Non-blocking background worker generating objective visual step summaries.
 
-    Key design properties:
+def degenerate_summary_reason(text: str) -> str | None:
+    """Why a lens output is unusable (echo/length), or None when it is fine."""
+    if SUMMARY_ECHO_MARKER in text or text.startswith("---"):
+        return "echoes an input section marker"
+    if len(text) < SUMMARY_MIN_CHARS:
+        return f"too short ({len(text)} chars < {SUMMARY_MIN_CHARS})"
+    if len(text) > SUMMARY_MAX_CHARS:
+        return f"too long ({len(text)} chars > {SUMMARY_MAX_CHARS})"
+    return None
+
+
+class VisualStepSummarizer(StepMemoryService):
+    """Visual-transition lens on top of the shared step-memory runtime.
+
+    Key design properties (inherited from StepMemoryService):
     1. Zero-blocking dispatch: The main Flash runner dispatches and proceeds immediately.
     2. Lossless pending state: The compressor retains the source image until its summary is ready.
-    3. Independent retry: Every action owns a retry loop and does not depend on later actions arriving.
+    3. Independent bounded retry: Every action owns a retry loop capped at 1 + retry_limit attempts.
     """
 
-    def __init__(self, ctx: ArtemisContext, model_name: str | None = None):
-        self.ctx = ctx
-        self._summaries: dict[int | str, str] = {}
-        self._pending_tasks: dict[int | str, asyncio.Task] = {}
-        self._step_inputs: dict[int | str, dict[str, Any]] = {}
-        self._retry_counts: dict[int | str, int] = {}
-        self._retry_delays = (0.0, 0.5, 1.0, 2.0, 3.0)
+    def __init__(
+        self,
+        ctx: ArtemisContext,
+        model_name: str | None = None,
+        retry_limit: int = 3,
+        *,
+        max_concurrency: int = 1,
+        flush_timeout_s: float = 30.0,
+    ):
+        super().__init__(
+            ctx,
+            max_concurrency=max_concurrency,
+            retry_limit=retry_limit,
+            flush_timeout_s=flush_timeout_s,
+        )
 
         # Initialize lightweight VLM: prioritize explicit model_name
         target_model = model_name or "gemini-2.5-flash-lite"
+        self._model_name = target_model
         try:
             if model_name:
                 self._llm = get_google_llm(model_name=target_model, temperature=0.0)
@@ -62,8 +97,19 @@ class VisualStepSummarizer:
                 self._llm = get_llm(ctx, name="summarizer", is_utils=True)
         except Exception:
             self._llm = get_google_llm(model_name=target_model, temperature=0.0)
+        try:
+            configured = getattr(self._llm, "model", None) or getattr(
+                self._llm, "model_name", None
+            )
+            if isinstance(configured, str) and configured:
+                self._model_name = configured
+        except Exception:
+            pass
 
-        # Load system prompt template
+        # Load system prompt templates: the dual-frame transition prompt and
+        # the single-frame variant (§5 revision: describe whichever frames
+        # exist — a Pro step record never carries an independent after-frame,
+        # by design, and must not be prompted as if one were expected).
         prompt_path = Path(__file__).parent / "flash_summarizer.md"
         if prompt_path.exists():
             self._prompt_template = prompt_path.read_text(encoding="utf-8")
@@ -72,6 +118,19 @@ class VisualStepSummarizer:
                 "You are the Step Summarizer for an Android UI automation agent.\n"
                 "Synthesize the physical action and visual delta between BEFORE and AFTER screens in exactly ONE "
                 "continuous first-person paragraph using 'I' (e.g., 'In Step {{ step_number }}, I tapped... and observed...').\n"
+                "Strictly avoid subjective validation words: successfully, completed, failed, achieved, navigated to."
+            )
+        single_path = Path(__file__).parent / "flash_summarizer_single.md"
+        if single_path.exists():
+            self._single_prompt_template = single_path.read_text(encoding="utf-8")
+        else:
+            self._single_prompt_template = (
+                "You are the Step Summarizer for an Android UI automation agent.\n"
+                "Exactly ONE screenshot (the decision frame) is available; there is NO after-action screenshot —"
+                " that only means no independent post-action evidence exists.\n"
+                "Describe strictly what THIS screen shows and where the action landed (red marker), in exactly ONE"
+                " continuous first-person paragraph using 'I' for Step {{ step_number }}. Never describe or guess"
+                " the post-action state.\n"
                 "Strictly avoid subjective validation words: successfully, completed, failed, achieved, navigated to."
             )
 
@@ -87,9 +146,23 @@ class VisualStepSummarizer:
         action_key: str | None = None,
         data_engine_step_id: UUID | str | None = None,
     ) -> None:
-        """Dispatches an asynchronous summarization task without blocking the caller."""
-        key: int | str = action_key or step_number
-        self._step_inputs[key] = {
+        """Dispatches an asynchronous summarization task without blocking the caller.
+
+        Jobs are keyed by the DataEngine step id when one is available; the
+        tool_call_id (``action_key``) is retained as an alias so the message
+        compressor can keep querying by it. Callers with neither provide the
+        step ordinal, matching the legacy keying.
+        """
+        key: JobKey
+        aliases: tuple[JobKey, ...] = ()
+        if data_engine_step_id is not None:
+            key = str(data_engine_step_id)
+            if action_key is not None:
+                aliases = (action_key,)
+        else:
+            key = action_key if action_key is not None else step_number
+
+        payload = {
             "step_number": step_number,
             "action_name": action_name,
             "action_args": action_args,
@@ -98,31 +171,49 @@ class VisualStepSummarizer:
             "exec_outcome": exec_outcome,
             "data_engine_step_id": data_engine_step_id,
         }
+        self.submit(key, payload, aliases=aliases)
 
-        task = asyncio.create_task(self._run_summary_until_ready(key))
-        self._pending_tasks[key] = task
+    def _meter_lens_call(self, response: Any) -> None:
+        """Meter one raw-model lens call as an ``llm_usage`` trace, best-effort.
 
-    async def _run_summary_until_ready(self, action_key: int | str) -> None:
-        """Retry one action independently until a non-empty summary is committed."""
-        while action_key not in self._summaries:
-            if await self._run_summary_once(action_key):
-                return
+        Gateway-wrapped models already meter at the wrapper exit; only the raw
+        ``get_google_llm`` bypass needs explicit metering here. Lens prompts
+        are tiny and must not overwrite the session's ``last_prompt_tokens``
+        (the compaction thresholds' live context base), hence
+        ``update_last_prompt=False``.
+        """
+        if isinstance(self._llm, RobustChatModelWrapper):
+            return
+        engine = getattr(self.ctx, "data_engine", None) if self.ctx else None
+        record_llm_usage(
+            engine,
+            response,
+            source=f"lens:visual_transition:{self._model_name}",
+            update_last_prompt=False,
+        )
 
-            retry_count = self._retry_counts.get(action_key, 0) + 1
-            self._retry_counts[action_key] = retry_count
-            delay = self._retry_delays[min(retry_count - 1, len(self._retry_delays) - 1)]
-            input_data = self._step_inputs.get(action_key)
-            display_step = input_data.get("step_number") if input_data else action_key
-            logger.info(
-                f"VisualStepSummarizer: Retrying Step {display_step} "
-                f"(attempt {retry_count + 1}) after {delay:.1f}s"
+    def _on_status(self, key: JobKey, status: str) -> None:
+        """Best-effort DataEngine summary-status write (pending/failed)."""
+        if not self.ctx.data_engine:
+            return
+        payload = self._step_inputs.get(key) or {}
+        target_step = payload.get("data_engine_step_id")
+        if not target_step:
+            return
+        try:
+            self.ctx.data_engine.update_step_summary(
+                target_step,
+                None,
+                status=status,
+                source="visual_transition",
+                model=self._model_name,
             )
-            if delay:
-                await asyncio.sleep(delay)
+        except Exception as de_err:
+            logger.debug(f"DataEngine summary status update skipped: {de_err}")
 
-    async def _run_summary_once(self, action_key: int | str) -> bool:
+    async def _attempt(self, key: JobKey) -> bool:
         """Execute one lightweight VLM attempt for a step transition."""
-        input_data = self._step_inputs.get(action_key)
+        input_data = self._step_inputs.get(key)
         if not input_data:
             return False
 
@@ -134,7 +225,14 @@ class VisualStepSummarizer:
         exec_outcome = input_data["exec_outcome"]
 
         try:
-            rendered_prompt = Template(self._prompt_template).render(step_number=step_number)
+            # §5 revision: the lens input adapts to whichever frames exist.
+            # Both frames -> the classic BEFORE/AFTER transition prompt; a
+            # single frame (Pro steps never carry an independent after-frame,
+            # by design) -> the single-frame variant, which has no AFTER
+            # ACTION section and forbids synthesizing a transition.
+            dual = bool(pre_bytes) and bool(post_bytes)
+            template = self._prompt_template if dual else self._single_prompt_template
+            rendered_prompt = Template(template).render(step_number=step_number)
             content_blocks: list[dict[str, Any]] = [
                 {
                     "type": "text",
@@ -156,7 +254,12 @@ class VisualStepSummarizer:
                 content_blocks.append(
                     {
                         "type": "text",
-                        "text": "--- [1] BEFORE ACTION SCREEN (Action Marked Visually in Red) ---",
+                        "text": (
+                            "--- [1] BEFORE ACTION SCREEN (Action Marked Visually in Red) ---"
+                            if dual
+                            else "--- [1] DECISION FRAME: SCREEN AT ACTION TIME"
+                            " (Action Marked Visually in Red) ---"
+                        ),
                     }
                 )
                 content_blocks.append(
@@ -165,7 +268,17 @@ class VisualStepSummarizer:
 
             if post_bytes:
                 b64_post = base64.b64encode(post_bytes).decode("utf-8")
-                content_blocks.append({"type": "text", "text": "--- [2] AFTER ACTION SCREEN ---"})
+                content_blocks.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            "--- [2] AFTER ACTION SCREEN ---"
+                            if dual
+                            else "--- [1] SCREEN OBSERVED AFTER THE ACTION"
+                            " (no decision frame available) ---"
+                        ),
+                    }
+                )
                 content_blocks.append(
                     {
                         "type": "image_url",
@@ -179,6 +292,7 @@ class VisualStepSummarizer:
             ]
 
             response = await asyncio.wait_for(self._llm.ainvoke(messages), timeout=25.0)
+            self._meter_lens_call(response)
             summary_raw = response.content if isinstance(response.content, str) else ""
             if isinstance(response.content, list):
                 summary_raw = "".join(
@@ -188,22 +302,35 @@ class VisualStepSummarizer:
                 )
 
             summary_text = summary_raw.strip()
+            degenerate = degenerate_summary_reason(summary_text) if summary_text else None
+            if degenerate:
+                logger.warning(
+                    f"VisualStepSummarizer: Discarding degenerate summary for"
+                    f" Step {step_number} ({degenerate}): {summary_text[:80]!r}"
+                )
+                return False
             if summary_text:
-                self._summaries[action_key] = summary_text
+                self._summaries[key] = summary_text
                 logger.info(
                     f"VisualStepSummarizer: Generated summary for Step {step_number}: {summary_text[:80]}..."
                 )
 
                 # Free binary image buffers from memory once summary is secured
-                if action_key in self._step_inputs:
-                    self._step_inputs[action_key]["pre_img_bytes"] = None
-                    self._step_inputs[action_key]["post_img_bytes"] = None
+                if key in self._step_inputs:
+                    self._step_inputs[key]["pre_img_bytes"] = None
+                    self._step_inputs[key]["post_img_bytes"] = None
 
                 # Update DataEngine telemetry if active
                 if self.ctx.data_engine:
                     try:
                         target_step = input_data.get("data_engine_step_id") or step_number
-                        self.ctx.data_engine.update_step_summary(target_step, summary_text)
+                        self.ctx.data_engine.update_step_summary(
+                            target_step,
+                            summary_text,
+                            status="ready",
+                            source="visual_transition",
+                            model=self._model_name,
+                        )
                     except Exception as de_err:
                         logger.debug(f"DataEngine step summary update skipped: {de_err}")
                 return True
@@ -213,36 +340,3 @@ class VisualStepSummarizer:
                 f"VisualStepSummarizer: Error generating summary for step {step_number}: {e}"
             )
         return False
-
-    def get_summary(
-        self, action_key: int | str, fallback_text: str | None = None
-    ) -> str | None:
-        """Retrieve the summary for a stable action key, or fallback text."""
-        return self._summaries.get(action_key, fallback_text)
-
-    def has_summary(self, action_key: int | str) -> bool:
-        """Check whether an action summary has completed."""
-        return action_key in self._summaries
-
-    def has_job(self, action_key: int | str) -> bool:
-        """Check whether an action has been submitted for visual summarization."""
-        return action_key in self._step_inputs
-
-    def is_pending(self, action_key: int | str) -> bool:
-        """Check whether an action still needs a summary."""
-        return self.has_job(action_key) and not self.has_summary(action_key)
-
-    async def flush(self, timeout_seconds: float = 30.0) -> None:
-        """Wait for active jobs up to a bound, then cancel remaining retry loops."""
-        tasks = [t for t in self._pending_tasks.values() if not t.done()]
-        if tasks:
-            logger.info(f"VisualStepSummarizer: Flushing {len(tasks)} pending summary tasks...")
-            _, pending = await asyncio.wait(tasks, timeout=timeout_seconds)
-            if pending:
-                logger.warning(
-                    f"VisualStepSummarizer: Cancelling {len(pending)} unfinished summary tasks "
-                    f"after {timeout_seconds:.1f}s flush timeout."
-                )
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)

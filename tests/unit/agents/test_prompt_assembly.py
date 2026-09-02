@@ -92,7 +92,7 @@ def test_full_toolset_is_the_default():
         )
 
 
-@pytest.mark.parametrize("tool", OPERATOR_DEVICE_TOOLS + ("video_analyzer",))
+@pytest.mark.parametrize("tool", OPERATOR_DEVICE_TOOLS + ("video_analyzer", "recall_history"))
 def test_removed_tool_leaves_no_reference(tool):
     """The executable definition of 'an absent tool costs the model nothing'."""
     for name, template in load_operator_prompts().items():
@@ -154,8 +154,8 @@ def test_full_set_enum_slots_render_verbatim():
     )
     assert (
         "(`ask_explorer`, `ask_diagnoser`, `video_analyzer`, `run_adb_command`,"
-        " `manage_task`, `analyze_task_output`, `read_note`, `list_notes`, and"
-        " `save_note`)" in out
+        " `manage_task`, `analyze_task_output`, `read_note`, `list_notes`,"
+        " `save_note`, and `recall_history`)" in out
     )
 
 

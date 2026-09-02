@@ -122,6 +122,7 @@ BACKEND_INDEPENDENT_TOOLS: frozenset[str] = frozenset(
         "run_adb_command",
         "manage_task",
         "analyze_task_output",
+        "recall_history",
         "report_task_status",
         "report_failure_analysis",
     }

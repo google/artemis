@@ -344,7 +344,7 @@ async def test_history_analyzer_integration_with_task_tree():
     mock_path.exists.return_value = True
     mock_path.read_text.return_value = fake_plan
 
-    # Mock build_plan_and_history
+    # Mock the policy-table compiled-history renderer (M4)
     with (
         patch(
             "artemis.agents.history_analyzer.history_analyzer.get_llm",
@@ -355,23 +355,23 @@ async def test_history_analyzer_integration_with_task_tree():
             return_value=mock_path,
         ),
         patch(
-            "artemis.agents.history_analyzer.history_analyzer.build_plan_and_history"
+            "artemis.agents.history_analyzer.history_analyzer.build_history_for"
         ) as mock_build,
     ):
         mock_build.return_value = "Mocked operation history"
         analyzer = HistoryAnalyzer(mock_ctx)
         await analyzer.run("query")
 
-        # Verify build_plan_and_history call args
+        # Verify build_history_for call args
         mock_build.assert_called_once()
         args, kwargs = mock_build.call_args
-        assert args[0] == fake_plan
-        assert args[1] == steps
+        assert args[0] == "history_analyzer"
+        assert args[1] == fake_plan
+        assert args[2] == steps
 
         import hashlib
 
         expected_hash = hashlib.md5(b"Active Subgoal").hexdigest()
-        assert args[2] == expected_hash
+        assert args[3] == expected_hash
 
-        assert kwargs.get("last_n_detailed") == 1
-        assert kwargs.get("min_summaries") == len(steps)
+        assert kwargs.get("engine") is mock_ctx.data_engine

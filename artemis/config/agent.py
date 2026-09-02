@@ -289,6 +289,262 @@ class StepSummarizerConfig(BaseModel):
         default=True,
         description="Whether to prune outdated heavy UI XML trees from historical turns.",
     )
+    retry_limit: int = Field(
+        default=3,
+        ge=0,
+        description=(
+            "Maximum retries per step summary after the first attempt; on"
+            " exhaustion the step is marked summary_status=failed instead of"
+            " retrying forever."
+        ),
+    )
+    model_config = {"extra": "allow"}
+
+
+class MemoryRuntimeConfig(BaseModel):
+    """Scheduling options for the shared step-memory runtime (agent.memory.runtime)."""
+
+    max_concurrency: int = Field(
+        default=2,
+        ge=1,
+        le=16,
+        description=(
+            "Maximum background summary attempts running concurrently."
+            " Default 2 per the 2026-09-01 on-device baseline"
+            " (history-baseline-2026-09-01.md §6): the serial queue at 1 pushed"
+            " summary-ready P90 past the scrub-edge grace window; lens calls"
+            " are independent lightweight-model requests, so 2 is low-risk."
+        ),
+    )
+    retry_limit: int = Field(
+        default=3,
+        ge=0,
+        description=(
+            "Maximum retries per summary job after the first attempt; on"
+            " exhaustion the job enters an explicit failed state."
+        ),
+    )
+    flush_timeout_s: float = Field(
+        default=30.0,
+        gt=0,
+        description="Upper bound in seconds for draining in-flight summary jobs at shutdown.",
+    )
+    model_config = {"extra": "allow"}
+
+
+class MemoryTranscriptConfig(BaseModel):
+    """Scrub-edge options for the message transcript (agent.memory.transcript)."""
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the Pro operator builds its prompt from the session"
+            " transcript ledger (S/F/A regions + per-turn tail) instead of the"
+            " legacy per-turn 2-message rebuild. On by default since M5"
+            " (2026-09-01, per the on-device A/B in"
+            " history-baseline-2026-09-01.md); this is also the rollback"
+            " switch — setting it to false restores the legacy path"
+            " byte-for-byte, and L2/L3 chunk compression rides the same flag."
+        ),
+    )
+    image_scrub_depth: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Depth K of the screenshot scrub edge: the K-th most recent"
+            " historical screenshot is replaced by its visual summary."
+        ),
+    )
+    pending_grace_steps: int = Field(
+        default=3,
+        ge=0,
+        description=(
+            "Extra image-depths a step may retain its screenshot past the"
+            " scrub edge while its summary is still pending; afterwards the"
+            " image is replaced by a placeholder referencing the DataEngine step."
+        ),
+    )
+    xml_scrub_depth: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "How many of the most recent observations keep their UI Element"
+            " list; older lists are stripped (depth 1 matches the legacy"
+            " prune_history_xml semantics)."
+        ),
+    )
+    context_budget_tokens: int = Field(
+        default=80000,
+        ge=1024,
+        description=(
+            "Measured-token budget for the transcript context (provisional"
+            " default pending the on-device baseline; §3.4). The soft/hard"
+            " ratios below are applied against this budget."
+        ),
+    )
+    soft_ratio: float = Field(
+        default=0.7,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Soft threshold: when the last measured prompt size reaches"
+            " budget*soft_ratio, the oldest open segment is chunk-compressed"
+            " (L2)."
+        ),
+    )
+    hard_ratio: float = Field(
+        default=0.9,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Hard threshold: when the last measured prompt size reaches"
+            " budget*hard_ratio, the frozen region collapses to the L3 session"
+            " snapshot (chunk headers merged; per-step index retained)."
+        ),
+    )
+    min_active_steps: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Sliding-window floor: no compression trigger may shrink the"
+            " active region below this many most-recent raw turns."
+        ),
+    )
+    similarity_hint: bool = Field(
+        default=True,
+        description=(
+            "Whether the operator prompt injects a local historical-state hint"
+            " when the current screen's perceptual hash closely matches a much"
+            " older step's post-action screen (no model call, no historical"
+            " image). Silent when the match is within the recent 3 steps —"
+            " that regime belongs to the pixel-level same-screen note."
+        ),
+    )
+    similarity_max_distance: int = Field(
+        default=5,
+        ge=0,
+        le=64,
+        description=(
+            "Maximum Hamming distance between 64-bit dHash values for the"
+            " historical-state hint to fire. Calibrated 2026-09-01 from 460"
+            " dHash-stamped on-device steps (16 sessions): same-screen"
+            " re-captures cluster at distance <=4, genuinely different screens"
+            " mass at >=7 (valley at 5-6); cross-app pairs (guaranteed"
+            " different screens) score <=5 in only 0.14% of cases vs 0.24% at"
+            " the previous provisional 8."
+        ),
+    )
+    model_config = {"extra": "allow"}
+
+
+class MemoryRecallConfig(BaseModel):
+    """History recall tool options (agent.memory.recall)."""
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the Pro operator gets the recall_history tool for"
+            " deterministic lookups into cold (compressed/evicted) history."
+        ),
+    )
+    max_results: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Upper bound on results per recall_history call.",
+    )
+    max_text_tokens: int = Field(
+        default=2000,
+        ge=128,
+        description=(
+            "Estimated-token cap (char/4) on one recall_history text response;"
+            " excerpts are truncated to fit."
+        ),
+    )
+    max_image_steps: int = Field(
+        default=1,
+        ge=0,
+        le=1,
+        description=(
+            "Maximum number of steps whose real stored screenshots may be"
+            " returned as data URLs when include_images is requested."
+        ),
+    )
+    model_config = {"extra": "allow"}
+
+
+class MemoryChunkingConfig(BaseModel):
+    """Segment (L2) chunk compression options (agent.memory.chunking)."""
+
+    max_steps: int = Field(
+        default=12,
+        ge=1,
+        description=(
+            "Size-threshold trigger: an open segment of this many steps is"
+            " chunk-compressed even without a milestone switch. Also the"
+            " maximum steps per chunk when a longer segment is split."
+        ),
+    )
+    target_source_tokens: int = Field(
+        default=2000,
+        ge=128,
+        description=(
+            "Size-threshold trigger: estimated source tokens (char/4 over the"
+            " open segment's transcript text) that force a chunk compression."
+        ),
+    )
+    model: str = Field(
+        default="gemini-3.7-flash",
+        description="Model used for the chunk-level StepCapsuleLens (bands ①+②).",
+    )
+    max_chunks: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Maximum full three-band chunk blocks kept in the frozen region;"
+            " older chunks merge into eras (headers set-merged, ledgers kept)."
+        ),
+    )
+    max_eras: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Maximum eras kept with their per-segment ledgers; older eras"
+            " collapse their ledgers to recall_history marker lines. None"
+            " (default) follows max_chunks, preserving the pre-M5 equal-value"
+            " behavior."
+        ),
+    )
+    model_config = {"extra": "allow"}
+
+
+class MemoryConfig(BaseModel):
+    """Unified step-memory configuration block (agent.memory)."""
+
+    runtime: MemoryRuntimeConfig = Field(
+        default_factory=MemoryRuntimeConfig,
+        description="Shared background summarization runtime scheduling options.",
+    )
+    transcript: MemoryTranscriptConfig = Field(
+        default_factory=MemoryTranscriptConfig,
+        description="Transcript scrub-edge options.",
+    )
+    chunking: MemoryChunkingConfig = Field(
+        default_factory=MemoryChunkingConfig,
+        description="Segment chunk (L2) compression options.",
+    )
+    recall: MemoryRecallConfig = Field(
+        default_factory=MemoryRecallConfig,
+        description="History recall tool options.",
+    )
+    policies: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-agent overrides of the compiled-history ContextPolicy table"
+            " (artemis.memory.context_policy); keys are agent names, values"
+            " are policy field overrides (e.g. {'planner': {'last_n_detailed': 3}})."
+        ),
+    )
     model_config = {"extra": "allow"}
 
 
@@ -398,6 +654,10 @@ class AgentGlobalConfig(BaseModel):
         default_factory=VideoAnalyzerConfig,
         description="Video analyzer runtime options.",
     )
+    memory: MemoryConfig = Field(
+        default_factory=MemoryConfig,
+        description="Unified step-memory runtime and transcript scrub options.",
+    )
 
     model_config = {"extra": "allow"}
 
@@ -451,6 +711,18 @@ class AgentGlobalConfig(BaseModel):
             "pro" not in data or "video_analyzer" not in data.get("pro", {})
         ):
             data.setdefault("pro", {})["video_analyzer"] = data["video_analyzer"]
+
+        # 3b. Legacy alias: an explicit flash.step_summarizer.retry_limit keeps
+        # working by seeding memory.runtime.retry_limit when the new key is
+        # absent (an explicit new key wins over the legacy one).
+        flash_block = data.get("flash")
+        flash_ss = flash_block.get("step_summarizer") if isinstance(flash_block, dict) else None
+        if isinstance(flash_ss, dict) and "retry_limit" in flash_ss:
+            mem_block = data.setdefault("memory", {})
+            if isinstance(mem_block, dict):
+                runtime_block = mem_block.setdefault("runtime", {})
+                if isinstance(runtime_block, dict):
+                    runtime_block.setdefault("retry_limit", flash_ss["retry_limit"])
 
         # 4. Environment variable overrides (highest precedence for runtime switches)
         def _parse_bool(var_name: str) -> bool | None:

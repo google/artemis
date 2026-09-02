@@ -121,11 +121,6 @@ class State(BaseModel):
         "Native/implicit thinking process of the operator",
         take_last,
     ] = None
-    short_term_memory: Annotated[
-        str | None,
-        "Short term memory / scratchpad for the operator",
-        take_last,
-    ] = None
     last_execution_result: Annotated[
         dict | None, "Last execution result from validator", take_last
     ] = None

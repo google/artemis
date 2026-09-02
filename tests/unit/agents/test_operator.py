@@ -16,8 +16,14 @@ import json
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from artemis.agents.operator.operator import OperatorNode
+from artemis.config.agent import MemoryTranscriptConfig
 from artemis.context import ArtemisContext
 import pytest
+
+# These tests exercise the legacy 2-message prompt path. Since M5 the
+# transcript path is the default, so flag-off semantics must be requested
+# explicitly (never via the config default).
+LEGACY_TRANSCRIPT = MemoryTranscriptConfig(enabled=False)
 
 
 @pytest.mark.asyncio
@@ -58,7 +64,7 @@ async def test_operator_node_fast_path():
 
     # Patch dependencies
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
-        node = OperatorNode(mock_ctx)
+        node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         # Verify state was updated with action
@@ -77,7 +83,7 @@ async def test_perform_action_validation():
     from artemis.graph.state import State
 
     mock_ctx = MagicMock()
-    node = OperatorNode(mock_ctx)
+    node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
 
     mock_state = MagicMock(spec=State)
     mock_state.indexed_points = [[200, 300], [400, 500]]
@@ -114,6 +120,7 @@ async def test_perform_action_validation():
             "target_bounds": "[100,100][300,500]",
             "target_resource_id": "btn_1",
             "target_class": "android.widget.Button",
+            "target_label_source": "index",
         }
     ]
 
@@ -143,6 +150,7 @@ async def test_perform_action_validation():
         "target_bounds": "[300,400][500,600]",
         "target_resource_id": "input_1",
         "target_class": "android.widget.EditText",
+        "target_label_source": "index",
     }
 
     # Test swipe direction
@@ -170,6 +178,7 @@ async def test_perform_action_validation():
             "target_bounds": "[300,400][500,600]",
             "target_resource_id": "input_1",
             "target_class": "android.widget.EditText",
+            "target_label_source": "index",
         }
     ]
 
@@ -223,6 +232,59 @@ async def test_perform_action_validation():
 
 
 @pytest.mark.asyncio
+async def test_bare_coordinate_click_enriched_by_hit_test():
+    """A coordinate click hit tests the pre-action frame for element semantics."""
+    from artemis.agents.operator.operator import OperatorNode
+    from unittest.mock import MagicMock
+    from artemis.graph.state import State
+
+    mock_ctx = MagicMock()
+    node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
+
+    mock_state = MagicMock(spec=State)
+    mock_state.indexed_elements = [
+        {
+            "center": [550, 1440],
+            "text": "Confirm",
+            "bounds": [500, 1400, 600, 1480],
+            "class": "android.widget.Button",
+            "resource_id": "btn_confirm",
+            "is_ocr": False,
+        }
+    ]
+
+    # Normalized (500, 600) on the default 1080x2400 device -> pixel (540, 1440),
+    # which falls inside the "Confirm" button bounds.
+    actions, err = node._translate_and_validate_tool(
+        {"name": "click", "args": {"target": [500, 600]}}, mock_state
+    )
+    assert err is None
+    assert actions == [
+        {
+            "action": "tap",
+            "coordinates": [540, 1440],
+            "normalized_coordinates": [500, 600],
+            "times": 1,
+            "delay_ms": 100,
+            "target_text": "Confirm",
+            "target_bounds": [500, 1400, 600, 1480],
+            "target_resource_id": "btn_confirm",
+            "target_class": "android.widget.Button",
+            "target_label_source": "hit_test",
+        }
+    ]
+
+    # Graceful degradation: no perception data at all -> bare coordinates, "none".
+    mock_state.indexed_elements = []
+    actions, err = node._translate_and_validate_tool(
+        {"name": "click", "args": {"target": [500, 600]}}, mock_state
+    )
+    assert err is None
+    assert actions[0]["target_text"] is None
+    assert actions[0]["target_label_source"] == "none"
+
+
+@pytest.mark.asyncio
 async def test_operator_node_multiple_actions():
     from artemis.agents.operator.operator import OperatorNode
     from artemis.context import ArtemisContext
@@ -258,7 +320,7 @@ async def test_operator_node_multiple_actions():
     mock_llm.bind_tools.return_value = mock_llm
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
-        node = OperatorNode(mock_ctx)
+        node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         update_dict = node_update
@@ -302,7 +364,7 @@ async def test_operator_node_no_record_step():
     mock_llm.bind_tools.return_value = mock_llm
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
-        node = OperatorNode(mock_ctx)
+        node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         mock_ctx.data_engine.record_step.assert_not_called()
@@ -352,7 +414,7 @@ async def test_operator_dynamic_prompt():
     mock_llm.bind_tools.return_value = mock_llm
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
-        node = OperatorNode(mock_ctx, prompt_components=[MockComponent()])
+        node = OperatorNode(mock_ctx, prompt_components=[MockComponent()], transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
 
@@ -488,7 +550,7 @@ async def test_operator_history_compression():
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.read_text", mock_read_text),
     ):
-        node = OperatorNode(mock_ctx, last_n_detailed=5)
+        node = OperatorNode(mock_ctx, last_n_detailed=5, transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
 
@@ -506,7 +568,7 @@ async def test_operator_loop_detection():
     mock_state.subagent_calls = ["ask_explorer", "ask_explorer", "ask_explorer"]
     mock_state.initial_goal = "Test goal"
 
-    node = OperatorNode(mock_ctx)
+    node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
 
     with pytest.raises(RuntimeError) as exc_info:
         node_update = await node(mock_state)
@@ -568,7 +630,7 @@ async def test_operator_tracks_subagent_calls():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_diagnoser_tool])
+        node = OperatorNode(mock_ctx, tools=[mock_diagnoser_tool], transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         update_dict = node_update
@@ -660,7 +722,7 @@ async def test_operator_defer_action_for_gathering():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_diagnoser_tool])
+        node = OperatorNode(mock_ctx, tools=[mock_diagnoser_tool], transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         # Subagent tool should have been executed
@@ -683,7 +745,7 @@ async def test_wait_actions_translation():
     from artemis.graph.state import State
 
     mock_ctx = MagicMock()
-    node = OperatorNode(mock_ctx)
+    node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
     mock_state = MagicMock(spec=State)
 
     # 1. Test wait_for_delay translation
@@ -708,7 +770,7 @@ async def test_long_press_action_translation():
     from artemis.graph.state import State
 
     mock_ctx = MagicMock()
-    node = OperatorNode(mock_ctx)
+    node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
     mock_state = MagicMock(spec=State)
     mock_state.indexed_points = [[200, 300], [400, 500]]
     mock_state.indexed_elements = [
@@ -744,6 +806,7 @@ async def test_long_press_action_translation():
             "target_bounds": "[100,100][300,500]",
             "target_resource_id": "btn_1",
             "target_class": "android.widget.Button",
+            "target_label_source": "index",
         }
     ]
 
@@ -765,6 +828,7 @@ async def test_long_press_action_translation():
             "target_bounds": None,
             "target_resource_id": None,
             "target_class": None,
+            "target_label_source": "none",
         }
     ]
 
@@ -844,7 +908,7 @@ async def test_operator_no_defer_for_note_updating():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_update_note_tool])
+        node = OperatorNode(mock_ctx, tools=[mock_update_note_tool], transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         # The update_note tool should have been executed immediately
@@ -934,7 +998,7 @@ async def test_operator_defer_for_note_reading():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_read_note_tool])
+        node = OperatorNode(mock_ctx, tools=[mock_read_note_tool], transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         # The read_note tool should have been executed
@@ -1022,7 +1086,7 @@ async def test_operator_no_defer_for_note_appending():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_append_note_tool])
+        node = OperatorNode(mock_ctx, tools=[mock_append_note_tool], transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         # The append_note tool should have been executed immediately
@@ -1111,7 +1175,7 @@ async def test_operator_background_tasks_prompt_injection():
                 side_effect=mock_invoke_llm_loop,
             ),
         ):
-            node = OperatorNode(mock_ctx)
+            node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
             node_update = await node(mock_state)
 
             # Assert that the captured messages (prompts) contain the background tasks section
@@ -1202,7 +1266,7 @@ async def test_operator_task_plan_warning_prompt_injection():
             side_effect=mock_invoke_llm_loop_1,
         ),
     ):
-        node = OperatorNode(mock_ctx)
+        node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         full_content_1 = ""
@@ -1255,7 +1319,7 @@ async def test_operator_task_plan_warning_prompt_injection():
             side_effect=mock_invoke_llm_loop_2,
         ),
     ):
-        node = OperatorNode(mock_ctx)
+        node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         full_content_2 = ""
@@ -1322,7 +1386,7 @@ async def test_operator_tool_limit_exceeded_warning():
             side_effect=mock_invoke_llm_loop,
         ),
     ):
-        node = OperatorNode(mock_ctx)
+        node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         full_content = ""
@@ -1380,7 +1444,7 @@ async def test_operator_fallback_function_call_parsing():
     mock_llm.bind_tools.return_value = mock_llm
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
-        node = OperatorNode(mock_ctx)
+        node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
         node_update = await node(mock_state)
 
         # Verify state was updated with parsed click action
@@ -1402,7 +1466,7 @@ async def test_operator_swipe_translation():
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_state = MagicMock()
     mock_state.operator_raw_data = {"width": 1080, "height": 2400}
-    node = OperatorNode(mock_ctx)
+    node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
 
     # 1. Directional swipe
     actions, err = node._translate_and_validate_tool(

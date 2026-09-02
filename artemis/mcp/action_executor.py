@@ -54,6 +54,7 @@ from artemis.utils.coordinates import (
     compute_smart_swipe_coordinates,
     parse_swipe_parameters,
 )
+from artemis.utils.element_hit_test import hit_test_semantics
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import (
     format_list_notes_failure,
@@ -139,11 +140,19 @@ class McpActionExecutor:
         img_bytes: bytes | None = None
         shot_path: str | None = None
         xml_list: str | None = None
+        target_semantics: dict[str, Any] | None = None
 
         with span:
             try:
                 session = await self._session_or_start()
                 wire_name, wire_args, finalize = self._translate(raw_name, args, state)
+                # Record-time enrichment: bare-coordinate targeted actions get
+                # best-effort element semantics from the pre-action frame (the
+                # post-action observe below overwrites state.indexed_elements,
+                # so this must happen before the device call).
+                target_semantics = self._target_semantics(raw_name, wire_args, state)
+                if target_semantics:
+                    span.payload = {"args": {**args, **target_semantics}}
                 extension = raw_name not in (REQUIRED_ACTIONS | OPTIONAL_ACTIONS)
 
                 if extension:
@@ -207,8 +216,68 @@ class McpActionExecutor:
             metadata={
                 "code": res.code.value,
                 "normalized_coordinates": res.normalized_coordinates,
+                "target_semantics": target_semantics,
             },
         )
+
+    def _target_semantics(
+        self, raw_name: str, wire_args: dict[str, Any], state: Any
+    ) -> dict[str, Any] | None:
+        """Best-effort element semantics for a coordinate-targeted action.
+
+        Hit tests the normalized (0-1000) target point(s) against the
+        pre-action frame's indexed elements. Single-target actions get the
+        flat ``target_*`` fields; multi-point actions (``click_sequence``,
+        ``swipe``) hit test every point best-effort (M5), hoisting the FIRST
+        point's semantics to the main ``target_*`` label and keeping the
+        per-point results alongside. Returns None for actions without a
+        resolvable coordinate target; degrades to
+        ``target_label_source: "none"`` when no element data covers the point.
+        """
+        try:
+            elements = getattr(state, "indexed_elements", None) if state else None
+
+            if raw_name in ("click", "long_press", "input_text"):
+                target = wire_args.get("target")
+                if not (isinstance(target, (list, tuple)) and len(target) == 2):
+                    return None
+                return self._hit_test_point(elements, target)
+
+            if raw_name == "click_sequence":
+                sequence = wire_args.get("sequence")
+                if not (isinstance(sequence, (list, tuple)) and sequence):
+                    return None
+                points = [self._hit_test_point(elements, p) for p in sequence]
+                semantics: dict[str, Any] = dict(points[0])
+                semantics["points_semantics"] = points
+                return semantics
+
+            if raw_name == "swipe":
+                start = wire_args.get("start")
+                end = wire_args.get("end")
+                if not (isinstance(start, (list, tuple)) and len(start) == 2):
+                    return None
+                semantics = dict(self._hit_test_point(elements, start))
+                semantics["start_semantics"] = self._hit_test_point(elements, start)
+                if isinstance(end, (list, tuple)) and len(end) == 2:
+                    semantics["end_semantics"] = self._hit_test_point(elements, end)
+                return semantics
+
+            return None
+        except Exception as enrich_err:
+            logger.debug(f"Target semantics enrichment skipped for {raw_name}: {enrich_err}")
+            return {"target_label_source": "none"}
+
+    def _hit_test_point(self, elements: Any, target: Any) -> dict[str, Any]:
+        """Hit tests one normalized (0-1000) point; never raises."""
+        try:
+            width = getattr(self.ctx.device, "device_width", 1080) if self.ctx.device else 1080
+            height = getattr(self.ctx.device, "device_height", 2400) if self.ctx.device else 2400
+            x_px = int(max(0, min(width - 1, float(target[0]) * width / 1000)))
+            y_px = int(max(0, min(height - 1, float(target[1]) * height / 1000)))
+            return hit_test_semantics(elements, x_px, y_px)
+        except Exception:
+            return {"target_label_source": "none"}
 
     @staticmethod
     def _observe_despite_failure(raw_name: str, res: ActionResult) -> bool:

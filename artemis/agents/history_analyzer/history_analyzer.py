@@ -35,7 +35,8 @@ from artemis.utils.notes import (
     get_note_file_path,
     get_notes_dir,
 )
-from artemis.utils.task_tree import build_plan_and_history, get_active_subgoal_hashes
+from artemis.memory.context_policy import build_history_for
+from artemis.utils.task_tree import get_active_subgoal_hashes
 
 logger = get_logger(__name__)
 
@@ -110,12 +111,12 @@ class HistoryAnalyzer:
 
             if current_plan:
                 active_subgoal_hash, _ = get_active_subgoal_hashes(current_plan)
-                plan_and_history = build_plan_and_history(
+                plan_and_history = build_history_for(
+                    "history_analyzer",
                     current_plan,
                     self.history_steps,
                     active_subgoal_hash,
-                    last_n_detailed=1,
-                    min_summaries=len(self.history_steps),
+                    engine=self.ctx.data_engine,
                 )
         except Exception as e:
             logger.error(f"Failed to build plan and history in HistoryAnalyzer: {e}")

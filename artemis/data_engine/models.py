@@ -55,6 +55,33 @@ class StepRecord(BaseModel):
     extra_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class HistoryChunkRecord(BaseModel):
+    """One version of a compressed history segment (history redesign §3.3/§6.1).
+
+    Identity is the step *range* ``(session_id, start_step_number,
+    end_step_number)``; the milestone ``subgoal_hash`` is label metadata only.
+    Rows are append-only: a later write for the same range carries a higher
+    ``version`` (capsule readiness, post-hoc checkpoint annotations).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    chunk_id: UUID | str
+    session_id: UUID | str
+    start_step_id: str | None = None
+    end_step_id: str | None = None
+    start_step_number: int
+    end_step_number: int
+    source_step_ids: list[str] = Field(default_factory=list)
+    subgoal_hash: str | None = None
+    version: int = 1
+    status: str = "pending"  # pending (band ③ only), ready (bands ①②③)
+    band1: dict[str, Any] = Field(default_factory=dict)  # synopsis + structured fields
+    band2: str | None = None  # interval narrative
+    band3: str | None = None  # mechanical per-step action ledger
+    rendered_text: str | None = None
+    created_at: float = Field(default_factory=time.time)
+
+
 class TraceRecord(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     trace_id: UUID | str

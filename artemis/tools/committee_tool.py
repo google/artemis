@@ -48,8 +48,8 @@ from artemis.tools.types import CyFunctionDetector
 from artemis.tools.video_tool import get_video_analyzer_tool
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path, get_notes_dir
+from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import (
-    build_plan_and_history,
     get_active_subgoal_hashes,
     get_recent_subgoal_hashes,
 )
@@ -186,12 +186,13 @@ async def _execute_committee(
                         logger.error(f"Failed to parse active subgoal in committee: {e}")
 
                 try:
-                    plan_and_history = build_plan_and_history(
+                    plan_and_history = build_history_for(
+                        "committee",
                         task_plan,
                         steps,
                         active_subgoal_hash,
                         keep_subgoal_hashes=keep_hashes,
-                        last_n_detailed=3,
+                        engine=ctx.data_engine,
                     )
                     history_summary += plan_and_history
                 except Exception as e:  # pylint: disable=broad-exception-caught
