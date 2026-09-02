@@ -51,8 +51,8 @@ from artemis.services.llm import get_llm
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
+from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import (
-    build_plan_and_history,
     format_action_clean,
     get_active_subgoal_hashes,
 )
@@ -358,15 +358,11 @@ class FailureAnalyzer:
 
     def _build_plan_and_history(self, steps: list[dict], task_plan: str) -> str:
         active_subgoal_hash = self._get_active_subgoal_hash()
-        return build_plan_and_history(
+        return build_history_for(
+            "failure_analyzer",
             task_plan,
             steps,
             active_subgoal_hash,
-            last_n_detailed=1,
-            strict_milestone_pruning=True,
-            recent_window_size=3,
-            chronological_last_step=True,
-            for_failure_analyzer=True,
         )
 
     def _prune_intermediate_screenshots(self, messages: list[Any]):

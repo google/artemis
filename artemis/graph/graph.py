@@ -96,6 +96,20 @@ def convergence_node(state: State):
     return {}
 
 
+def _notify_history_chunker(ctx: ArtemisContext, method: str, *args) -> None:
+    """Best-effort event feed to the transcript's L2/L3 chunk manager (M3).
+
+    The chunker only exists when the transcript flag is on; every failure is
+    swallowed — history compression must never gate the execution path.
+    """
+    try:
+        chunker = getattr(getattr(ctx, "transcript_ledger", None), "chunker", None)
+        if chunker is not None:
+            getattr(chunker, method)(*args)
+    except Exception as e:
+        logger.debug(f"History chunker notification '{method}' skipped: {e}")
+
+
 async def execution_check_node(state: State, ctx: ArtemisContext):
     state = strict_state(state, "execution_check")
     logger.info("Starting execution_check_node")
@@ -126,6 +140,10 @@ async def execution_check_node(state: State, ctx: ArtemisContext):
                     logger.warning(f"Failed to parse structured decisions: {e}")
 
             subgoal_hash_val, sub_subgoal_hash = _get_active_subgoal_hashes(ctx)
+            # The user's injected instruction is stamped verbatim on the step
+            # it reached: the chunk ledger (band ③) preserves it as a
+            # never-evicted line at every compression level (§3.3).
+            injected = getattr(state, "injected_instruction", None)
             step_id = ctx.data_engine.record_step(
                 pre_screenshot_bytes=screenshot_bytes,
                 ui_tree=xml_hierarchy,
@@ -138,10 +156,14 @@ async def execution_check_node(state: State, ctx: ArtemisContext):
                     "sub_subgoal_hash": sub_subgoal_hash,
                     "width": raw_data.get("width"),
                     "height": raw_data.get("height"),
+                    **({"injected_instruction": injected} if injected else {}),
                     **extra_metadata,
                 },
             )
             logger.info(f"Recorded step in DataEngine: {step_id}")
+            # Milestone-switch fact source: the stamped subgoal hash of every
+            # executed step, compared consecutively inside the chunk manager.
+            _notify_history_chunker(ctx, "on_step_stamped", str(step_id), subgoal_hash_val)
             return str(step_id)
         except Exception as e:
             logger.error(f"Failed to record step in DataEngine: {e}")
@@ -611,6 +633,10 @@ async def _process_plan_write(
     new_completions = new_top_level_completions(before, after)
     if new_completions:
         queue_checkpoints(ctx, state, after, new_completions, content_after)
+        # History chunking (M3): a top-level completion only queues an
+        # UNCONFIRMED boundary — the next stamped step confirms it via an
+        # actual subgoal-hash change (pseudo-switch protection, §3.3).
+        _notify_history_chunker(ctx, "queue_boundary_hint")
 
     return result
 
@@ -823,11 +849,14 @@ async def get_graph(ctx: ArtemisContext) -> CompiledStateGraph:
             operator_native_tools.append(t)
 
     # Get specialized tools for Operator
+    from artemis.tools.history_recall import recall_history_wrapper
+
     operator_specialized_wrappers = [
         ask_diagnoser_wrapper,
         run_adb_command_wrapper,
         manage_task_wrapper,
         ask_explorer_wrapper,
+        recall_history_wrapper,
     ]
     if ctx.execution_setup and ctx.execution_setup.enable_committee:
         operator_specialized_wrappers.append(ask_committee_wrapper)

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import json
-import re
 from typing import Any
 from uuid import uuid4
 
@@ -46,12 +45,11 @@ from artemis.utils.coordinates import (
     parse_swipe_parameters,
 )
 from artemis.utils.decorators import wrap_with_callbacks
+from artemis.utils.element_hit_test import find_element_at_point
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
-from artemis.utils.task_tree import (
-    build_plan_and_history,
-    get_active_subgoal_hashes,
-)
+from artemis.memory.context_policy import build_history_for
+from artemis.utils.task_tree import get_active_subgoal_hashes
 from artemis.utils.visualization import format_minimal_list_with_elements
 
 logger = get_logger(__name__)
@@ -62,6 +60,7 @@ DEFERRING_TOOLS = {
     "read_note",
     "list_notes",
     "save_note",
+    "recall_history",
     "run_adb_command",
     "manage_task",
     "analyze_task_output",
@@ -73,14 +72,16 @@ from artemis.agents.operator.prompts import (
     PromptComponent,
     TemplatePromptComponent,
     ObservationPromptComponent,
+    PlanRecitationPromptComponent,
     ScreenshotSimilarityPromptComponent,
+    HistoricalStateHintPromptComponent,
     FeedbackPromptComponent,
     CheckItemsExplainerPromptComponent,
     BackgroundTasksPromptComponent,
-    ShortTermMemoryPromptComponent,
     TaskPlanWarningPromptComponent,
     ToolLimitWarningPromptComponent,
     InjectedInstructionPromptComponent,
+    render_transcript_static_system,
 )
 from artemis.agents.operator.prompt_builder import load_operator_prompts
 
@@ -92,6 +93,7 @@ class OperatorNode:
         tools: list[BaseTool] | None = None,
         prompt_components: list[PromptComponent] | None = None,
         last_n_detailed: int = 1,
+        transcript_config=None,
     ):
         self.ctx = ctx
         self.tools = tools or []
@@ -102,6 +104,24 @@ class OperatorNode:
         except (OSError, ValueError, json.JSONDecodeError) as e:
             logger.error(f"Failed to load operator prompts: {e}")
             self.prompts = {}
+
+        # M2 transcript flag (agent.memory.transcript.enabled). Off keeps the
+        # legacy 2-message prompt path byte-for-byte; an explicit
+        # ``transcript_config`` overrides the loaded configuration (tests).
+        if transcript_config is not None:
+            self._transcript_cfg = transcript_config
+        else:
+            try:
+                from artemis.config import load_agent_config
+
+                self._transcript_cfg = load_agent_config().memory.transcript
+            except Exception:
+                from artemis.config.agent import MemoryTranscriptConfig
+
+                self._transcript_cfg = MemoryTranscriptConfig()
+        # Index into the rendered message list where this turn's tail begins;
+        # set by the transcript build and consumed after the tool loop.
+        self._transcript_turn_base: int | None = None
 
     def _available_device_actions(self) -> frozenset[str]:
         """Device actions the installed actuator backend provides.
@@ -170,6 +190,26 @@ class OperatorNode:
         active_background_tasks: list[dict] = None,
         newly_finished_tasks: list[dict] = None,
     ) -> list:
+        self._transcript_turn_base = None
+        if getattr(self._transcript_cfg, "enabled", False):
+            try:
+                return await self._build_prompt_transcript(
+                    state,
+                    latest_screenshot_b64,
+                    minimal_list,
+                    current_step_num,
+                    steps,
+                    task_plan,
+                    active_background_tasks=active_background_tasks,
+                    newly_finished_tasks=newly_finished_tasks,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Transcript prompt path failed; falling back to the legacy"
+                    f" 2-message build for this turn: {e}"
+                )
+                self._transcript_turn_base = None
+
         plan_and_history = self._build_plan_and_history(steps, task_plan)
 
         builder = PromptBuilder()
@@ -187,8 +227,8 @@ class OperatorNode:
                 (CheckItemsExplainerPromptComponent(), {}),
                 (ObservationPromptComponent(), {}),
                 (ScreenshotSimilarityPromptComponent(), {}),
+                (HistoricalStateHintPromptComponent(), {}),
                 (InjectedInstructionPromptComponent(), {}),
-                (ShortTermMemoryPromptComponent(), {}),
                 (BackgroundTasksPromptComponent(), {}),
                 (FeedbackPromptComponent(), {}),
                 (TaskPlanWarningPromptComponent(), {}),
@@ -216,6 +256,174 @@ class OperatorNode:
             await component(builder, state, self.ctx, **kwargs_to_pass)
 
         return builder.build()
+
+    # ------------------------------------------------------------------
+    # Transcript prompt path (M2, flag agent.memory.transcript.enabled)
+    # ------------------------------------------------------------------
+
+    def _ensure_transcript_ledger(self, state=None):
+        """Session ledger on the composition root, created on first use."""
+        from artemis.memory import TranscriptLedger, ensure_step_memory
+
+        ledger = getattr(self.ctx, "transcript_ledger", None)
+        if isinstance(ledger, TranscriptLedger):
+            return ledger
+        cfg = self._transcript_cfg
+        ledger = TranscriptLedger(
+            step_memory=ensure_step_memory(self.ctx),
+            image_scrub_depth=getattr(cfg, "image_scrub_depth", 3),
+            pending_grace_steps=getattr(cfg, "pending_grace_steps", 3),
+            xml_scrub_depth=getattr(cfg, "xml_scrub_depth", 1),
+        )
+        # L2/L3 chunk compression (M3) rides the same flag; without a
+        # DataEngine there are no step records to chunk, so the ledger simply
+        # runs scrub-edge-only.
+        if self.ctx.data_engine is not None:
+            try:
+                from artemis.memory import HistoryChunkManager
+
+                chunking_cfg = None
+                try:
+                    from artemis.config import load_agent_config
+
+                    chunking_cfg = load_agent_config().memory.chunking
+                except Exception:
+                    pass
+                ledger.attach_chunker(
+                    HistoryChunkManager(
+                        engine=self.ctx.data_engine,
+                        ctx=self.ctx,
+                        chunking_config=chunking_cfg,
+                        transcript_config=cfg,
+                        goal=getattr(state, "initial_goal", None) if state else None,
+                    )
+                )
+            except Exception as e:
+                logger.error(f"History chunk manager unavailable: {e}")
+        try:
+            self.ctx.transcript_ledger = ledger
+        except Exception:
+            pass
+        return ledger
+
+    async def _build_prompt_transcript(
+        self,
+        state: State,
+        latest_screenshot_b64: str,
+        minimal_list: str,
+        current_step_num: int,
+        steps: list[dict],
+        task_plan: str,
+        active_background_tasks: list[dict] = None,
+        newly_finished_tasks: list[dict] = None,
+    ) -> list:
+        """Build ``S + F + A + tail`` from the session transcript ledger.
+
+        The static system message renders once per session (byte-stable S
+        region); the previous turn is committed into the append-only active
+        region together with its step key and validator result; the fresh tail
+        carries the current observation plus the task-plan recitation.
+        """
+        from langchain_core.messages import HumanMessage
+
+        ledger = self._ensure_transcript_ledger(state)
+
+        # 1. S region: rendered exactly once per session.
+        if not ledger.has_static_prefix:
+            static_text = render_transcript_static_system(self.prompts, self.ctx, state)
+            ledger.set_static_prefix([SystemMessage(content=static_text)])
+
+        # 2. F region cold start: an empty ledger over an existing step record
+        # trail means the process restarted — freeze the compiled history once.
+        # A staged (not yet committed) turn means this is turn 2+ of a live
+        # session, not a cold start — step records already exist then, and
+        # seeding would be rejected by the empty-ledger invariant.
+        if (
+            ledger.turn_count == 0
+            and not ledger.has_staged_turn
+            and not ledger.has_restored_history
+            and steps
+        ):
+            restored = build_history_for(
+                "operator_cold_start",
+                task_plan,
+                steps,
+                self._get_active_subgoal_hash(),
+            )
+            ledger.set_restored_history(
+                "[Restored history] Rebuilt from the step records of this task"
+                " after a process restart; step times below are relative to the"
+                " original session start.\n"
+                f"{restored}"
+            )
+
+        # 3. Commit the previous turn (its step id and validator result only
+        # exist now). A turn without a terminal action never ran the validator,
+        # and ``structured_decisions`` is cleared on planner rejection — the
+        # gate keeps stale reports out of the ledger.
+        validator_result = (
+            getattr(state, "last_execution_result", None)
+            if getattr(state, "structured_decisions", None)
+            else None
+        )
+        ledger.commit_staged(
+            step_key=getattr(state, "current_step_id", None),
+            validator_result=validator_result,
+        )
+
+        # 4. Current tail: observation + plan recitation + injected components.
+        builder = PromptBuilder()
+        builder.add_human_content(f"# CURRENT OBSERVATION [{ledger.elapsed_label()}]")
+        components = [
+            (PlanRecitationPromptComponent(), {}),
+            (CheckItemsExplainerPromptComponent(), {}),
+            (ObservationPromptComponent(), {}),
+            (ScreenshotSimilarityPromptComponent(), {}),
+            (HistoricalStateHintPromptComponent(), {}),
+            (InjectedInstructionPromptComponent(), {}),
+            (BackgroundTasksPromptComponent(), {}),
+            (FeedbackPromptComponent(), {}),
+            (TaskPlanWarningPromptComponent(), {}),
+            (ToolLimitWarningPromptComponent(), {}),
+        ]
+        for component, extra_kwargs in components:
+            kwargs_to_pass = {
+                "prompts": self.prompts,
+                "task_plan": task_plan,
+                "latest_screenshot_b64": latest_screenshot_b64,
+                "minimal_list": minimal_list,
+                "current_step_num": current_step_num,
+                "active_background_tasks": active_background_tasks or [],
+                "newly_finished_tasks": newly_finished_tasks or [],
+                "steps": steps,
+            }
+            kwargs_to_pass.update(extra_kwargs)
+            await component(builder, state, self.ctx, **kwargs_to_pass)
+
+        tail_content = []
+        for part in builder.human_parts:
+            if isinstance(part, str):
+                tail_content.append({"type": "text", "text": part})
+            else:
+                tail_content.append(part)
+        tail = HumanMessage(content=tail_content)
+
+        messages = ledger.render([tail])
+        self._transcript_turn_base = len(messages) - 1
+        return messages
+
+    def _stage_transcript_turn(self, messages: list) -> None:
+        """Hand this turn's tail + tool-loop products to the ledger."""
+        base = self._transcript_turn_base
+        self._transcript_turn_base = None
+        if base is None:
+            return
+        try:
+            ledger = getattr(self.ctx, "transcript_ledger", None)
+            if ledger is not None:
+                ledger.stage_turn(messages[base:])
+        except Exception as e:
+            logger.error(f"Failed to stage transcript turn: {e}")
 
     async def _invoke_llm_loop(
         self,
@@ -729,30 +937,18 @@ class OperatorNode:
             state=state,
         )
 
+        # 8b. Transcript path: hold this turn's messages (observation tail +
+        # tool-loop products) for commit at the next build, when the turn's
+        # step id and validator result exist.
+        self._stage_transcript_turn(messages)
+
         # 9. Update State
         structured_decisions = json.dumps(action_result) if action_result else None
-
-        short_term_memory = None
-        combined_thinking = ""
-        if raw_thinking:
-            combined_thinking += raw_thinking + "\n"
-        if native_thinking:
-            combined_thinking += native_thinking
-
-        if combined_thinking:
-            stm_match = re.search(
-                r"<short_term_memory>(.*?)</short_term_memory>",
-                combined_thinking,
-                re.DOTALL,
-            )
-            if stm_match:
-                short_term_memory = stm_match.group(1).strip()
 
         return {
             "structured_decisions": structured_decisions,
             "operator_raw_thinking": raw_thinking,
             "operator_native_thinking": native_thinking,
-            "short_term_memory": short_term_memory,
             "indexed_points": state.indexed_points,
             "indexed_elements": state.indexed_elements,
             "current_step_id": state.current_step_id,
@@ -785,14 +981,12 @@ class OperatorNode:
         """Builds a plan checklist and separate execution history."""
 
         active_subgoal_hash = self._get_active_subgoal_hash()
-        return build_plan_and_history(
+        return build_history_for(
+            "operator",
             task_plan,
             steps,
             active_subgoal_hash,
             last_n_detailed=self.last_n_detailed,
-            strict_milestone_pruning=True,
-            recent_window_size=3,
-            chronological_last_step=True,
         )
 
     def _translate_and_validate_tool(self, tc: dict, state: State) -> tuple[list[dict], str | None]:
@@ -838,7 +1032,7 @@ class OperatorNode:
                     return None, f"Error: Invalid target index {target}."
                 indexed_elements = getattr(state, "indexed_elements", None) or []
                 if 1 <= target_int <= len(indexed_elements):
-                    return indexed_elements[target_int - 1], None
+                    return {**indexed_elements[target_int - 1], "label_source": "index"}, None
                 return (
                     None,
                     (
@@ -851,13 +1045,21 @@ class OperatorNode:
                     nx, ny = map(float, target)
                     x = int(max(0, min(width - 1, nx * width / 1000)))
                     y = int(max(0, min(height - 1, ny * height / 1000)))
+                    # Record-time enrichment: a bare-coordinate target carries no
+                    # element semantics, so hit test the pre-action frame's indexed
+                    # elements to best-effort recover what sits under the point.
+                    hit_el, hit_source = find_element_at_point(
+                        getattr(state, "indexed_elements", None), x, y
+                    )
+                    hit_el = hit_el or {}
                     return {
                         "center": [x, y],
-                        "text": None,
-                        "bounds": None,
-                        "class": None,
-                        "resource_id": None,
-                        "is_ocr": False,
+                        "text": hit_el.get("text"),
+                        "bounds": hit_el.get("bounds"),
+                        "class": hit_el.get("class"),
+                        "resource_id": hit_el.get("resource_id"),
+                        "is_ocr": bool(hit_el.get("is_ocr")),
+                        "label_source": hit_source,
                     }, None
                 except (ValueError, TypeError):
                     return (
@@ -894,6 +1096,7 @@ class OperatorNode:
                     "target_bounds": el.get("bounds"),
                     "target_resource_id": el.get("resource_id"),
                     "target_class": el.get("class"),
+                    "target_label_source": el.get("label_source", "none"),
                 }
             ], None
 
@@ -917,6 +1120,7 @@ class OperatorNode:
                     "target_bounds": el.get("bounds"),
                     "target_resource_id": el.get("resource_id"),
                     "target_class": el.get("class"),
+                    "target_label_source": el.get("label_source", "none"),
                 }
             ], None
 
@@ -953,6 +1157,7 @@ class OperatorNode:
                     "target_bounds": el.get("bounds"),
                     "target_resource_id": el.get("resource_id"),
                     "target_class": el.get("class"),
+                    "target_label_source": el.get("label_source", "none"),
                 }
             )
             return actions, None

@@ -24,7 +24,7 @@ def test_operator_prompt_contract_matches_note_runtime_semantics():
 
     assert "write-through tools `update_note` and `append_note`" in prompt
     assert "may accompany at most one Turn-Ending Action" in prompt
-    assert "`read_note`, `list_notes`, and `save_note`" in prompt
+    assert "`read_note`, `list_notes`, `save_note`, and `recall_history`" in prompt
     assert "Do NOT submit a Turn-Ending Action at the same time" not in prompt
     assert "memory note tools (`read_note`, `list_notes`, `save_note`, `update_note`" not in prompt
 

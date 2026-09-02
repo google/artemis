@@ -14,16 +14,24 @@
 
 """Universal Context Compressor for Artemis Flash profile.
 
-Replaces historical screenshots with high-density visual step summaries only
-after they are ready. Screenshots remain in context while summarization or
-retry is still in flight.
+:class:`ScrubEdgeCompressor` implements the scrub-edge (擦洗沿) discipline
+from the history-module redesign §3.2: each message is mutated a bounded
+number of times near the tail (XML stripped at depth 1, screenshot resolved
+at depth K), then frozen forever. A late summary never backfills a frozen
+message. FlashRunner uses this implementation; the Pro transcript ledger
+reuses it over its active region (see the class docstring).
+
+The legacy per-turn full-rescan ``compress_flash_messages`` was removed in M5
+(2026-09-01) after serving as the M1/M2 semantic reference — its surviving
+semantics are asserted directly against ``ScrubEdgeCompressor`` in
+``tests/unit/agents/test_flash_scrub_edge.py``.
 """
 
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.messages import BaseMessage
 
-from artemis.agents.flash.summarizer import VisualStepSummarizer
+from artemis.memory.step_memory import StepMemoryService
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -32,134 +40,298 @@ _HISTORY_SUMMARY_PREFIX = "--- Historical Visual Transition ---\n"
 _UI_LIST_MARKER = "--- UI Element List ---"
 
 
-def _without_historical_ui_list(text: str) -> str:
-    """Remove a historical UI list without discarding text before its marker."""
-    marker_index = text.find(_UI_LIST_MARKER)
+def _without_marked_suffix(text: str, markers: tuple[str, ...] = (_UI_LIST_MARKER,)) -> str:
+    """Remove a marked heavy block without discarding text before its marker."""
+    marker_index = -1
+    for marker in markers:
+        idx = text.find(marker)
+        if idx >= 0 and (marker_index < 0 or idx < marker_index):
+            marker_index = idx
     if marker_index < 0:
         return text
     return text[:marker_index].rstrip()
 
 
-def compress_flash_messages(
-    messages: list[BaseMessage],
-    summarizer: VisualStepSummarizer | None = None,
-    prune_history_xml: bool = True,
-) -> None:
-    """Compresses multi-turn conversation messages in-place.
+class ScrubEdgeCompressor:
+    """Scrub-edge context compressor (history-module redesign §3.2, M1).
 
-    Rules:
-    1. Keeps the latest screenshot and live UI hierarchy completely intact.
-    2. For earlier steps, if a VisualStepSummarizer has completed the step's summary,
-       replaces the intermediate image block with the objective summary text.
-    3. If the background summary is not ready yet, retains the original image until
-       a successful summary can replace it.
-    4. If prune_history_xml is True, removes heavy outdated UI Element lists from past turns.
+    Mutation discipline — every message is touched at most twice, always near
+    the tail, and is then frozen forever:
+
+    1. Depth 1 (XML): once a newer observation exists, historical UI Element
+       lists are stripped (same semantics as the legacy ``prune_history_xml``).
+    2. Depth K (image, ``image_scrub_depth``): the K-th most recent
+       image-bearing message has its screenshot resolved — replaced by the
+       ready visual summary; if the summary is still pending the image is
+       retained for up to ``pending_grace_steps`` further image-depths, after
+       which it is replaced by a pending placeholder. A failed summary is
+       replaced by an unavailable placeholder immediately. Both placeholders
+       carry the DataEngine step reference.
+    3. Frozen: after resolution the message is never read or written again —
+       a late summary never backfills a frozen message.
+
+    Contract: the message list is append-only (FlashRunner never removes or
+    reorders entries), so bookkeeping is index-based and each pass only
+    touches the few messages near the scrub edge instead of rescanning the
+    whole history.
+
+    Profile generalization (M2): the Pro transcript ledger reuses this exact
+    discipline over its active region. Its observation messages carry no
+    ``tool_call_id``, so ``summary_key_getter`` supplies the summary-job key
+    (the DataEngine step id) per message; ``strip_markers`` extends the
+    depth-1 strip to the Pro tail blocks (UI element list + plan recitation);
+    and ``tail_offset=1`` accounts for the live observation living outside
+    the tracked list (the ledger renders it as a separate tail), so depth
+    arithmetic and the keep-window stay aligned with the Flash semantics
+    where the live observation is *inside* the list. Defaults leave the
+    Flash behavior byte-identical.
     """
-    if not messages:
-        return
 
-    # 1. Identify the last message containing an active screenshot
-    last_img_msg_idx = -1
-    for idx in range(len(messages) - 1, -1, -1):
-        msg = messages[idx]
-        msg_content = getattr(msg, "content", None)
-        if isinstance(msg_content, list):
-            has_image = any(
-                isinstance(block, dict) and block.get("type") in ("image_url", "image")
-                for block in msg_content
-            )
+    def __init__(
+        self,
+        summarizer: StepMemoryService | None = None,
+        *,
+        prune_history_xml: bool = True,
+        image_scrub_depth: int = 3,
+        pending_grace_steps: int = 3,
+        xml_scrub_depth: int = 1,
+        summary_key_getter: Callable[[BaseMessage], str | None] | None = None,
+        strip_markers: tuple[str, ...] = (_UI_LIST_MARKER,),
+        tail_offset: int = 0,
+    ):
+        self._summarizer = summarizer
+        self._prune_history_xml = prune_history_xml
+        self._image_scrub_depth = max(1, image_scrub_depth)
+        self._pending_grace_steps = max(0, pending_grace_steps)
+        self._xml_scrub_depth = max(1, xml_scrub_depth)
+        self._summary_key_getter = summary_key_getter
+        self._strip_markers = tuple(strip_markers) or (_UI_LIST_MARKER,)
+        self._tail_offset = max(0, tail_offset)
+
+        self._scanned_until = 0
+        self._tool_msg_count = 0
+        # Append-only records of image-bearing messages, in message order:
+        # {"idx", "key" (str tool_call_id | None), "legacy" (ordinal | None), "is_tool"}
+        self._tracked: list[dict[str, Any]] = []
+        self._frozen: set[int] = set()
+        self._xml_candidates: list[int] = []
+
+    def compress(self, messages: list[BaseMessage]) -> None:
+        """Advance the scrub edge over newly appended messages in-place."""
+        self._discover(messages)
+        if not self._tracked:
+            return
+        self._scrub_xml(messages)
+        self._scrub_images(messages)
+
+    # ------------------------------------------------------------------
+    # Discovery (incremental; frozen prefix is never rescanned)
+    # ------------------------------------------------------------------
+
+    def _discover(self, messages: list[BaseMessage]) -> None:
+        for idx in range(self._scanned_until, len(messages)):
+            msg = messages[idx]
+            tool_call_id = getattr(msg, "tool_call_id", None)
+            if tool_call_id is not None:
+                self._tool_msg_count += 1
+            content = getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
+
+            has_image = False
+            has_xml = False
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") in ("image_url", "image"):
+                    has_image = True
+                elif block.get("type") == "text" and self._has_strip_marker(
+                    block.get("text", "")
+                ):
+                    has_xml = True
+
+            if has_xml:
+                self._xml_candidates.append(idx)
             if has_image:
-                last_img_msg_idx = idx
-                break
+                key = str(tool_call_id) if tool_call_id is not None else None
+                if key is None and self._summary_key_getter is not None:
+                    try:
+                        getter_key = self._summary_key_getter(msg)
+                    except Exception:
+                        getter_key = None
+                    if getter_key is not None:
+                        key = str(getter_key)
+                self._tracked.append(
+                    {
+                        "idx": idx,
+                        "key": key,
+                        "legacy": self._tool_msg_count if tool_call_id is not None else None,
+                        "is_tool": tool_call_id is not None,
+                    }
+                )
+        self._scanned_until = len(messages)
 
-    # 2. Iterate through historical messages and apply compression/fallback.
-    # ``tool_call_id`` is the stable identity of an action result. The legacy
-    # ordinal is retained only for summaries produced by older callers/tests.
-    tool_step_counter = 0
-    for idx in range(len(messages)):
-        msg = messages[idx]
-        msg_content = getattr(msg, "content", None)
-        if not isinstance(msg_content, list):
-            continue
+    def _has_strip_marker(self, text: str) -> bool:
+        return any(marker in text for marker in self._strip_markers)
 
-        # Keep the latest live screen intact
-        if idx == last_img_msg_idx:
-            continue
+    # ------------------------------------------------------------------
+    # Depth-1 XML scrub
+    # ------------------------------------------------------------------
 
-        # Count tool steps strictly corresponding to FlashRunner action turns
-        tool_call_id = getattr(msg, "tool_call_id", None)
-        is_tool_msg = tool_call_id is not None
-        if is_tool_msg:
-            tool_step_counter += 1
-            legacy_step_num = tool_step_counter
-        else:
-            legacy_step_num = None
+    def _scrub_xml(self, messages: list[BaseMessage]) -> None:
+        if not self._prune_history_xml:
+            return
+        # Keep the UI list only in the newest xml_scrub_depth observation
+        # messages; everything older (or non-image XML carriers) is stripped.
+        # With a live tail outside the tracked list (tail_offset > 0) the tail
+        # itself occupies the newest slots of the keep window.
+        keep_count = max(0, self._xml_scrub_depth - self._tail_offset)
+        keep_indices = (
+            {rec["idx"] for rec in self._tracked[-keep_count:]} if keep_count else set()
+        )
+        still_pending: list[int] = []
+        for idx in self._xml_candidates:
+            if idx in keep_indices:
+                still_pending.append(idx)
+                continue
+            if idx in self._frozen:
+                continue
+            self._strip_xml_blocks(messages[idx])
+        self._xml_candidates = still_pending
 
-        summary_text = None
-        summary_pending = False
-        if summarizer and is_tool_msg:
-            # New FlashRunner instances key summaries by tool_call_id, so generic
-            # tools, no-tool turns, and parallel tool calls cannot shift memories.
-            action_key = str(tool_call_id)
-            summary_text = summarizer.get_summary(action_key)
-            summary_pending = summarizer.is_pending(action_key)
-            if (
-                summary_text is None
-                and not summarizer.has_job(action_key)
-                and legacy_step_num is not None
-            ):
-                summary_text = summarizer.get_summary(legacy_step_num)
-                summary_pending = summarizer.is_pending(legacy_step_num)
-
+    def _strip_xml_blocks(self, msg: BaseMessage) -> None:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            return
         new_blocks: list[Any] = []
-
-        for b in msg_content:
-            if not isinstance(b, dict):
-                # LangChain permits string parts in multimodal content lists.
-                # They are lightweight historical evidence and must not vanish.
-                new_blocks.append(b)
-                continue
-            b_type = b.get("type", "")
-            b_text = b.get("text", "")
-
-            if b_type == "text" and b_text.startswith(_HISTORY_SUMMARY_PREFIX):
-                # Rebuild this generated block on every pass. This makes the
-                # compressor idempotent and lets a late summary replace itself.
-                continue
-
-            # Filter heavy outdated XML hierarchy from past steps to save tokens.
-            # Some adapters combine action text and the hierarchy in one block;
-            # retain the useful prefix instead of dropping the entire block.
-            if prune_history_xml and b_type == "text" and _UI_LIST_MARKER in b_text:
-                retained_text = _without_historical_ui_list(b_text)
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and self._has_strip_marker(block.get("text", ""))
+            ):
+                retained_text = _without_marked_suffix(
+                    block.get("text", ""), self._strip_markers
+                )
                 if retained_text:
-                    retained_block = dict(b)
+                    retained_block = dict(block)
                     retained_block["text"] = retained_text
                     new_blocks.append(retained_block)
                 continue
+            new_blocks.append(block)
+        msg.content = new_blocks
 
-            if b_type in ("image_url", "image"):
-                # A submitted image remains visible until its summary is ready.
-                # This temporarily favors context size over losing visual evidence.
-                if summary_pending:
-                    new_blocks.append(b)
+    # ------------------------------------------------------------------
+    # Depth-K image scrub
+    # ------------------------------------------------------------------
+
+    def _scrub_images(self, messages: list[BaseMessage]) -> None:
+        total = len(self._tracked)
+        scrub_depth = self._image_scrub_depth
+        grace_limit = scrub_depth + self._pending_grace_steps
+
+        for pos, rec in enumerate(self._tracked):
+            if rec["idx"] in self._frozen:
                 continue
+            # 1 == most recent image-bearing message; a live tail outside the
+            # tracked list (tail_offset > 0) counts as the newest depths.
+            depth = total - pos + self._tail_offset
+            if depth < scrub_depth:
+                continue  # active window
+            if self._tail_offset == 0 and pos == total - 1:
+                continue  # the live observation is never scrubbed
 
-            new_blocks.append(b)
-
-        # Do not tie injection to the presence of an image: the image is normally
-        # pruned before the background summary finishes. A stable tool-call key lets
-        # a later compression pass backfill the summary into the correct result.
-        if summary_text:
-            new_blocks.append(
-                {
+            summary, pending, failed, step_no = self._lookup(rec)
+            if summary is not None:
+                replacement = {
                     "type": "text",
-                    "text": f"{_HISTORY_SUMMARY_PREFIX}{summary_text}",
+                    "text": f"{_HISTORY_SUMMARY_PREFIX}{summary}",
                 }
-            )
+            elif failed:
+                replacement = {
+                    "type": "text",
+                    "text": f"[visual summary unavailable; evidence at DataEngine step {step_no}]",
+                }
+            elif pending and depth <= grace_limit:
+                continue  # grace period: retain the image, revisit next pass
+            elif pending:
+                replacement = {
+                    "type": "text",
+                    "text": f"[visual summary pending; evidence at DataEngine step {step_no}]",
+                }
+            else:
+                replacement = None  # no summary job exists; drop the image silently
+
+            self._resolve(messages, rec, replacement)
+
+    def _lookup(self, rec: dict[str, Any]) -> tuple[str | None, bool, bool, int | None]:
+        """Mirror the legacy keying: tool_call_id first, ordinal fallback."""
+        summarizer = self._summarizer
+        if summarizer is None:
+            return None, False, False, None
+
+        effective_key: Any = rec["key"]
+        if effective_key is None:
+            return None, False, False, None
+
+        summary = summarizer.get_summary(effective_key)
+        if (
+            summary is None
+            and not summarizer.has_job(effective_key)
+            and rec["legacy"] is not None
+        ):
+            effective_key = rec["legacy"]
+            summary = summarizer.get_summary(effective_key)
+
+        failed = summarizer.has_failed(effective_key)
+        pending = summarizer.is_pending(effective_key) and not failed
+        step_no = summarizer.get_step_number(effective_key)
+        if step_no is None:
+            step_no = rec["legacy"]
+        return summary, pending, failed, step_no
+
+    def _resolve(
+        self,
+        messages: list[BaseMessage],
+        rec: dict[str, Any],
+        replacement: dict[str, Any] | None,
+    ) -> None:
+        """Replace the message's image blocks and freeze it permanently."""
+        msg = messages[rec["idx"]]
+        content = getattr(msg, "content", None)
+        new_blocks: list[Any] = []
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in ("image_url", "image"):
+                    continue
+                if (
+                    self._prune_history_xml
+                    and isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and self._has_strip_marker(block.get("text", ""))
+                ):
+                    # Freezing implies fully scrubbed: no stale UI list survives
+                    # even when xml_scrub_depth exceeds the image depth.
+                    retained_text = _without_marked_suffix(
+                        block.get("text", ""), self._strip_markers
+                    )
+                    if retained_text:
+                        retained_block = dict(block)
+                        retained_block["text"] = retained_text
+                        new_blocks.append(retained_block)
+                    continue
+                new_blocks.append(block)
+
+        if replacement is not None:
+            new_blocks.append(replacement)
 
         # Defensive fallback: never leave ToolMessage or HumanMessage content empty
         if not new_blocks:
-            new_blocks = [{"type": "text", "text": "Action completed." if is_tool_msg else ""}]
+            new_blocks = [
+                {"type": "text", "text": "Action completed." if rec["is_tool"] else ""}
+            ]
 
         msg.content = new_blocks
+        self._frozen.add(rec["idx"])
+        if rec["idx"] in self._xml_candidates:
+            self._xml_candidates.remove(rec["idx"])

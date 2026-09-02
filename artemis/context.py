@@ -232,6 +232,17 @@ class ArtemisContext(BaseModel):
     """Optional actuator backend override (artemis.mcp.actuators). ``None`` selects
     the default AdbActuator; installing e.g. a robot-arm backend happens here."""
 
+    step_memory: Any | None = None
+    """Shared :class:`~artemis.memory.step_memory.StepMemoryService` composition
+    root (history redesign §6.2). Created on first use via
+    ``artemis.memory.ensure_step_memory``; Flash and Pro profiles share one
+    instance so summary jobs, retries, and flush semantics are unified."""
+
+    transcript_ledger: Any | None = None
+    """Session :class:`~artemis.memory.transcript.TranscriptLedger` for the Pro
+    operator's transcript prompt path (``agent.memory.transcript.enabled``).
+    Lives beside ``step_memory``; the State never carries message payloads."""
+
     async def __aenter__(self) -> ArtemisContext:
         return self
 
@@ -245,6 +256,31 @@ class ArtemisContext(BaseModel):
                 pass
             finally:
                 self.action_session = None
+
+        # Drain in-flight step-summary jobs before the generic background-task
+        # sweep: the shared service owns its own bounded flush semantics. On an
+        # exceptional exit the flush is skipped and the jobs are cancelled below.
+        if self.step_memory is not None and callable(getattr(self.step_memory, "flush", None)):
+            try:
+                if exc_type is None:
+                    await self.step_memory.flush()
+                else:
+                    await self.step_memory.flush(timeout_seconds=0.0)
+            except Exception:
+                pass
+
+        # Drain in-flight chunk capsule jobs the same way (M3): the chunk
+        # manager persists any harvested capsules so the DB copy is complete
+        # even though the frozen transcript text is not re-rendered.
+        chunker = getattr(self.transcript_ledger, "chunker", None)
+        if chunker is not None and callable(getattr(chunker, "flush", None)):
+            try:
+                if exc_type is None:
+                    await chunker.flush()
+                else:
+                    await chunker.flush(timeout_seconds=0.0)
+            except Exception:
+                pass
 
         if self.background_tasks:
             tasks = list(self.background_tasks)

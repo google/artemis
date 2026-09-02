@@ -302,6 +302,28 @@ def _record_verdicts(
         )
 
 
+def _annotate_history_chunks(ctx, run: CheckpointRun, verdicts) -> None:
+    """Post-hoc chunk annotation (M3 §9): a verdict harvested after its subgoal's
+    segment was chunk-compressed is appended to that chunk and bumps its
+    version. Best-effort — history annotation never gates checkpoint booking."""
+    try:
+        chunker = getattr(getattr(ctx, "transcript_ledger", None), "chunker", None)
+        if chunker is None:
+            return
+        payload = [
+            {
+                "kind": getattr(v, "kind", "check"),
+                "item_text": getattr(v, "item_text", ""),
+                "status": getattr(v, "status", ""),
+                "evidence": getattr(v, "evidence", ""),
+            }
+            for v in verdicts
+        ]
+        chunker.annotate_from_checkpoint(run.checkpoint.checkpoint_id, payload)
+    except Exception as e:
+        logger.debug(f"History chunk annotation skipped: {e}")
+
+
 def _record_attempt_failure(ctx, run: CheckpointRun, status: str, evidence: str) -> None:
     base_dir = ctx.data_engine.base_dir
     for ci in run.checkpoint.check_items:
@@ -367,6 +389,7 @@ def harvest_run(
     report = task.result()
     verdicts = list(getattr(report, "verdicts", []) or [])
     _record_verdicts(ctx, run, verdicts, anchor_step_id)
+    _annotate_history_chunks(ctx, run, verdicts)
 
     # Applicability gate for side effects: the verdict must belong to the
     # current attempt of its checkpoint AND the anchored subgoal's text must be

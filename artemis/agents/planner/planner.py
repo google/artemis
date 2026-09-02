@@ -47,7 +47,7 @@ from artemis.utils.decorators import wrap_with_callbacks
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.plan_grammar import render_plan_grammar_spec
-from artemis.utils.task_tree import build_plan_and_history
+from artemis.memory.context_policy import build_history_for
 
 logger = get_logger(__name__)
 
@@ -130,14 +130,11 @@ async def run_async_planner_validation(
         if ctx.data_engine:
             try:
                 steps = ctx.data_engine.get_agent_friendly_steps()
-                history_str = build_plan_and_history(
+                history_str = build_history_for(
+                    "planner",
                     "",  # Pass empty string to avoid rendering the task plan in the history
                     steps,
                     "default",
-                    last_n_detailed=2,
-                    strict_milestone_pruning=True,
-                    recent_window_size=5,
-                    chronological_last_step=True,
                 )
 
             except Exception as e:

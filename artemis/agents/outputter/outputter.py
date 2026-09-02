@@ -38,7 +38,8 @@ from artemis.tools.scratchpad import (
 from artemis.tools.video_tool import get_video_analyzer_tool_pure
 from artemis.tools.tool_wrapper import invoke_tool_with_injection
 from artemis.utils.logger import get_logger
-from artemis.utils.task_tree import build_plan_and_history, get_active_subgoal_hashes
+from artemis.memory.context_policy import build_history_for
+from artemis.utils.task_tree import get_active_subgoal_hashes
 from pydantic import BaseModel
 
 logger = get_logger(__name__)
@@ -78,13 +79,12 @@ async def outputter(
                     except Exception as e:
                         logger.error(f"Failed to parse active subgoal in outputter: {e}")
 
-                plan_and_history = build_plan_and_history(
+                plan_and_history = build_history_for(
+                    "outputter",
                     current_plan,
                     history,
                     active_subgoal_hash,
-                    last_n_detailed=0,
-                    min_summaries=len(history),
-                    strict_milestone_pruning=False,
+                    engine=ctx.data_engine,
                 )
         except Exception as e:
             logger.error(f"Failed to resolve plan and history in outputter: {e}")

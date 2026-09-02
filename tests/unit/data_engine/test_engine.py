@@ -380,3 +380,62 @@ def test_update_step_summary_includes_step_number_in_sse(tmp_path):
     assert last_update["step_number"] == 1
 
 
+
+def _foreground_engine(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+    engine = DataEngine(mock_ctx)
+    engine.start_session("foreground_app persistence")
+    return engine
+
+
+def test_record_step_persists_explicit_foreground_app(tmp_path):
+    """M5: the historically dropped foreground_app parameter is persisted."""
+    engine = _foreground_engine(tmp_path)
+    engine.record_step(
+        foreground_app="com.android.settings",
+        ui_tree=[{"package": "com.other.app", "bounds": "[0,0][10,10]"}],
+        summary="Explicit parameter wins",
+    )
+    for t in list(engine._pending_threads):
+        t.join()
+
+    step = engine.storage.get_steps(engine.current_session_id)[0]
+    assert step.extra_metadata["foreground_app"] == "com.android.settings"
+
+
+def test_record_step_derives_foreground_app_from_ui_tree(tmp_path):
+    """Without the parameter, the dominant non-overlay package is stamped."""
+    engine = _foreground_engine(tmp_path)
+    engine.record_step(
+        ui_tree=[
+            {"package": "com.android.systemui", "bounds": "[0,0][10,10]"},
+            {"package": "com.google.android.deskclock"},
+            {
+                "packageName": "com.google.android.deskclock",
+                "children": [{"package": "com.google.android.deskclock"}],
+            },
+        ],
+        summary="Derived from UI tree",
+    )
+    for t in list(engine._pending_threads):
+        t.join()
+
+    step = engine.storage.get_steps(engine.current_session_id)[0]
+    assert step.extra_metadata["foreground_app"] == "com.google.android.deskclock"
+
+
+def test_record_step_without_app_data_stamps_nothing(tmp_path):
+    engine = _foreground_engine(tmp_path)
+    engine.record_step(
+        ui_tree=[{"package": "com.android.systemui"}],
+        summary="Only overlay packages",
+    )
+    for t in list(engine._pending_threads):
+        t.join()
+
+    step = engine.storage.get_steps(engine.current_session_id)[0]
+    assert "foreground_app" not in (step.extra_metadata or {})

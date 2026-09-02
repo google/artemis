@@ -33,7 +33,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from artemis.agents.flash.context_compressor import compress_flash_messages
+from artemis.agents.flash.context_compressor import ScrubEdgeCompressor
 from artemis.agents.flash.summarizer import VisualStepSummarizer
 from artemis.agents.validator.tool_declarations import (
     ASK_EXPLORER_TOOL,
@@ -43,7 +43,12 @@ from artemis.agents.validator.tool_declarations import (
     capture_screenshot_and_parse_ui,
     prune_intermediate_screenshots,
 )
-from artemis.config import StepSummarizerConfig, load_agent_config
+from artemis.config import (
+    MemoryRuntimeConfig,
+    MemoryTranscriptConfig,
+    StepSummarizerConfig,
+    load_agent_config,
+)
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import trace
@@ -74,17 +79,34 @@ class FlashRunner:
             cfg = load_agent_config()
             self.max_turns = max_turns if max_turns is not None else cfg.flash.max_turns
             self.step_summarizer_cfg = cfg.flash.step_summarizer
+            self.memory_runtime_cfg = cfg.memory.runtime
+            self.transcript_cfg = cfg.memory.transcript
         except Exception:
             self.max_turns = max_turns if max_turns is not None else 30
             self.step_summarizer_cfg = StepSummarizerConfig()
+            self.memory_runtime_cfg = MemoryRuntimeConfig()
+            self.transcript_cfg = MemoryTranscriptConfig()
 
         self.controller = UnifiedMobileController(ctx)
         self.executor = McpActionExecutor(ctx, self.controller)
         self.summarizer = (
-            VisualStepSummarizer(ctx, model_name=self.step_summarizer_cfg.model)
+            VisualStepSummarizer(
+                ctx,
+                model_name=self.step_summarizer_cfg.model,
+                retry_limit=self.memory_runtime_cfg.retry_limit,
+                max_concurrency=self.memory_runtime_cfg.max_concurrency,
+                flush_timeout_s=self.memory_runtime_cfg.flush_timeout_s,
+            )
             if self.step_summarizer_cfg.enabled
             else None
         )
+        # Publish the service on the composition root (ctx.step_memory, M2) so
+        # any co-resident consumer shares this run's summary runtime.
+        if self.summarizer is not None and getattr(ctx, "step_memory", None) is None:
+            try:
+                ctx.step_memory = self.summarizer
+            except Exception:
+                pass
 
     def _get_tools(self) -> list:
         tools = [t for t in VALIDATOR_TOOLS_DECLARATION if t.name != "report_failure_analysis"]
@@ -108,6 +130,16 @@ class FlashRunner:
     @trace(type="agent", name="FlashRunner")
     async def run(self, state: State) -> dict:
         logger.info(f"Starting Artemis Flash reactive loop for goal: {self.goal}")
+
+        # Fresh scrub-edge ledger per run: the frozen/watermark bookkeeping is
+        # execution state bound to this run's append-only message list.
+        compressor = ScrubEdgeCompressor(
+            summarizer=self.summarizer,
+            prune_history_xml=self.step_summarizer_cfg.prune_history_xml,
+            image_scrub_depth=self.transcript_cfg.image_scrub_depth,
+            pending_grace_steps=self.transcript_cfg.pending_grace_steps,
+            xml_scrub_depth=self.transcript_cfg.xml_scrub_depth,
+        )
 
         # 1. Initialize Universal LLM via Service Layer
         try:
@@ -204,13 +236,10 @@ class FlashRunner:
                 except Exception as e:
                     logger.warning(f"Failed to check injected instruction in FlashRunner: {e}")
 
-            # Compress history even when visual summarization is disabled, so
-            # screenshot and historical XML pruning have identical semantics.
-            compress_flash_messages(
-                messages,
-                summarizer=self.summarizer,
-                prune_history_xml=self.step_summarizer_cfg.prune_history_xml,
-            )
+            # Advance the scrub edge even when visual summarization is
+            # disabled, so screenshot and historical XML pruning keep one
+            # code path. Messages behind the edge are frozen permanently.
+            compressor.compress(messages)
 
             # Tool restriction on the final turn
             if turns == self.max_turns:
@@ -476,6 +505,15 @@ class FlashRunner:
                             if norm_start and norm_end:
                                 action_dict["normalized_start_coordinates"] = norm_start
                                 action_dict["normalized_end_coordinates"] = norm_end
+
+                            # Record-time enrichment computed by the executor from
+                            # the pre-action frame (target_text / target_class /
+                            # target_resource_id / target_label_source).
+                            target_semantics = (exec_result.metadata or {}).get(
+                                "target_semantics"
+                            )
+                            if isinstance(target_semantics, dict):
+                                action_dict.update(target_semantics)
 
                             recorded_step_id = self.ctx.data_engine.record_step(
                                 pre_screenshot_bytes=current_pre_screenshot_bytes,

@@ -83,19 +83,20 @@ NODE_VISIBILITY: dict[str, NodeVisibility] = {
             "latest_screenshot",
             "indexed_points",
             "indexed_elements",
-            "short_term_memory",
             "subagent_calls",
             "current_step_id",
             "operator_tool_limit_exceeded",
             "structured_decisions",
             "operator_raw_thinking",
             "operator_native_thinking",
+            # Transcript path (M2): committing the previous turn into the
+            # ledger appends its validator result message.
+            "last_execution_result",
         },
         writes={
             "structured_decisions",
             "operator_raw_thinking",
             "operator_native_thinking",
-            "short_term_memory",
             "indexed_points",
             "indexed_elements",
             "current_step_id",
@@ -111,6 +112,9 @@ NODE_VISIBILITY: dict[str, NodeVisibility] = {
             "operator_native_thinking",
             "user_stop_requested",
             "initial_goal",
+            # M3: the turn's injected instruction is stamped verbatim onto the
+            # step record so the chunk ledger can preserve it (never-evict).
+            "injected_instruction",
         },
         writes={
             "checker_success",

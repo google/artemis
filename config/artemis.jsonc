@@ -190,6 +190,50 @@
     // ==========================================================================
     // 🌐 4.3 Shared Capabilities & Global Overrides
     // ==========================================================================
+    // 🧠 Unified Step-Memory Runtime (history-module redesign v3, M0–M5)
+    // Transcript ledger + layered compression for the Pro operator.
+    "memory": {
+      // Background summarization runtime (visual/capsule lenses)
+      "runtime": {
+        "max_concurrency": 2, // 1→2 per 2026-09-01 baseline: serial queue pushed summary-ready P90 past the scrub window
+        "retry_limit": 3,
+        "flush_timeout_s": 30
+      },
+      "transcript": {
+        // ROLLBACK SWITCH: set false to restore the legacy per-turn 2-message
+        // prompt path byte-for-byte (L2/L3 chunk compression rides this same
+        // flag). Default on since M5 (2026-09-01) per the on-device A/B:
+        // turn latency −77% P50, cache-hit calls 43%→88%, output tokens −74%.
+        "enabled": true,
+        "context_budget_tokens": 80000,
+        "soft_ratio": 0.7,
+        "hard_ratio": 0.9,
+        "min_active_steps": 5,
+        "image_scrub_depth": 3,
+        "pending_grace_steps": 3,
+        "xml_scrub_depth": 1,
+        // Local historical-state hint (no model call); distance calibrated
+        // 2026-09-01 from 460 dHash-stamped on-device steps (same screen <=4,
+        // different screens >=7).
+        "similarity_hint": true,
+        "similarity_max_distance": 5
+      },
+      // Segment (L2) chunk compression: three-band chunks, era folding
+      "chunking": {
+        "max_steps": 12,
+        "target_source_tokens": 2000,
+        "model": "gemini-3.7-flash",
+        "max_chunks": 8
+        // "max_eras": 8 // independent era cap; omitted = follows max_chunks
+      },
+      // Deterministic cold-history recall tool (Pro operator)
+      "recall": {
+        "enabled": true,
+        "max_results": 5,
+        "max_text_tokens": 2000,
+        "max_image_steps": 1
+      }
+    },
     // 🎬 Screen Recording & Video Analyzer Configuration
     "video_analyzer": {
       "enabled": true, // Whether continuous screen recording via scrcpy is active (default: auto-detected)

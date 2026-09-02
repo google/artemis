@@ -801,14 +801,22 @@ def build_plan_and_history(
     keep_subgoal_hashes: set | None = None,
     min_summaries: int = 5,
     last_n_detailed: int = 1,
-    detailed_subgoal_hashes: set | None = None,
     all_detailed: bool = False,
     strict_milestone_pruning: bool = False,
     recent_window_size: int = 3,
-    chronological_last_step: bool = False,
     for_failure_analyzer: bool = False,
+    chunks: list | None = None,
 ) -> str:
-    """Builds a clean plan list and separate flat chronological execution history with adaptive compression."""
+    """Builds a clean plan list and separate flat chronological execution history with adaptive compression.
+
+    ``chunks`` (optional, M4): pre-rendered history-chunk blocks — each a dict
+    with ``start_step_number``/``end_step_number``/``text``. When provided,
+    the chunk blocks are emitted right after the history header and the
+    per-step lines inside any chunked range are dropped (the chunk block
+    replaces them), except steps that must render detailed (the recent
+    window / the most-recent step stay untouched). When ``chunks`` is
+    ``None`` or empty the output is byte-identical to the pre-M4 rendering.
+    """
     # 1. Plan Checklist Section
     output_parts = []
 
@@ -900,12 +908,39 @@ def build_plan_and_history(
             # Ensure the last step is always in detailed_step_ids
             detailed_step_ids.add(full_info_step_id)
 
+        # M4: chunk blocks replace the per-step lines of already-chunked
+        # ranges. Chunks only ever cover frozen (old) turns, so they are
+        # emitted first, in chronological order; steps that must render
+        # detailed (recent window / most-recent step) are never suppressed.
+        chunked_ranges: list[tuple[int, int]] = []
+        if chunks:
+            for chunk in sorted(
+                chunks, key=lambda c: c.get("start_step_number") or 0
+            ):
+                text = chunk.get("text")
+                if not text:
+                    continue
+                try:
+                    start_n = int(chunk.get("start_step_number"))
+                    end_n = int(chunk.get("end_step_number"))
+                except (TypeError, ValueError):
+                    continue
+                chunked_ranges.append((start_n, end_n))
+                output_parts.append(text)
+
         for step in steps:
             step_id = step["step_id"]
 
             # Skip steps that are compressed (not marked as visible)
             if step_id not in visible_step_ids:
                 continue
+
+            if chunked_ranges and step_id not in detailed_step_ids and step_id != full_info_step_id:
+                step_number = step.get("step_number")
+                if isinstance(step_number, int) and any(
+                    start_n <= step_number <= end_n for start_n, end_n in chunked_ranges
+                ):
+                    continue  # represented by its chunk block above
 
             relative_time = step.get("relative_time") or "N/A"
             summary = step.get("summary")

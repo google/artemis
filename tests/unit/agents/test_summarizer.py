@@ -12,11 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-from unittest.mock import MagicMock, Mock, patch
+"""SummarizerNode tests (M2: visual-transition lens dispatch).
+
+Per the history redesign §5 the Pro SummarizerNode no longer runs its own LLM
+call to produce a text capsule: it dispatches the step to the shared
+step-memory service (``ctx.step_memory``) with the pre/post screenshot bytes
+pulled from the DataEngine, and degrades gracefully when images are missing.
+"""
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
+
+import pytest
+
 from artemis.agents.summarizer.summarizer import SummarizerNode
 from artemis.context import ArtemisContext
-import pytest
 
 
 class DummyState:
@@ -36,181 +46,107 @@ class DummyState:
 
 
 @pytest.fixture
-def mock_context():
+def mock_context(tmp_path):
     ctx = Mock(spec=ArtemisContext)
     ctx.device = None
-    ctx.data_engine = Mock()
     ctx.background_tasks = []
+    ctx.step_memory = MagicMock()
+
+    pre_path = tmp_path / "pre.jpg"
+    post_path = tmp_path / "post.jpg"
+    pre_path.write_bytes(b"PRE_IMAGE")
+    post_path.write_bytes(b"POST_IMAGE")
+
+    engine = Mock()
+    engine.get_step_number.return_value = 7
+    engine.get_step_record.return_value = SimpleNamespace(
+        action_taken=[{"action": "tap", "coordinates": [500, 600], "target_text": "Search"}]
+    )
+    engine.get_step_image_path.side_effect = lambda step_number, which="pre": (
+        pre_path if which == "pre" else post_path
+    )
+    ctx.data_engine = engine
     return ctx
 
 
 @pytest.mark.asyncio
-async def test_summarizer_success(mock_context):
-    """Test that SummarizerNode successfully generates summary from raw thinking and execution result."""
-    decisions = json.dumps([{"action": "tap", "coordinates": [500, 600]}])
-    thinking = "The operator clicked the search button."
-    result = {
-        "status": "success",
-        "executed_actions": [{"action": "tap", "coordinates": [500, 600]}],
-    }
-
+async def test_summarizer_dispatches_visual_lens(mock_context):
+    """The node dispatches to the shared service instead of calling an LLM."""
     state = DummyState(
-        structured_decisions=decisions,
-        operator_raw_thinking=thinking,
-        last_execution_result=result,
+        last_execution_result={"status": "success"},
         current_step_id="12345678-1234-5678-1234-567812345678",
     )
 
-    # Mock LLM response
-    mock_response = Mock()
-    mock_response.content = "Step completed successfully."
-    mock_llm = MagicMock()
+    node = SummarizerNode(mock_context)
+    result = await node(state)
 
-    async def mock_astream(*args, **kwargs):
-        yield mock_response
-
-    mock_llm.astream.side_effect = mock_astream
-
-    with (
-        patch(
-            "artemis.agents.summarizer.summarizer.get_llm", return_value=mock_llm
-        ) as mock_get_llm,
-        patch("asyncio.create_task") as mock_create_task,
-    ):
-        # Run the node call
-        node = SummarizerNode(mock_context)
-        await node(state)
-
-        # Verify task was registered in context
-        assert len(mock_context.background_tasks) == 1
-        assert mock_context.background_tasks[0] == mock_create_task.return_value
-
-        # Verify background task was spawned
-        assert mock_create_task.called
-        background_coroutine = mock_create_task.call_args[0][0]
-
-        # Await the background task synchronously for test verification
-        await background_coroutine
-
-    # Verify LLM was invoked with proper structured messages
-    assert mock_llm.astream.called
-    invoked_messages = mock_llm.astream.call_args[0][0]
-
-    system_msg = invoked_messages[0].content
-    human_msg = invoked_messages[1].content
-
-    assert "Summarizer Agent" in system_msg
-    assert "Decisions made" in human_msg
-    assert "The operator clicked the search button." in human_msg
-
-    # Verify Data Engine updated the step summary
-    from uuid import UUID
-
-    mock_context.data_engine.update_step_summary.assert_called_once_with(
-        UUID("12345678-1234-5678-1234-567812345678"),
-        "Step completed successfully.",
+    assert result == {}
+    mock_context.step_memory.dispatch.assert_called_once_with(
+        step_number=7,
+        action_name="tap",
+        action_args={"coordinates": [500, 600], "target_text": "Search"},
+        pre_img_bytes=b"PRE_IMAGE",
+        post_img_bytes=b"POST_IMAGE",
+        exec_outcome="success",
+        data_engine_step_id="12345678-1234-5678-1234-567812345678",
     )
+    # No direct capsule write from the node: the lens owns the versioned
+    # summary write when its background job completes.
+    mock_context.data_engine.update_step_summary.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_summarizer_with_native_thinking(mock_context):
-    """Test that SummarizerNode successfully generates summary from both explicit and native thoughts."""
-    decisions = json.dumps([{"action": "tap", "coordinates": [500, 600]}])
-    raw_thinking = "Explicit monologue."
-    native_thinking = "Silent core reasoning."
-    result = {"status": "success"}
+async def test_summarizer_degrades_gracefully_without_images(mock_context):
+    """Missing DataEngine screenshots dispatch with None bytes, no exception."""
+    mock_context.data_engine.get_step_image_path.side_effect = None
+    mock_context.data_engine.get_step_image_path.return_value = None
 
     state = DummyState(
-        structured_decisions=decisions,
-        operator_raw_thinking=raw_thinking,
-        operator_native_thinking=native_thinking,
-        last_execution_result=result,
+        last_execution_result={"status": "failed", "error": "tap missed"},
         current_step_id="12345678-1234-5678-1234-567812345678",
     )
 
-    mock_response = Mock()
-    mock_response.content = "Summary result."
-    mock_llm = MagicMock()
+    node = SummarizerNode(mock_context)
+    await node(state)
 
-    async def mock_astream(*args, **kwargs):
-        yield mock_response
-
-    mock_llm.astream.side_effect = mock_astream
-
-    with (
-        patch(
-            "artemis.agents.summarizer.summarizer.get_llm", return_value=mock_llm
-        ) as mock_get_llm,
-        patch("asyncio.create_task") as mock_create_task,
-    ):
-        node = SummarizerNode(mock_context)
-        await node(state)
-
-        # Verify task was registered in context
-        assert len(mock_context.background_tasks) == 1
-        assert mock_context.background_tasks[0] == mock_create_task.return_value
-
-        background_coroutine = mock_create_task.call_args[0][0]
-        await background_coroutine
-
-    assert mock_llm.astream.called
-    invoked_messages = mock_llm.astream.call_args[0][0]
-    human_msg = invoked_messages[1].content
-
-    assert "Operator explicit thoughts:" in human_msg
-    assert "Explicit monologue." in human_msg
-    assert "Operator native thoughts:" in human_msg
-    assert "Silent core reasoning." in human_msg
+    kwargs = mock_context.step_memory.dispatch.call_args.kwargs
+    assert kwargs["pre_img_bytes"] is None
+    assert kwargs["post_img_bytes"] is None
+    assert kwargs["exec_outcome"] == "Error: tap missed"
 
 
 @pytest.mark.asyncio
-async def test_summarizer_with_chronological_trace(mock_context):
-    """Test that SummarizerNode generates a prompt containing the chronological step trace when available."""
-    step_id = "12345678-1234-5678-1234-567812345678"
+async def test_summarizer_falls_back_to_structured_decisions(mock_context):
+    """Without a step record the action comes from structured_decisions, and
+    extra actions ride along as additional_actions."""
+    mock_context.data_engine.get_step_record.return_value = None
+
     state = DummyState(
-        current_step_id=step_id,
+        structured_decisions=(
+            '[{"action": "swipe", "coordinates": [1, 2, 3, 4]},'
+            ' {"action": "tap", "coordinates": [9, 9]}]'
+        ),
+        last_execution_result={"status": "success"},
+        current_step_id="12345678-1234-5678-1234-567812345678",
     )
 
-    mock_step_data = {
-        "step_id": step_id,
-        "step_number": 1,
-        "relative_time": "5.0s",
-        "action_taken": [{"action": "click", "target_text": "Search"}],
-        "last_execution_result": {"status": "success"},
-        "interleaved_events": [
-            {"type": "thought", "content": "Let's click search."},
-        ],
-    }
+    node = SummarizerNode(mock_context)
+    await node(state)
 
-    mock_context.data_engine.get_agent_friendly_steps.return_value = [mock_step_data]
+    kwargs = mock_context.step_memory.dispatch.call_args.kwargs
+    assert kwargs["action_name"] == "swipe"
+    assert kwargs["action_args"]["coordinates"] == [1, 2, 3, 4]
+    assert kwargs["action_args"]["additional_actions"] == [
+        {"action": "tap", "coordinates": [9, 9]}
+    ]
 
-    # Mock LLM response
-    mock_response = Mock()
-    mock_response.content = "Summary using chronological trace."
-    mock_llm = MagicMock()
 
-    async def mock_astream(*args, **kwargs):
-        yield mock_response
+@pytest.mark.asyncio
+async def test_summarizer_noop_without_step_id(mock_context):
+    state = DummyState(current_step_id=None)
 
-    mock_llm.astream.side_effect = mock_astream
+    node = SummarizerNode(mock_context)
+    result = await node(state)
 
-    with (
-        patch("artemis.agents.summarizer.summarizer.get_llm", return_value=mock_llm),
-        patch("asyncio.create_task") as mock_create_task,
-    ):
-        node = SummarizerNode(mock_context)
-        await node(state)
-
-        # Verify task was registered in context
-        assert len(mock_context.background_tasks) == 1
-        assert mock_context.background_tasks[0] == mock_create_task.return_value
-
-        background_coroutine = mock_create_task.call_args[0][0]
-        await background_coroutine
-
-    assert mock_llm.astream.called
-    invoked_messages = mock_llm.astream.call_args[0][0]
-    human_msg = invoked_messages[1].content
-
-    assert "--- Execution History ---" in human_msg
-    assert "Let's click search." in human_msg
+    assert result == {}
+    mock_context.step_memory.dispatch.assert_not_called()

@@ -44,8 +44,8 @@ from artemis.tools.tool_wrapper import (
 from artemis.tools.video_tool import get_video_analyzer_tool
 from artemis.tools.wait_tool import get_wait_tool
 from artemis.utils.logger import get_logger
+from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import (
-    build_plan_and_history,
     get_active_subgoal_hashes,
     get_recent_subgoal_hashes,
 )
@@ -160,14 +160,16 @@ class Diagnoser:
                 keep_hashes = get_recent_subgoal_hashes(
                     steps,
                     subgoal_hash,
-                    window_steps=self.ctx.agent_config.history_window_steps,
+                    self.ctx.data_engine.base_dir,
                 )
 
-                plan_and_history = build_plan_and_history(
+                plan_and_history = build_history_for(
+                    "diagnoser",
                     task_plan,
                     steps,
                     subgoal_hash,
                     keep_subgoal_hashes=keep_hashes,
+                    engine=self.ctx.data_engine,
                 )
             except Exception as e:
                 logger.error(f"Failed to build plan and history in Diagnoser: {e}")

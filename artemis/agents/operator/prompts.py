@@ -52,7 +52,7 @@ from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER
 
 _PRE_DECISION_HELPER_TOOLS = ("ask_explorer", "ask_diagnoser", "video_analyzer")
 _PRE_DECISION_ADB_TOOLS = ("run_adb_command", "manage_task", "analyze_task_output")
-_PRE_DECISION_MEMORY_TOOLS = ("read_note", "list_notes", "save_note")
+_PRE_DECISION_MEMORY_TOOLS = ("read_note", "list_notes", "save_note", "recall_history")
 _PRE_DECISION_ALL_TOOLS = (
     _PRE_DECISION_HELPER_TOOLS + _PRE_DECISION_ADB_TOOLS + _PRE_DECISION_MEMORY_TOOLS
 )
@@ -159,6 +159,119 @@ class PromptComponent:
         raise NotImplementedError
 
 
+def resolve_operator_prompt_tools(ctx: ArtemisContext) -> frozenset[str]:
+    """The tool set the operator prompt may advertise for this run.
+
+    Extracted verbatim from the template component so the transcript static
+    prefix (M2) and the legacy per-turn render assemble against the identical
+    availability set.
+    """
+    # video_analyzer is bound conditionally (graph.py gates it on
+    # video_recording_tools_enabled); the prompt must not advertise it when the
+    # tool is not actually available this run.
+    available = set(OPERATOR_PROMPT_TOOLSET)
+    setup = getattr(ctx, "execution_setup", None)
+    if not (setup and getattr(setup, "video_recording_tools_enabled", False)):
+        available.discard("video_analyzer")
+
+    # recall_history (M4) needs a DataEngine to search and is config-gated;
+    # the prompt must not advertise it when the tool is not bound this run.
+    if getattr(ctx, "data_engine", None) is None or not _recall_enabled():
+        available.discard("recall_history")
+
+    # Device actions the installed actuator backend does not implement disappear
+    # from the prompt in lockstep with their tool declarations.
+    actuator = getattr(ctx, "actuator", None)
+    if actuator is not None and callable(getattr(actuator, "capabilities", None)):
+        try:
+            from artemis.mcp.action_manifest import (
+                DEVICE_ACTIONS,
+                available_device_actions,
+            )
+
+            available -= DEVICE_ACTIONS - available_device_actions(actuator)
+        except Exception as e:
+            logger.warning(f"Failed to assemble prompt against actuator: {e}")
+
+    return frozenset(available)
+
+
+def _operator_grammar_flags(ctx: ArtemisContext) -> tuple[bool, bool]:
+    """(include_checks, verification_active) for the template render."""
+    setup = getattr(ctx, "execution_setup", None)
+    # Grammar spec assembly is a function of configuration: with both check
+    # gates disabled, the check-line grammar never enters any prompt.
+    include_checks = bool(setup and getattr(setup, "checks_enabled", False))
+    # The rejection/finding diagnosis trigger only exists while a mechanism
+    # that can produce rejections or findings is active.
+    verification_active = include_checks or bool(
+        setup and not getattr(setup, "disable_planner_validation", True)
+    )
+    return include_checks, verification_active
+
+
+# --- M2 template split -----------------------------------------------------------
+# The only volatile span of operator.json's main_template is the plan+history
+# section below. The transcript path replaces it with a static pointer so the
+# whole system message becomes a byte-stable S region; the legacy path renders
+# the untouched template and stays byte-identical.
+
+#: The volatile section of ``main_template`` (must occur exactly once).
+PLAN_HISTORY_TEMPLATE_SECTION = "## Current Plan & Execution History\n{{ plan_and_history }}"
+
+#: Static replacement used by the transcript S region.
+PLAN_HISTORY_STATIC_POINTER = (
+    "## Current Plan & Execution History\n"
+    "Provided in the conversation that follows: earlier turns carry the raw"
+    " step-by-step execution history (a restored-history block precedes them"
+    " after a process restart), and each turn's observation message recites"
+    " the current task plan."
+)
+
+
+def render_transcript_static_system(
+    prompts: dict,
+    ctx: ArtemisContext,
+    state: State,
+    template_name: str = "main_template",
+) -> str:
+    """Render the transcript path's byte-stable static system prompt (S region).
+
+    Same template, same availability assembly, and the same render inputs as
+    the legacy path — except the volatile plan+history section is swapped for
+    a static pointer, so the output never changes across the session.
+    """
+    prompt_template = prompts.get(template_name)
+    if not prompt_template:
+        raise KeyError(
+            "Failed to format prompt, template not found in operator prompts config."
+        )
+    if prompt_template.count(PLAN_HISTORY_TEMPLATE_SECTION) != 1:
+        # Hard dependency of the M2 split (redesign §9): without a clean
+        # section boundary the S region cannot be byte-stable.
+        raise ValueError(
+            "operator main_template no longer contains exactly one plan+history"
+            " section; the transcript static split cannot be applied."
+        )
+    static_template = prompt_template.replace(
+        PLAN_HISTORY_TEMPLATE_SECTION, PLAN_HISTORY_STATIC_POINTER
+    )
+
+    available = resolve_operator_prompt_tools(ctx)
+    static_template = apply_operator_prompt_contract(
+        static_template, available_tools=available
+    )
+    include_checks, verification_active = _operator_grammar_flags(ctx)
+    return Template(static_template).render(
+        initial_goal=state.initial_goal,
+        subgoals_status="",
+        plan_and_history="",
+        unified_history="",
+        plan_grammar=render_plan_grammar_spec(include_checks),
+        verification_active=verification_active,
+    )
+
+
 class TemplatePromptComponent(PromptComponent):
     async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
         prompts = kwargs.get("prompts", {})
@@ -169,42 +282,15 @@ class TemplatePromptComponent(PromptComponent):
                 "Failed to format prompt, template not found in operator prompts config."
             )
 
-        # video_analyzer is bound conditionally (graph.py gates it on
-        # video_recording_tools_enabled); the prompt must not advertise it when the
-        # tool is not actually available this run.
-        available = set(OPERATOR_PROMPT_TOOLSET)
-        setup = getattr(ctx, "execution_setup", None)
-        if not (setup and getattr(setup, "video_recording_tools_enabled", False)):
-            available.discard("video_analyzer")
-
-        # Device actions the installed actuator backend does not implement disappear
-        # from the prompt in lockstep with their tool declarations.
-        actuator = getattr(ctx, "actuator", None)
-        if actuator is not None and callable(getattr(actuator, "capabilities", None)):
-            try:
-                from artemis.mcp.action_manifest import (
-                    DEVICE_ACTIONS,
-                    available_device_actions,
-                )
-
-                available -= DEVICE_ACTIONS - available_device_actions(actuator)
-            except Exception as e:
-                logger.warning(f"Failed to assemble prompt against actuator: {e}")
+        available = resolve_operator_prompt_tools(ctx)
 
         prompt_template = apply_operator_prompt_contract(
-            prompt_template, available_tools=frozenset(available)
+            prompt_template, available_tools=available
         )
 
         plan_and_history = kwargs.get("plan_and_history", "No plan or history yet.")
 
-        # Grammar spec assembly is a function of configuration: with both check
-        # gates disabled, the check-line grammar never enters any prompt.
-        include_checks = bool(setup and getattr(setup, "checks_enabled", False))
-        # The rejection/finding diagnosis trigger only exists while a mechanism
-        # that can produce rejections or findings is active.
-        verification_active = include_checks or bool(
-            setup and not getattr(setup, "disable_planner_validation", True)
-        )
+        include_checks, verification_active = _operator_grammar_flags(ctx)
 
         full_prompt = Template(prompt_template).render(
             initial_goal=state.initial_goal,
@@ -235,6 +321,21 @@ class ObservationPromptComponent(PromptComponent):
             }
         )
         builder.add_human_content(f"--- Visible UI Elements ---\n{minimal_list}")
+
+
+class PlanRecitationPromptComponent(PromptComponent):
+    """Per-turn task-plan recitation for the transcript tail (M2).
+
+    With the plan+history section moved out of the (now static) system
+    message, every observation recites the live task plan; the scrub edge
+    strips the copies from older turns at depth 1.
+    """
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        from artemis.memory.transcript import PLAN_RECITATION_MARKER
+
+        task_plan = kwargs.get("task_plan") or "No task plan yet."
+        builder.add_human_content(f"{PLAN_RECITATION_MARKER}\n{task_plan}")
 
 
 class FeedbackPromptComponent(PromptComponent):
@@ -334,14 +435,6 @@ class BackgroundTasksPromptComponent(PromptComponent):
                 else:
                     lines.append(f"{intro}\n  Final Output:\n  {output_text.strip()}")
             builder.add_human_content("\n".join(lines) + "\n")
-
-
-class ShortTermMemoryPromptComponent(PromptComponent):
-    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
-        if state.short_term_memory:
-            builder.add_human_content(
-                f"--- Short-Term Memory (Scratchpad) ---\n{state.short_term_memory}\n"
-            )
 
 
 class TaskPlanWarningPromptComponent(PromptComponent):
@@ -506,3 +599,95 @@ class ScreenshotSimilarityPromptComponent(PromptComponent):
                 if diff_count > max_allowed:
                     break
         return diff_count
+
+
+def _recall_enabled() -> bool:
+    """Whether the recall_history tool is enabled by configuration (M4)."""
+    try:
+        from artemis.config import load_agent_config
+
+        return bool(load_agent_config().memory.recall.enabled)
+    except Exception:
+        return True
+
+
+class HistoricalStateHintPromptComponent(PromptComponent):
+    """Local historical-state hint from stored perceptual hashes (M4).
+
+    Compares the current screenshot's dHash against the post-action hashes
+    stamped on every recorded step (``extra_metadata["post_image_dhash"]``,
+    including steps already chunk-compressed out of the visible transcript) —
+    an O(n) integer scan, no model call, no historical image bytes. On a
+    close match to a step *older* than the recent window it injects a one-line
+    hint pointing at ``recall_history``.
+
+    Division of labor with :class:`ScreenshotSimilarityPromptComponent`: that
+    component's pixel-exact 3-step look-back covers "stuck on the same
+    screen"; this one covers "returned to a much earlier state". When any of
+    the last :attr:`RECENT_SILENT_STEPS` steps also matches, this hint stays
+    silent so the two never fire on the same regime.
+    """
+
+    #: Matches within this many most-recent steps stay silent (the pixel
+    #: same-screen note owns that window).
+    RECENT_SILENT_STEPS: int = 3
+    #: Upper bound on how many historical steps are scanned (most recent first).
+    SCAN_CAP: int = 500
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        latest_screenshot_b64 = kwargs.get("latest_screenshot_b64")
+        steps = kwargs.get("steps") or []
+        if not latest_screenshot_b64 or len(steps) <= self.RECENT_SILENT_STEPS:
+            return
+
+        max_distance = 8
+        try:
+            from artemis.config import load_agent_config
+
+            transcript_cfg = load_agent_config().memory.transcript
+            if not getattr(transcript_cfg, "similarity_hint", True):
+                return
+            max_distance = int(getattr(transcript_cfg, "similarity_max_distance", 8))
+        except Exception:
+            pass
+
+        try:
+            from artemis.utils.image_hash import dhash_hex, hamming_distance_hex
+
+            if "," in latest_screenshot_b64:
+                latest_screenshot_b64 = latest_screenshot_b64.split(",", 1)[1]
+            current_hash = dhash_hex(base64.b64decode(latest_screenshot_b64))
+        except Exception:
+            return
+        if not current_hash:
+            return
+
+        def _step_hash(step: dict) -> str | None:
+            meta = step.get("extra_metadata") or {}
+            return meta.get("post_image_dhash") or meta.get("pre_image_dhash")
+
+        # Silence rule first: a close match inside the recent window belongs
+        # to the pixel-level same-screen note, not this hint.
+        for step in steps[-self.RECENT_SILENT_STEPS :]:
+            distance = hamming_distance_hex(current_hash, _step_hash(step))
+            if distance is not None and distance <= max_distance:
+                return
+
+        older_steps = steps[: -self.RECENT_SILENT_STEPS][-self.SCAN_CAP :]
+        best_step_number = None
+        best_distance = None
+        for step in older_steps:
+            distance = hamming_distance_hex(current_hash, _step_hash(step))
+            if distance is None or distance > max_distance:
+                continue
+            if best_distance is None or distance <= best_distance:
+                # <= keeps the most recent step on ties.
+                best_distance = distance
+                best_step_number = step.get("step_number")
+
+        if best_step_number is not None:
+            builder.add_human_content(
+                f"Historical state hint: current screen closely resembles the"
+                f" post-action screen from Step {best_step_number}. Use"
+                " recall_history only if its details are needed."
+            )
