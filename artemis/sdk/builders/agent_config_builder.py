@@ -67,7 +67,7 @@ class AgentConfigBuilder:
         self._graph_config_callbacks: Callbacks = None
         self._video_recording_tools_enabled: bool = detect_video_tools_enabled()
         self._force_web_accessibility: bool = False
-        self._disable_checker: bool = True
+        self._disable_checker: bool = False
         self._cloud_mobile_id_or_ref: str | None = None
         self._concurrency_mode: str = "per_device"
         self._max_concurrency: int | None = None

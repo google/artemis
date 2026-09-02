@@ -27,13 +27,15 @@ from artemis.context import ArtemisContext, ExecutionSetup
 from artemis.graph.checkpoints import (
     CheckpointRun,
     PendingCheckpoint,
+    checker_note_key,
     harvest_finished_checkpoints,
     harvest_run,
+    is_checker_note_key,
     queue_checkpoints,
     read_ledger,
     spawn_pending_checkpoints,
 )
-from artemis.graph.graph import execution_check_node, wrap_note_tool
+from artemis.graph.graph import execution_check_node, wrap_note_tool, wrap_update_note_tool
 from artemis.graph.state import State
 from artemis.utils.plan_grammar import CheckItem, parse_plan, subgoal_hash
 
@@ -50,6 +52,9 @@ PLAN_WITH_CHECKS = (
 
 def _make_ctx(tmp_path, **setup_kwargs):
     setup_kwargs.setdefault("disable_checker", False)
+    # These tests exercise the midway checkpoint machinery, which is off in
+    # the factory layering — pin it on unless a test overrides it.
+    setup_kwargs.setdefault("disable_midway_checks", False)
     ctx = MagicMock(spec=ArtemisContext)
     ctx.execution_setup = ExecutionSetup(**setup_kwargs)
     ctx.data_engine = MagicMock()
@@ -526,6 +531,150 @@ async def test_timeout_records_inconclusive_not_passed(tmp_path):
     records = read_ledger(tmp_path)
     assert {r["status"] for r in records} == {"inconclusive"}
     assert all(r["status"] != "passed" for r in records)
+
+
+# --- Verify-finding four-layer persistence -------------------------------------------
+
+
+def _checker_note_path(tmp_path):
+    return tmp_path / "notes" / f"{checker_note_key(GOAL_KEY)}.md"
+
+
+@pytest.mark.asyncio
+async def test_verify_fail_writes_finding_line_and_checker_note(tmp_path):
+    plan_path = _write_plan(tmp_path)
+    ctx = _make_ctx(tmp_path)
+    run = _done_run(ctx, CheckReport(verdicts=[_verdict("verify", "failed")]))
+
+    harvest_run(ctx, _make_state(), run, allow_side_effects=True)
+
+    content = plan_path.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    # Standing headline pinned directly under the (now reverted) subgoal,
+    # naming the failed criterion and pointing at the detail note.
+    idx = lines.index(f"- [/] {GOAL_TEXT}")
+    assert lines[idx + 1].startswith("  - finding: verify failed")
+    assert checker_note_key(GOAL_KEY) in lines[idx + 1]
+
+    # Layer 3: the system note carries the full criterion/evidence/suggestion.
+    note = _checker_note_path(tmp_path).read_text(encoding="utf-8")
+    assert "the alarm list shows 7:30 AM" in note
+    assert "concrete evidence" in note
+    assert "fix it" in note
+
+
+@pytest.mark.asyncio
+async def test_finding_line_regrows_on_model_plan_write(tmp_path):
+    plan_path = _write_plan(tmp_path)
+    ctx = _make_ctx(tmp_path)
+    run = _done_run(ctx, CheckReport(verdicts=[_verdict("verify", "failed")]))
+    harvest_run(ctx, _make_state(), run, allow_side_effects=True)
+    assert "- finding:" in plan_path.read_text(encoding="utf-8")
+
+    # The model rewrites the plan WITHOUT the finding line...
+    clean_rewrite = PLAN_WITH_CHECKS.replace(f"- [x] {GOAL_TEXT}", f"- [/] {GOAL_TEXT}")
+
+    async def fake_invoke(tool, args, tool_call_id, state, record_trace=None):
+        plan_path.write_text(args["content"], encoding="utf-8")
+        return "Success"
+
+    mock_tool = MagicMock()
+    mock_tool.name = "save_note"
+    mock_tool.description = "save"
+
+    with patch("artemis.graph.graph.invoke_tool_with_injection", side_effect=fake_invoke):
+        wrapped = wrap_note_tool(ctx, mock_tool)
+        await wrapped.ainvoke(
+            {"key": "task_plan", "content": clean_rewrite, "tool_call_id": "t1"}
+        )
+
+    # ...and the deterministic projection grows it back on the write path.
+    assert "- finding: verify failed" in plan_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_finding_line_removed_after_verify_passes_note_kept(tmp_path):
+    plan_path = _write_plan(tmp_path)
+    ctx = _make_ctx(tmp_path)
+    run1 = _done_run(ctx, CheckReport(verdicts=[_verdict("verify", "failed")]))
+    harvest_run(ctx, _make_state(), run1, allow_side_effects=True)
+    assert "- finding:" in plan_path.read_text(encoding="utf-8")
+
+    run2 = _done_run(
+        ctx,
+        CheckReport(verdicts=[_verdict("verify", "passed")]),
+        attempt_id=f"{GOAL_KEY}#2",
+    )
+    harvest_run(ctx, _make_state(), run2, allow_side_effects=True)
+
+    # Layer 2 headline retired; layer 3 note stays on disk with the full
+    # per-attempt repair log (fail then pass).
+    assert "- finding:" not in plan_path.read_text(encoding="utf-8")
+    note = _checker_note_path(tmp_path).read_text(encoding="utf-8")
+    assert f"attempt {GOAL_KEY}#1 — verify failed" in note
+    assert f"attempt {GOAL_KEY}#2 — verify passed" in note
+
+
+@pytest.mark.asyncio
+async def test_finding_line_removed_on_repair_quota_exhaustion(tmp_path):
+    plan_path = _write_plan(tmp_path)
+    ctx = _make_ctx(tmp_path, checkpoint_max_repairs=1)
+    run1 = _done_run(ctx, CheckReport(verdicts=[_verdict("verify", "failed")]))
+    harvest_run(ctx, _make_state(), run1, allow_side_effects=True)
+    assert "- finding:" in plan_path.read_text(encoding="utf-8")
+
+    # Re-complete, fail again: quota (1) is exhausted -> finding settled.
+    plan_path.write_text(
+        plan_path.read_text(encoding="utf-8").replace(
+            f"- [/] {GOAL_TEXT}", f"- [x] {GOAL_TEXT}"
+        ),
+        encoding="utf-8",
+    )
+    run2 = _done_run(
+        ctx,
+        CheckReport(verdicts=[_verdict("verify", "failed")]),
+        attempt_id=f"{GOAL_KEY}#2",
+    )
+    harvest_run(ctx, _make_state(), run2, allow_side_effects=True)
+
+    content = plan_path.read_text(encoding="utf-8")
+    assert "- finding:" not in content
+    assert f"- [x] {GOAL_TEXT}" in content  # no further revert either
+
+
+@pytest.mark.asyncio
+async def test_checker_note_prefix_writes_rejected_by_wrappers(tmp_path):
+    ctx = _make_ctx(tmp_path)
+    save_tool = MagicMock()
+    save_tool.name = "save_note"
+    save_tool.description = "save"
+    update_tool = MagicMock()
+    update_tool.name = "update_note"
+    update_tool.description = "update"
+
+    with patch(
+        "artemis.graph.graph.invoke_tool_with_injection", new_callable=AsyncMock
+    ) as inv:
+        wrapped_save = wrap_note_tool(ctx, save_tool)
+        result = await wrapped_save.ainvoke(
+            {"key": checker_note_key(GOAL_KEY), "content": "spoof", "tool_call_id": "t1"}
+        )
+        assert "reserved" in str(result.content)
+
+        wrapped_update = wrap_update_note_tool(ctx, update_tool)
+        result2 = await wrapped_update.ainvoke(
+            {
+                "key": "checker:abc",
+                "target": "a",
+                "replacement": "b",
+                "tool_call_id": "t2",
+            }
+        )
+        assert "reserved" in str(result2.content)
+
+    inv.assert_not_awaited()
+    assert is_checker_note_key("checker-123") and is_checker_note_key("checker:123")
+    assert not is_checker_note_key("checkerboard_notes") and not is_checker_note_key("notes")
 
 
 @pytest.mark.asyncio

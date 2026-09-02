@@ -116,7 +116,7 @@ class PlannerValidationConfig(BaseModel):
     """Configuration specific to Planner validation of milestone changes."""
 
     enabled: bool = Field(
-        default=False,
+        default=True,
         description="Whether to enable async planner validation when task plan milestones change.",
     )
     similarity_threshold: float = Field(
@@ -146,15 +146,18 @@ class CheckerConfig(BaseModel):
     """Configuration for plan-driven checkpoint verification and the final review."""
 
     enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Master switch (compat alias): False disables BOTH midway"
             " checkpoints and the final check."
         ),
     )
     midway_checks: bool = Field(
-        default=True,
-        description="Whether plan-declared midway checkpoints run (requires enabled=True).",
+        default=False,
+        description=(
+            "Whether plan-declared midway checkpoints run (requires enabled=True)."
+            " Off in the factory layering: final check on, midway checks off."
+        ),
     )
     final_check: bool = Field(
         default=True,

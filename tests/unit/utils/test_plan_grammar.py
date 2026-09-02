@@ -239,3 +239,59 @@ def test_prompts_carry_the_single_sourced_grammar():
     planner = json.loads(planner_raw)
     guidelines = planner["blocks"]["validator_guidelines"]
     assert "until manually stopped" not in guidelines
+
+
+# --- Finding lines (system channel; single-direction projection) ---------------------
+
+
+def test_finding_lines_are_invisible_to_the_machine_channel():
+    from artemis.utils.plan_grammar import apply_finding_lines
+
+    plan = "- [x] G1\n  - verify: V1\n- [ ] G2\n"
+    key = subgoal_hash("G1")
+    with_finding = apply_finding_lines(
+        plan, {key: "verify failed — 'V1' (details: note 'checker-x')"}
+    )
+
+    assert "- finding: verify failed" in with_finding
+
+    before, after = parse_plan(plan), parse_plan(with_finding)
+    # Same items, same hashes, same check items: no milestone drift, no
+    # planner-validation trigger, no check multiset change.
+    assert [i.key for i in after.items] == [i.key for i in before.items]
+    assert milestones_changed(before, after) is False
+    assert check_items_changed(before, after) is False
+    assert new_top_level_completions(before, after) == []
+    assert unintended_milestone_edits(before, after) == []
+
+
+def test_apply_finding_lines_projection_is_idempotent_and_anchored():
+    from artemis.utils.plan_grammar import apply_finding_lines, strip_finding_lines
+
+    plan = "- [x] G1\n  - verify: V1\n- [/] G2\n"
+    findings = {subgoal_hash("G1"): "headline one"}
+    once = apply_finding_lines(plan, findings)
+    twice = apply_finding_lines(once, findings)
+    assert once == twice  # idempotent projection
+    # Anchored directly under its parent subgoal
+    lines = once.splitlines()
+    assert lines[lines.index("- [x] G1") + 1] == "  - finding: headline one"
+
+    # Resolution: an empty registry strips the line back out
+    assert apply_finding_lines(once, {}) == plan
+    assert strip_finding_lines(once) == plan
+
+
+def test_apply_finding_lines_drops_entries_for_missing_subgoals():
+    from artemis.utils.plan_grammar import apply_finding_lines
+
+    plan = "- [x] G1 (rephrased)\n"
+    projected = apply_finding_lines(plan, {subgoal_hash("G1"): "stale headline"})
+    assert "finding" not in projected
+
+
+def test_finding_grammar_doc_is_conditional():
+    base = render_plan_grammar_spec(include_checks=False)
+    extended = render_plan_grammar_spec(include_checks=True)
+    assert "finding" not in base
+    assert "- finding:" in extended and "checker-" in extended

@@ -42,11 +42,13 @@ from artemis.graph.checkpoints import (
     final_check_enabled,
     harvest_finished_checkpoints,
     has_ledger_records,
+    is_checker_note_key,
     queue_checkpoints,
     read_ledger,
     revert_subgoal_status,
     settle_all_checkpoints,
     spawn_pending_checkpoints,
+    sync_finding_lines,
     write_run_outcome,
 )
 from artemis.graph.perception import perception_node
@@ -518,6 +520,27 @@ def check_unintended_rewrite(content_before: str, content_after: str) -> str | N
     )
 
 
+def _reject_checker_note_write(key: str, tool_call_id: str | None) -> ToolMessage | None:
+    """Guard for the system-authored checker note channel.
+
+    Note keys with the reserved ``checker-`` / ``checker:`` prefix are written
+    exclusively by the checkpoint verifier (repair logs); model-side writes are
+    rejected with guidance instead of silently colliding with the log.
+    """
+    if not is_checker_note_key(key):
+        return None
+    return ToolMessage(
+        content=(
+            f"The note key '{key}' was not written: keys with the 'checker-'"
+            " prefix are reserved for system-authored verification repair"
+            " logs. Those notes are read-only for you — read them with"
+            " read_note. Record your own observations under a different key."
+        ),
+        tool_call_id=tool_call_id or "",
+        status="success",
+    )
+
+
 class NoteArgs(BaseModel):
     model_config = {"ignored_types": (CyFunctionDetector,)}
     key: str = Field(..., description=SAVE_NOTE_ARG_KEY_DESC)
@@ -569,6 +592,13 @@ async def _process_plan_write(
             task_plan_path.write_text(content_after, encoding="utf-8")
         except Exception as e:
             logger.error(f"Failed to write merged check lines: {e}")
+
+    # Deterministic finding-line projection: unresolved verify findings are
+    # re-rendered from the checkpoint repair state on every plan write, so a
+    # model deletion grows back and a resolved finding is retired. Finding
+    # lines live outside the checkbox/check machine channel, so this rewrite
+    # never influences the parses below.
+    sync_finding_lines(ctx)
 
     before = parse_plan(content_before)
     after = parse_plan(content_after)
@@ -650,6 +680,9 @@ def wrap_note_tool(ctx: ArtemisContext, original_tool):
         state: Annotated[State, InjectedState] = None,
     ):
         """Wrapped tool to intercept task plan updates."""
+        rejection = _reject_checker_note_write(key, tool_call_id)
+        if rejection is not None:
+            return rejection
         args = {"key": key, "content": content}
         if key != "task_plan" or not ctx.data_engine:
             return await invoke_tool_with_injection(
@@ -706,6 +739,9 @@ def wrap_update_note_tool(ctx: ArtemisContext, original_tool):
         state: Annotated[State, InjectedState] = None,
     ):
         """Wrapped tool to intercept task plan updates via update_note."""
+        rejection = _reject_checker_note_write(key, tool_call_id)
+        if rejection is not None:
+            return rejection
         args = {"key": key, "target": target, "replacement": replacement}
         if key != "task_plan" or not ctx.data_engine:
             return await invoke_tool_with_injection(
