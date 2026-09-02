@@ -1,6 +1,22 @@
 # ARTEMIS Pro Context, History, and Summarization Redesign
 
-Status: Proposal (2026-08-25)
+Status: Proposal (2026-08-25) — partially superseded
+
+> **2026-08-31**: `docs/plans/history-module-redesign.md` (unified v3) supersedes
+> §6/§11/§12 of this document: Pro moves from per-turn prompt recompilation to an
+> incremental append-only transcript with layered compaction (this doc's Phase 5
+> promoted to the core architecture). §7 (data model), §8 (visually grounded
+> neutral summaries), §9 (stable chunks), §10 (recall), §13 (same-turn envelopes)
+> are absorbed and remain authoritative where referenced.
+>
+> **Final status (2026-09-01)**: the unified v3 plan is fully implemented
+> (M0–M5, work in worktree `zealous-gates-4626b1`, uncommitted). Everything
+> this document delegated forward has landed, including §3.3 (the
+> `<short_term_memory>` relay was removed end to end in M5 — state field,
+> operator extraction, prompt component, visibility manifest entries, and the
+> operator.json instruction block; render-time tag scrubbing is kept for older
+> recorded responses, per this section's own "safely ignoring" clause). See
+> history-module-redesign.md §7 for the per-milestone implementation notes.
 
 Scope: ARTEMIS Pro / LangGraph execution mode
 

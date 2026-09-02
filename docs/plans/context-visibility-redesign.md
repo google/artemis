@@ -2,6 +2,18 @@
 
 状态：提案 v2（2026-08-31，经"不损伤"审计细化，待终审）
 
+> **2026-08-31 更新**：Phase 0/1 已实施；Phase 4（§6 方案 D 记忆内核）由
+> `docs/plans/history-module-redesign.md`（统一方案 v3）取代并修订——其中
+> "两 lens 按 profile 分立"修订为"步级视觉 lens + 段级胶囊 lens 按高度分立"
+> （该修订已于 2026-08-31 获用户拍板采纳），
+> StepMemoryService 运行时与 ContextPolicy 策略表保留。Phase 2/3 不受影响。
+>
+> **最终状态（2026-09-01）**：统一方案 v3 已全部实施（M0-M5，worktree
+> `zealous-gates-4626b1`，未提交）——StepMemoryService/ContextPolicy 均已按
+> 该方案落地；附录 B 中"保留、移除权属姊妹文档 §3.3"的 `short_term_memory`
+> 台账行已在 M5 核销移除（全部消费者先核销后删，台账纪律照本文档执行）。
+> 各里程碑实施标注见 history-module-redesign.md §7。
+
 范围：State / ArtemisContext 的类型化与生命周期分域；感知数据通道；Flash 压缩机制上提为通用记忆内核。
 
 底线与目标：**不损伤为最低要求**——每一处删除/搬迁都在附录 B 台账中核销其全部消费者，
@@ -554,7 +566,7 @@ asanitize 断言 → 返回值断言、15 个工具测试文件 Command→ToolMe
 | run_outcome | graph.py:367 写 / sdk/agent.py:720 读 | 保留；ctx 侧动态挂载显式化 | P3 | sdk/agent.py:721 |
 | exit_settlement_route | exit_settlement 写 / gate 读 | 保留 | — | — |
 | current_step_id / structured_decisions / operator_*_thinking / last_execution_result / subagent_calls / operator_tool_limit_exceeded | 活跃读写对（附录 A） | 保留 | — | — |
-| short_term_memory | operator.py:743-765 写 / prompts.py:331 读 | **保留**；移除权属姊妹文档 §3.3 | — | — |
+| short_term_memory | operator.py:743-765 写 / prompts.py:331 读 | ~~**保留**；移除权属姊妹文档 §3.3~~ **已移除（M5，2026-09-01）**：全链核销——State 字段/operator 提取写块/prompt 组件/manifest 读写集/operator.json 指令段；渲染侧旧标签剥除保留 | — | — |
 | messages | 写：无（Pro）；读：sdk/agent.py:1182(空转)、:1321(空转)；graph_runner.py:57 写(坏路径) | 删除 | P1 | 读 2 处、写 1 处、_get_graph_state |
 | validator_messages | 14 工具信封写 + graph.py:195 跨回合写；通道 0 读 | 信封→ToolOutcome；:195→operator_feedback；删通道 | P0(:195)+P1(信封) | 14 工具 + tool_wrapper:175 + operator:388 + graph:526,595 |
 | remaining_steps | 仅 init（sdk:1201）；上限实际由 recursion_limit 承载（sdk:674） | 删除 | P1 | _get_graph_state |
