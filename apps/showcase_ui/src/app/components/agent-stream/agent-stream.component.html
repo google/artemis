@@ -19,6 +19,8 @@ limitations under the License.
   <header class="vscode-nav-header">
     <div class="vscode-tab-container">
       <button
+        #taskQueueOrigin="cdkOverlayOrigin"
+        cdkOverlayOrigin
         class="vscode-tab-btn"
         [class.active]="isTaskDropdownOpen()"
         (click)="toggleTaskDropdown($event)"
@@ -29,6 +31,8 @@ limitations under the License.
         <span class="tab-label">Task Queue</span>
       </button>
       <button
+        #notesOrigin="cdkOverlayOrigin"
+        cdkOverlayOrigin
         class="vscode-tab-btn"
         [class.active]="isNotesDropdownOpen()"
         (click)="toggleNotesDropdown($event)"
@@ -41,7 +45,15 @@ limitations under the License.
     </div>
 
     <!-- Dropdown Popover Panel for Task Queue -->
-    @if (isTaskDropdownOpen()) {
+    <ng-template
+      cdkConnectedOverlay
+      [cdkConnectedOverlayOrigin]="taskQueueOrigin"
+      [cdkConnectedOverlayOpen]="isTaskDropdownOpen()"
+      [cdkConnectedOverlayHasBackdrop]="true"
+      cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
+      (backdropClick)="isTaskDropdownOpen.set(false)"
+      [cdkConnectedOverlayPositions]="dropdownPositions"
+    >
       <div class="vscode-dropdown-menu task-dropdown">
         <div class="popover-title-header">
           <span class="material-symbols-outlined">list_alt</span>
@@ -173,10 +185,18 @@ limitations under the License.
           }
         </div>
       </div>
-    }
+    </ng-template>
 
     <!-- Dropdown Popover Panel for Notes & Plans -->
-    @if (isNotesDropdownOpen()) {
+    <ng-template
+      cdkConnectedOverlay
+      [cdkConnectedOverlayOrigin]="notesOrigin"
+      [cdkConnectedOverlayOpen]="isNotesDropdownOpen()"
+      [cdkConnectedOverlayHasBackdrop]="true"
+      cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
+      (backdropClick)="isNotesDropdownOpen.set(false)"
+      [cdkConnectedOverlayPositions]="dropdownPositions"
+    >
       <div class="vscode-dropdown-menu notes-dropdown">
         <div class="popover-title-header">
           <span class="material-symbols-outlined">description</span>
@@ -361,7 +381,7 @@ limitations under the License.
           </div>
         }
       </div>
-    }
+    </ng-template>
   </header>
 
   <!-- Floating Top-Right Badges & Toolbar (Pinned overlay, hidden in empty/initial state) -->
@@ -558,62 +578,109 @@ limitations under the License.
                               @if (isCheckerBlock(block) && item.type === 'thinking') {
                                 <div
                                   class="thinking-stream-details native-thinking-details"
-                                  [class.is-running]="isCheckerSegmentRunning(block, itemIdx)"
+                                  [class.is-running]="isCheckerSegmentRunning(block, itemIdx) && !isCheckerSegmentResetNotice(item)"
+                                  [class.is-resetting]="isCheckerSegmentResetNotice(item)"
                                   [class.collapsed]="isCheckerSegmentCollapsed(block, itemIdx)">
                                   <div class="details-summary" (click)="toggleCheckerSegment(block, itemIdx)">
-                                    <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx)"></span>
-                                    Thought
+                                    <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx) && !isCheckerSegmentResetNotice(item)" [class.resetting]="isCheckerSegmentResetNotice(item)"></span>
+                                    <span class="header-label">{{ isCheckerSegmentResetNotice(item) ? getCheckerSegmentResetMessage(item) : 'Thought' }}</span>
                                   </div>
-                                  <div class="details-content-wrapper">
-                                    <div class="details-content stream-box">
-                                      <div class="stream-text" [innerHTML]="renderMarkdown(item.data.text, block.id + '-seg-' + itemIdx)"></div>
+                                  @if (item.data.text && item.data.text.trim()) {
+                                    <div class="details-content-wrapper">
+                                      <div class="details-content stream-box">
+                                        <div class="stream-text" [innerHTML]="renderMarkdown(item.data.text, block.id + '-seg-' + itemIdx)"></div>
+                                      </div>
                                     </div>
-                                  </div>
+                                  }
                                 </div>
                               }
                               @if (isCheckerBlock(block) && item.type === 'text' && isCheckerTextVisible(item)) {
-                                <div
-                                  class="step-raw-thinking-message"
-                                  [class.is-running]="isCheckerSegmentRunning(block, itemIdx)">
-                                  <div class="report-header">
-                                    <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx)"></span>
-                                    Work
+                                @if (item.data.isReset) {
+                                  <div class="llm-retry-notes">
+                                    <div class="llm-retry-note">
+                                      <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx)"></span>
+                                      <div class="llm-retry-note-text">
+                                        <span class="llm-retry-status-line">{{ formatResetMessage(getCheckerSegmentResetMessage(item), isCheckerSegmentRunning(block, itemIdx)) }}</span>
+                                      </div>
+                                    </div>
                                   </div>
-                                  <div class="report-content stream-box">
-                                    <div class="stream-text" [innerHTML]="renderMarkdown(item.data.text, block.id + '-seg-' + itemIdx)"></div>
+                                }
+                                @if (item.data.text && item.data.text.trim()) {
+                                  <div
+                                    class="step-raw-thinking-message"
+                                    [class.is-running]="isCheckerSegmentRunning(block, itemIdx)">
+                                    <div class="report-header">
+                                      <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx)"></span>
+                                      <span class="header-label">Work</span>
+                                    </div>
+                                    <div class="report-content stream-box">
+                                      <div class="stream-text" [innerHTML]="renderMarkdown(item.data.text, block.id + '-seg-' + itemIdx)"></div>
+                                    </div>
                                   </div>
-                                </div>
+                                }
                               }
                               <!-- Native Thinking (Thought) -->
                               @if (!isCheckerBlock(block) && item.type === 'thinking') {
-                                <div
-                                  class="thinking-stream-details native-thinking-details"
-                                  [class.is-running]="isBlockRunning(block)"
-                                  [class.collapsed]="collapsedStreams().has(block.data.execution_id || block.data.step_id || block.id)">
-                                  <div class="details-summary" (click)="toggleCollapse(block.data.execution_id || block.data.step_id || block.id)">
-                                    <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
-                                    Thought
+                                @if (getBlockResets(block, true).length > 0) {
+                                  <div class="llm-retry-notes">
+                                    @for (reset of getBlockResets(block, true); track reset.id || $index) {
+                                      <div class="llm-retry-note">
+                                        <span class="stream-status-dot" [class.streaming]="reset.isWaiting"></span>
+                                        <div class="llm-retry-note-text">
+                                          <span class="llm-retry-status-line">{{ formatResetMessage(reset.message, reset.isWaiting) }}</span>
+                                        </div>
+                                      </div>
+                                    }
                                   </div>
-                                  <div class="details-content-wrapper">
-                                    <div class="details-content stream-box">
-                                      <div class="stream-text" [innerHTML]="renderMarkdown(typedTextsSignal()[block.id + '-native'] || item.data.text, block.id + '-native')"></div>
+                                }
+                                @if (getStreamDisplayText(block.id + '-native', item.data.text) || (isBlockRunning(block) && !isStreamRewinding(block.id + '-native') && !hasWaitingReset(block, true))) {
+                                  <div
+                                    class="thinking-stream-details native-thinking-details"
+                                    [class.is-running]="isBlockRunning(block)"
+                                    [class.collapsed]="collapsedStreams().has(block.data.execution_id || block.data.step_id || block.id)">
+                                    <div class="details-summary" (click)="toggleCollapse(block.data.execution_id || block.data.step_id || block.id)">
+                                      <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                                      <span class="header-label">Thought</span>
                                     </div>
+                                    @if (getStreamDisplayText(block.id + '-native', item.data.text)) {
+                                      <div class="details-content-wrapper">
+                                        <div class="details-content stream-box">
+                                          <div class="stream-text" [innerHTML]="renderMarkdown(getStreamDisplayText(block.id + '-native', item.data.text), block.id + '-native')"></div>
+                                        </div>
+                                      </div>
+                                    }
                                   </div>
-                                </div>
+                                }
                               }
                               <!-- Raw Thinking / Plan / Message (Work) -->
-                              @if (!isCheckerBlock(block) && item.type === 'text' && getRawThinking(block)) {
-                                <div
-                                  class="step-raw-thinking-message"
-                                  [class.is-running]="isBlockRunning(block)">
-                                  <div class="report-header">
-                                    <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
-                                    Work
+                              @if (!isCheckerBlock(block) && item.type === 'text') {
+                                @if (getBlockResets(block, false).length > 0) {
+                                  <div class="llm-retry-notes">
+                                    @for (reset of getBlockResets(block, false); track reset.id || $index) {
+                                      <div class="llm-retry-note">
+                                        <span class="stream-status-dot" [class.streaming]="reset.isWaiting"></span>
+                                        <div class="llm-retry-note-text">
+                                          <span class="llm-retry-status-line">{{ formatResetMessage(reset.message, reset.isWaiting) }}</span>
+                                        </div>
+                                      </div>
+                                    }
                                   </div>
-                                  <div class="report-content stream-box">
-                                    <div class="stream-text" [innerHTML]="renderMarkdown(typedTextsSignal()[block.id] || item.data.text, block.id)"></div>
+                                }
+                                @if (getStreamDisplayText(block.id, item.data.text) || (isBlockRunning(block) && !isStreamRewinding(block.id) && !hasWaitingReset(block, false))) {
+                                  <div
+                                    class="step-raw-thinking-message"
+                                    [class.is-running]="isBlockRunning(block)">
+                                    <div class="report-header">
+                                      <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                                      <span class="header-label">Work</span>
+                                    </div>
+                                    @if (getStreamDisplayText(block.id, item.data.text)) {
+                                      <div class="report-content stream-box">
+                                        <div class="stream-text" [innerHTML]="renderMarkdown(getStreamDisplayText(block.id, item.data.text), block.id)"></div>
+                                      </div>
+                                    }
                                   </div>
-                                </div>
+                                }
                               }
                               <!-- Task Submission / Report Card (when item is report_task_status action or tool) -->
                               @if (isReportStatusAction(item.data)) {
@@ -689,7 +756,7 @@ limitations under the License.
                                 </div>
                               }
                               <!-- Android Action Card (when item is an action) -->
-                              @if (item.type === 'action' && isAndroidAction(item.data)) {
+                              @if (item.type === 'action' && !isReportStatusAction(item.data) && (isAndroidAction(item.data) || item.data?.type === 'action')) {
                                 <div class="step-android-action-card"
                                   [class.is-running]="isItemRunning(item, block)"
                                   [class.is-failed]="isActionFailed(item.data, block.data)"
@@ -974,9 +1041,6 @@ limitations under the License.
                                     <div class="action-card-header" (click)="toggleActionExpanded('tool-' + block.id + '-' + itemIdx, $event)">
                                       <span class="material-symbols-outlined action-icon" [class.is-failed]="isToolFailed(item.data)">{{ getToolIcon(item.data) }}</span>
                                       <span class="action-title">{{ getToolTitle(item.data) }}</span>
-                                      @if (getToolAgentName(item.data)) {
-                                        <span class="action-agent-badge" [class.is-outputter]="getToolAgentName(item.data) === 'Outputter'">{{ getToolAgentName(item.data) }}</span>
-                                      }
                                       @if (isToolFailed(item.data)) {
                                         <span class="action-status-badge is-failed">
                                           <span class="material-symbols-outlined status-icon">error</span>

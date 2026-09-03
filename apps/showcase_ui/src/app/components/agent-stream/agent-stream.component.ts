@@ -22,7 +22,8 @@ import { HttpClient } from '@angular/common/http';
 import { AgentService, StartupProgressEvent } from '../../services/agent.service';
 import { Session, ModelInfo } from '../../core/models/session.model';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
-import { StepBlock, PhaseBlock, StepEvent, ActionParam, CheckerResult } from '../../core/models/stream.model';
+import { OverlayModule, ConnectedPosition } from '@angular/cdk/overlay';
+import { StepBlock, PhaseBlock, StepEvent, ActionParam, CheckerResult, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE } from '../../core/models/stream.model';
 
 export const PLANNING_LOADER_PHRASES: string[] = [
   'Planning next step...',
@@ -195,12 +196,12 @@ import {
   checkPlanningLoader
 } from '../../utils/stream-aggregator.util';
 
-export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
+export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote, StreamResetNotice };
 
 @Component({
   selector: 'app-agent-stream',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, OverlayModule],
   templateUrl: './agent-stream.component.html',
   styleUrl: './agent-stream.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -234,6 +235,31 @@ export class AgentStreamComponent implements AfterViewInit {
   public isTaskDropdownOpen = signal<boolean>(false);
   public isNotesDropdownOpen = signal<boolean>(false);
 
+  // CDK Connected Overlay Positioning Strategy
+  public readonly dropdownPositions: ConnectedPosition[] = [
+    {
+      originX: 'end',
+      originY: 'bottom',
+      overlayX: 'end',
+      overlayY: 'top',
+      offsetY: 6,
+    },
+    {
+      originX: 'end',
+      originY: 'top',
+      overlayX: 'end',
+      overlayY: 'bottom',
+      offsetY: -6,
+    },
+    {
+      originX: 'start',
+      originY: 'bottom',
+      overlayX: 'start',
+      overlayY: 'top',
+      offsetY: 6,
+    }
+  ];
+
   // Zoom Modal State
   public selectedZoomImage = signal<string | null>(null);
   public selectedZoomAction = signal<any | null>(null);
@@ -257,6 +283,18 @@ export class AgentStreamComponent implements AfterViewInit {
   // ≈ legacy pace of 8 characters every 12ms interval tick.
   private static readonly TYPING_CHARS_PER_SECOND = 667;
   private static readonly TYPING_MIN_FRAME_MS = 28;
+
+  // Active reset notices per block (displayed after typewriter rewind finishes)
+  public activeBlockResets = signal<Map<string, StreamResetNotice[]>>(new Map());
+  public activeResetNotices = signal<Map<string, string>>(new Map());
+  private rewindTargets = new Map<string, {
+    blockId: string;
+    isThinking: boolean;
+    execId?: string;
+    message: string;
+  }>();
+  // Fast rewind pace (backspace speed ≈ 4x normal typing speed for snappy deletion)
+  private static readonly REWIND_CHARS_PER_SECOND = 2600;
 
   // Rendered-markdown memo per template slot: returning the identical string
   // instance for unchanged text lets the [innerHTML] binding skip re-sanitizing
@@ -466,6 +504,18 @@ export class AgentStreamComponent implements AfterViewInit {
       this.scheduleAutoScroll(false);
     });
 
+    // Listen for stream reset events to trigger fast typewriter rewind
+    effect(() => {
+      const resetEvent = this.agentService.streamResetEvent();
+      if (!resetEvent) return;
+      untracked(() => {
+        this.triggerStreamRewind(
+          resetEvent.stream_execution_id || resetEvent.stream_exec_id,
+          resetEvent.message || DEFAULT_STREAM_RESET_MESSAGE
+        );
+      });
+    });
+
     // Typewriter drive logic: triggers typing when block appears or expands
     effect(() => {
       const blocks = this.consolidatedBlocks();
@@ -473,6 +523,39 @@ export class AgentStreamComponent implements AfterViewInit {
         // Check blocks render their per-turn segments directly (no typewriter).
         if (block.type === 'checker') return;
         const blockId = block.id;
+
+        // If the block is flagged as reset, ensure typewriter rewind is active or reset notice is set
+        if (block.data?.isReset) {
+          untracked(() => {
+            const resetMsg = block.data.resetMessage || DEFAULT_STREAM_RESET_MESSAGE;
+            const currentRecord = this.typedTextsSignal();
+            const hasText = (currentRecord[blockId]?.length || 0) > 0 || (currentRecord[blockId + '-native']?.length || 0) > 0;
+            if (hasText) {
+              if (!this.rewindTargets.has(blockId) && !this.rewindTargets.has(blockId + '-native')) {
+                this.triggerStreamRewind(block.data.execution_id, resetMsg);
+              }
+            } else {
+              const activeResets = this.activeBlockResets().get(blockId) || [];
+              if (activeResets.length === 0) {
+                this.upsertBlockResetNotice(blockId, {
+                  id: block.data.execution_id || `${blockId}-text`,
+                  message: resetMsg,
+                  isWaiting: !block.data?.isCompleted,
+                  streamType: 'text'
+                });
+              }
+              if (!this.activeResetNotices().has(blockId)) {
+                this.activeResetNotices.update(m => {
+                  const next = new Map(m);
+                  next.set(blockId, resetMsg);
+                  return next;
+                });
+              }
+            }
+          });
+          return;
+        }
+
         const rawText = this.getRawThinking(block) || '';
         const nativeText = this.getNativeThinking(block) || '';
 
@@ -541,6 +624,8 @@ export class AgentStreamComponent implements AfterViewInit {
       untracked(() => {
         this.stopTypingLoop();
         this.typedTextsSignal.set({});
+        this.activeResetNotices.set(new Map());
+        this.activeBlockResets.set(new Map());
         this.markdownHtmlCache.clear();
         this.scheduledCollapses.clear();
         this.collapsedStreams.set(new Set<string>());
@@ -754,8 +839,51 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   // Typewriter & Delayed Collapse
+  private upsertBlockResetNotice(blockId: string, notice: StreamResetNotice): void {
+    this.activeBlockResets.update(m => {
+      const next = new Map(m);
+      const list = [...(next.get(blockId) || [])];
+      const existingIdx = list.findIndex(r => r.id === notice.id);
+      if (existingIdx > -1) {
+        list[existingIdx] = notice;
+      } else {
+        list.push(notice);
+      }
+      next.set(blockId, list);
+      return next;
+    });
+  }
+
   private startTyping(key: string, targetText: string, isThinking: boolean = false, execId?: string) {
     const blockId = key.endsWith('-native') ? key.replace('-native', '') : key;
+    // If there was an active rewind, cancel it, reset text to empty, and record its reset notice as completed waiting
+    const activeRewind = this.rewindTargets.get(key);
+    if (activeRewind) {
+      this.rewindTargets.delete(key);
+      this.typedTextsSignal.update(r => ({ ...r, [key]: '' }));
+      this.upsertBlockResetNotice(blockId, {
+        id: activeRewind.execId || `${blockId}-${isThinking ? 'thinking' : 'text'}`,
+        message: activeRewind.message,
+        isWaiting: false,
+        streamType: isThinking ? 'thinking' : 'text'
+      });
+    }
+
+    // Cancel any active rewind on this key
+    this.rewindTargets.delete(key);
+
+    // When retry stream starts outputting content, change waiting dot to normal dot (isWaiting: false)
+    // The previous prompt sentence DOES NOT disappear.
+    this.activeBlockResets.update(m => {
+      const list = m.get(blockId);
+      if (!list || list.length === 0) return m;
+      const targetType = isThinking ? 'thinking' : 'text';
+      const updated = list.map(r => r.streamType === targetType ? { ...r, isWaiting: false } : r);
+      const next = new Map(m);
+      next.set(blockId, updated);
+      return next;
+    });
+
     this.typingTargets.set(key, { blockId, isThinking, execId, fallbackText: targetText });
     this.ensureTypingLoop();
   }
@@ -771,7 +899,7 @@ export class AgentStreamComponent implements AfterViewInit {
           this.lastTypingTimestamp = now;
           this.advanceTyping(elapsed);
         }
-        if (this.typingTargets.size > 0) {
+        if (this.typingTargets.size > 0 || this.rewindTargets.size > 0) {
           this.typingRafId = requestAnimationFrame(step);
         }
       };
@@ -781,6 +909,7 @@ export class AgentStreamComponent implements AfterViewInit {
 
   private stopTypingLoop(): void {
     this.typingTargets.clear();
+    this.rewindTargets.clear();
     if (this.typingRafId !== null) {
       cancelAnimationFrame(this.typingRafId);
       this.typingRafId = null;
@@ -798,9 +927,14 @@ export class AgentStreamComponent implements AfterViewInit {
       1,
       Math.round(AgentStreamComponent.TYPING_CHARS_PER_SECOND * elapsedMs / 1000)
     );
+    const rewindChars = Math.max(
+      2,
+      Math.round(AgentStreamComponent.REWIND_CHARS_PER_SECOND * elapsedMs / 1000)
+    );
     const updates: Record<string, string> = {};
     let hasUpdates = false;
 
+    // 1. Advance forward typing targets
     for (const [key, typing] of this.typingTargets) {
       const block = blocks.find((b) => b.id === typing.blockId);
       let target = typing.fallbackText;
@@ -821,9 +955,209 @@ export class AgentStreamComponent implements AfterViewInit {
       }
     }
 
+    // 2. Advance fast rewind targets (backspacing for mid-stream resets)
+    const completedRewinds: Array<{ blockId: string; execId?: string; isThinking: boolean; message: string }> = [];
+    for (const [key, rewind] of this.rewindTargets) {
+      const current = updates[key] !== undefined ? updates[key] : (currentRecord[key] || '');
+      if (current.length > 0) {
+        const nextLen = Math.max(0, current.length - rewindChars);
+        updates[key] = current.slice(0, nextLen);
+        hasUpdates = true;
+        if (nextLen === 0) {
+          this.rewindTargets.delete(key);
+          completedRewinds.push({
+            blockId: rewind.blockId,
+            execId: rewind.execId,
+            isThinking: rewind.isThinking,
+            message: rewind.message
+          });
+        }
+      } else {
+        this.rewindTargets.delete(key);
+        completedRewinds.push({
+          blockId: rewind.blockId,
+          execId: rewind.execId,
+          isThinking: rewind.isThinking,
+          message: rewind.message
+        });
+      }
+    }
+
+    if (completedRewinds.length > 0) {
+      for (const item of completedRewinds) {
+        this.upsertBlockResetNotice(item.blockId, {
+          id: item.execId || `${item.blockId}-${item.isThinking ? 'thinking' : 'text'}`,
+          message: item.message,
+          isWaiting: true,
+          streamType: item.isThinking ? 'thinking' : 'text'
+        });
+      }
+      this.activeResetNotices.update((notices) => {
+        const next = new Map(notices);
+        for (const item of completedRewinds) {
+          next.set(item.blockId, item.message);
+        }
+        return next;
+      });
+    }
+
     if (hasUpdates) {
       this.typedTextsSignal.update((r) => ({ ...r, ...updates }));
     }
+  }
+
+  /**
+   * Triggers fast typewriter rewind on a stream execution when a mid-stream reset occurs.
+   * Once characters rewind to zero, the block displays the graceful retry notification.
+   */
+  public triggerStreamRewind(execId: string | undefined, message: string): void {
+    const blocks = untracked(() => this.consolidatedBlocks());
+    const currentTexts = untracked(() => this.typedTextsSignal());
+
+    const targetBlock = blocks.find(b =>
+      b.data?.execution_id === execId
+      || b.id === `stream-${execId}`
+      || b.data?.step_id === execId
+      || (Array.isArray(b.data?.stream_segments) && b.data.stream_segments.some((s: any) => s.execution_id === execId))
+    ) || blocks.find(b => b.data?.isReset);
+
+    if (!targetBlock) return;
+    const blockId = targetBlock.id;
+
+    const keysToCheck: Array<{ key: string; isThinking: boolean }> = [
+      { key: blockId, isThinking: false },
+      { key: blockId + '-native', isThinking: true }
+    ];
+
+    let startedRewind = false;
+    for (const { key, isThinking } of keysToCheck) {
+      this.typingTargets.delete(key);
+
+      const currentText = currentTexts[key] || '';
+      if (currentText.length > 0) {
+        this.rewindTargets.set(key, {
+          blockId,
+          isThinking,
+          execId,
+          message
+        });
+        startedRewind = true;
+      }
+    }
+
+    if (startedRewind) {
+      this.ensureTypingLoop();
+    } else {
+      this.upsertBlockResetNotice(blockId, {
+        id: execId || `${blockId}-text`,
+        message,
+        isWaiting: true,
+        streamType: 'text'
+      });
+      this.activeResetNotices.update(notices => {
+        const next = new Map(notices);
+        next.set(blockId, message);
+        return next;
+      });
+    }
+  }
+
+  public getBlockResets(block: any, isThinking: boolean = false): StreamResetNotice[] {
+    if (!block) return [];
+    const blockId = block.id;
+    const targetStreamType = isThinking ? 'thinking' : 'text';
+
+    // 1. From activeBlockResets signal
+    const activeList = (this.activeBlockResets().get(blockId) || [])
+      .filter(r => r.streamType === targetStreamType);
+
+    // 2. From block.data.stream_resets (aggregated from logs)
+    const blockDataResets = (Array.isArray(block.data?.stream_resets) ? block.data.stream_resets : [])
+      .filter((r: any) => (r.streamType || 'text') === targetStreamType);
+
+    // Fast path: if both lists are empty, check fallback or return empty array immediately
+    if (activeList.length === 0 && blockDataResets.length === 0) {
+      if (!isThinking && block.data?.isReset && block.data?.resetMessage) {
+        return [{
+          id: block.data.execution_id || blockId,
+          message: block.data.resetMessage,
+          isWaiting: !block.data?.isCompleted,
+          streamType: 'text'
+        }];
+      }
+      return [];
+    }
+
+    // Merge by id, giving precedence to activeList
+    const mergedMap = new Map<string, StreamResetNotice>();
+    for (const r of blockDataResets) {
+      mergedMap.set(r.id, {
+        id: r.id,
+        message: r.message,
+        isWaiting: block.data?.isCompleted ? false : (r.isWaiting ?? false),
+        streamType: r.streamType || targetStreamType
+      });
+    }
+    for (const r of activeList) {
+      mergedMap.set(r.id, {
+        ...r,
+        isWaiting: block.data?.isCompleted ? false : r.isWaiting
+      });
+    }
+
+    return Array.from(mergedMap.values());
+  }
+
+  public hasWaitingReset(block: any, isThinking: boolean = false): boolean {
+    const resets = this.getBlockResets(block, isThinking);
+    return resets.some(r => r.isWaiting);
+  }
+
+  public hasBlockResets(block: any, isThinking: boolean = false): boolean {
+    return this.getBlockResets(block, isThinking).length > 0;
+  }
+
+  public formatResetMessage(message: string, isWaiting: boolean): string {
+    if (!message) return '';
+    if (isWaiting) return message;
+    return message
+      .replace(/[,.\s]*(?:Retrying automatically(?:\.{3}|\.\.\.)?)\s*$/i, '')
+      .trim();
+  }
+
+  public getCheckerSegmentResetMessage(item: any): string {
+    return item?.data?.resetMessage || DEFAULT_STREAM_RESET_MESSAGE;
+  }
+
+  public getResetNotice(block: any): string | null {
+    if (!block) return null;
+    const resets = this.getBlockResets(block, false);
+    if (resets.length > 0) {
+      const last = resets[resets.length - 1];
+      return this.formatResetMessage(last.message, last.isWaiting);
+    }
+    const blockId = block.id;
+    const active = this.activeResetNotices().get(blockId);
+    if (active) return this.formatResetMessage(active, !block.data?.isCompleted);
+    if (block.data?.isReset && block.data?.resetMessage) {
+      return this.formatResetMessage(block.data.resetMessage, !block.data?.isCompleted);
+    }
+    return null;
+  }
+
+  public isStreamRewinding(key: string): boolean {
+    return this.rewindTargets.has(key);
+  }
+
+  public isCheckerSegmentResetNotice(item: any): boolean {
+    if (!item?.data?.isReset) return false;
+    const text = item.data.text;
+    return !text || text.trim().length === 0;
+  }
+
+  public getStreamDisplayText(key: string, fallback: string = ''): string {
+    const typed = this.typedTextsSignal()[key];
+    return typed !== undefined ? typed : fallback;
   }
 
   private triggerDelayedCollapse(execId: string) {
@@ -1275,6 +1609,7 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   public isCheckerTextVisible(item: any): boolean {
+    if (item?.data?.isReset) return true;
     const text = item?.data?.text;
     return typeof text === 'string' && text.trim().length > 0 && this.isHumanThinking(text);
   }
@@ -1347,6 +1682,7 @@ export class AgentStreamComponent implements AfterViewInit {
     if (block.type === 'checker') return true;
     const hasNative = Boolean(this.getNativeThinking(block));
     const hasRaw = Boolean(this.getRawThinking(block));
+    const hasReset = this.hasBlockResets(block, false) || this.hasBlockResets(block, true);
     const hasVisibleTools = Boolean(block.data?.generic_tools) && block.data.generic_tools.some((t: any) =>
       this.shouldShowTool(t, block.data)
       || this.isDisplayableLLMFailure(t)
@@ -1354,7 +1690,7 @@ export class AgentStreamComponent implements AfterViewInit {
       || this.isReportStatusAction(t)
     );
     const hasAndroidActions = Boolean(block.data?.action_taken) && (this.isAndroidAction(block.data.action_taken) || this.isReportStatusAction(block.data.action_taken));
-    return hasNative || hasRaw || hasVisibleTools || hasAndroidActions;
+    return hasNative || hasRaw || hasReset || hasVisibleTools || hasAndroidActions;
   }
 
   public isReportStatusAction(action: any): boolean {

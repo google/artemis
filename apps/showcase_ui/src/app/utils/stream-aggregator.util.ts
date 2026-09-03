@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import { StepBlock, PhaseBlock, StepEvent, StreamSegment } from '../core/models/stream.model';
-import { isAndroidAction, isReportStatusAction, getReportStatusExplanation, getReportStatusValue } from './action-formatter.util';
-import { getUniqueGenericTools } from './tool-formatter.util';
+import { StepBlock, PhaseBlock, StepEvent, StreamSegment, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE } from '../core/models/stream.model';
+import { isAndroidAction, isReportStatusAction, getReportStatusExplanation, getReportStatusValue, getActionObject } from './action-formatter.util';
+import { getUniqueGenericTools, isInternalPlumbingTool } from './tool-formatter.util';
 
 /**
  * Helper to safely extract milliseconds timestamp
@@ -193,6 +193,8 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
       const streamType = log.data?.stream_type || 'text';
       const text = log.data?.text || '';
       const isCompleted = log.data?.isCompleted ?? false;
+      const isReset = log.data?.isReset ?? false;
+      const resetMessage = log.data?.resetMessage;
 
       // The Checker's own reasoning streams under its agent trace: route it to
       // the attempt block, never to the Operator step that is current.
@@ -215,7 +217,9 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           stream_type: streamType === 'thinking' ? 'thinking' : 'text',
           text,
           timestamp: segmentIndex > -1 ? segments[segmentIndex].timestamp : log.timestamp,
-          isCompleted
+          isCompleted,
+          isReset,
+          resetMessage
         };
         if (segmentIndex > -1) segments[segmentIndex] = segment; else segments.push(segment);
         checkerData.stream_segments = segments;
@@ -248,10 +252,42 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
       if (existingIndex === -1 && execId) {
         existingIndex = blocks.findIndex(b => b.data?.execution_id === execId || b.id === `stream-${execId}`);
       }
+      // If no stepId and not matched by execId, check if there is an unattached stream block that was reset.
+      // The retry stream supersedes that reset block rather than spawning an orphaned duplicate card.
+      if (existingIndex === -1 && !stepId) {
+        existingIndex = blocks.findIndex(b => b.type === 'llm_stream' && b.data?.isReset);
+      }
 
       if (existingIndex > -1) {
         const existing = blocks[existingIndex];
         const updatedData = { ...existing.data };
+        const existingResets: StreamResetNotice[] =
+          Array.isArray(updatedData.stream_resets) ? [...updatedData.stream_resets] : [];
+
+        if (isReset) {
+          updatedData.isReset = true;
+          updatedData.resetMessage = resetMessage;
+          const msg = resetMessage || DEFAULT_STREAM_RESET_MESSAGE;
+          const resetId = execId || `reset-${log.timestamp || updatedData.step_id || 'stream'}`;
+          const existingResetIdx = existingResets.findIndex(r => r.id === resetId);
+          if (existingResetIdx > -1) {
+            existingResets[existingResetIdx] = { id: resetId, message: msg, isWaiting: true, streamType };
+          } else {
+            existingResets.push({ id: resetId, message: msg, isWaiting: true, streamType });
+          }
+          updatedData.stream_resets = existingResets;
+        } else if (execId && updatedData.execution_id !== execId) {
+          // New execution replacing a reset stream: mark prior resets as finished waiting
+          updatedData.stream_resets = existingResets.map(r => ({ ...r, isWaiting: false }));
+          updatedData.isReset = false;
+          updatedData.resetMessage = undefined;
+          updatedData.execution_id = execId;
+        } else if (!isReset && text && text.length > 0 && existingResets.some(r => r.isWaiting)) {
+          updatedData.stream_resets = existingResets.map(r => ({ ...r, isWaiting: false }));
+          updatedData.isReset = false;
+          updatedData.resetMessage = undefined;
+        }
+
         if (streamType === 'thinking') {
           updatedData.operator_native_thinking = text;
           updatedData.operator_native_thinking_timestamp =
@@ -268,6 +304,9 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           updatedData.execution_id = execId;
         }
         updatedData.isCompleted = isCompleted;
+        if (isCompleted && updatedData.stream_resets) {
+          updatedData.stream_resets = updatedData.stream_resets.map((r: any) => ({ ...r, isWaiting: false }));
+        }
 
         blocks[existingIndex] = {
           ...existing,
@@ -279,6 +318,14 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           execution_id: execId,
           step_id: stepId,
           isCompleted: isCompleted,
+          isReset: isReset,
+          resetMessage: resetMessage,
+          stream_resets: isReset ? [{
+            id: execId || `reset-${log.timestamp || stepId || 'stream'}`,
+            message: resetMessage || DEFAULT_STREAM_RESET_MESSAGE,
+            isWaiting: true,
+            streamType
+          }] : [],
           generic_tools: []
         };
         if (streamType === 'thinking') {
@@ -338,6 +385,9 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           generic_tools: mergedTools,
           isCompleted: true
         };
+        if (mergedData.stream_resets) {
+          mergedData.stream_resets = mergedData.stream_resets.map((r: any) => ({ ...r, isWaiting: false }));
+        }
 
         blocks[existingIndex] = {
           ...existingBlock,
@@ -667,6 +717,9 @@ export function getSortedStepEvents(
 ): StepEvent[] {
   if (!stepData || typeof stepData !== 'object') return [];
   const toolsLen = stepData.generic_tools ? stepData.generic_tools.length : 0;
+  const toolsSignature = stepData.generic_tools && Array.isArray(stepData.generic_tools)
+    ? stepData.generic_tools.map((t: any) => `${t?.trace_id || t?.name || ''}:${t?.status || ''}`).join(',')
+    : '';
   const actionTs = stepData.action_taken ? (stepData.action_taken.timestamp || stepData.action_taken.start_time || stepData.action_taken.created_at) : null;
   const nativeText = typeof stepData.operator_native_thinking === 'string'
     ? stepData.operator_native_thinking.trim()
@@ -679,11 +732,15 @@ export function getSortedStepEvents(
     : null;
   const signature = [
     toolsLen,
+    toolsSignature,
     actionTs ?? '',
     stepData.operator_native_thinking_timestamp ?? '',
     stepData.operator_raw_thinking_timestamp ?? '',
     nativeText.length,
     rawText.length,
+    stepData.isReset ? '1' : '0',
+    stepData.resetMessage ?? '',
+    stepData.stream_resets ? stepData.stream_resets.map((r: any) => `${r.id}:${r.isWaiting ? 1 : 0}`).join(',') : '',
     segments ? segments.map((s) => `${s.execution_id}:${s.stream_type}:${s.text.length}`).join(',') : ''
   ].join('|');
 
@@ -704,38 +761,58 @@ export function getSortedStepEvents(
     // Multi-turn agent (Checker): one event per streamed turn, each at the
     // time its first chunk arrived, so turns sort between the tool calls.
     segments.forEach((segment) => {
-      if (!segment.text || !segment.text.trim()) return;
+      if ((!segment.text || !segment.text.trim()) && !segment.isReset) return;
       events.push({
         type: segment.stream_type === 'thinking' ? 'thinking' : 'text',
-        data: { text: segment.text, execution_id: segment.execution_id, segment: true },
+        data: {
+          text: segment.text,
+          execution_id: segment.execution_id,
+          segment: true,
+          isReset: segment.isReset,
+          resetMessage: segment.resetMessage
+        },
         timestamp: getItemTimestamp(segment.timestamp, fallbackTime),
         sequence: sequence++
       });
     });
   } else {
-    if (nativeText) {
+    const hasThinkingResets = Array.isArray(stepData.stream_resets) && stepData.stream_resets.some((r: any) => r.streamType === 'thinking');
+    if (nativeText || hasThinkingResets) {
       events.push({
         type: 'thinking',
-        data: { text: stepData.operator_native_thinking },
+        data: { text: stepData.operator_native_thinking || '' },
         timestamp: getItemTimestamp(stepData.operator_native_thinking_timestamp, fallbackTime),
         sequence: sequence++
       });
     }
 
-    if (rawText) {
+    if (rawText || (stepData.isReset && stepData.resetMessage) || (Array.isArray(stepData.stream_resets) && stepData.stream_resets.length > 0)) {
       events.push({
         type: 'text',
-        data: { text: stepData.operator_raw_thinking },
+        data: {
+          text: stepData.operator_raw_thinking || '',
+          isReset: stepData.isReset,
+          resetMessage: stepData.resetMessage
+        },
         timestamp: getItemTimestamp(stepData.operator_raw_thinking_timestamp, fallbackTime),
         sequence: sequence++
       });
     }
   }
 
-  // Add action_taken if present and valid.
-  if (stepData.action_taken && (isAndroidAction(stepData.action_taken) || isReportStatusAction(stepData.action_taken))) {
+  // 2. Single Source of Truth & Fallback Resolution:
+  const uniqueTools = getUniqueGenericTools(stepData.generic_tools);
+  const hasActionInTools = uniqueTools.some((tool: any) =>
+    tool && (tool.type === 'action' || isAndroidAction(tool) || isReportStatusAction(tool))
+  );
+
+  // Fallback: only add action_taken if generic_tools did NOT already contain an action trace.
+  // Pushed before uniqueTools so that when timestamps are missing/equal, the primary action
+  // preserves deterministic sequence ordering ahead of generic fallback tools.
+  if (!hasActionInTools && stepData.action_taken && (isAndroidAction(stepData.action_taken) || isReportStatusAction(stepData.action_taken))) {
+    const actObj = getActionObject(stepData.action_taken);
     const actTime = getItemTimestamp(
-      stepData.action_taken.timestamp ?? stepData.action_taken.start_time ?? stepData.action_taken.created_at,
+      actObj?.timestamp ?? actObj?.start_time ?? actObj?.created_at,
       fallbackTime
     );
     events.push({
@@ -746,15 +823,19 @@ export function getSortedStepEvents(
     });
   }
 
-  // Add generic tools if present.
-  const uniqueTools = getUniqueGenericTools(stepData.generic_tools);
+  // Add all real tool calls and actions from the event stream.
   uniqueTools.forEach((tool: any) => {
+    if (isInternalPlumbingTool(tool) && !isReportStatusAction(tool)) {
+      return;
+    }
+
+    const isAction = tool.type === 'action' || isAndroidAction(tool) || isReportStatusAction(tool);
     const toolTime = getItemTimestamp(
       tool.timestamp ?? tool.start_time ?? tool.created_at,
       fallbackTime
     );
     events.push({
-      type: 'tool',
+      type: isAction ? 'action' : 'tool',
       data: tool,
       timestamp: toolTime,
       sequence: sequence++

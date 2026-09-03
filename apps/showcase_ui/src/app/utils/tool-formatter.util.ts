@@ -15,7 +15,6 @@
  */
 
 import { ActionParam } from '../core/models/stream.model';
-import { isAndroidAction, isReportStatusAction } from './action-formatter.util';
 import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequenceCoordinates } from './image-overlay.util';
 
 // Tool objects are replaced (not mutated) when a trace is updated, so a
@@ -276,23 +275,11 @@ export function isInternalPlumbingTool(tool: any): boolean {
 /**
  * Determines whether a tool invocation should be displayed in the timeline.
  */
-export function shouldShowTool(tool: any, stepData?: any): boolean {
+export function shouldShowTool(tool: any, _stepData?: any): boolean {
   if (!tool || !tool.name) return false;
   if (tool.type === 'llm_call') return false;
   if (tool.type === 'agent') return false;
   if (isInternalPlumbingTool(tool)) return false;
-
-  // If this tool is an operator/validator atomic action that duplicates stepData.action_taken, skip it
-  if (stepData && stepData.action_taken && isAndroidAction(stepData.action_taken) && isDeviceActionTool(tool)) {
-    const agentName = (tool.agent_name || tool.agent || '').toLowerCase();
-    const isSelfHealingOrSubAgent = agentName.includes('failure') || 
-                                    agentName.includes('analyzer') || 
-                                    agentName.includes('diagnos') || 
-                                    (agentName && agentName !== 'operator' && agentName !== 'flashrunner' && agentName !== 'validator');
-    if (!isSelfHealingOrSubAgent) {
-      return false;
-    }
-  }
 
   return true;
 }

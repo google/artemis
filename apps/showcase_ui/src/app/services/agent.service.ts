@@ -20,9 +20,9 @@ import { Observable } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
-import { StepItemData, StepReplayFrame } from '../core/models/stream.model';
+import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
-export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame };
+export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
 const SESSION_CACHE_KEY = 'artemis.sessions.v1';
 
@@ -240,6 +240,7 @@ export class AgentService {
   public videoSeekRequest = signal<{ seconds: number; requestId: number } | null>(null);
   public stepSeekRequest = signal<{ index: number; requestId: number } | null>(null);
   public playerMode = signal<'video' | 'steps'>('video');
+  public streamResetEvent = signal<LLMStreamResetEventData | null>(null);
   private activeVideoSessionId: string | null = null;
   private videoSeekRequestId = 0;
   private stepSeekRequestId = 0;
@@ -348,7 +349,7 @@ export class AgentService {
 
   // Streaming chunks are coalesced into one signal update per short window so a
   // chatty LLM stream cannot force a full recompute pass per SSE chunk.
-  private pendingStreamChunks = new Map<string, { execId: any; stepId: any; parentTraceId?: any; streamType: string; chunk: string }>();
+  private pendingStreamChunks = new Map<string, { execId: any; stepId: any; sessionId?: string | null; parentTraceId?: any; streamType: string; chunk: string }>();
   private streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private lastQueueSignature: string | null = null;
   private lastActiveTasksSignature: string | null = null;
@@ -762,6 +763,7 @@ export class AgentService {
 
     const eventTypes = [
       'llm_stream',
+      'llm_stream_reset',
       'trace_recorded',
       'step_recorded',
       'step_updated',
@@ -951,6 +953,67 @@ export class AgentService {
             this.isRetrying.set(false);
           }
 
+          if (eventType === 'llm_stream_reset') {
+            const streamExecId = parsedData?.stream_exec_id || parsedData?.stream_execution_id;
+            if (streamExecId) {
+              for (const key of Array.from(this.pendingStreamChunks.keys())) {
+                if (key.startsWith(`${streamExecId}|`) || key === streamExecId) {
+                  this.pendingStreamChunks.delete(key);
+                }
+              }
+            }
+            const resetMessage = parsedData?.message || DEFAULT_STREAM_RESET_MESSAGE;
+            this.streamResetEvent.set({
+              stream_exec_id: streamExecId,
+              stream_execution_id: streamExecId,
+              step_id: parsedData?.step_id,
+              session_id: parsedData?.session_id,
+              action: parsedData?.action || 'discard',
+              reason: parsedData?.reason || 'mid_stream_failure',
+              category: parsedData?.category,
+              error: parsedData?.error,
+              message: resetMessage,
+              retry_attempt: parsedData?.retry_attempt,
+              timestamp: Date.now()
+            });
+
+            this.sessionLogs.update((logs) => {
+              let updated = false;
+              const next = logs.map((log) => {
+                if (log.type === 'llm_stream' && log.data?.execution_id === streamExecId) {
+                  updated = true;
+                  return {
+                    ...log,
+                    data: {
+                      ...log.data,
+                      isReset: true,
+                      resetMessage
+                    }
+                  };
+                }
+                return log;
+              });
+              if (!updated && streamExecId) {
+                next.push({
+                  type: 'llm_stream',
+                  timestamp: new Date().toISOString(),
+                  session_id: parsedData?.session_id,
+                  data: {
+                    execution_id: streamExecId,
+                    step_id: parsedData?.step_id,
+                    stream_type: 'text',
+                    text: '',
+                    isCompleted: false,
+                    isReset: true,
+                    resetMessage
+                  }
+                });
+              }
+              return next;
+            });
+            return;
+          }
+
           if (eventType === 'llm_stream') {
             this.queueStreamChunk(parsedData);
           } else {
@@ -1033,19 +1096,22 @@ export class AgentService {
   private queueStreamChunk(parsedData: any): void {
     const execId = parsedData.execution_id;
     const stepId = parsedData.step_id;
+    const sessionId = parsedData.session_id || null;
     // The emitting agent's trace: lets the aggregator route a concurrent
     // agent's stream (e.g. the Checker) to its own block instead of the
     // Operator step that happens to be current.
     const parentTraceId = parsedData.parent_trace_id || null;
     const streamType = parsedData.stream_type || 'text';
     const key = `${execId}|${streamType}`;
+    const chunk = parsedData.chunk !== undefined ? parsedData.chunk : (parsedData.text || '');
     const pending = this.pendingStreamChunks.get(key);
     if (pending) {
-      pending.chunk += parsedData.chunk;
+      pending.chunk += chunk;
       if (stepId) pending.stepId = stepId;
+      if (sessionId) pending.sessionId = sessionId;
       if (parentTraceId) pending.parentTraceId = parentTraceId;
     } else {
-      this.pendingStreamChunks.set(key, { execId, stepId, parentTraceId, streamType, chunk: parsedData.chunk });
+      this.pendingStreamChunks.set(key, { execId, stepId, sessionId, parentTraceId, streamType, chunk });
     }
     if (!this.streamFlushTimer) {
       const delay = typeof document !== 'undefined' && document.hidden ? 500 : 80;
@@ -1083,9 +1149,11 @@ export class AgentService {
           const existingLog = next[existingIndex];
           next[existingIndex] = {
             ...existingLog,
+            session_id: batch.sessionId || existingLog.session_id,
             data: {
               ...existingLog.data,
-              text: existingLog.data.text + batch.chunk,
+              session_id: batch.sessionId || existingLog.data?.session_id,
+              text: (existingLog.data.text || '') + batch.chunk,
               step_id: batch.stepId || existingLog.data.step_id,
               parent_trace_id: batch.parentTraceId || existingLog.data.parent_trace_id || null
             }
@@ -1105,8 +1173,10 @@ export class AgentService {
           next.push({
             type: 'llm_stream',
             timestamp: new Date().toISOString(),
+            session_id: batch.sessionId || undefined,
             data: {
               execution_id: batch.execId,
+              session_id: batch.sessionId || undefined,
               step_id: batch.stepId,
               parent_trace_id: batch.parentTraceId || null,
               text: batch.chunk,

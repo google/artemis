@@ -1,7 +1,8 @@
 import {
   cleanErrorMessage,
   getUniqueGenericTools,
-  getVideoAnalysisView
+  getVideoAnalysisView,
+  shouldShowTool
 } from './tool-formatter.util';
 
 describe('cleanErrorMessage', () => {
@@ -162,5 +163,40 @@ describe('video analysis timeline formatting', () => {
       'video-analysis-video-agent-1',
       'video-analysis-video-agent-2'
     ]);
+  });
+});
+
+describe('shouldShowTool (Option A Single Source of Truth)', () => {
+  it('keeps ADB commands visible even when stepData.action_taken is present', () => {
+    const adbTool = {
+      name: 'run_adb_command',
+      type: 'tool',
+      payload: { CommandLine: 'dumpsys telephony.registry' }
+    };
+    const stepData = {
+      action_taken: [{ action: 'wait_for_delay', time_in_ms: 1000 }]
+    };
+
+    expect(shouldShowTool(adbTool, stepData)).toBeTrue();
+  });
+
+  it('keeps explorer calls visible when stepData.action_taken is present', () => {
+    const explorerTool = {
+      name: 'ask_explorer',
+      type: 'tool'
+    };
+    const stepData = {
+      action_taken: [{ action: 'wait_for_delay', time_in_ms: 1000 }]
+    };
+
+    expect(shouldShowTool(explorerTool, stepData)).toBeTrue();
+  });
+
+  it('filters out internal plumbing tools', () => {
+    const plumbingTool = {
+      name: 'safety_net_pixel_validation',
+      type: 'tool'
+    };
+    expect(shouldShowTool(plumbingTool)).toBeFalse();
   });
 });

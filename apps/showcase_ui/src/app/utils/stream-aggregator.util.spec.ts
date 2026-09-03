@@ -349,3 +349,139 @@ describe('stream aggregator checker history relocation', () => {
     expect(checker.data.generic_tools.map((t: any) => t.trace_id)).toEqual(['tool-probe']);
   });
 });
+
+describe('stream aggregator single source of truth (Option A)', () => {
+  it('does not duplicate action_taken when generic_tools already contains the action trace', () => {
+    const events = getSortedStepEvents({
+      timestamp: 100,
+      action_taken: [{ action: 'launch_app', app_name: 'Maps', timestamp: 102 }],
+      generic_tools: [
+        { trace_id: 'tool-note', type: 'tool', name: 'update_note', timestamp: 101 },
+        { trace_id: 'act-launch', type: 'action', name: 'launch_app', timestamp: 102, payload: { args: { action: { action: 'launch_app', app_name: 'Maps' } } } }
+      ]
+    });
+
+    expect(events.length).toBe(2);
+    expect(events.map(e => e.type)).toEqual(['tool', 'action']);
+    expect(events.map(e => e.data.name)).toEqual(['update_note', 'launch_app']);
+  });
+
+  it('retains multiple adb commands and tools alongside physical actions without dropping any', () => {
+    const events = getSortedStepEvents({
+      timestamp: 100,
+      action_taken: [{ action: 'wait_for_delay', time_in_ms: 1000, timestamp: 105 }],
+      generic_tools: [
+        { trace_id: 'adb-1', type: 'tool', name: 'run_adb_command', timestamp: 101, payload: { CommandLine: 'dumpsys telephony.registry' } },
+        { trace_id: 'adb-2', type: 'tool', name: 'run_adb_command', timestamp: 102, payload: { CommandLine: 'am start -a ...' } },
+        { trace_id: 'exp-1', type: 'tool', name: 'ask_explorer', timestamp: 103 },
+        { trace_id: 'act-wait', type: 'action', name: 'wait_for_delay', timestamp: 104, payload: { args: { time_in_ms: 1000 } } }
+      ]
+    });
+
+    expect(events.length).toBe(4);
+    expect(events.map(e => e.type)).toEqual(['tool', 'tool', 'tool', 'action']);
+    expect(events.map(e => e.data.name)).toEqual(['run_adb_command', 'run_adb_command', 'ask_explorer', 'wait_for_delay']);
+  });
+
+  it('supports multi-action bursts sequentially from generic_tools', () => {
+    const events = getSortedStepEvents({
+      timestamp: 100,
+      action_taken: [{ action: 'tap', coordinates: [200, 300] }],
+      generic_tools: [
+        { trace_id: 'tap-1', type: 'action', name: 'tap', timestamp: 101, payload: { args: { action: { action: 'tap', coordinates: [100, 200] } } } },
+        { trace_id: 'tap-2', type: 'action', name: 'tap', timestamp: 102, payload: { args: { action: { action: 'tap', coordinates: [200, 300] } } } }
+      ]
+    });
+
+    expect(events.length).toBe(2);
+    expect(events.every(e => e.type === 'action')).toBeTrue();
+    expect(events[0].data.trace_id).toBe('tap-1');
+    expect(events[1].data.trace_id).toBe('tap-2');
+  });
+
+  it('correctly processes real trace 38fd934e Step 16 keeping ADB commands and wait_for_delay visible without duplicates', () => {
+    const step16 = {
+      step_id: '31e8c7ec-6b67-485e-94f4-355a853ccf8a',
+      step_number: 16,
+      action_taken: [{ action: 'wait_for_delay', time_in_ms: 1000 }],
+      operator_native_thinking: 'Let me check telephony and send SMS...',
+      operator_native_thinking_timestamp: 1788457630,
+      timestamp: 1788457630,
+      generic_tools: [
+        { trace_id: 't-adb-1', parent_trace_id: 't-op', name: 'run_adb_command', type: 'tool', timestamp: 1788457631, status: 'success', payload: { args: { CommandLine: 'dumpsys telephony.registry' } } },
+        { trace_id: 't-adb-1-sub', parent_trace_id: 't-adb-1', name: 'run_adb_command', type: 'tool', timestamp: 1788457631.5, status: 'success' },
+        { trace_id: 't-adb-2', parent_trace_id: 't-op', name: 'run_adb_command', type: 'tool', timestamp: 1788457632, status: 'success', payload: { args: { CommandLine: 'am start -a android.intent.action.SENDTO ...' } } },
+        { trace_id: 't-adb-2-sub', parent_trace_id: 't-adb-2', name: 'run_adb_command', type: 'tool', timestamp: 1788457632.5, status: 'success' },
+        { trace_id: 't-exp', parent_trace_id: 't-op', name: 'ask_explorer', type: 'tool', timestamp: 1788457633, status: 'success', payload: { args: { query: 'any text on screen' } } },
+        { trace_id: 't-exp-sub', parent_trace_id: 't-exp', name: 'ask_explorer', type: 'tool', timestamp: 1788457633.5, status: 'success' },
+        { trace_id: 't-wait', parent_trace_id: 't-val', name: 'wait_for_delay', type: 'action', timestamp: 1788457635, status: 'success', payload: { args: { action: { action: 'wait_for_delay', time_in_ms: 1000 } } } },
+        { trace_id: 't-safety', parent_trace_id: 't-wait', name: 'safety_net_pixel_validation', type: 'tool', timestamp: 1788457636, status: 'success' }
+      ]
+    };
+
+    const events = getSortedStepEvents(step16);
+    // 1 native thinking + 2 adb tools + 1 explorer tool + 1 wait_for_delay action
+    expect(events.length).toBe(5);
+    expect(events.map(e => e.type)).toEqual(['thinking', 'tool', 'tool', 'tool', 'action']);
+    expect(events.map(e => e.data.name || e.data.action || 'thinking')).toEqual([
+      'thinking',
+      'run_adb_command',
+      'run_adb_command',
+      'ask_explorer',
+      'wait_for_delay'
+    ]);
+  });
+
+  it('correctly handles mid-stream reset and supersedes the reset block on retry', () => {
+    // 1. Initial stream fails mid-stream and is marked reset
+    const resetLogs = [
+      {
+        type: 'llm_stream',
+        timestamp: '2026-09-03T10:00:01.000Z',
+        data: {
+          execution_id: 'exec-failed-1',
+          stream_type: 'text',
+          text: 'Here is the aborted plan...',
+          isCompleted: false,
+          isReset: true,
+          resetMessage: 'A request error occurred during output generation, typically caused by lower API priority. Retrying automatically...'
+        }
+      }
+    ];
+
+    const initialBlocks = consolidateLogsToBlocks(resetLogs);
+    expect(initialBlocks.length).toBe(1);
+    expect(initialBlocks[0].data.isReset).toBeTrue();
+    expect(initialBlocks[0].data.resetMessage).toBe('A request error occurred during output generation, typically caused by lower API priority. Retrying automatically...');
+
+    // getSortedStepEvents retains the reset state and message
+    const resetEvents = getSortedStepEvents(initialBlocks[0].data);
+    expect(resetEvents.length).toBe(1);
+    expect(resetEvents[0].type).toBe('text');
+    expect(resetEvents[0].data.isReset).toBeTrue();
+
+    // 2. Retry stream arrives without step_id (e.g. pre-planning retry)
+    const retryLogs = [
+      ...resetLogs,
+      {
+        type: 'llm_stream',
+        timestamp: '2026-09-03T10:00:03.000Z',
+        data: {
+          execution_id: 'exec-retry-2',
+          stream_type: 'text',
+          text: 'Here is the fresh completed plan.',
+          isCompleted: true
+        }
+      }
+    ];
+
+    const updatedBlocks = consolidateLogsToBlocks(retryLogs);
+    // Should supersede the reset block rather than creating an orphaned duplicate card
+    expect(updatedBlocks.length).toBe(1);
+    expect(updatedBlocks[0].data.execution_id).toBe('exec-retry-2');
+    expect(updatedBlocks[0].data.isReset).toBeFalse();
+    expect(updatedBlocks[0].data.operator_raw_thinking).toBe('Here is the fresh completed plan.');
+    expect(updatedBlocks[0].data.isCompleted).toBeTrue();
+  });
+});
+

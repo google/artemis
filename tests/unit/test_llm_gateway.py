@@ -204,3 +204,39 @@ async def test_acomplete_compat_path_for_plain_models():
 
     result = await acomplete(InvokeOnly(), [])
     assert result.content == "direct"
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_failure_records_stream_reset_payload(monkeypatch):
+    recorded_events = []
+
+    def mock_record_event(name, payload, *, status="retrying"):
+        recorded_events.append((name, payload, status))
+
+    monkeypatch.setattr(llm_service, "_record_llm_event", mock_record_event)
+
+    class BreaksMidStream:
+        def __init__(self):
+            self.calls = 0
+
+        async def astream(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield AIMessageChunk(content="Partial thoughts...")
+                raise RuntimeError("503 high demand spike")
+            yield AIMessageChunk(content="Recovered output")
+
+    base = BreaksMidStream()
+    wrapper = RobustChatModelWrapper(base)
+    result = await wrapper.complete([])
+
+    assert result.content == "Recovered output"
+    resets = [e for e in recorded_events if e[0] == "llm_stream_reset"]
+    assert len(resets) == 1
+    event_name, payload, status = resets[0]
+    assert event_name == "llm_stream_reset"
+    assert payload["action"] == "discard"
+    assert payload["reason"] == "mid_stream_failure"
+    assert "stream_exec_id" in payload
+    assert "lower API priority" in payload["message"]
+

@@ -52,6 +52,32 @@ export interface LLMStreamEventData {
   chunk?: string;
   stream_type?: 'thinking' | 'text' | string;
   isCompleted?: boolean;
+  isReset?: boolean;
+  resetMessage?: string;
+}
+
+export const DEFAULT_STREAM_RESET_MESSAGE =
+  'A request error occurred during output generation, typically caused by lower API priority. Retrying automatically...';
+
+export interface StreamResetNotice {
+  id: string;
+  message: string;
+  isWaiting: boolean;
+  streamType: string;
+}
+
+export interface LLMStreamResetEventData {
+  stream_exec_id?: string;
+  stream_execution_id?: string;
+  step_id?: string;
+  session_id?: string;
+  action?: 'discard' | string;
+  reason?: string;
+  category?: string;
+  error?: string;
+  message?: string;
+  retry_attempt?: number;
+  timestamp?: number;
 }
 
 export interface StepItemData {
@@ -119,6 +145,8 @@ export interface StreamSegment {
   text: string;
   timestamp: string;
   isCompleted?: boolean;
+  isReset?: boolean;
+  resetMessage?: string;
 }
 
 /**

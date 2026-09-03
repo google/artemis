@@ -19,12 +19,65 @@ import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequence
 import { cleanErrorMessage } from './tool-formatter.util';
 
 /**
+ * Safely parse JSON string if it looks like an object/array, otherwise return original value
+ */
+export function safeParseJson(val: any): any {
+  if (typeof val === 'string' && (val.trim().startsWith('{') || val.trim().startsWith('['))) {
+    try {
+      return JSON.parse(val);
+    } catch {
+      return val;
+    }
+  }
+  return val;
+}
+
+// WeakMap memo for parsed action objects to avoid repeated JSON.parse and object allocation across change detection cycles
+const actionObjectCache = new WeakMap<object, any>();
+
+function computeActionObject(action: any): any {
+  if (action && typeof action === 'object' && action.payload) {
+    const payload = typeof action.payload === 'string' ? safeParseJson(action.payload) : action.payload;
+    const innerAction = payload?.args?.action;
+    if (innerAction && typeof innerAction === 'object') {
+      return {
+        ...action,
+        ...innerAction,
+        name: action.name || innerAction.action || innerAction.name,
+        action: innerAction.action || action.name,
+        trace_id: action.trace_id,
+        timestamp: action.timestamp ?? innerAction.timestamp
+      };
+    }
+    const innerArgs = payload?.args;
+    if (innerArgs && typeof innerArgs === 'object') {
+      return {
+        ...action,
+        ...innerArgs,
+        name: action.name || innerArgs.action || innerArgs.name,
+        action: innerArgs.action || action.name,
+        trace_id: action.trace_id,
+        timestamp: action.timestamp ?? innerArgs.timestamp
+      };
+    }
+  }
+  return action;
+}
+
+/**
  * Safely extract action object from possible array or nested structure
  */
 export function getActionObject(action: any): any {
   if (!action) return null;
   if (Array.isArray(action)) {
-    return action.length > 0 ? action[0] : null;
+    return action.length > 0 ? getActionObject(action[0]) : null;
+  }
+  if (typeof action === 'object') {
+    const cached = actionObjectCache.get(action);
+    if (cached !== undefined) return cached;
+    const res = computeActionObject(action);
+    actionObjectCache.set(action, res);
+    return res;
   }
   return action;
 }
@@ -46,7 +99,7 @@ export function isAndroidAction(action: any): boolean {
     'tap', 'click', 'click_sequence', 'input', 'input_text', 'swipe', 'scroll', 'press_key', 
     'press_home', 'press_back', 'launch_app', 'manage_app', 'open_app',
     'focus_and_input_text', 'focus_and_clear_text', 'long_press', 'long_press_on',
-    'wait_for_delay', 'wait'
+    'wait_for_delay', 'wait', 'drag', 'drag_and_drop'
   ].includes(name);
 }
 
@@ -543,7 +596,8 @@ export function isGenericToolTrace(actionData: any, stepData?: any): boolean {
     }
   }
   if (actionData.is_primary_step_action) return false;
-  return Boolean(actionData.trace_id || actionData.payload || actionData.type === 'tool' || (actionData.type === 'action' && actionData.trace_id));
+  if (actionData.type === 'action' || isAndroidAction(actionData)) return false;
+  return Boolean(actionData.trace_id || actionData.payload || actionData.type === 'tool');
 }
 
 interface ResolvedImageEntry {
@@ -554,16 +608,6 @@ interface ResolvedImageEntry {
 
 const stepImageMapCache = new WeakMap<any, { key: string; map: Map<any, ResolvedImageEntry> }>();
 
-function safeParseJson(val: any): any {
-  if (typeof val === 'string' && (val.trim().startsWith('{') || val.trim().startsWith('['))) {
-    try {
-      return JSON.parse(val);
-    } catch {
-      return val;
-    }
-  }
-  return val;
-}
 
 export function extractItemPreImage(item: any): string | null {
   const act = getActionObject(item);
@@ -639,7 +683,10 @@ export function resolveStepImageMap(stepData: any): Map<any, ResolvedImageEntry>
   if (!stepData || typeof stepData !== 'object') return emptyMap;
 
   const toolsLen = Array.isArray(stepData.generic_tools) ? stepData.generic_tools.length : 0;
-  const cacheKey = `${stepData.step_id || ''}_${toolsLen}_${stepData.post_image_name || ''}_${stepData.pre_image_name || ''}`;
+  const toolsImageSig = Array.isArray(stepData.generic_tools)
+    ? stepData.generic_tools.map((t: any) => `${t?.trace_id || ''}:${t?.post_image_name || t?.post_screenshot || ''}`).join(',')
+    : '';
+  const cacheKey = `${stepData.step_id || ''}_${toolsLen}_${toolsImageSig}_${stepData.post_image_name || ''}_${stepData.pre_image_name || ''}`;
 
   const cached = stepImageMapCache.get(stepData);
   if (cached && cached.key === cacheKey) {
@@ -649,7 +696,11 @@ export function resolveStepImageMap(stepData: any): Map<any, ResolvedImageEntry>
   const map = new Map<any, ResolvedImageEntry>();
   const events: Array<{ item: any; act: any; timestamp: number; isPrimary: boolean }> = [];
 
-  if (stepData.action_taken) {
+  const hasActionInTools = Array.isArray(stepData.generic_tools) && stepData.generic_tools.some(
+    (t: any) => t && (t.type === 'action' || isAndroidAction(t) || isReportStatusAction(t))
+  );
+
+  if (!hasActionInTools && stepData.action_taken) {
     events.push({
       item: stepData.action_taken,
       act: getActionObject(stepData.action_taken),
@@ -661,11 +712,12 @@ export function resolveStepImageMap(stepData: any): Map<any, ResolvedImageEntry>
   if (Array.isArray(stepData.generic_tools)) {
     stepData.generic_tools.forEach((t: any) => {
       if (t) {
+        const isAction = t.type === 'action' || isAndroidAction(t) || isReportStatusAction(t);
         events.push({
           item: t,
           act: getActionObject(t),
           timestamp: getEventTimestamp(t),
-          isPrimary: false
+          isPrimary: isAction
         });
       }
     });
@@ -728,6 +780,19 @@ export function resolveStepImageMap(stepData: any): Map<any, ResolvedImageEntry>
     map.set(e.item, entry);
     if (act && act !== e.item) map.set(act, entry);
     if (act?.trace_id) map.set(act.trace_id, entry);
+    if (e.item?.trace_id) map.set(e.item.trace_id, entry);
+  }
+
+  // Ensure stepData.action_taken cross-resolves to the action images
+  if (stepData.action_taken && lastActionItem) {
+    const lastEntry = map.get(lastActionItem);
+    if (lastEntry) {
+      map.set(stepData.action_taken, lastEntry);
+      const actObj = getActionObject(stepData.action_taken);
+      if (actObj && actObj !== stepData.action_taken) {
+        map.set(actObj, lastEntry);
+      }
+    }
   }
 
   stepImageMapCache.set(stepData, { key: cacheKey, map });
@@ -885,7 +950,9 @@ export function extractStepReplayFrames(logsOrSteps: any[]): StepReplayFrame[] {
   const visualCandidates: VisualCandidate[] = [];
 
   for (const stepData of stepsList) {
-    const act = stepData.action_taken;
+    const act = stepData.action_taken || (Array.isArray(stepData.generic_tools)
+      ? stepData.generic_tools.find((t: any) => t && (t.type === 'action' || isAndroidAction(t)))
+      : null);
     const preUrl = getStepPreImageUrl(stepData, act);
     const postUrl = getStepPostImageUrl(stepData, act);
     const primaryImg = preUrl || postUrl;

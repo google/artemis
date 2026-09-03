@@ -728,8 +728,13 @@ class RobustChatModelWrapper:
                     "llm_stream_reset",
                     {
                         "stream_exec_id": str(stream_exec_id),
+                        "action": "discard",
+                        "reason": "mid_stream_failure",
                         "error": str(stream_error)[:500],
                         "category": classify_failure(stream_error).category.value,
+                        "message": (
+                            "A request error occurred during output generation, typically caused by lower API priority. Retrying automatically..."
+                        ),
                     },
                 )
                 raise
