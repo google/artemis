@@ -29,6 +29,7 @@ from artemis.config.paths import (
     get_ipc_port_file,
     get_ls_address_file,
     get_temp_dir,
+    is_source_checkout,
 )
 from artemis.utils.logger import get_logger
 
@@ -41,19 +42,17 @@ def read_ipc_port() -> int | None:
     if env_port and env_port.strip().isdigit():
         return int(env_port.strip())
 
-    candidate_paths = [
-        get_temp_dir() / "artemis-ipc-port",
-        get_app_dir() / IPC_PORT_FILENAME,
-        ROOT_DIR / IPC_PORT_FILENAME,
-        get_ipc_port_file(),
-    ]
+    candidate_paths = [get_temp_dir() / "artemis-ipc-port", get_app_dir() / IPC_PORT_FILENAME]
+    if is_source_checkout():
+        candidate_paths.append(ROOT_DIR / IPC_PORT_FILENAME)
+    candidate_paths.append(get_ipc_port_file())
     for p in candidate_paths:
         if p.exists():
             try:
                 content = p.read_text(encoding="utf-8").strip()
                 if content.isdigit():
                     return int(content)
-            except Exception:
+            except (OSError, ValueError):
                 pass
 
     # Dynamic fallback: check local admin console status endpoint
@@ -71,8 +70,8 @@ def read_ipc_port() -> int | None:
                 ipc_port = data.get("ipc_port")
                 if ipc_port and str(ipc_port).isdigit():
                     return int(ipc_port)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"IPC port discovery via admin console status skipped: {exc}", exc_info=True)
 
     return None
 
@@ -85,8 +84,9 @@ def write_ipc_port(port: int) -> Path:
         port_file,
         get_temp_dir() / "artemis-ipc-port",
         get_app_dir() / IPC_PORT_FILENAME,
-        ROOT_DIR / IPC_PORT_FILENAME,
     ]
+    if is_source_checkout():
+        all_targets.append(ROOT_DIR / IPC_PORT_FILENAME)
     for target in all_targets:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -103,8 +103,9 @@ def clear_ipc_port() -> None:
         get_ipc_port_file(),
         get_temp_dir() / "artemis-ipc-port",
         get_app_dir() / IPC_PORT_FILENAME,
-        ROOT_DIR / IPC_PORT_FILENAME,
     ]
+    if is_source_checkout():
+        all_targets.append(ROOT_DIR / IPC_PORT_FILENAME)
     for target in all_targets:
         if target.exists():
             try:

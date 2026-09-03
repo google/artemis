@@ -21,6 +21,7 @@ from typing import Any
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import (
     ExplorerVersion,
+    checker_overrides_for_level,
     get_default_llm_config,
     load_agent_config,
     settings,
@@ -83,7 +84,6 @@ class AgentConfigBuilder:
         else:
             self._video_recording_tools_enabled = detect_video_tools_enabled()
         self._disable_planner_validation = not agent_cfg.planner_validation.enabled
-        self._planner_validation_threshold = agent_cfg.planner_validation.similarity_threshold
         self._enable_committee = agent_cfg.committee.enabled
         self._committee_debate_rounds = agent_cfg.committee.debate_rounds
         self._disable_checker = not agent_cfg.checker.enabled
@@ -298,6 +298,25 @@ class AgentConfigBuilder:
             self._disable_device_probes = not device_probes
         return self
 
+    def with_verification_level(self, level: str) -> "AgentConfigBuilder":
+        """Apply a coarse Checker preset (the ``--verification-level`` knob).
+
+        Presets are defined once in :data:`artemis.config.VERIFICATION_LEVEL_PRESETS`:
+        ``off`` (no Checker), ``final`` (exit review only, the factory default),
+        ``checkpoints`` (every plan checkpoint + exit review) and ``strict``
+        (checkpoints with a larger repair budget; a failed assert halts).
+        Fields the preset leaves unspecified keep their current values, so an
+        explicit :meth:`with_checker` call afterwards still wins.
+
+        Args:
+            level: One of ``off``, ``final``, ``checkpoints`` or ``strict``
+                (case-insensitive, surrounding whitespace ignored).
+
+        Raises:
+            ValueError: when ``level`` is not a known preset.
+        """
+        return self.with_checker(**checker_overrides_for_level(level))
+
     def with_midway_checks(self, enabled: bool = True) -> "AgentConfigBuilder":
         """Enable or disable plan-declared midway checkpoints."""
         self._disable_midway_checks = not enabled
@@ -317,18 +336,17 @@ class AgentConfigBuilder:
         self._disable_planner_validation = disable
         return self
 
-    def with_planner_validation(
-        self, enabled: bool = True, similarity_threshold: float | None = None
-    ) -> "AgentConfigBuilder":
-        """Configure async Planner validation on milestone changes.
+    def with_planner_validation(self, enabled: bool = True) -> "AgentConfigBuilder":
+        """Configure the advisory async Planner validation on milestone changes.
+
+        Every top-level milestone text change is reviewed by the lightweight
+        validator; a flagged change only yields a hint plus reason for the
+        Operator (no rollback, no action suppression).
 
         Args:
             enabled: Whether planner validation is enabled
-            similarity_threshold: Optional similarity threshold (0.0 - 1.0)
         """
         self._disable_planner_validation = not enabled
-        if similarity_threshold is not None:
-            self._planner_validation_threshold = similarity_threshold
         return self
 
     def with_enable_committee(self, enabled: bool = True) -> "AgentConfigBuilder":
@@ -381,8 +399,10 @@ class AgentConfigBuilder:
         """Configure ⚡ Flash execution profile options.
 
         Args:
-            max_turns: Maximum reactive loop turns before timeout
-            explorer_mode: Visual perception mode for Flash runner ('flash' 1-shot detection)
+            max_turns: Maximum reactive loop turns (0 = unlimited)
+            explorer_mode: Explorer tier used by the Flash runner's ``ask_explorer``
+                ('flash' one-shot detection, 'pro' short reasoning loop, 'ultra'
+                deep loop); mirrored to ``explorer.flash_mode``
             step_summarizer: Enable/disable asynchronous visual context compressor
             step_summarizer_model: Lightweight model for background step summarization
             prune_history_xml: Whether to prune outdated XML trees from historical steps
@@ -430,15 +450,20 @@ class AgentConfigBuilder:
         committee: bool | None = None,
         checker: bool | None = None,
         video_ledger: bool | None = None,
+        verification_level: str | None = None,
     ) -> "AgentConfigBuilder":
         """Configure 🚀 Pro execution profile options.
 
         Args:
-            explorer_mode: Visual perception mode for Pro profile ('flash', 'pro', or 'ultra')
-            planner_validation: Enable/disable planner milestone validation
+            explorer_mode: Explorer tier used by the Pro profile's Operator / Validator
+                ('flash', 'pro', or 'ultra'); mirrored to ``explorer.pro_mode``
+            planner_validation: Enable/disable the advisory review of plan milestone edits
             committee: Enable/disable multi-agent committee debate tool
-            checker: Enable/disable visual verification & snapshot rollback
+            checker: Enable/disable the Checker (plan checkpoint verification + exit final review)
             video_ledger: Enable/disable screen video action ledger tracking
+            verification_level: Coarse Checker preset ('off', 'final', 'checkpoints',
+                'strict'); applied before the explicit ``checker`` switch so the
+                switch still wins when both are given
         """
         if explorer_mode is not None:
             self._pro = self._pro.model_copy(
@@ -449,6 +474,8 @@ class AgentConfigBuilder:
             self.with_planner_validation(enabled=planner_validation)
         if committee is not None:
             self.with_committee(enabled=committee)
+        if verification_level is not None:
+            self.with_verification_level(verification_level)
         if checker is not None:
             self.with_checker(enabled=checker)
         if video_ledger is not None:
@@ -471,15 +498,23 @@ class AgentConfigBuilder:
         caching: bool | None = None,
         versions: dict[str, ExplorerVersion] | None = None,
     ) -> "AgentConfigBuilder":
-        """Configure UI Explorer visual perception options.
+        """Configure the Explorer tier behind ``ask_explorer``.
+
+        The tier is a user setting resolved per execution profile; calling agents
+        never see it. Precedence at run time: ``ARTEMIS_EXPLORER_VERSION``, then
+        ``versions`` (per-agent override), then the profile knob (``flash_mode``
+        for the Flash runner, ``pro_mode`` for the Pro Operator / Validator), then
+        ``default_version``.
 
         Args:
-            version: Default Explorer version mode ('flash', 'pro', or 'ultra')
-            default_version: Alias for version ('flash', 'pro', or 'ultra')
-            flash_mode: Explorer version for Flash execution profile (FlashRunner)
-            pro_mode: Explorer version for Pro execution profile (Graph/Operator/Validator)
-            caching: Whether to enable context caching for multi-turn Explorer
-            versions: Optional explicit per-agent version mapping
+            version: Fallback tier when no profile knob applies ('flash', 'pro', 'ultra')
+            default_version: Alias for version
+            flash_mode: Tier for the Flash execution profile (FlashRunner)
+            pro_mode: Tier for the Pro execution profile (Operator / Validator)
+            caching: Gemini explicit context caching for the multi-turn tiers;
+                None keeps the per-tier default (off for pro, on for ultra)
+            versions: Advanced per-agent override, e.g. ``{"validator": "ultra"}``;
+                empty by default so the profile knobs decide
         """
         target_version = version if version is not None else default_version
         updates = {}
@@ -498,12 +533,16 @@ class AgentConfigBuilder:
         return self
 
     def with_explorer_version(self, version: ExplorerVersion) -> "AgentConfigBuilder":
-        """Configure default model version to use for explorer sub-agents ('flash', 'pro', or 'ultra')."""
+        """Configure the fallback Explorer tier ('flash', 'pro', or 'ultra').
+
+        Only applies when no profile knob matches; prefer :meth:`with_flash_config`
+        / :meth:`with_pro_config` (or :meth:`with_explorer`) for the per-profile tiers.
+        """
         self._explorer = self._explorer.model_copy(update={"default_version": version})
         return self
 
     def with_explorer_versions(self, versions: dict[str, ExplorerVersion]) -> "AgentConfigBuilder":
-        """Configure per-agent model versions to use for explorer sub-agents."""
+        """Configure the advanced per-agent Explorer tier override (empty by default)."""
         self._explorer_versions = versions
         return self
 
@@ -580,7 +619,6 @@ class AgentConfigBuilder:
             assert_failure_policy=self._assert_failure_policy,
             disable_device_probes=self._disable_device_probes,
             disable_planner_validation=self._disable_planner_validation,
-            planner_validation_threshold=self._planner_validation_threshold,
             enable_committee=self._enable_committee,
             committee_debate_rounds=self._committee_debate_rounds,
             disable_outputter=self._disable_outputter,

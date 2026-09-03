@@ -24,7 +24,6 @@ from pydantic_settings import BaseSettings
 from artemis.config.constants import (
     DEFAULT_ADB_HOST,
     DEFAULT_ADB_PORT,
-    DEFAULT_EXPLORER_VERSION,
     DEFAULT_MODEL,
     DEFAULT_PROFILE,
     ENV_ANTHROPIC_API_KEY,
@@ -37,22 +36,21 @@ from artemis.config.constants import (
     ENV_OPENAI_API_KEY,
     ENV_VISION_API_KEY,
     ENV_XAI_API_KEY,
-    ExplorerVersion,
 )
 from artemis.config.paths import (
     GLOBAL_APP_DIR,
-    ROOT_DIR,
-    get_app_dir,
     get_data_engine_db_path,
     get_default_traces_path,
+    get_env_file,
     get_temp_dir,
 )
 from artemis.utils.logger import get_logger
 
-# Load environment configuration from workspace root dir and app dir if present
-load_dotenv(dotenv_path=ROOT_DIR / ".env", verbose=True)
+# Installed wheels load .env from the user directory, outside site-packages.
+_canonical_env = get_env_file()
+load_dotenv(dotenv_path=_canonical_env, verbose=True)
 _global_env = GLOBAL_APP_DIR / ".env"
-if _global_env.exists() and _global_env.resolve() != (ROOT_DIR / ".env").resolve():
+if _global_env.exists() and _global_env.resolve() != _canonical_env.resolve():
     load_dotenv(dotenv_path=_global_env, verbose=True)
 
 logger = get_logger(__name__)
@@ -121,14 +119,14 @@ class Settings(BaseSettings):
     ARTEMIS_DEFAULT_PROFILE: str = Field(default=DEFAULT_PROFILE)
     ARTEMIS_DEFAULT_MODEL: str = Field(default=DEFAULT_MODEL)
 
-    # Explorer Tool Settings
-    EXPLORER_VERSION: ExplorerVersion = Field(
-        default=DEFAULT_EXPLORER_VERSION,
-        description="Active version mode for the UI Explorer tool ('flash', 'pro', or 'ultra')",
-    )
-    EXPLORER_CACHING: bool = Field(
-        default=True,
-        description="Enable context caching when running multi-turn pro/ultra Explorer",
+    # Explorer Tool Settings (the tier itself is configured in artemis.jsonc or
+    # via ARTEMIS_EXPLORER_VERSION; see artemis.config.agent.ExplorerConfig)
+    EXPLORER_CACHING: bool | None = Field(
+        default=None,
+        description=(
+            "Environment-level override for Explorer context caching; unset"
+            " defers to the agent configuration and the tier default."
+        ),
     )
 
     # LLM Reliability
@@ -251,13 +249,11 @@ class Settings(BaseSettings):
             os.environ[ENV_VISION_API_KEY] = key
 
         if persist_to_env and env_key_name:
-            target_env_files = [
-                ROOT_DIR / ".env",
-                get_app_dir() / ".env",
-            ]
+            target_env_files = [get_env_file()]
             seen_paths = set()
             for env_file in target_env_files:
                 try:
+                    env_file.parent.mkdir(parents=True, exist_ok=True)
                     resolved = env_file.resolve()
                     if resolved in seen_paths:
                         continue

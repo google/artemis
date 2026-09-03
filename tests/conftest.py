@@ -12,13 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Global pytest fixtures for ARTEMIS test suite."""
+"""Repository-wide pytest fixtures and classification helpers.
+
+The default test paths contain only deterministic tests.  Tests under the
+integration and end-to-end trees remain directly runnable, and receive stable
+markers here so callers can select them without relying on filename patterns.
+"""
+
+from pathlib import Path
 
 import pytest
+
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 
 
 @pytest.fixture
 def mock_driver():
-    """Provides an isolated MockDeviceDriver instance."""
+    """Provide an isolated mock mobile driver."""
     return MockDeviceDriver(device_id="fixture-mock-device", width=1080, height=2400)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Attach test-layer markers according to the owning test directory."""
+    for item in items:
+        parts = Path(str(item.path)).parts
+        if "integration" in parts:
+            item.add_marker(pytest.mark.integration)
+        if "e2e" in parts:
+            item.add_marker(pytest.mark.e2e)

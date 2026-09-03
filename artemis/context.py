@@ -122,7 +122,6 @@ class ExecutionSetup(BaseModel):
     assert_failure_policy: Literal["continue", "halt"] = "continue"
     disable_device_probes: bool = False
     disable_planner_validation: bool = False
-    planner_validation_threshold: float = 0.85
     enable_committee: bool = False
     committee_debate_rounds: int = 2
     disable_outputter: bool = False
@@ -160,7 +159,7 @@ class ExecutionSetup(BaseModel):
         return self.explorer.pro_mode
 
     @property
-    def explorer_caching(self) -> bool:
+    def explorer_caching(self) -> bool | None:
         return self.explorer.caching
 
     def get_locked_app_package(self) -> str | None:
@@ -185,6 +184,9 @@ class ArtemisContext(BaseModel):
     agent_config: Any = None
     adb_client: Any | None = None
     ui_adb_client: Any | None = None
+    adb_task_registry: Any | None = None
+    """Per-task ADB background-task registry (``artemis.tools.command_tool``).
+    Created lazily on first ADB tool use; killed at task end."""
 
     execution_setup: ExecutionSetup | None = None
 
@@ -211,7 +213,6 @@ class ArtemisContext(BaseModel):
     final_check_attempts: int = 0
     """Number of final-check passes already executed at exit settlement."""
 
-    task_plan_content_before: str | None = None
     last_validated_plan: str | None = None
     """Ratchet baseline for planner validation: the last plan content whose
     top-level milestones were validated (or the initial plan). Drift is always
@@ -254,8 +255,8 @@ class ArtemisContext(BaseModel):
         if self.action_session is not None:
             try:
                 await self.action_session.aclose()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"Action session close failed; skipped: {exc}", exc_info=True)
             finally:
                 self.action_session = None
 
@@ -268,8 +269,8 @@ class ArtemisContext(BaseModel):
                     await self.step_memory.flush()
                 else:
                     await self.step_memory.flush(timeout_seconds=0.0)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"Step-memory flush failed; skipped: {exc}", exc_info=True)
 
         # Drain in-flight chunk capsule jobs the same way (M3): the chunk
         # manager persists any harvested capsules so the DB copy is complete
@@ -281,8 +282,8 @@ class ArtemisContext(BaseModel):
                     await chunker.flush()
                 else:
                     await chunker.flush(timeout_seconds=0.0)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"History chunk flush failed; skipped: {exc}", exc_info=True)
 
         if self.background_tasks:
             tasks = list(self.background_tasks)
@@ -321,8 +322,8 @@ class ArtemisContext(BaseModel):
         if self.mcp_client_ctx:
             try:
                 await self.mcp_client_ctx.__aexit__(exc_type, exc_val, exc_tb)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"MCP client context exit failed; skipped: {exc}", exc_info=True)
             finally:
                 self.mcp_client_ctx = None
                 self.mcp_session = None
@@ -330,8 +331,8 @@ class ArtemisContext(BaseModel):
         if self.data_engine:
             try:
                 await self.data_engine.shutdown()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"DataEngine shutdown failed; skipped: {exc}", exc_info=True)
 
     def get_adb_client(self) -> Any:
         if self.adb_client is None:

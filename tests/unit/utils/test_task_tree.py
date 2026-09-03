@@ -14,6 +14,7 @@
 
 import hashlib
 from artemis.utils.task_tree import (
+    format_step_action_result,
     build_plan_and_history,
     get_active_subgoal_hashes,
     get_recent_subgoal_hashes,
@@ -406,16 +407,40 @@ def test_build_plan_and_history_interleaved_decision_loop():
     assert "* [Validator Execution Result]" not in output
 
 
-def test_build_plan_and_history_safety_net_and_failure_analyzer():
+def test_build_plan_and_history_safety_net_and_incident():
     plan = "- [ ] Subgoal 1"
     steps = [
         {
             "step_id": "step_1",
             "step_number": 1,
             "relative_time": "5.0s",
-            "summary": "Repaired click search",
+            "summary": "Tried to click search",
             "action_taken": [{"action": "click", "target_text": "Search"}],
-            "last_execution_result": {"status": "success"},
+            "last_execution_result": {
+                "status": "failed",
+                "burst": False,
+                "execution": [
+                    {
+                        "action": "click",
+                        "target_text": "Search",
+                        "attempts": [
+                            "Pre-execution validation failed: Target button is not visible"
+                        ],
+                    }
+                ],
+                "incident": {
+                    "kind": "safety_net",
+                    "category": "target_disappeared",
+                    "reason": "Target button is not visible",
+                    "action": {"action": "click", "target_text": "Search"},
+                    "action_description": "Tapped 'Search' at None",
+                    "action_index": 0,
+                    "burst_size": 1,
+                    "step_number": 1,
+                    "consecutive_failures": 2,
+                    "evidence": {},
+                },
+            },
             "interleaved_events": [
                 {"type": "thought", "content": "Let's click search."},
                 # Safety net failure
@@ -428,36 +453,6 @@ def test_build_plan_and_history_safety_net_and_failure_analyzer():
                         "TARGET_DISAPPEARED",
                         "Target button is not visible",
                     ],
-                },
-                # Failure Analyzer intervention
-                {
-                    "type": "failure_analyzer_thought",
-                    "content": ("The search button is covered by keyboard, need to go BACK first."),
-                },
-                {
-                    "type": "tool_call",
-                    "name": "_exec_press_key",
-                    "args": {"key": "BACK", "state": "<State>"},
-                    "result": ["Pressed key BACK", "<Bytes>", "/path/to/shot.jpg"],
-                },
-                {
-                    "type": "failure_analyzer_thought",
-                    "content": "Keyboard is closed, now re-executing search tap.",
-                },
-                {
-                    "type": "tool_call",
-                    "name": "_exec_click",
-                    "args": {"target": [500, 600]},
-                    "result": ["Tapped search button successfully", "<Bytes>"],
-                },
-                {
-                    "type": "tool_call",
-                    "name": "report_failure_analysis",
-                    "args": {
-                        "status": "fixed",
-                        "analysis": "Closed keyboard and tapped search.",
-                    },
-                    "result": "Success",
                 },
             ],
         }
@@ -472,37 +467,87 @@ def test_build_plan_and_history_safety_net_and_failure_analyzer():
         " Pre-Execution Safety Net)" in output
     )
     assert "* [Pre-Execution Safety Net]:" in output
-    assert "- [Safety Net Check]: (Action not executed: Target button is not visible)" in output
-    assert "* [Failure Analyzer Recovery Loop]:" in output
-    assert "    - [Tool Call]: Pressed key 'BACK'" in output
-    assert "    - [Tool Call]: Tapped element at [500, 600]" in output
+    assert (
+        "- [Safety Net Check]: (Intercepted by Pre-Execution Safety Net: Target button is"
+        " not visible)" in output
+    )
+    # No repair agent: the incident IS the result line, with its escalation count.
+    assert "Failure Analyzer" not in output
+    assert (
+        "* [Result]: Error: Intercepted by Pre-Execution Safety Net"
+        " (target_disappeared, consecutive failure #2) on action `Tapped 'Search' at"
+        " None`: Target button is not visible" in output
+    )
 
 
-def test_build_plan_and_history_repaired_result():
+def test_build_plan_and_history_fast_action_burst():
     plan = "- [ ] Subgoal 1"
+    burst = [
+        {"action": "click", "coordinates": [500, 900]},
+        {"action": "click", "coordinates": [880, 120], "target_text": "Skip"},
+        {"action": "press_key", "keycode": "BACK"},
+    ]
     steps = [
         {
             "step_id": "step_1",
             "step_number": 1,
             "relative_time": "2.5s",
-            "summary": "Tapped button with repair",
-            "action_taken": [{"action": "click"}],
+            "summary": "Woke the control bar and tapped Skip",
+            "action_taken": burst,
             "last_execution_result": {
+                "status": "failed",
+                "burst": True,
                 "execution": [
+                    {"action": "click", "coordinates": [500, 900]},
                     {
                         "action": "click",
-                        "attempts": ["pre-validation failed"],
-                        "repair": ("Tapped center to wake controls and then tapped target"),
-                    }
+                        "coordinates": [880, 120],
+                        "target_text": "Skip",
+                        "attempts": ["Error: tap rejected"],
+                    },
+                    {
+                        "action": "press_key",
+                        "keycode": "BACK",
+                        "attempts": ["Skipped (burst aborted)"],
+                    },
                 ],
-                "status": "success",
-                "repair_status": "fixed",
+                "incident": {
+                    "kind": "exec_error",
+                    "category": "general",
+                    "reason": "Error: tap rejected",
+                    "action": burst[1],
+                    "action_description": "Tapped 'Skip' at [880, 120]",
+                    "action_index": 1,
+                    "burst_size": 3,
+                    "step_number": 1,
+                    "consecutive_failures": 1,
+                    "evidence": {},
+                },
             },
         }
     ]
+    # Detailed view: every member with its outcome.
     output = build_plan_and_history(plan, steps, "default", last_n_detailed=1)
-    assert "  * [Validator Execution Result]: Action executed." not in output
-    assert "  * [Result]: Repaired: Tapped center to wake controls and then tapped target" in output
+    assert (
+        "* [Planned Fast-Action Burst]: 3 actions fired back to back without the"
+        " safety net" in output
+    )
+    assert "    1. Tapped element at [500, 900] (executed)" in output
+    assert "    2. Tapped 'Skip' at [880, 120] (FAILED: Error: tap rejected)" in output
+    assert "    3. Pressed key 'BACK' (skipped)" in output
+    assert (
+        "* [Result]: Error: Execution failed (general, consecutive failure #1) on burst"
+        " action 2/3 `Tapped 'Skip' at [880, 120]`: Error: tap rejected; the remaining"
+        " burst actions were not executed" in output
+    )
+
+    # Compact view: the whole burst on one line.
+    compact = format_step_action_result(steps[0])
+    assert compact.startswith(
+        "Fast-action burst (3 actions, unvetted): Tapped element at [500, 900] ->"
+        " Tapped 'Skip' at [880, 120] -> Pressed key 'BACK'"
+    )
+    assert "(Execution failed: Error: tap rejected)" in compact
 
 
 def test_get_recent_subgoal_hashes_robust_milestone_exclusion(tmp_path):
@@ -576,71 +621,3 @@ def test_get_recent_subgoal_hashes_robust_milestone_exclusion(tmp_path):
 
     # 5. Older failed subgoals from previously completed milestones (hash_failed_old)
     assert hash_failed_old not in keep_hashes
-
-
-def test_build_plan_and_history_for_failure_analyzer():
-    plan_with_subgoals = """- [/] Goal 1
-    - [x] Subtask 1.1
-    - [/] Subtask 1.2"""
-
-    steps = [
-        {
-            "step_id": "step_1",
-            "step_number": 1,
-            "relative_time": "12.3s",
-            "summary": "Tapped full screen",
-            "action_taken": [{"action": "click", "target_text": "Fullscreen"}],
-            "operator_raw_thinking": "Let's tap it",
-            "operator_native_thinking": "Thinking to tap",
-            "last_execution_result": {"status": "failed"},
-            "interleaved_events": [
-                {"type": "thought", "content": "I should find fullscreen icon."},
-                {
-                    "type": "tool_call",
-                    "name": "safety_net_validation",
-                    "args": {"target": "Fullscreen"},
-                    "result": [
-                        False,
-                        "TARGET_DISAPPEARED",
-                        "Target button is not visible",
-                    ],
-                },
-            ],
-        }
-    ]
-
-    # Test with subgoals and for_failure_analyzer=True
-    output_analyzer_with_plan = build_plan_and_history(
-        plan_with_subgoals,
-        steps,
-        "default",
-        last_n_detailed=1,
-        for_failure_analyzer=True,
-    )
-    assert "--- Task Plan ---" in output_analyzer_with_plan
-    assert (
-        "*(Note: Provided for context only. Do not execute the remaining"
-        " plan.)*" in output_analyzer_with_plan
-    )
-    assert "--- Execution History ---" in output_analyzer_with_plan
-    assert (
-        "- **Step 1 (Most Recent Step (Failed to execute, this is the step you"
-        " need to focus on and repair), Start: 12.3s)**" in output_analyzer_with_plan
-    )
-    assert "[Operator Decision Loop]" in output_analyzer_with_plan
-    assert "I should find fullscreen icon." in output_analyzer_with_plan
-    assert (
-        "* [Planned Action]: Tapped 'Fullscreen' at None (Intercepted by"
-        " Pre-Execution Safety Net)" in output_analyzer_with_plan
-    )
-
-    # Test with empty plan and for_failure_analyzer=True (should completely omit plan block)
-    output_analyzer_empty_plan = build_plan_and_history(
-        "", steps, "default", last_n_detailed=1, for_failure_analyzer=True
-    )
-    assert "--- Task Plan ---" not in output_analyzer_empty_plan
-    assert (
-        "*(Note: Provided for context only. Do not execute the remaining"
-        " plan.)*" not in output_analyzer_empty_plan
-    )
-    assert "--- Execution History ---" in output_analyzer_empty_plan

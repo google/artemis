@@ -22,6 +22,12 @@ workspace path resolution, RESTful /api/v1/* endpoints, and SSE event streaming.
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = [pytest.mark.integration, pytest.mark.cloud]
+pytest.importorskip(
+    "cloud_service",
+    reason="optional cloud_service package is not installed",
+)
+
 from cloud_service.gateway.auth import TokenAuthProvider
 from cloud_service.gateway.manager import ConnectionManager
 

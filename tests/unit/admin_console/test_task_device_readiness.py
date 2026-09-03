@@ -40,9 +40,7 @@ async def test_run_task_rejects_locked_device(monkeypatch):
     )
     run_probe = AsyncMock(return_value=locked_probe)
     enqueue_tasks = AsyncMock()
-    monkeypatch.setattr(
-        tasks.readiness_engine, "run_device_submission_probe", run_probe
-    )
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
     monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue_tasks)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -66,9 +64,7 @@ async def test_run_task_enqueues_when_device_is_unlocked(monkeypatch):
     )
     run_probe = AsyncMock(return_value=unlocked_probe)
     enqueue_tasks = AsyncMock(return_value={"status": "started", "tasks": []})
-    monkeypatch.setattr(
-        tasks.readiness_engine, "run_device_submission_probe", run_probe
-    )
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
     monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue_tasks)
 
     result = await tasks.run_task(RunRequest(goal="Open Settings"))
@@ -96,9 +92,7 @@ async def test_run_task_binds_probe_verified_device_when_no_serial_requested(mon
     )
     run_probe = AsyncMock(return_value=unlocked_probe)
     enqueue_tasks = AsyncMock(return_value={"status": "started", "tasks": []})
-    monkeypatch.setattr(
-        tasks.readiness_engine, "run_device_submission_probe", run_probe
-    )
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
     monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue_tasks)
 
     result = await tasks.run_task(RunRequest(goal="Run on any ready device"))
@@ -113,9 +107,7 @@ async def test_run_task_binds_probe_verified_device_when_no_serial_requested(mon
 @pytest.mark.asyncio
 async def test_idempotent_retry_skips_device_probe_for_active_session(monkeypatch):
     run_probe = AsyncMock()
-    monkeypatch.setattr(
-        tasks.readiness_engine, "run_device_submission_probe", run_probe
-    )
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
     monkeypatch.setattr(tasks.state, "active_session_id", "sdk-task-1")
     monkeypatch.setattr(tasks.state, "active_connections", {})
     monkeypatch.setattr(
@@ -204,9 +196,7 @@ async def test_explicit_device_is_rejected_when_attached_but_not_ready(monkeypat
 
 @pytest.mark.parametrize("enumeration", [None, []])
 @pytest.mark.asyncio
-async def test_explicit_device_proceeds_when_enumeration_is_indeterminate(
-    monkeypatch, enumeration
-):
+async def test_explicit_device_proceeds_when_enumeration_is_indeterminate(monkeypatch, enumeration):
     """A failed (None) or empty enumeration must never hard-reject an explicit
     serial: the submission queues and fails downstream if the device is truly
     absent. This is the startup-storm regression guard."""
@@ -236,4 +226,3 @@ async def test_explicit_device_proceeds_when_enumeration_is_indeterminate(
     enqueue_tasks.assert_awaited_once()
     _, kwargs = enqueue_tasks.call_args
     assert kwargs.get("device_serial") == "pixel-10"
-

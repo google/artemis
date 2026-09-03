@@ -75,9 +75,7 @@ def test_extract_usage_absent_returns_none():
 def test_meter_accumulates_session_totals():
     meter = SessionTokenMeter("s1")
     meter.record({"prompt_tokens": 100, "completion_tokens": 10, "cached_tokens": 0})
-    snapshot = meter.record(
-        {"prompt_tokens": 300, "completion_tokens": 20, "cached_tokens": 250}
-    )
+    snapshot = meter.record({"prompt_tokens": 300, "completion_tokens": 20, "cached_tokens": 250})
     assert snapshot == {
         "session_llm_calls": 2,
         "session_prompt_tokens": 400,

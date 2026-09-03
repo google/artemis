@@ -43,14 +43,11 @@ from artemis.mcp.action_manifest import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# Prompt sources belonging to the three agents this manifest governs (plus the
+# Prompt sources belonging to the agents this manifest governs (plus the
 # Validator's safety net). Other agents (log_analyzer, image_processor, ...) have their
 # own tool universes and are deliberately out of scope.
 SCOPED_PROMPT_FILES = [
     "artemis/agents/flash/flash_runner.md",
-    "artemis/agents/validator/failure_analyzer.md",
-    "artemis/agents/validator/target_disappeared_analyzer.md",
-    "artemis/agents/validator/pixel_target_disappeared_analyzer.md",
     "artemis/agents/validator/pixel_safety_net.md",
 ]
 
@@ -284,4 +281,4 @@ def test_filter_rejects_unknown_agent_role():
 
 
 def test_all_agent_roles_are_covered():
-    assert AGENT_ROLES == {"operator", "flash", "failure_analyzer", "validator"}
+    assert AGENT_ROLES == {"operator", "flash", "validator"}

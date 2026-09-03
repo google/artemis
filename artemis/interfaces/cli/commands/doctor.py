@@ -327,6 +327,8 @@ def doctor_command(
         )
 
     # 9. Showcase UI Build Status
+    from artemis.resources import get_bundled_showcase_dist
+
     base_dist = ROOT_DIR / "apps" / "showcase_ui" / "dist"
     candidates = [
         base_dist / "frontend" / "browser" / "index.html",
@@ -335,6 +337,10 @@ def doctor_command(
         base_dist / "index.html",
     ]
     found_showcase = next((p for p in candidates if p.exists()), None)
+    if found_showcase is None:
+        bundled_showcase = get_bundled_showcase_dist()
+        if bundled_showcase is not None:
+            found_showcase = bundled_showcase / "index.html"
     if found_showcase:
         table.add_row(
             "Showcase UI",

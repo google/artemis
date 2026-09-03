@@ -16,7 +16,7 @@
 
 This is the act-then-observe half that used to be welded into every executor action
 (``capture_screenshot_and_parse_ui``). Split out so that actuation and observation are
-separate calls: the Flash/FailureAnalyzer adapter observes after each action, while the
+separate calls: the Flash adapter observes after each action, while the
 Validator -- which runs its own UI-change polling -- simply never calls it.
 """
 

@@ -47,11 +47,7 @@ class _DummyResponse:
             types.Candidate(
                 content=types.Content(
                     role="model",
-                    parts=parts
-                    if parts
-                    else (
-                        [types.Part.from_text(text=text)] if text else []
-                    ),
+                    parts=parts if parts else ([types.Part.from_text(text=text)] if text else []),
                 )
             )
         ]
@@ -240,11 +236,7 @@ def _record_main_llm_trace(
     for c in contents:
         if hasattr(c, "model_dump"):
             dumped = c.model_dump()
-            if (
-                isinstance(dumped, dict)
-                and "parts" in dumped
-                and dumped["parts"]
-            ):
+            if isinstance(dumped, dict) and "parts" in dumped and dumped["parts"]:
                 for p in dumped["parts"]:
                     if (
                         isinstance(p, dict)
@@ -343,11 +335,7 @@ async def _consume_main_stream(
                 else [types.Tool(function_declarations=tools_declaration)],
                 safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
                 **(
-                    {
-                        "thinking_config": types.ThinkingConfig(
-                            thinking_level=thinking_level
-                        )
-                    }
+                    {"thinking_config": types.ThinkingConfig(thinking_level=thinking_level)}
                     if thinking_level
                     else {}
                 ),
@@ -383,9 +371,7 @@ async def _consume_main_stream(
         chunk_text = chunk.text or ""
         text += chunk_text
         if ctx.data_engine and trace_id and chunk_text:
-            ctx.data_engine.stream_output(
-                trace_id, chunk_text, is_thinking=False
-            )
+            ctx.data_engine.stream_output(trace_id, chunk_text, is_thinking=False)
 
         if chunk.function_calls:
             function_calls.extend(chunk.function_calls)
@@ -422,8 +408,7 @@ async def _execute_native_tool_calls(analyzer, function_calls: list) -> list:
     audio_only_calls = [
         fc
         for fc in function_calls
-        if (fc.name.split(":")[-1] if ":" in fc.name else fc.name)
-        == "analyze_audio_only"
+        if (fc.name.split(":")[-1] if ":" in fc.name else fc.name) == "analyze_audio_only"
     ]
     other_calls = [
         fc
@@ -445,9 +430,7 @@ async def _execute_native_tool_calls(analyzer, function_calls: list) -> list:
     return tool_response_parts
 
 
-async def _run_spawn_calls(
-    analyzer, sub_agent_calls: list, tool_response_parts: list
-) -> None:
+async def _run_spawn_calls(analyzer, sub_agent_calls: list, tool_response_parts: list) -> None:
     """Runs spawn_sub_agent calls in parallel and appends their responses."""
     logger.info(f"Executing {len(sub_agent_calls)} sub-agent calls in parallel...")
 
@@ -469,25 +452,17 @@ async def _run_spawn_calls(
             error_msg = f"Sub-agent failed. Error: {result}"
             logger.error(error_msg)
             tool_response_parts.append(
-                types.Part.from_function_response(
-                    name=fc.name, response={"error": error_msg}
-                )
+                types.Part.from_function_response(name=fc.name, response={"error": error_msg})
             )
         else:
             tool_response_parts.append(
-                types.Part.from_function_response(
-                    name=fc.name, response={"result": result}
-                )
+                types.Part.from_function_response(name=fc.name, response={"result": result})
             )
 
 
-async def _run_audio_calls(
-    analyzer, audio_only_calls: list, tool_response_parts: list
-) -> None:
+async def _run_audio_calls(analyzer, audio_only_calls: list, tool_response_parts: list) -> None:
     """Runs analyze_audio_only calls in parallel and appends their responses."""
-    logger.info(
-        f"Executing {len(audio_only_calls)} analyze_audio_only calls in parallel..."
-    )
+    logger.info(f"Executing {len(audio_only_calls)} analyze_audio_only calls in parallel...")
 
     async def bounded_audio_spawn(fc):
         async with _va.API_SEMAPHORE:
@@ -505,21 +480,15 @@ async def _run_audio_calls(
             error_msg = f"Audio analysis failed. Error: {result}"
             logger.error(error_msg)
             tool_response_parts.append(
-                types.Part.from_function_response(
-                    name=fc.name, response={"error": error_msg}
-                )
+                types.Part.from_function_response(name=fc.name, response={"error": error_msg})
             )
         else:
             tool_response_parts.append(
-                types.Part.from_function_response(
-                    name=fc.name, response={"result": result}
-                )
+                types.Part.from_function_response(name=fc.name, response={"result": result})
             )
 
 
-async def _run_other_calls(
-    analyzer, other_calls: list, tool_response_parts: list
-) -> None:
+async def _run_other_calls(analyzer, other_calls: list, tool_response_parts: list) -> None:
     """Runs remaining coordinator tool calls sequentially."""
     for fc in other_calls:
         name = fc.name.split(":")[-1] if ":" in fc.name else fc.name
@@ -532,15 +501,11 @@ async def _run_other_calls(
                     args.get("start_time"), args.get("end_time")
                 )
                 tool_response_parts.append(
-                    types.Part.from_function_response(
-                        name=name, response={"result": res}
-                    )
+                    types.Part.from_function_response(name=name, response={"result": res})
                 )
             except Exception as e:
                 tool_response_parts.append(
-                    types.Part.from_function_response(
-                        name=name, response={"error": str(e)}
-                    )
+                    types.Part.from_function_response(name=name, response={"error": str(e)})
                 )
 
 
@@ -559,9 +524,7 @@ async def _cleanup_native_run(analyzer) -> None:
         analyzer.cloud_files_to_cleanup.clear()
 
     if os.environ.get("KEEP_VIDEOS") or os.environ.get("ARTEMIS_DEBUG"):
-        logger.info(
-            "Skipping cleanup of local video files and directories due to debug mode."
-        )
+        logger.info("Skipping cleanup of local video files and directories due to debug mode.")
     else:
         for path in list(analyzer.local_files_to_cleanup):
             try:

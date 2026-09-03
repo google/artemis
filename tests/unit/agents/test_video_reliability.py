@@ -138,9 +138,7 @@ async def test_native_chunk_exhaustion_commits_universal_fallback(tmp_path):
         duration_seconds=5.0,
         warning=None,
     )
-    controller = SimpleNamespace(
-        extract_segment_metadata=AsyncMock(return_value=extracted)
-    )
+    controller = SimpleNamespace(extract_segment_metadata=AsyncMock(return_value=extracted))
     fallback_text = "[from 0.0s to 5.0s] Summary: fallback recovered Analysis: grounded"
 
     with (

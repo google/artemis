@@ -83,9 +83,7 @@ async def exec_analyze_audio_only(
         specific_query,
         modality="audio",
         model_name=analyzer.model_name,
-        source_generation=(
-            active_session.generation if active_session is not None else None
-        ),
+        source_generation=(active_session.generation if active_session is not None else None),
     )
     if claim.state == "cached":
         result = (
@@ -225,8 +223,7 @@ async def _finish_failed_audio(
     ):
         try:
             logger.warning(
-                "Native audio analysis failed"
-                f" [{failure.category.value}]; using universal fallback"
+                f"Native audio analysis failed [{failure.category.value}]; using universal fallback"
             )
             _va._record_llm_event(
                 "llm_fallback",
@@ -311,25 +308,17 @@ def _build_audio_prompt(
     warnings = analyzer.get_overlapping_warnings(start_time, end_time)
     warning_block = ""
     if warnings:
-        lines = [
-            "WARNING: The following queries were already tried in this timeframe:\n"
-        ]
+        lines = ["WARNING: The following queries were already tried in this timeframe:\n"]
         for w in warnings:
             lines.append(f"Searched for: {w['target']} -> {w['summary']}")
         warning_block = "\n".join(lines) + "\n\n"
 
     duration_secs = getattr(result, "duration_seconds", None)
-    actual_end = (
-        actual_start + duration_secs
-        if isinstance(duration_secs, (int, float))
-        else None
-    )
+    actual_end = actual_start + duration_secs if isinstance(duration_secs, (int, float)) else None
     end_str = f" to {actual_end:.1f}s" if actual_end is not None else ""
     warning_val = getattr(result, "warning", None)
     truncation_note = (
-        f" (NOTE: {warning_val})"
-        if isinstance(warning_val, str) and warning_val
-        else ""
+        f" (NOTE: {warning_val})" if isinstance(warning_val, str) and warning_val else ""
     )
 
     prompt_with_context = (
@@ -377,9 +366,7 @@ async def _run_native_audio_conversation(
         with TraceSpan(name="upload_audio_to_gemini") as span:
             file = await analyzer.upload_and_poll_file(media.audio_path)
             span.result = f"Uploaded {file.name}"
-        logger.info(
-            f"Invoking Gemini for audio-only task with model {analyzer.model_name}..."
-        )
+        logger.info(f"Invoking Gemini for audio-only task with model {analyzer.model_name}...")
 
         sub_agent_contents = [
             types.Content(
@@ -439,9 +426,7 @@ async def _run_native_audio_conversation(
                 logger.error(f"Failed to delete cloud file {file.name}: {ce}")
 
 
-async def _drive_audio_agent_loop(
-    analyzer, sub_agent_contents: list
-) -> tuple[str, str, float]:
+async def _drive_audio_agent_loop(analyzer, sub_agent_contents: list) -> tuple[str, str, float]:
     """Iterates the audio agent conversation until submit_answer is accepted."""
     sub_max_iterations = 2
     sub_iterations = 0
@@ -475,11 +460,7 @@ async def _drive_audio_agent_loop(
                     contents=sub_agent_contents,
                     config=types.GenerateContentConfig(
                         system_instruction=analyzer.audio_system_prompt,
-                        tools=[
-                            types.Tool(
-                                function_declarations=[analyzer.submit_answer_tool]
-                            )
-                        ],
+                        tools=[types.Tool(function_declarations=[analyzer.submit_answer_tool])],
                         safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
                     ),
                 ),
@@ -528,9 +509,7 @@ def _handle_audio_function_calls(
     """Processes audio-agent function calls; returns (answered, summary, analysis, score)."""
     answered = False
     for fc in function_calls:
-        if (
-            fc.name.split(":")[-1] if ":" in fc.name else fc.name
-        ) == "submit_answer":
+        if (fc.name.split(":")[-1] if ":" in fc.name else fc.name) == "submit_answer":
             args = fc.args
             if (
                 "confidence_score" not in args
@@ -567,15 +546,9 @@ def _handle_audio_function_calls(
                 answered = "error"
                 break
 
-            final_summary = (
-                args.get("summary", "No summary provided.")
-                .strip()
-                .replace("\n", " ")
-            )
+            final_summary = args.get("summary", "No summary provided.").strip().replace("\n", " ")
             final_analysis = (
-                args.get("analysis", "No analysis provided.")
-                .strip()
-                .replace("\n", " ")
+                args.get("analysis", "No analysis provided.").strip().replace("\n", " ")
             )
             final_confidence_score = float(args["confidence_score"])
             answered = True
@@ -596,13 +569,7 @@ def _handle_audio_function_calls(
             parts=[
                 types.Part.from_function_response(
                     name=function_calls[0].name,
-                    response={
-                        "error": (
-                            "Tool not recognized."
-                            " Please use"
-                            " submit_answer."
-                        )
-                    },
+                    response={"error": ("Tool not recognized. Please use submit_answer.")},
                 )
             ],
         )

@@ -127,9 +127,7 @@ class LinuxPlatformProcess(IPlatformProcess):
                 if p.pid != current_pid and getattr(p, "ppid", lambda: None)() != current_pid
             ]
             direct_children = [
-                p
-                for p in children + [parent]
-                if getattr(p, "ppid", lambda: None)() == current_pid
+                p for p in children + [parent] if getattr(p, "ppid", lambda: None)() == current_pid
             ]
 
             if external_procs:

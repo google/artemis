@@ -14,6 +14,7 @@
 
 """UI Launch and Web Console CLI Command (artemis ui)."""
 
+import logging
 from pathlib import Path
 import shutil
 import subprocess
@@ -27,6 +28,8 @@ import webbrowser
 from rich.console import Console
 from rich.panel import Panel
 import typer
+
+logger = logging.getLogger(__name__)
 
 
 def running_via_console_script_shim() -> bool:
@@ -87,14 +90,21 @@ def _showcase_build_required(showcase_dir: Path) -> bool:
 def ensure_showcase_built(console: Console) -> None:
     """Rebuild the Angular Showcase UI when its sources are newer than the dist build."""
     from artemis.config.paths import ROOT_DIR
+    from artemis.resources import get_bundled_showcase_dist
 
     showcase_dir = ROOT_DIR / "apps" / "showcase_ui"
+    # An installed wheel has no frontend source tree; its immutable build is
+    # prepared during packaging and must never trigger npm at runtime.
+    if not showcase_dir.is_dir() and get_bundled_showcase_dist() is not None:
+        return
     if not _showcase_build_required(showcase_dir):
         return
     npm_executable = _resolve_npm_executable()
     if not npm_executable:
         return
-    console.print("   [yellow]🎨 Showcase UI sources changed. Compiling Angular Showcase UI...[/yellow]")
+    console.print(
+        "   [yellow]🎨 Showcase UI sources changed. Compiling Angular Showcase UI...[/yellow]"
+    )
     try:
         subprocess.run([npm_executable, "install", "--silent"], cwd=showcase_dir, check=True)
         subprocess.run([npm_executable, "run", "build"], cwd=showcase_dir, check=True)
@@ -113,8 +123,8 @@ def load_session_reconciler() -> None:
     """
     try:
         import apps.admin_console.database.repositories.session_repository  # noqa: F401
-    except Exception:
-        pass
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug("Admin console session reconciler not loaded: %s", exc, exc_info=True)
 
 
 def _poll_and_open_browser(url: str, stop_event: threading.Event, timeout: float = 15.0) -> None:
@@ -189,7 +199,9 @@ def ui_command(
         pids = find_server_pids(port)
         pid_str = f" (PID: {', '.join(map(str, pids))})" if pids else ""
         if sys.stdin.isatty():
-            console.print(f"\n   [yellow]⚠ Port {port} is already in use by an active Artemis server{pid_str}.[/yellow]")
+            console.print(
+                f"\n   [yellow]⚠ Port {port} is already in use by an active Artemis server{pid_str}.[/yellow]"
+            )
             console.print("   [dim]Choose an action:[/dim]")
             console.print("     [bold]1[/bold] Open browser (default)")
             console.print("     [bold]2[/bold] Restart server (stop existing and start here)")
@@ -199,7 +211,9 @@ def ui_command(
             except (KeyboardInterrupt, EOFError):
                 choice = "1"
             if choice == "2":
-                console.print(f"\n   [yellow]🔄 Terminating previous Artemis instance on port {port}...[/yellow]")
+                console.print(
+                    f"\n   [yellow]🔄 Terminating previous Artemis instance on port {port}...[/yellow]"
+                )
                 load_session_reconciler()
                 stop_server(port=port, timeout=12.0)
             elif choice == "3":
@@ -230,21 +244,23 @@ def ui_command(
         )
     )
     console.print(Panel(msg, title="🚀 Web Server Active", border_style="cyan", expand=False))
-    # Ensure .env exists in workspace root
-    from artemis.config.paths import ROOT_DIR
+    # Ensure the canonical writable .env exists. Installed wheels must never
+    # attempt to mutate their site-packages directory.
+    from artemis.config.paths import ROOT_DIR, get_env_file, is_source_checkout
 
-    env_file = ROOT_DIR / ".env"
+    env_file = get_env_file()
     env_example = ROOT_DIR / ".env.example"
     if not env_file.exists():
-        if env_example.exists():
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        if is_source_checkout() and env_example.exists():
             try:
                 env_file.write_text(env_example.read_text(encoding="utf-8"), encoding="utf-8")
-            except Exception:
+            except (OSError, UnicodeError):
                 pass
         else:
             try:
                 env_file.touch()
-            except Exception:
+            except OSError:
                 pass
 
     ensure_showcase_built(console)

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import base64
+from datetime import datetime
 import hashlib
 import json
 import logging
@@ -20,6 +21,7 @@ import os
 from pathlib import Path
 import subprocess
 import threading
+import time
 from typing import Any
 import urllib.parse
 from fastapi import HTTPException
@@ -51,13 +53,23 @@ class MediaService:
             if suffix == ".mp4":
                 return p
             if suffix in (".mkv", ".webm"):
+                if cls.is_live_recording(p):
+                    # scrcpy is still appending to this file: converting now
+                    # would freeze a few-seconds partial as recording.mp4.
+                    return p
                 src_stat = p.stat()
                 cache_key = str(p)
                 cached = cls._playable_cache.get(cache_key)
                 if cached and cached[0] == src_stat.st_mtime and cached[1] == src_stat.st_size:
                     return Path(cached[2])
                 mp4_cand = p.with_suffix(".mp4")
-                if mp4_cand.exists() and mp4_cand.stat().st_size > 0:
+                if (
+                    mp4_cand.exists()
+                    and mp4_cand.stat().st_size > 0
+                    and mp4_cand.stat().st_mtime >= src_stat.st_mtime
+                ):
+                    # An MP4 older than its source is a stale partial left by a
+                    # mid-run scan; fall through and convert again.
                     cls._playable_cache[cache_key] = (
                         src_stat.st_mtime,
                         src_stat.st_size,
@@ -88,6 +100,7 @@ class MediaService:
     @staticmethod
     def _convert_to_mp4(p: Path, mp4_cand: Path) -> Path:
         from artemis.utils.video import get_ffmpeg_path
+
         ffmpeg = get_ffmpeg_path()
         # 1. Attempt fast copy remux
         subprocess.run(
@@ -135,6 +148,115 @@ class MediaService:
             return mp4_cand
         return p
 
+    LIVE_RECORDING_GRACE_SECONDS = 10.0
+    TRACE_STATUS_SUFFIXES = ("_PASS_", "_FAIL_", "_TESTFAIL_")
+
+    @classmethod
+    def is_live_recording(cls, p: Path) -> bool:
+        """Whether ``p`` is a raw .mkv that scrcpy is still appending to.
+
+        scrcpy touches the file continuously while recording; a raw file that
+        has not changed for a few seconds belongs to a finished (or killed)
+        recording and is safe to convert.
+        """
+        if p.suffix.lower() != ".mkv":
+            return False
+        try:
+            return (time.time() - p.stat().st_mtime) < cls.LIVE_RECORDING_GRACE_SECONDS
+        except OSError:
+            return False
+
+    @staticmethod
+    def is_browser_playable(p: Path) -> bool:
+        return p.suffix.lower() in (".mp4", ".webm")
+
+    @classmethod
+    def strip_trace_status_suffix(cls, folder_name: str) -> str:
+        for marker in cls.TRACE_STATUS_SUFFIXES:
+            folder_name = folder_name.split(marker)[0]
+        return folder_name
+
+    @classmethod
+    def _finalize_trace_folder_name(cls, folder: Path, session_start_time: float | None) -> Path:
+        """Give an unfinished temp trace folder the terminal name the worker uses."""
+        try:
+            if folder.resolve().parent != Path(TRACES_PATH).resolve():
+                return folder
+        except OSError:
+            return folder
+        if any(marker in folder.name for marker in cls.TRACE_STATUS_SUFFIXES):
+            return folder
+        try:
+            stamp = datetime.fromtimestamp(float(session_start_time or time.time())).strftime(
+                "%Y-%m-%dT%H-%M-%S"
+            )
+        except (TypeError, ValueError, OSError, OverflowError):
+            stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        target = folder.with_name(f"{folder.name}_FAIL_{stamp}")
+        if target.exists():
+            return folder
+        try:
+            folder.rename(target)
+        except OSError as exc:
+            logger.warning("Could not rename orphaned trace folder %s: %s", folder, exc)
+            return folder
+        return target
+
+    @classmethod
+    def recover_orphaned_recording(
+        cls,
+        local_video_path: str | Path | None,
+        session_start_time: float | None = None,
+    ) -> Path | None:
+        """Finalize the recording of a worker that died before its own stop path ran.
+
+        A hard-killed worker leaves the raw scrcpy ``recording.mkv`` behind
+        (playable, but never remuxed) plus, possibly, a few-seconds partial
+        ``recording.mp4`` that a session-list scan converted mid-run. The raw
+        file is remuxed over that partial and removed on success, and the temp
+        trace folder is renamed the way the worker would have done it.
+
+        Returns the final browser-playable path, or None when nothing usable
+        exists (the caller then records a terminal recording failure).
+        """
+        if not local_video_path:
+            return None
+        source = Path(str(local_video_path))
+        folder = source.parent
+        if not folder.is_dir():
+            return None
+        raw = source if source.suffix.lower() == ".mkv" else folder / "recording.mkv"
+        mp4 = folder / "recording.mp4"
+
+        def _non_empty(path: Path) -> bool:
+            try:
+                return path.is_file() and path.stat().st_size > 0
+            except OSError:
+                return False
+
+        if _non_empty(raw):
+            if cls.is_live_recording(raw):
+                return None
+            with cls._playable_cache_lock:
+                converted = cls._convert_to_mp4(raw, mp4)
+                cls._playable_cache.pop(str(raw), None)
+            if converted != mp4 or not _non_empty(mp4):
+                return None
+            try:
+                raw.unlink()
+            except OSError:
+                pass
+            final = mp4
+        elif _non_empty(mp4):
+            final = mp4
+        elif _non_empty(source) and cls.is_browser_playable(source):
+            final = source
+        else:
+            return None
+
+        folder = cls._finalize_trace_folder_name(folder, session_start_time)
+        return folder / final.name
+
     @staticmethod
     def path_to_video_url(p: Path) -> str:
         resolved = p.resolve()
@@ -168,13 +290,18 @@ class MediaService:
                             vfile = item / f"recording{ext}"
                             if vfile.exists():
                                 vfile = cls.ensure_browser_playable_video(vfile)
+                                if not cls.is_browser_playable(vfile):
+                                    # Live (still recording) or unconvertible raw file.
+                                    break
                                 url = cls.path_to_video_url(vfile)
                                 idx[item.name] = url
-                                prefix = item.name.split("_PASS_")[0].split("_FAIL_")[0]
+                                prefix = cls.strip_trace_status_suffix(item.name)
                                 idx[prefix] = url
                                 break
                     elif item.suffix in [".mp4", ".mkv", ".webm"]:
                         item = cls.ensure_browser_playable_video(item)
+                        if not cls.is_browser_playable(item):
+                            continue
                         url = cls.path_to_video_url(item)
                         idx[item.stem] = url
                         idx[item.name] = url
@@ -199,15 +326,17 @@ class MediaService:
         v_fp = row_dict.get("video_filepath")
         if v_fp and os.path.exists(v_fp):
             p = cls.ensure_browser_playable_video(Path(v_fp))
-            v_url = cls.path_to_video_url(p)
+            if cls.is_browser_playable(p):
+                v_url = cls.path_to_video_url(p)
 
         orig_rec = video_rec_map.get(s_id)
         if not v_url and orig_rec:
             p = Path(orig_rec)
             if p.exists():
                 p = cls.ensure_browser_playable_video(p)
-                v_url = cls.path_to_video_url(p)
-            else:
+                if cls.is_browser_playable(p):
+                    v_url = cls.path_to_video_url(p)
+            if not v_url:
                 folder_name = p.parent.name
                 v_url = video_idx.get(folder_name) or video_idx.get(folder_name.split("_")[0])
 
@@ -221,13 +350,16 @@ class MediaService:
                     vfile = sess_dir / f"recording{ext}"
                     if vfile.exists():
                         vfile = cls.ensure_browser_playable_video(vfile)
-                        v_url = cls.path_to_video_url(vfile)
+                        if cls.is_browser_playable(vfile):
+                            v_url = cls.path_to_video_url(vfile)
                         break
                 if not v_url:
                     try:
                         for item in sess_dir.iterdir():
                             if item.is_file() and item.suffix.lower() in [".mp4", ".webm", ".mkv"]:
                                 item = cls.ensure_browser_playable_video(item)
+                                if not cls.is_browser_playable(item):
+                                    continue
                                 v_url = cls.path_to_video_url(item)
                                 break
                     except OSError:
@@ -260,7 +392,10 @@ class MediaService:
             segments = []
             for item in payload.get("segments", []):
                 segment_path = (manifest_path.parent / str(item["file"])).resolve()
-                if segment_path.parent != manifest_path.parent.resolve() or not segment_path.is_file():
+                if (
+                    segment_path.parent != manifest_path.parent.resolve()
+                    or not segment_path.is_file()
+                ):
                     continue
                 segments.append(
                     {
@@ -399,6 +534,43 @@ class MediaService:
             except Exception as e:
                 return f"Error reading task plan: {e}"
         return "No task plan created yet."
+
+    @staticmethod
+    def get_session_checks(session_id: str) -> dict[str, Any]:
+        """Checker material of one session for UI backfill: the append-only
+        verdict ledger (``check_ledger.jsonl``) and the machine-readable run
+        outcome (``run_outcome.json``), both written by
+        ``artemis.graph.checkpoints``. Missing files mean "no checks ran".
+        """
+        session_dir = TRACES_PATH / session_id
+        records: list[dict[str, Any]] = []
+        ledger_path = session_dir / "check_ledger.jsonl"
+        if ledger_path.is_file():
+            try:
+                for line in ledger_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(rec, dict):
+                        records.append(rec)
+            except (OSError, ValueError) as e:
+                logger.warning(f"Failed to read check ledger for {session_id}: {e}")
+
+        run_outcome: dict[str, Any] | None = None
+        outcome_path = session_dir / "run_outcome.json"
+        if outcome_path.is_file():
+            try:
+                loaded = json.loads(outcome_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    run_outcome = loaded
+            except (OSError, ValueError) as e:
+                logger.warning(f"Failed to read run outcome for {session_id}: {e}")
+
+        return {"records": records, "run_outcome": run_outcome}
 
     @staticmethod
     def get_session_notes_content(session_id: str) -> dict[str, str]:

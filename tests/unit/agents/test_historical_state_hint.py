@@ -77,9 +77,7 @@ async def _run(steps, b64=B64_A, cfg=None):
     builder = PromptBuilder()
     component = HistoricalStateHintPromptComponent()
     with patch("artemis.config.load_agent_config", return_value=cfg or _cfg()):
-        await component(
-            builder, MagicMock(), MagicMock(), latest_screenshot_b64=b64, steps=steps
-        )
+        await component(builder, MagicMock(), MagicMock(), latest_screenshot_b64=b64, steps=steps)
     return [p for p in builder.human_parts if isinstance(p, str)]
 
 

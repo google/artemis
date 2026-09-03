@@ -12,11 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Universal ADB command and background task management tools for ARTEMIS."""
+"""Universal ADB command and background task management tools for ARTEMIS.
+
+State model
+-----------
+Every automation task owns one :class:`AdbTaskRegistry` (stored on its
+:class:`~artemis.context.ArtemisContext`).  The registry holds the running
+background processes, the recently finished task logs, and the persistent
+terminal environments.  Keeping this per context matters because the MCP
+daemon runs concurrent tasks for different devices inside one process: a
+module-level registry would leak device A's tasks and completion notices into
+device B's Operator prompt.  A module-level default registry still exists for
+callers that have no context (tests, ad-hoc scripts).
+
+Hang protection
+---------------
+Commands are passed to ``adb shell`` as an argument, never through stdin, so
+the remote shell exits as soon as the script does.  ``stdin`` is closed
+(``DEVNULL``) unless the caller asks for ``Interactive=True``; a command that
+reads stdin therefore sees EOF instead of blocking forever.  Anything that
+outlives ``WaitMsBeforeAsync`` is moved to a background task with a bounded
+log buffer, and :func:`shutdown_adb_background_tasks` kills whatever is still
+running when the automation task ends.
+"""
 
 import asyncio
 from asyncio.subprocess import Process as AsyncProcess
+from collections import deque
 import os
+import shlex
 from typing import Any, Literal
 import uuid
 
@@ -36,39 +60,68 @@ from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Global persistent Android shell environments
-_PERSISTENT_ENVIRONMENTS: dict[str, dict[str, str]] = {}
-# Global background tasks
-_BACKGROUND_TASKS: dict[str, "BackgroundTask"] = {}
-# Finished tasks history logs cache (to support Action='analyze' even after tasks are unregistered)
-_FINISHED_TASKS_LOGS: dict[str, dict[str, Any]] = {}
+#: Maximum number of finished task records kept per registry.
+_FINISHED_TASKS_CAP = 50
+#: Maximum number of output lines retained for a background task.
+_BACKGROUND_LOG_MAX_LINES = 20000
+#: Seconds to wait for a terminated process before killing it.
+_TERMINATE_GRACE_SECONDS = 3.0
 
+_EXIT_CODE_MARKER = "===EXIT_CODE==="
+_ENV_START_MARKER = "===ENV_START==="
 
-# pylint: disable=too-many-arguments,too-many-positional-arguments
-def _register_finished_task(
-    task_id: str,
-    command: str,
-    cwd: str | None,
-    terminal_id: str | None,
-    status: str,
-    exit_code: int | None,
-    output: str,
-):
-    """Caches execution details for finished tasks."""
-    _FINISHED_TASKS_LOGS[task_id] = {
-        "task_id": task_id,
-        "command": command,
-        "cwd": cwd,
-        "terminal_id": terminal_id,
-        "status": status,
-        "exit_code": exit_code,
-        "output": output,
-        "notified": False,
+#: Variables that every Android shell already defines. They are never
+#: re-exported into a persistent terminal: re-exporting PATH/HOME etc. is
+#: pointless and some of them (BOOTCLASSPATH, LD_*) are long and fragile.
+_PERSISTENT_ENV_EXCLUDE = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "HOSTNAME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "PWD",
+        "OLDPWD",
+        "SHLVL",
+        "_",
+        "TMPDIR",
+        "HISTFILE",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "EXTERNAL_STORAGE",
+        "ASEC_MOUNTPOINT",
+        "DOWNLOAD_CACHE",
     }
-    # Keep memory bounded
-    if len(_FINISHED_TASKS_LOGS) > 10:
-        oldest_key = next(iter(_FINISHED_TASKS_LOGS))
-        del _FINISHED_TASKS_LOGS[oldest_key]
+)
+_PERSISTENT_ENV_EXCLUDE_PREFIXES = (
+    "ANDROID_",
+    "BOOTCLASSPATH",
+    "DEX2OAT",
+    "SYSTEMSERVER",
+    "STANDALONE_",
+)
+
+#: Guidance shared by the tool descriptions: the commands that hang an
+#: ``adb shell`` and how to bound them.
+HANG_GUIDANCE = (
+    "Streaming or open-ended commands (logcat, top, getevent, screenrecord,"
+    " tail -f, an interactive shell) never return on their own: bound them"
+    " (logcat -d, top -n 1, --time-limit) or expect them to be moved to a"
+    " background task. Detach daemons explicitly with"
+    " `nohup CMD >/dev/null 2>&1 &`, otherwise the shell waits for them."
+)
+
+
+def _adb_binary() -> str:
+    """Resolves the adb executable through the shared toolchain resolver."""
+    try:
+        from artemis.toolchain import toolchain
+
+        return toolchain.find_adb()
+    except Exception:  # pylint: disable=broad-exception-caught
+        return "adb"
 
 
 def _is_output_long(output: str) -> bool:
@@ -88,19 +141,183 @@ def _format_long_output_response(_task_id: str, output: str, intro: str) -> str:
     )
 
 
-def _get_task_info(task_id: str, ctx: ArtemisContext) -> dict[str, Any] | None:
-    """Retrieves metadata and logs for a running or finished task."""
-    if task_id in _BACKGROUND_TASKS:
-        t = _BACKGROUND_TASKS[task_id]
-        return {
-            "command": t.command,
-            "cwd": t.cwd,
-            "terminal_id": t.terminal_id,
-            "status": t.status,
-            "output": "".join(t.stdout_log),
+def _filter_persistent_env(env: dict[str, str]) -> dict[str, str]:
+    """Drops the platform-provided variables from a captured shell environment."""
+    kept: dict[str, str] = {}
+    for key, value in env.items():
+        if not key or key in _PERSISTENT_ENV_EXCLUDE:
+            continue
+        if key.startswith(_PERSISTENT_ENV_EXCLUDE_PREFIXES):
+            continue
+        if not key.replace("_", "a").isalnum():
+            continue
+        kept[key] = value
+    return kept
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+
+class AdbTaskRegistry:
+    """Per-task bookkeeping for background processes, finished logs and envs."""
+
+    def __init__(self) -> None:
+        self.background: dict[str, BackgroundTask] = {}
+        self.finished: dict[str, dict[str, Any]] = {}
+        self.persistent_envs: dict[str, dict[str, str]] = {}
+
+    # -- finished task cache -------------------------------------------------
+
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def register_finished(
+        self,
+        task_id: str,
+        command: str,
+        cwd: str | None,
+        terminal_id: str | None,
+        status: str,
+        exit_code: int | None,
+        output: str,
+    ) -> None:
+        """Caches execution details for a finished task."""
+        self.finished[task_id] = {
+            "task_id": task_id,
+            "command": command,
+            "cwd": cwd,
+            "terminal_id": terminal_id,
+            "status": status,
+            "exit_code": exit_code,
+            "output": output,
+            "notified": False,
         }
-    if task_id in _FINISHED_TASKS_LOGS:
-        return _FINISHED_TASKS_LOGS[task_id]
+        while len(self.finished) > _FINISHED_TASKS_CAP:
+            oldest_key = next(iter(self.finished))
+            del self.finished[oldest_key]
+
+    def get_task_info(self, task_id: str) -> dict[str, Any] | None:
+        """Returns metadata and logs for a running or finished task, if known."""
+        if task_id in self.background:
+            t = self.background[task_id]
+            return {
+                "command": t.command,
+                "cwd": t.cwd,
+                "terminal_id": t.terminal_id,
+                "status": t.status,
+                "output": "".join(t.stdout_log),
+            }
+        return self.finished.get(task_id)
+
+    # -- prompt helpers ------------------------------------------------------
+
+    def active_task_summaries(self) -> list[dict[str, Any]]:
+        """Compact view of running tasks for the Operator prompt."""
+        return [
+            {
+                "task_id": tid,
+                "command": t.command,
+                "cwd": t.cwd,
+                "terminal_id": t.terminal_id,
+                "output_line_count": len(t.stdout_log),
+            }
+            for tid, t in self.background.items()
+        ]
+
+    def pop_unnotified_finished(self) -> list[dict[str, Any]]:
+        """Returns finished tasks not yet shown to the model and marks them shown."""
+        newly_finished: list[dict[str, Any]] = []
+        for tid, tinfo in self.finished.items():
+            if tinfo.get("notified", False):
+                continue
+            newly_finished.append(
+                {
+                    "task_id": tid,
+                    "command": tinfo.get("command", ""),
+                    "status": tinfo.get("status", "completed"),
+                    "output_text": tinfo.get("output", ""),
+                }
+            )
+            tinfo["notified"] = True
+        return newly_finished
+
+    # -- lifecycle -----------------------------------------------------------
+
+    async def shutdown(self, ctx: ArtemisContext | None = None) -> int:
+        """Terminates every running background task. Returns the number killed."""
+        tasks = list(self.background.values())
+        for task in tasks:
+            try:
+                await task.stop(ctx, status="killed")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning(f"Failed to stop background ADB task {task.task_id}: {e}")
+        return len(tasks)
+
+
+#: Registry used when no context is available.
+_DEFAULT_REGISTRY = AdbTaskRegistry()
+
+# Backward-compatibility aliases onto the default registry's dictionaries.
+_BACKGROUND_TASKS = _DEFAULT_REGISTRY.background
+_FINISHED_TASKS_LOGS = _DEFAULT_REGISTRY.finished
+_PERSISTENT_ENVIRONMENTS = _DEFAULT_REGISTRY.persistent_envs
+
+
+def get_adb_task_registry(ctx: ArtemisContext | None) -> AdbTaskRegistry:
+    """Returns the registry bound to ``ctx``, creating it on first use."""
+    if ctx is None:
+        return _DEFAULT_REGISTRY
+    existing = getattr(ctx, "adb_task_registry", None)
+    if isinstance(existing, AdbTaskRegistry):
+        return existing
+    registry = AdbTaskRegistry()
+    try:
+        setattr(ctx, "adb_task_registry", registry)
+    except (AttributeError, TypeError):
+        return _DEFAULT_REGISTRY
+    return registry
+
+
+async def shutdown_adb_background_tasks(ctx: ArtemisContext | None) -> int:
+    """Kills the background ADB tasks of ``ctx``. Safe to call when none exist."""
+    existing = getattr(ctx, "adb_task_registry", None) if ctx is not None else None
+    if not isinstance(existing, AdbTaskRegistry):
+        return 0
+    killed = await existing.shutdown(ctx)
+    if killed:
+        logger.info(f"Terminated {killed} background ADB task(s) at task end.")
+    return killed
+
+
+# pylint: disable=too-many-arguments,too-many-positional-arguments
+def _register_finished_task(
+    task_id: str,
+    command: str,
+    cwd: str | None,
+    terminal_id: str | None,
+    status: str,
+    exit_code: int | None,
+    output: str,
+    ctx: ArtemisContext | None = None,
+):
+    """Caches execution details for finished tasks (registry of ``ctx``)."""
+    get_adb_task_registry(ctx).register_finished(
+        task_id, command, cwd, terminal_id, status, exit_code, output
+    )
+
+
+def _get_task_info(task_id: str, ctx: ArtemisContext | None) -> dict[str, Any] | None:
+    """Retrieves metadata and logs for a running or finished task.
+
+    Looks in the context registry, then the default registry, then the
+    persisted background task table.
+    """
+    registry = get_adb_task_registry(ctx)
+    info = registry.get_task_info(task_id)
+    if info is None and registry is not _DEFAULT_REGISTRY:
+        info = _DEFAULT_REGISTRY.get_task_info(task_id)
+    if info is not None:
+        return info
     if ctx and ctx.data_engine:
         db_tasks = ctx.data_engine.get_all_background_tasks()
         for db_t in db_tasks:
@@ -115,6 +332,11 @@ def _get_task_info(task_id: str, ctx: ArtemisContext) -> dict[str, Any] | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Background task
+# ---------------------------------------------------------------------------
+
+
 # pylint: disable=too-many-instance-attributes
 class BackgroundTask:
     """Represents an active or completing background ADB shell task."""
@@ -127,89 +349,148 @@ class BackgroundTask:
         process: AsyncProcess,
         terminal_id: str | None = None,
         cwd: str | None = None,
+        interactive: bool = False,
+        registry: AdbTaskRegistry | None = None,
     ):
         self.task_id = task_id
         self.command = command
         self.process = process
         self.terminal_id = terminal_id
         self.cwd = cwd
-        self.stdout_log: list[str] = []
+        self.interactive = interactive
+        self.registry = registry
+        self.stdout_log: deque[str] = deque(maxlen=_BACKGROUND_LOG_MAX_LINES)
         self.status = "running"
         self.exit_code: int | None = None
         self.trace_id: uuid.UUID | None = None
         self.listener_task: asyncio.Task | None = None
+        self._stop_requested = False
+        self._finalized = False
 
     async def start(self, ctx: ArtemisContext):
         """Starts the background output listener task."""
         self.listener_task = asyncio.create_task(self._listen(ctx))
 
+    async def stop(self, ctx: ArtemisContext | None, status: str = "killed") -> None:
+        """Terminates the process (kill after a grace period) and records the result."""
+        self._stop_requested = True
+        self.status = status
+        proc = self.process
+        if getattr(proc, "returncode", None) is None:
+            try:
+                proc.terminate()
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE_SECONDS)
+            except TimeoutError:
+                try:
+                    proc.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE_SECONDS)
+                except TimeoutError:
+                    pass
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                # Shutdown must never raise; the exit code is read back below.
+                logger.debug(
+                    f"Waiting for background ADB task {self.task_id} to exit failed: {exc}",
+                    exc_info=True,
+                )
+        if self.listener_task is not None and not self.listener_task.done():
+            self.listener_task.cancel()
+            try:
+                await self.listener_task
+            except asyncio.CancelledError:
+                pass
+        self.exit_code = getattr(proc, "returncode", None)
+        self._finalize(ctx)
+
+    def _finalize(self, ctx: ArtemisContext | None) -> None:
+        """Moves the task from the active map to the finished cache exactly once."""
+        if self._finalized:
+            return
+        self._finalized = True
+        registry = self.registry or get_adb_task_registry(ctx)
+
+        output_text = "".join(self.stdout_log)
+        _, parsed_env, _ = self.parse_output(output_text)
+        if self.terminal_id and parsed_env is not None:
+            registry.persistent_envs[self.terminal_id] = _filter_persistent_env(parsed_env)
+            logger.info(
+                "Updated persistent env for Android terminal"
+                f" '{self.terminal_id}' from background task."
+            )
+
+        if ctx and getattr(ctx, "data_engine", None):
+            try:
+                ctx.data_engine.unregister_background_task(self.task_id, self.status)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.debug(f"Failed to unregister background task {self.task_id}: {e}")
+
+        registry.register_finished(
+            task_id=self.task_id,
+            command=self.command,
+            cwd=self.cwd,
+            terminal_id=self.terminal_id,
+            status=self.status,
+            exit_code=self.exit_code,
+            output=output_text,
+        )
+        registry.background.pop(self.task_id, None)
+
     async def _listen(self, ctx: ArtemisContext):
         """Reads process output streams and updates lifecycle status."""
         try:
-            # Read stdout/stderr merged
             while True:
                 line = await self.process.stdout.readline()
                 if not line:
                     break
-                decoded = line.decode()
+                decoded = line.decode(errors="replace")
                 self.stdout_log.append(decoded)
-                if ctx and ctx.data_engine and getattr(self, "trace_id", None):
+                if ctx and getattr(ctx, "data_engine", None) and self.trace_id:
                     ctx.data_engine.stream_output(self.trace_id, decoded)
 
             self.exit_code = await self.process.wait()
+            if self._stop_requested:
+                return
+            _, _, script_exit = self.parse_output("".join(self.stdout_log))
+            if self.terminal_id and script_exit is not None:
+                self.exit_code = script_exit
             self.status = "completed" if self.exit_code == 0 else "failed"
             logger.info(
                 f"Background ADB task {self.task_id} completed with exit code {self.exit_code}"
             )
-
-            # Post-process output to extract env if persistent
-            output_text = "".join(self.stdout_log)
-            _, parsed_env = self.parse_output(output_text)
-
-            if self.terminal_id and parsed_env:
-                _PERSISTENT_ENVIRONMENTS[self.terminal_id] = parsed_env
-                logger.info(
-                    "Updated persistent env for Android terminal"
-                    f" '{self.terminal_id}' from background task."
-                )
-
-            # Update status in DataEngine
-            if ctx and ctx.data_engine:
-                ctx.data_engine.unregister_background_task(
-                    task_id=self.task_id,
-                    status=self.status,
-                )
+        except asyncio.CancelledError:
+            return
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error(f"Error in background task {self.task_id} listener: {e}")
             self.status = "error"
-            if ctx and ctx.data_engine:
-                ctx.data_engine.unregister_background_task(self.task_id, "failed")
         finally:
-            # Cache logs in memory before removing task from active tasks
-            full_output = "".join(self.stdout_log)
-            _register_finished_task(
-                task_id=self.task_id,
-                command=self.command,
-                cwd=self.cwd,
-                terminal_id=self.terminal_id,
-                status=self.status,
-                exit_code=self.exit_code,
-                output=full_output,
-            )
-            if self.task_id in _BACKGROUND_TASKS:
-                del _BACKGROUND_TASKS[self.task_id]
+            if not self._stop_requested:
+                self._finalize(ctx)
 
     @staticmethod
-    def parse_output(output: str) -> tuple[str, dict[str, str] | None]:
-        """Separates stdout lines from exported environment variables."""
-        clean_lines = []
-        env_lines = []
+    def parse_output(output: str) -> tuple[str, dict[str, str] | None, int | None]:
+        """Separates stdout lines from the exit-code marker and exported env.
+
+        Returns ``(clean_output, env_or_None, script_exit_code_or_None)``.
+        """
+        clean_lines: list[str] = []
+        env_lines: list[str] = []
+        exit_code: int | None = None
         in_env = False
 
         for line in output.splitlines():
-            if "===EXIT_CODE===" in line:
+            if _EXIT_CODE_MARKER in line:
+                raw = line.split(_EXIT_CODE_MARKER, 1)[1].strip()
+                try:
+                    exit_code = int(raw)
+                except ValueError:
+                    exit_code = None
                 continue
-            if "===ENV_START===" in line:
+            if _ENV_START_MARKER in line:
                 in_env = True
                 continue
             if in_env:
@@ -219,18 +500,23 @@ class BackgroundTask:
 
         clean_output = "\n".join(clean_lines)
 
-        parsed_env = None
-        if env_lines:
+        parsed_env: dict[str, str] | None = None
+        if in_env:
             parsed_env = {}
             for el in env_lines:
                 if "=" in el:
                     k, v = el.split("=", 1)
                     parsed_env[k] = v
 
-        return clean_output, parsed_env
+        return clean_output, parsed_env, exit_code
 
     # Backwards compatibility alias
     _parse_output = parse_output
+
+
+# ---------------------------------------------------------------------------
+# run_adb_command
+# ---------------------------------------------------------------------------
 
 
 class RunAdbCommandArgs(BaseModel):
@@ -268,6 +554,35 @@ class RunAdbCommandArgs(BaseModel):
             " synchronously before sending it to the background."
         ),
     )
+    Interactive: bool = Field(
+        default=False,
+        description=(
+            "Keep stdin open so 'manage_task send_input' can feed the command"
+            " later. Default false: stdin is closed and commands that read it"
+            " see EOF instead of hanging."
+        ),
+    )
+
+
+def _build_phone_script(
+    cmd_line: str,
+    cwd: str,
+    env_vars: dict[str, str],
+    run_persistent: bool,
+) -> str:
+    """Builds the script passed as the single ``adb shell`` argument."""
+    script = f"cd {shlex.quote(cwd)}\n"
+    for k, v in env_vars.items():
+        script += f"export {k}={shlex.quote(v)}\n"
+    script += f"{cmd_line}\n"
+    if run_persistent:
+        script += (
+            "_artemis_ec=$?\n"
+            f'echo "{_EXIT_CODE_MARKER}$_artemis_ec"\n'
+            f'echo "{_ENV_START_MARKER}"\n'
+            "env\n"
+        )
+    return script
 
 
 class RunAdbCommandTool(ArtemisTool):
@@ -278,10 +593,10 @@ class RunAdbCommandTool(ArtemisTool):
             name="run_adb_command",
             description=(
                 "[SHELL] Executes a shell command directly on the Android mobile "
-                "device via ADB shell. Can run synchronously or transition to a "
+                "device via ADB shell. Runs synchronously and transitions to a "
                 "background task if execution takes longer than WaitMsBeforeAsync. "
                 "Supports persistent environments (environment variables) on the "
-                "phone across invocations."
+                f"phone across invocations. {HANG_GUIDANCE}"
             ),
             args_schema=RunAdbCommandArgs,
             category="system",
@@ -297,6 +612,7 @@ class RunAdbCommandTool(ArtemisTool):
         RunPersistent: bool = False,
         RequestedTerminalID: str | None = None,
         WaitMsBeforeAsync: int = 5000,
+        Interactive: bool = False,
         **kwargs: Any,
     ) -> str:
         # Extract command line supporting alternative key formats
@@ -319,6 +635,8 @@ class RunAdbCommandTool(ArtemisTool):
             if WaitMsBeforeAsync != 5000
             else kwargs.get("wait_ms_before_async", WaitMsBeforeAsync)
         )
+        interactive = bool(Interactive or kwargs.get("interactive", False))
+        wait_seconds = max(float(wait_ms) / 1000.0, 0.05)
 
         # Fallback to driver's execute_shell if no full ArtemisContext is available
         if (
@@ -327,7 +645,9 @@ class RunAdbCommandTool(ArtemisTool):
             and hasattr(driver, "execute_shell")
             and not run_persistent
         ):
-            return await driver.execute_shell(cmd_line)
+            return await driver.execute_shell(cmd_line, timeout_seconds=wait_seconds)
+
+        registry = get_adb_task_registry(ctx)
 
         device_id = None
         if ctx and hasattr(ctx, "device") and ctx.device:
@@ -340,53 +660,54 @@ class RunAdbCommandTool(ArtemisTool):
         # Prepare environment
         terminal_id = None
         run_env = os.environ.copy()  # Local host env to run adb command
-        android_env_vars = {}
+        android_env_vars: dict[str, str] = {}
 
         if run_persistent:
             terminal_id = requested_terminal_id or f"term_{uuid.uuid4().hex[:8]}"
-            if terminal_id in _PERSISTENT_ENVIRONMENTS:
-                android_env_vars = _PERSISTENT_ENVIRONMENTS[terminal_id]
-            else:
-                _PERSISTENT_ENVIRONMENTS[terminal_id] = android_env_vars
+            android_env_vars = registry.persistent_envs.setdefault(terminal_id, {})
 
-        # Construct command to run inside adb shell
-        # We inject the cached environment variables by prepending 'export K=V' declarations
-        env_prepends = ""
-        for k, v in android_env_vars.items():
-            env_prepends += f"export {k}='{v}'\n"
+        phone_script = _build_phone_script(cmd_line, cwd, android_env_vars, run_persistent)
 
-        # Construct final command script
-        phone_script = f"cd '{cwd}'\n" + env_prepends + f"{cmd_line}\n"
-        if run_persistent:
-            phone_script += (
-                '_exit_code=$?\necho "===EXIT_CODE===$_exit_code"\necho "===ENV_START==="\nenv'
-            )
-
-        # In Cloud Mode or when adb client is virtualized
+        # In Cloud Mode or when adb client is virtualized: no host subprocess,
+        # therefore no background handoff. The wait window is a hard timeout.
         adb_client = getattr(ctx, "adb_client", None) if ctx else None
         if os.environ.get("ARTEMIS_CLOUD_MODE") == "1" or (
             adb_client is not None and hasattr(adb_client, "_bridge")
         ):
             try:
                 device = get_adb_device(ctx)
-                output = device.shell(phone_script)
-                clean_output, new_env = BackgroundTask.parse_output(output)
-                if run_persistent and new_env:
-                    android_env_vars.update(new_env)
+                output = await asyncio.wait_for(
+                    asyncio.to_thread(device.shell, phone_script),
+                    timeout=wait_seconds,
+                )
+            except TimeoutError:
                 return (
-                    clean_output
-                    if clean_output.strip()
-                    else "Command executed successfully with empty output."
+                    f"Error: Command did not finish within {wait_seconds:.1f}s."
+                    " Background tasks are not available on this device"
+                    " connection; bound the command (logcat -d, top -n 1,"
+                    " --time-limit) and retry."
                 )
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.error(f"Failed to execute virtual adb shell for '{cmd_line}': {e}")
                 return f"Failed to execute adb command: {e}"
+            clean_output, new_env, script_exit = BackgroundTask.parse_output(str(output))
+            if run_persistent and new_env is not None:
+                registry.persistent_envs[terminal_id] = _filter_persistent_env(new_env)
+            intro = "ADB command completed"
+            if script_exit is not None:
+                intro += f" with exit code {script_exit}"
+            intro += "."
+            if run_persistent:
+                intro += f" TerminalID: {terminal_id}."
+            body = clean_output if clean_output.strip() else "(empty output)"
+            return f"{intro}\nOutput:\n{body}"
 
-        # We spawn the host subprocess: adb -s <serial> shell
-        # Pass phone_script as an argument so it doesn't hold the shell open if we keep stdin open.
+        # We spawn the host subprocess: adb -s <serial> shell <script>.
+        # The script travels as an argument so the remote shell exits with it;
+        # stdin is closed unless the caller wants to feed input later.
         try:
             process = await asyncio.create_subprocess_exec(
-                "adb",
+                _adb_binary(),
                 "-s",
                 device_id,
                 "shell",
@@ -395,94 +716,117 @@ class RunAdbCommandTool(ArtemisTool):
                 env=run_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                stdin=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
             )
-
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error(f"Failed to spawn adb shell process for command '{cmd_line}': {e}")
             return f"Failed to spawn adb process: {e}"
 
-        # Wait for wait_ms milliseconds
-        wait_seconds = wait_ms / 1000.0
+        stdout_data: list[str] = []
         try:
-            stdout_data = []
 
             async def read_limit():
                 while True:
                     line = await process.stdout.readline()
                     if not line:
                         break
-                    stdout_data.append(line.decode())
+                    stdout_data.append(line.decode(errors="replace"))
                 await process.wait()
 
             await asyncio.wait_for(read_limit(), timeout=wait_seconds)
-
-            # If we reached here, the process completed within the wait window
-            exit_code = process.returncode
-            output_text = "".join(stdout_data)
-
-            # Clean output and extract environment
-            clean_output = output_text
-            parsed_env = None
-            if run_persistent:
-                clean_output, parsed_env = BackgroundTask.parse_output(output_text)
-                if parsed_env:
-                    _PERSISTENT_ENVIRONMENTS[terminal_id] = parsed_env
-
-            intro = f"ADB command completed with exit code {exit_code}."
-            if run_persistent:
-                intro += f" TerminalID: {terminal_id}."
-
-            if _is_output_long(clean_output):
-                task_id = f"task_sync_{uuid.uuid4().hex[:8]}"
-                intro += f" TaskId: {task_id}."
-                _register_finished_task(
-                    task_id=task_id,
-                    command=cmd_line,
-                    cwd=cwd,
-                    terminal_id=terminal_id,
-                    status="completed" if exit_code == 0 else "failed",
-                    exit_code=exit_code,
-                    output=clean_output,
-                )
-                return _format_long_output_response(task_id, clean_output, intro)
-
-            return f"{intro}\nOutput:\n{clean_output}"
-
         except TimeoutError:
-            # Process did not finish in time, move to background
-            task_id = f"task_{process.pid}"
-            trace_id = uuid.uuid4()
+            return await self._hand_off_to_background(
+                ctx,
+                registry,
+                process,
+                cmd_line,
+                cwd,
+                terminal_id,
+                interactive,
+                stdout_data,
+            )
 
-            bg_task = BackgroundTask(
+        # The process completed within the wait window.
+        exit_code = process.returncode
+        output_text = "".join(stdout_data)
+
+        clean_output = output_text
+        if run_persistent:
+            clean_output, parsed_env, script_exit = BackgroundTask.parse_output(output_text)
+            if parsed_env is not None:
+                registry.persistent_envs[terminal_id] = _filter_persistent_env(parsed_env)
+            if script_exit is not None:
+                exit_code = script_exit
+
+        intro = f"ADB command completed with exit code {exit_code}."
+        if run_persistent:
+            intro += f" TerminalID: {terminal_id}."
+
+        if _is_output_long(clean_output):
+            task_id = f"task_sync_{uuid.uuid4().hex[:8]}"
+            intro += f" TaskId: {task_id}."
+            registry.register_finished(
                 task_id=task_id,
                 command=cmd_line,
-                process=process,
-                terminal_id=terminal_id,
                 cwd=cwd,
+                terminal_id=terminal_id,
+                status="completed" if exit_code == 0 else "failed",
+                exit_code=exit_code,
+                output=clean_output,
             )
-            bg_task.stdout_log = list(stdout_data)
-            bg_task.trace_id = trace_id
-            _BACKGROUND_TASKS[task_id] = bg_task
+            # Already shown inline; do not re-announce it as newly finished.
+            registry.finished[task_id]["notified"] = True
+            return _format_long_output_response(task_id, clean_output, intro)
 
-            # Register in DataEngine
-            if ctx and ctx.data_engine:
-                ctx.data_engine.register_background_task(
-                    task_id=task_id,
-                    summary=f"ADB Command: {cmd_line[:50]}...",
-                    trace_id=trace_id,
-                )
-                if stdout_data:
-                    ctx.data_engine.stream_output(trace_id, "".join(stdout_data))
+        return f"{intro}\nOutput:\n{clean_output}"
 
-            if ctx:
-                await bg_task.start(ctx)
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def _hand_off_to_background(
+        self,
+        ctx: ArtemisContext | None,
+        registry: AdbTaskRegistry,
+        process: AsyncProcess,
+        cmd_line: str,
+        cwd: str,
+        terminal_id: str | None,
+        interactive: bool,
+        stdout_so_far: list[str],
+    ) -> str:
+        """Registers a still-running process as a background task."""
+        task_id = f"task_{process.pid}_{uuid.uuid4().hex[:6]}"
+        trace_id = uuid.uuid4()
 
-            response_msg = f"ADB command was sent to the background as a task.\nTaskId: {task_id}\n"
-            if run_persistent:
-                response_msg += f"TerminalID: {terminal_id}\n"
-            response_msg += "Use the 'manage_task' tool to check its status or terminate it."
-            return response_msg
+        bg_task = BackgroundTask(
+            task_id=task_id,
+            command=cmd_line,
+            process=process,
+            terminal_id=terminal_id,
+            cwd=cwd,
+            interactive=interactive,
+            registry=registry,
+        )
+        bg_task.stdout_log.extend(stdout_so_far)
+        bg_task.trace_id = trace_id
+        registry.background[task_id] = bg_task
+
+        if ctx and getattr(ctx, "data_engine", None):
+            ctx.data_engine.register_background_task(
+                task_id=task_id,
+                summary=f"ADB Command: {cmd_line[:50]}...",
+                trace_id=trace_id,
+            )
+            if stdout_so_far:
+                ctx.data_engine.stream_output(trace_id, "".join(stdout_so_far))
+
+        await bg_task.start(ctx)
+
+        response_msg = f"ADB command was sent to the background as a task.\nTaskId: {task_id}\n"
+        if terminal_id:
+            response_msg += f"TerminalID: {terminal_id}\n"
+        response_msg += "Use the 'manage_task' tool to check its status or terminate it."
+        if not interactive:
+            response_msg += " (stdin is closed; relaunch with Interactive=true to send input.)"
+        return response_msg
 
 
 # Universal tool instance & aliases
@@ -494,6 +838,11 @@ ToolRegistry.register(run_adb_command)
 def get_run_adb_command_tool(ctx: ArtemisContext) -> BaseTool:
     """Exports run_adb_command as a LangChain BaseTool."""
     return trace_langchain_tool(run_adb_command.to_langchain_tool(ctx), ctx)
+
+
+# ---------------------------------------------------------------------------
+# manage_task
+# ---------------------------------------------------------------------------
 
 
 class ManageTaskArgs(BaseModel):
@@ -541,13 +890,15 @@ class ManageTaskTool(ArtemisTool):
         action = Action or kwargs.get("action", "list")
         task_id = TaskId if TaskId is not None else kwargs.get("task_id")
         input_str = Input if Input is not None else kwargs.get("input")
+        registry = get_adb_task_registry(ctx)
 
         if action == "list":
             active_tasks = []
-            for tid, t in _BACKGROUND_TASKS.items():
+            for tid, t in registry.background.items():
                 active_tasks.append(
                     f"- {tid}: Command='{t.command[:40]}...', Phone"
-                    f" Cwd='{t.cwd}', TerminalID='{t.terminal_id}'"
+                    f" Cwd='{t.cwd}', TerminalID='{t.terminal_id}',"
+                    f" Interactive={t.interactive}"
                 )
             if not active_tasks:
                 return "No active background tasks running."
@@ -555,18 +906,20 @@ class ManageTaskTool(ArtemisTool):
 
         if action == "list_finished":
             finished_tasks = []
-            for tid, t in _FINISHED_TASKS_LOGS.items():
+            for tid, t in registry.finished.items():
                 finished_tasks.append(
                     f"- {tid}: Command='{t['command'][:40]}...', Status='{t['status']}'"
                 )
             if not finished_tasks:
                 return "No recently finished tasks."
-            return "Recently finished tasks (up to 10):\n" + "\n".join(finished_tasks)
+            return f"Recently finished tasks (up to {_FINISHED_TASKS_CAP}):\n" + "\n".join(
+                finished_tasks
+            )
 
         if not task_id:
             return "Error: TaskId is required for status, kill, or send_input actions."
 
-        task = _BACKGROUND_TASKS.get(task_id)
+        task = registry.background.get(task_id)
 
         if action == "status":
             task_info = _get_task_info(task_id, ctx)
@@ -574,8 +927,8 @@ class ManageTaskTool(ArtemisTool):
                 return f"Task {task_id} not found."
 
             output_text = task_info.get("output", "")
-            if "===ENV_START===" in output_text:
-                output_text = output_text.split("===ENV_START===")[0]
+            if _ENV_START_MARKER in output_text:
+                output_text = output_text.split(_ENV_START_MARKER)[0]
 
             intro = (
                 f"Task: {task_id}\n"
@@ -584,6 +937,9 @@ class ManageTaskTool(ArtemisTool):
                 f"Cwd: {task_info.get('cwd')}\n"
                 f"TerminalID: {task_info.get('terminal_id')}"
             )
+            exit_code = task_info.get("exit_code")
+            if exit_code is not None:
+                intro += f"\nExitCode: {exit_code}"
 
             if _is_output_long(output_text):
                 return _format_long_output_response(task_id, output_text, intro)
@@ -594,13 +950,7 @@ class ManageTaskTool(ArtemisTool):
             if not task:
                 return f"Task {task_id} is not active or already finished."
             try:
-                task.process.terminate()
-                await task.process.wait()
-                task.status = "killed"
-                if ctx and ctx.data_engine:
-                    ctx.data_engine.unregister_background_task(task_id, "killed")
-                if task_id in _BACKGROUND_TASKS:
-                    del _BACKGROUND_TASKS[task_id]
+                await task.stop(ctx, status="killed")
                 return f"Task {task_id} successfully terminated."
             except Exception as e:  # pylint: disable=broad-exception-caught
                 return f"Failed to terminate task {task_id}: {e}"
@@ -610,6 +960,11 @@ class ManageTaskTool(ArtemisTool):
                 return f"Task {task_id} is not active."
             if not input_str:
                 return "Error: Input is required for send_input action."
+            if not task.interactive or task.process.stdin is None:
+                return (
+                    f"Error: Task {task_id} was launched without Interactive=true, so its"
+                    " stdin is closed. Relaunch the command with Interactive=true."
+                )
             try:
                 task.process.stdin.write(input_str.encode())
                 await task.process.stdin.drain()
@@ -629,6 +984,13 @@ ToolRegistry.register(manage_task)
 def get_manage_task_tool(ctx: ArtemisContext) -> BaseTool:
     """Exports manage_task as a LangChain BaseTool."""
     return trace_langchain_tool(manage_task.to_langchain_tool(ctx), ctx)
+
+
+# ---------------------------------------------------------------------------
+# run_short_adb_command (Diagnoser)
+# ---------------------------------------------------------------------------
+
+_SHORT_COMMAND_TIMEOUT_SECONDS = 3.0
 
 
 class RunShortAdbCommandArgs(BaseModel):
@@ -651,8 +1013,9 @@ class RunShortAdbCommandTool(ArtemisTool):
             description=(
                 "[SHELL] Executes a short, synchronous shell command directly on the Android "
                 "mobile device via ADB shell. Returns the command output. Times out after 3 "
-                "seconds. Do not use this tool to execute actions that change the phone state "
-                "such as clicking, swiping, or navigating back."
+                "seconds, so bound streaming commands (logcat -d, top -n 1). Do not use this "
+                "tool to execute actions that change the phone state such as clicking, "
+                "swiping, or navigating back."
             ),
             args_schema=RunShortAdbCommandArgs,
             category="system",
@@ -671,6 +1034,7 @@ class RunShortAdbCommandTool(ArtemisTool):
             if CommandLine is not None
             else (kwargs.get("command_line") or kwargs.get("command") or kwargs.get("cmd") or "")
         )
+        timeout = _SHORT_COMMAND_TIMEOUT_SECONDS
 
         # Fallback to driver's execute_shell if no full ArtemisContext is available
         if (
@@ -678,7 +1042,7 @@ class RunShortAdbCommandTool(ArtemisTool):
             and driver is not None
             and hasattr(driver, "execute_shell")
         ):
-            return await driver.execute_shell(cmd_line, timeout_seconds=3.0)
+            return await driver.execute_shell(cmd_line, timeout_seconds=timeout)
 
         device_id = None
         if ctx and hasattr(ctx, "device") and ctx.device:
@@ -697,14 +1061,19 @@ class RunShortAdbCommandTool(ArtemisTool):
         ):
             try:
                 device = get_adb_device(ctx)
-                output = device.shell(phone_script)
+                output = await asyncio.wait_for(
+                    asyncio.to_thread(device.shell, phone_script),
+                    timeout=timeout,
+                )
                 return f"ADB command completed.\nOutput:\n{output}"
+            except TimeoutError:
+                return f"Error: Command timed out after {timeout:.0f} seconds."
             except Exception as e:  # pylint: disable=broad-exception-caught
                 return f"Error running command: {e}"
 
         try:
             process = await asyncio.create_subprocess_exec(
-                "adb",
+                _adb_binary(),
                 "-s",
                 device_id,
                 "shell",
@@ -713,25 +1082,28 @@ class RunShortAdbCommandTool(ArtemisTool):
                 env=run_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                stdin=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
             )
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error(f"Failed to spawn adb shell process for command '{cmd_line}': {e}")
             return f"Failed to spawn adb process: {e}"
 
         try:
-            stdout_data, _ = await asyncio.wait_for(process.communicate(), timeout=3.0)
+            stdout_data, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
             exit_code = process.returncode
-            output_text = stdout_data.decode()
+            output_text = stdout_data.decode(errors="replace")
 
             return f"ADB command completed with exit code {exit_code}.\nOutput:\n{output_text}"
         except TimeoutError:
             try:
                 process.terminate()
-                await process.wait()
+                await asyncio.wait_for(process.wait(), timeout=_TERMINATE_GRACE_SECONDS)
             except Exception:  # pylint: disable=broad-exception-caught
-                pass
-            return "Error: Command timed out after 3 seconds."
+                try:
+                    process.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+            return f"Error: Command timed out after {timeout:.0f} seconds."
         except Exception as e:  # pylint: disable=broad-exception-caught
             return f"Error running command: {e}"
 
@@ -762,6 +1134,11 @@ manage_task_wrapper = ToolWrapper(
     on_success_fn=lambda output: output,
     on_failure_fn=lambda err: f"Task management failed: {err}",
 )
+
+
+# ---------------------------------------------------------------------------
+# analyze_task_output
+# ---------------------------------------------------------------------------
 
 
 class AnalyzeTaskOutputArgs(BaseModel):

@@ -23,8 +23,10 @@ Two rules govern the split between required and optional:
 
 1. A tool is REQUIRED only when a prompt depends on it *structurally*, i.e. the prompt
    cannot be assembled around its absence. Today that is ``click_sequence`` alone: the
-   two ``*_disappeared_analyzer.md`` prompts are built around "atomic chained execution
-   to defeat turn latency", which *is* ``click_sequence``.
+   Flash runner prompt's "Time-Sensitive Tasks" teaching is built around "atomic
+   chained execution to defeat turn latency", which *is* ``click_sequence``. (The Pro
+   Operator needs no such tool: a multi-action turn is executed by the Validator as an
+   unvetted fast-action burst.)
 2. Everything else is OPTIONAL, because every other prompt reference lives in a tool
    enumeration slot or a self-contained instruction block that the assembly layer
    (``artemis/agents/prompt_assembly.py``) renders conditionally. An optional tool that
@@ -124,7 +126,6 @@ BACKEND_INDEPENDENT_TOOLS: frozenset[str] = frozenset(
         "analyze_task_output",
         "recall_history",
         "report_task_status",
-        "report_failure_analysis",
     }
 )
 
@@ -139,7 +140,6 @@ AGENT_ROLES: frozenset[str] = frozenset(
     {
         "operator",
         "flash",
-        "failure_analyzer",
         "validator",
     }
 )

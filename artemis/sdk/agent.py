@@ -55,6 +55,7 @@ from artemis.controllers.platform_specific_commands_controller import (
     get_first_device,
 )
 from artemis.runtime import DeviceExecutionLock
+from artemis.runtime.cancel_requests import watch_for_cancel_request
 from artemis.data_engine.engine import DataEngine
 from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
@@ -264,11 +265,11 @@ class Agent:
             client = genai.Client(api_key=key)
 
             # 2. Pre-warm LangChain client
-            chat = ChatGoogleGenerativeAI(model="gemini-3.7-flash", google_api_key=key)
+            chat = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=key)
 
             # Fire both calls concurrently in the background
             await asyncio.gather(
-                client.aio.models.count_tokens(model="gemini-3.7-flash", contents="ping"),
+                client.aio.models.count_tokens(model="gemini-3.8-flash", contents="ping"),
                 chat.ainvoke("ping"),
                 return_exceptions=True,
             )
@@ -588,8 +589,12 @@ class Agent:
                         queue_cancel_event.set()
                         try:
                             await asyncio.shield(acquire_task)
-                        except Exception:
-                            pass
+                        except Exception as exc:  # pylint: disable=broad-exception-caught
+                            # Draining the lock acquisition after cancellation is best effort.
+                            logger.debug(
+                                f"Device lock acquisition drain after cancel failed: {exc}",
+                                exc_info=True,
+                            )
                         raise
                 # All device mutation and UI initialization happens only after
                 # this task reaches the head of the one global FIFO queue.
@@ -652,8 +657,11 @@ class Agent:
                                 message="Invoking FlashRunner...",
                             )
 
+                            # An explicit max_steps caps the reactive loop; the
+                            # default leaves the cap to agent.flash.max_turns
+                            # (0 = unlimited).
                             max_turns = (
-                                request.max_steps if request.max_steps != RECURSION_LIMIT else 35
+                                request.max_steps if request.max_steps != RECURSION_LIMIT else None
                             )
                             runner = FlashRunner(context, goal=request.goal, max_turns=max_turns)
                             flash_result = await runner.run(state)
@@ -834,6 +842,14 @@ class Agent:
                 raise
             finally:
                 try:
+                    # Background ADB processes (logcat, screenrecord, ...) started
+                    # by the Operator must not outlive the automation task.
+                    from artemis.tools.command_tool import shutdown_adb_background_tasks
+
+                    await asyncio.wait_for(shutdown_adb_background_tasks(context), timeout=15.0)
+                except Exception as e:
+                    logger.warning(f"[{task_name}] Failed to stop background ADB tasks: {e}")
+                try:
                     await self._finalize_tracing_safely(task=task, context=context)
                 finally:
                     if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
@@ -856,11 +872,42 @@ class Agent:
                 except asyncio.CancelledError:
                     pass
 
+            cancel_watcher: asyncio.Task | None = None
             try:
                 self._current_task = asyncio.create_task(_execute_task_logic())
+                cancel_watcher = asyncio.create_task(self._watch_external_cancel(task_name))
                 return await self._current_task
             finally:
                 self._current_task = None
+                if cancel_watcher is not None and not cancel_watcher.done():
+                    cancel_watcher.cancel()
+                    try:
+                        await cancel_watcher
+                    except asyncio.CancelledError:
+                        pass
+
+    async def _watch_external_cancel(self, task_name: str) -> None:
+        """Cancel the running task when another process drops a cancel marker.
+
+        The admin console (and other ingresses) cannot deliver a signal to a
+        worker portably, so they write a marker keyed by session id / pid.
+        Reacting here routes the request through the same cancellation path
+        as Ctrl+C: the recording is stopped and remuxed, the trace folder is
+        compiled and renamed, and the device lease is released.
+        """
+
+        def _on_cancel() -> None:
+            logger.warning(
+                f"[{task_name}] External cancel request received; stopping the task gracefully."
+            )
+            self.stop_current_task()
+
+        try:
+            await watch_for_cancel_request(_on_cancel, session_id=self._session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(f"[{task_name}] Cancel watcher stopped: {exc}")
 
     def stop_current_task(self):
         """Requests cancellation of the currently running automation task."""
@@ -1049,7 +1096,6 @@ class Agent:
             assert_failure_policy=self._config.assert_failure_policy,
             disable_device_probes=self._config.disable_device_probes,
             disable_planner_validation=self._config.disable_planner_validation,
-            planner_validation_threshold=self._config.planner_validation_threshold,
             enable_committee=self._config.enable_committee,
             committee_debate_rounds=self._config.committee_debate_rounds,
             disable_outputter=self._config.disable_outputter,

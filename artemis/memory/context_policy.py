@@ -70,12 +70,11 @@ class ContextPolicy:
     uncompressed: bool = False
     last_n_detailed: int = 1
     all_detailed: bool = False
-    for_failure_analyzer: bool = False
     whitelist: bool = False
     chunk_view: str | None = "digest"  # "full" | "digest" | None (never chunks)
 
 
-#: The eight production call sites, verbatim (kwargs recorded 2026-09-01).
+#: Default compiled-history settings for each agent.
 CONTEXT_POLICIES: dict[str, ContextPolicy] = {
     # operator.py:996 — last_n_detailed comes from the node constructor.
     "operator": ContextPolicy(
@@ -89,14 +88,6 @@ CONTEXT_POLICIES: dict[str, ContextPolicy] = {
         uncompressed=True,
         last_n_detailed=1,
         chunk_view=None,
-    ),
-    # failure_analyzer.py:361
-    "failure_analyzer": ContextPolicy(
-        strategy="strict_milestone",
-        strict_milestone_pruning=True,
-        recent_window_size=3,
-        last_n_detailed=1,
-        for_failure_analyzer=True,
     ),
     # planner.py:133 — caller passes an empty plan and hash "default".
     "planner": ContextPolicy(
@@ -195,14 +186,8 @@ def load_chunk_blocks(engine: Any, view: str | None) -> list[dict] | None:
         rendered = getattr(row, "rendered_text", None)
         if not isinstance(start, int) or not isinstance(end, int) or not rendered:
             continue
-        text = (
-            rendered
-            if view == "full"
-            else _chunk_digest_text(rendered, start, end)
-        )
-        blocks.append(
-            {"start_step_number": start, "end_step_number": end, "text": text}
-        )
+        text = rendered if view == "full" else _chunk_digest_text(rendered, start, end)
+        blocks.append({"start_step_number": start, "end_step_number": end, "text": text})
     return blocks or None
 
 
@@ -230,13 +215,10 @@ def build_history_for(
     policy = resolve_policy(agent)
     kwargs: dict[str, Any] = {
         "min_summaries": len(steps) if policy.uncompressed else policy.min_summaries,
-        "last_n_detailed": (
-            policy.last_n_detailed if last_n_detailed is None else last_n_detailed
-        ),
+        "last_n_detailed": (policy.last_n_detailed if last_n_detailed is None else last_n_detailed),
         "all_detailed": policy.all_detailed,
         "strict_milestone_pruning": policy.strict_milestone_pruning,
         "recent_window_size": policy.recent_window_size,
-        "for_failure_analyzer": policy.for_failure_analyzer,
     }
     if policy.whitelist:
         kwargs["keep_subgoal_hashes"] = keep_subgoal_hashes

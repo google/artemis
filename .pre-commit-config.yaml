@@ -1,0 +1,20 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff lint
+        entry: uv run ruff check
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: Ruff format
+        entry: uv run ruff format --check
+        language: system
+        types: [python]
+
+      - id: quality-ratchet
+        name: Quality debt ratchet
+        entry: uv run python scripts/quality_ratchet.py
+        language: system
+        pass_filenames: false

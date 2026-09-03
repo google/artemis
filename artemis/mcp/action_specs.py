@@ -15,7 +15,7 @@
 """The canonical device-action manifest: every dialect of every action, side by side.
 
 Historically each device action was declared independently at three model-facing
-sites -- the Operator's inline LangChain shells, the Validator/Flash/FailureAnalyzer
+sites -- the Operator's inline LangChain shells, the Validator/Flash
 ``ToolDeclaration`` constants, and the action MCP server's function signatures -- and
 the declarations drifted apart (``click.target`` took an element index in one place
 and only coordinates in another). This module is now the single place all three are
@@ -30,7 +30,7 @@ and declared**, not accidental:
   coordinates. The shells are declaration-only ("Action Recorded"): the Operator's
   translate step lowers them into structured decisions.
 * ``declaration`` -- the JSON ``ToolDeclaration`` bound by the Validator's
-  FailureAnalyzer and the FlashRunner. These agents act on coordinates directly (the
+  FlashRunner. These agents act on coordinates directly (the
   element list they see carries coordinates), so target parameters are coordinate
   pairs and the wording teaches the act-then-observe loop ("The screen after X will
   be returned automatically").
@@ -103,7 +103,7 @@ class OperatorDialect:
 
 @dataclass(frozen=True)
 class DeclarationDialect:
-    """The Validator/Flash/FailureAnalyzer JSON declaration, wording preserved."""
+    """The Validator/Flash JSON declaration, wording preserved."""
 
     description: str
     parameters: dict[str, Any]
@@ -351,8 +351,8 @@ _SPECS: tuple[ActionSpec, ...] = (
             bind=_wire_click_sequence,
         ),
         differences=(
-            "Declared to Flash and the disappeared-target FailureAnalyzer strategies"
-            " only; sequence entries may be element indices at the declaration layer"
+            "Declared to Flash only (the Pro Operator chains actions as a fast-action"
+            " burst instead); sequence entries may be element indices at the declaration layer"
             " (resolved client-side), while the wire takes coordinate pairs only."
         ),
     ),
@@ -557,9 +557,8 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ParamSpec(
                     "duration",
                     int | None,
-                    "Optional swipe/drag duration in milliseconds (default 800). For drag-and-drop,"
-                    " list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars),"
-                    " set duration >= 1000 (e.g. 1500). If omitted for directional swipe, duration is computed automatically.",
+                    "Optional swipe/drag duration in milliseconds (default 800; computed"
+                    " automatically for directional swipes).",
                     required=False,
                     default=None,
                 ),
@@ -651,9 +650,8 @@ _SPECS: tuple[ActionSpec, ...] = (
         name="press_key",
         operator=OperatorDialect(
             description=(
-                "[ACTION] Press a physical or virtual system button (e.g.\n"
-                "\n"
-                "ENTER, BACK, HOME, APP_SWITCH)."
+                "[ACTION] Press a physical or virtual system button (e.g. ENTER, BACK,"
+                " HOME, APP_SWITCH)."
             ),
             params=(
                 ParamSpec(

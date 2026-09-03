@@ -38,6 +38,7 @@ def explorer_instance(artemis_context, mock_state):
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_exec_detect_objects(explorer_instance):
     result = await explorer_instance.exec_detect_objects(
         ["button", "text"], target_image_id="img_0"
@@ -48,6 +49,7 @@ async def test_exec_detect_objects(explorer_instance):
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_exec_ask_perception_tool(explorer_instance):
     result = await explorer_instance.exec_ask_perception_tool("login", 500, 500, ["button"])
     assert isinstance(result, dict)
@@ -74,6 +76,7 @@ async def test_exec_inspect_region(explorer_instance):
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_exec_ask_image_processor(explorer_instance):
     result = await explorer_instance.exec_ask_image_processor(
         "Invert colors", target_image_id="img_0"

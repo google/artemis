@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/*.pyc
+apps/showcase_ui/.angular
+apps/showcase_ui/dist
+apps/showcase_ui/node_modules
+build
+dist
+traces
+.env
+*.log

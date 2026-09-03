@@ -271,12 +271,15 @@ async def test_unified_controller_stop_recording(mock_ctx, tmp_path):
     )
     set_active_session("emulator-5554", session)
 
-    with patch(
-        "artemis.controllers.unified_controller.remux_recording_to_mp4",
-        AsyncMock(side_effect=lambda src, dst: (dst.write_bytes(b"mp4 content"), True)[1]),
-    ), patch(
-        "artemis.controllers.unified_controller.write_recording_manifest",
-        AsyncMock(return_value=tmp_path / "recording.json"),
+    with (
+        patch(
+            "artemis.controllers.unified_controller.remux_recording_to_mp4",
+            AsyncMock(side_effect=lambda src, dst: (dst.write_bytes(b"mp4 content"), True)[1]),
+        ),
+        patch(
+            "artemis.controllers.unified_controller.write_recording_manifest",
+            AsyncMock(return_value=tmp_path / "recording.json"),
+        ),
     ):
         res = await controller.stop_video_recording()
 

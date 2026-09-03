@@ -1041,25 +1041,26 @@ async def test_explorer_inspect_region():
 
 @pytest.mark.asyncio
 async def test_explorer_final_turn_tool_stripping():
-    """Test that on the final iteration (turn 10), Explorer strips other tools and injects warning."""
+    """On the final turn the Explorer strips other tools and injects the warning."""
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_ctx.device = MagicMock()
     mock_ctx.device.device_width = 1080
     mock_ctx.device.device_height = 2400
     mock_ctx.data_engine = MagicMock()
     mock_ctx.data_engine.base_dir = "/tmp/test_session"
-    explorer = Explorer(mock_ctx)
-
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
 
-    mock_state = MagicMock(spec=State)
-    mock_state.latest_screenshot = "/tmp/test_screenshot.jpg"
-
-    # Set up generate_content mock to capture call arguments
+    # A client already shared on the context selects the native engine and is
+    # reused lazily by ``run`` (no ``genai.Client`` construction).
     mock_client = MagicMock()
     mock_ctx._genai_client = mock_client
+    explorer = Explorer(mock_ctx)
+    assert explorer.use_native_gemini is True
+
+    mock_state = MagicMock(spec=State)
+    mock_state.latest_screenshot = "/tmp/test_screenshot.jpg"
 
     # Turn 1: model returns search_xml_ocr
     fc_search = MagicMock()
@@ -1094,14 +1095,14 @@ async def test_explorer_final_turn_tool_stripping():
             minimal_list="test list",
         )
 
-        # Total number of iterations is max_iterations = 3 under "pro" mode default
+        # The default "pro" tier budgets 3 turns (tiers.EXPLORER_TIERS)
         assert mock_client.aio.models.generate_content.call_count == 3
 
         # Check the final turn call (index 2) keyword args
         call_args_3 = mock_client.aio.models.generate_content.call_args_list[2]
         config = call_args_3.kwargs["config"]
 
-        # Tools in the 10th call should only contain "submit_answer"
+        # Tools in the final call should only contain "submit_answer"
         tools = config.tools[0].function_declarations
         assert len(tools) == 1
         assert tools[0].name == "submit_answer"
@@ -1120,8 +1121,15 @@ async def test_explorer_final_turn_tool_stripping():
 
 @pytest.mark.asyncio
 async def test_explorer_ask_perception_tool():
+    """The perception bundle answers from the in-memory screen index.
+
+    No Data Engine lookup is involved: the text search, the coordinate
+    audit and the OCR inventory all read ``explorer.screen_index``.
+    """
     import numpy as np
     from unittest.mock import mock_open
+
+    from artemis.agents.explorer.screen_index import ScreenIndex
 
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_ctx.data_engine = MagicMock()
@@ -1144,37 +1152,24 @@ async def test_explorer_ask_perception_tool():
             "description": "Original complete screenshot",
         }
     }
-
-    # Mock search_ui_func
-    mock_search_ui_res = {
-        "matches": [
+    explorer.screen_index = ScreenIndex.from_hierarchy(
+        [
             {
-                "matched_text": "Settings",
-                "bounds": [540, 480, 540, 480],
-                "type": "xml",
+                "bounds": "[500,400][600,560]",
+                "text": "Settings",
+                "resource-id": "com.android.settings:id/btn_settings",
+                "class": "android.widget.Button",
+                "clickable": "true",
             },
             {
-                "matched_text": "Sign In",
-                "bounds": [100, 100, 200, 200],
-                "type": "ocr",
+                "bounds": "[100,100][200,200]",
+                "class": "android.widget.FrameLayout [OCR]",
+                "ocr_elements": [{"text": "Settings page", "bounds": "[100,100][200,200]"}],
             },
-        ]
-    }
-
-    # Mock storage record
-    mock_record = MagicMock()
-    mock_record.ui_tree = [
-        {
-            "bounds": "[500,400][600,560]",
-            "text": "Settings Button",
-            "resource-id": "com.android.settings:id/btn_settings",
-            "class": "android.widget.Button",
-        }
-    ]
-    mock_record.ocr_result = []
-
-    mock_storage = MagicMock()
-    mock_storage.get_image.return_value = mock_record
+        ],
+        1080,
+        2400,
+    )
 
     # Mock _run_object_detection
     mock_detector_res = {
@@ -1186,18 +1181,7 @@ async def test_explorer_ask_perception_tool():
     mock_draw_dots = MagicMock()
 
     with (
-        patch(
-            "artemis.agents.explorer.explorer.search_ui_func",
-            return_value=mock_search_ui_res,
-        ),
-        patch(
-            "artemis.agents.explorer.explorer.StorageManager",
-            return_value=mock_storage,
-        ),
-        patch(
-            "artemis.mcp.xml_search_server.StorageManager",
-            return_value=mock_storage,
-        ),
+        patch("artemis.agents.explorer.explorer.StorageManager") as storage_cls,
         patch(
             "artemis.agents.explorer.explorer._run_object_detection",
             return_value=mock_detector_res,
@@ -1216,37 +1200,46 @@ async def test_explorer_ask_perception_tool():
             detect_queries=["profile icon"],
         )
 
-        assert "Text Search Results are:" in result["text"]
-        assert "Coordinate Search Results are:" in result["text"]
-        assert "Object Detection Results are:" in result["text"]
+    storage_cls.assert_not_called()
+    assert "Text Search Results are:" in result["text"]
+    assert "Coordinate Search Results are:" in result["text"]
+    assert "Object Detection Results are:" in result["text"]
 
-        # XML Text search should return label X1
-        assert "[X1]" in result["text"]
-        # OCR Text search should return label O2
-        assert "[O2]" in result["text"]
-        # Coordinate search should return label X3
-        assert "[X3]" in result["text"]
-        # Object detection should return label D4 (since global label idx is shared/contiguous)
-        assert "[D4]" in result["text"]
+    # UI-tree text match -> X1, OCR text match -> O2 (both from the index)
+    assert "[X1] 'Settings' at [509,200]" in result["text"]
+    assert "[O2] 'Settings page' at [138,62]" in result["text"]
+    # Coordinate audit -> X3 with the innermost element's description
+    assert (
+        "Matched element at [550,200]: [X3] | 'Settings' class=android.widget.Button"
+        " id=com.android.settings:id/btn_settings source=ui-tree interactive"
+    ) in result["text"]
+    # Object detection -> D4 (the label counter is shared and contiguous)
+    assert "[D4]" in result["text"]
 
-        assert len(result["image_paths"]) == 3
+    # Element-backed labels are registered; detection points are not.
+    assert explorer.label_registry["X1"].text == "Settings"
+    assert explorer.label_registry["O2"].source == "ocr"
+    assert explorer.label_registry["X3"] is explorer.label_registry["X1"]
+    assert "D4" not in explorer.label_registry
 
-        # Verify call arguments of draw_dots
-        assert mock_draw_dots.call_count == 3
-        # First call (XML/OCR Text search): green color
-        first_call = mock_draw_dots.call_args_list[0]
-        assert first_call.kwargs.get("color") == "green"
-        assert first_call.args[2] == ["X1", "O2"]
+    assert len(result["image_paths"]) == 3
 
-        # Second call (XML Coordinate audit): blue color
-        second_call = mock_draw_dots.call_args_list[1]
-        assert second_call.kwargs.get("color") == "blue"
-        assert second_call.args[2] == ["X3"]
+    # Verify call arguments of draw_dots
+    assert mock_draw_dots.call_count == 3
+    # First call (XML/OCR Text search): green color
+    first_call = mock_draw_dots.call_args_list[0]
+    assert first_call.kwargs.get("color") == "green"
+    assert first_call.args[2] == ["X1", "O2"]
 
-        # Third call (Object detection): red color
-        third_call = mock_draw_dots.call_args_list[2]
-        assert third_call.kwargs.get("color") == "red"
-        assert third_call.args[2] == ["D4"]
+    # Second call (XML Coordinate audit): blue color
+    second_call = mock_draw_dots.call_args_list[1]
+    assert second_call.kwargs.get("color") == "blue"
+    assert second_call.args[2] == ["X3"]
+
+    # Third call (Object detection): red color
+    third_call = mock_draw_dots.call_args_list[2]
+    assert third_call.kwargs.get("color") == "red"
+    assert third_call.args[2] == ["D4"]
 
 
 def test_explorer_prune_historical_images():

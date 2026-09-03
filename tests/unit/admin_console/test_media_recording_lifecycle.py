@@ -51,7 +51,13 @@ async def test_session_video_publishes_only_finalized_versioned_media(monkeypatc
         "resolve_video_segments",
         MagicMock(
             return_value=[
-                {"url": "/videos/recording.mp4", "start": 0, "duration": 4, "width": 1080, "height": 1920}
+                {
+                    "url": "/videos/recording.mp4",
+                    "start": 0,
+                    "duration": 4,
+                    "width": 1080,
+                    "height": 1920,
+                }
             ]
         ),
     )

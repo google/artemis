@@ -64,8 +64,7 @@ async def _run_native_chunk_conversation(
             file = await analyzer.upload_and_poll_file(media.compressed_path)
             span.result = f"Uploaded {file.name}"
         logger.info(
-            "Invoking Gemini for sub-agent task with model"
-            f" {analyzer.model_name} (streaming)..."
+            f"Invoking Gemini for sub-agent task with model {analyzer.model_name} (streaming)..."
         )
         trace_id = CURRENT_TRACE_ID.get()
 
@@ -209,11 +208,7 @@ async def _stream_sub_agent_turn(
                 contents=sub_agent_contents,
                 config=types.GenerateContentConfig(
                     system_instruction=analyzer.sub_system_prompt,
-                    tools=[
-                        types.Tool(
-                            function_declarations=[analyzer.submit_answer_tool]
-                        )
-                    ],
+                    tools=[types.Tool(function_declarations=[analyzer.submit_answer_tool])],
                     safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
                 ),
             ),
@@ -256,18 +251,12 @@ async def _read_sub_agent_stream(analyzer, span, target_stream, current_trace_id
         if chunk_text:
             text += chunk_text
             if analyzer.ctx.data_engine and current_trace_id:
-                analyzer.ctx.data_engine.stream_output(
-                    current_trace_id, chunk_text
-                )
+                analyzer.ctx.data_engine.stream_output(current_trace_id, chunk_text)
         if chunk.function_calls:
             function_calls.extend(chunk.function_calls)
 
         candidates = getattr(chunk, "candidates", None)
-        if (
-            candidates
-            and isinstance(candidates, list)
-            and len(candidates) > 0
-        ):
+        if candidates and isinstance(candidates, list) and len(candidates) > 0:
             content = getattr(candidates[0], "content", None)
             parts = getattr(content, "parts", None) if content else None
             if parts:
@@ -304,20 +293,12 @@ async def _handle_sub_agent_calls(
     """Processes function calls from one turn; returns (answered, summary, analysis)."""
     answered = False
     for fc in function_calls:
-        if (
-            fc.name.split(":")[-1] if ":" in fc.name else fc.name
-        ) == "submit_answer":
+        if (fc.name.split(":")[-1] if ":" in fc.name else fc.name) == "submit_answer":
             args = fc.args
             timeline_events = args.get("timeline_events", [])
-            final_summary = (
-                args.get("summary", "No summary provided.")
-                .strip()
-                .replace("\n", " ")
-            )
+            final_summary = args.get("summary", "No summary provided.").strip().replace("\n", " ")
             final_analysis = (
-                args.get("analysis", "No analysis provided.")
-                .strip()
-                .replace("\n", " ")
+                args.get("analysis", "No analysis provided.").strip().replace("\n", " ")
             )
 
             error_msg = _validate_timeline_events(timeline_events, start_time, end_time)
@@ -349,11 +330,7 @@ async def _handle_sub_agent_calls(
         function_calls,
         full_text,
         function_calls[0].name,
-        (
-            "Tool not recognized."
-            " Please use"
-            " submit_answer."
-        ),
+        ("Tool not recognized. Please use submit_answer."),
     )
     return answered, final_summary, final_analysis
 
@@ -388,9 +365,7 @@ def _validate_timeline_events(
                 event["verification_timestamp_secs"],
                 (int, float),
             )
-            or isinstance(
-                event["verification_timestamp_secs"], bool
-            )
+            or isinstance(event["verification_timestamp_secs"], bool)
         ):
             return (
                 "Error:"
@@ -409,9 +384,7 @@ def _validate_timeline_events(
         )
         confidence = float(event.get("confidence_score", 0.0))  # noqa: F841
 
-        if verification_ts < start_time or (
-            end_time is not None and verification_ts > end_time
-        ):
+        if verification_ts < start_time or (end_time is not None and verification_ts > end_time):
             return (
                 "Error:"
                 " 'verification_timestamp_secs'"
@@ -439,15 +412,8 @@ def _append_rejection(
             role="model",
             parts=original_parts
             if original_parts
-            else [
-                types.Part(function_call=fc)
-                for fc in function_calls
-            ]
-            + (
-                [types.Part.from_text(text=full_text)]
-                if full_text
-                else []
-            ),
+            else [types.Part(function_call=fc) for fc in function_calls]
+            + ([types.Part.from_text(text=full_text)] if full_text else []),
         )
     )
     sub_agent_contents.append(

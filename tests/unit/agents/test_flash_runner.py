@@ -18,7 +18,9 @@ from unittest.mock import Mock, patch
 import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
 
+from artemis.agents.explorer.constants import ASK_EXPLORER_DESCRIPTION
 from artemis.agents.flash.runner import FlashRunner
+from artemis.agents.validator.tool_declarations import ASK_EXPLORER_TOOL
 from artemis.context import ArtemisContext
 
 
@@ -55,6 +57,31 @@ def test_flash_runner_tools_initialization(mock_context):
         assert "report_task_status" in tool_names
         # Validator's report_failure_analysis should NOT be in FlashRunner
         assert "report_failure_analysis" not in tool_names
+
+
+def test_flash_runner_executor_follows_the_flash_explorer_tier(mock_context):
+    """The executor is tagged as the Flash profile so ask_explorer follows flash_mode."""
+    with (
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch("artemis.agents.flash.runner.McpActionExecutor") as executor_cls,
+    ):
+        runner = FlashRunner(mock_context, goal="Test Open Settings")
+
+    executor_cls.assert_called_once()
+    assert executor_cls.call_args.kwargs["agent_name"] == "flash"
+    assert runner.executor is executor_cls.return_value
+
+
+def test_ask_explorer_declaration_is_tier_agnostic(mock_context):
+    """Flash binds the shared ask_explorer contract: query + context_feedback, no tier."""
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="Test Open Settings")
+        declaration = next(t for t in runner._get_tools() if t.name == "ask_explorer")
+
+    assert declaration is ASK_EXPLORER_TOOL
+    assert declaration.description == ASK_EXPLORER_DESCRIPTION
+    assert set(declaration.parameters["properties"]) == {"query", "context_feedback"}
+    assert declaration.parameters["required"] == ["query"]
 
 
 def test_flash_runner_screenshot_pruning(mock_context):

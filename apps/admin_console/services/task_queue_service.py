@@ -16,8 +16,10 @@ import asyncio
 from datetime import datetime
 import logging
 import os
+from pathlib import Path
 import shutil
 import sys
+import threading
 import time
 from typing import Any
 import uuid
@@ -43,8 +45,11 @@ from artemis.runtime import (
     AdbEndpoint,
     AdbTarget,
     DeviceExecutionLock,
+    clear_cancel_request,
     current_adb_endpoint,
+    pid_is_alive,
     process_supervisor,
+    request_cancel,
     trace_store,
 )
 
@@ -59,6 +64,156 @@ class TaskQueueService:
     # Strong references to in-flight _execute_task_item tasks (asyncio itself only
     # keeps weak references to running tasks).
     _run_tasks: set[asyncio.Task] = set()
+    # Deadline enforcers for graceful stops (see _stop_worker_gracefully).
+    _forced_stop_tasks: set[asyncio.Task] = set()
+
+    DEFAULT_CANCEL_GRACE_SECONDS = 45.0
+
+    @classmethod
+    def _cancel_grace_seconds(cls) -> float:
+        """How long a worker may finalize itself before it is killed.
+
+        ``ARTEMIS_CANCEL_GRACE_SECONDS=0`` restores the legacy immediate kill.
+        """
+        raw = os.getenv("ARTEMIS_CANCEL_GRACE_SECONDS")
+        if raw is None or not raw.strip():
+            return cls.DEFAULT_CANCEL_GRACE_SECONDS
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            return cls.DEFAULT_CANCEL_GRACE_SECONDS
+
+    @staticmethod
+    def _hard_kill(pid: int, process_created_at: float = 0.0) -> bool:
+        if not pid:
+            return False
+        if process_created_at and process_created_at > 0:
+            return process_supervisor.terminate_tree_verified(pid, process_created_at)
+        try:
+            return process_supervisor.terminate_tree(pid)
+        except Exception:
+            return False
+
+    @classmethod
+    def _stop_worker_gracefully(
+        cls,
+        pid: Any,
+        process_created_at: float = 0.0,
+        session_id: str | None = None,
+        reason: str = "Task stopped from the Artemis frontend.",
+    ) -> tuple[bool, bool]:
+        """Ask a worker to cancel itself; hard-kill it once the grace period lapses.
+
+        Workers are isolated from the daemon's console (and may belong to
+        another ingress process), so instead of a signal the daemon drops a
+        cancel marker the worker polls for. Honouring it runs the worker's
+        normal cancellation path: the screen recording is stopped and remuxed,
+        the trace folder is compiled, and the device lease is released. A
+        worker that never picks the marker up is killed after the grace period.
+
+        Returns ``(stopped, deferred)``: ``stopped`` mirrors the legacy kill
+        result, ``deferred`` is True when the kill was handed to the deadline
+        enforcer instead of happening now.
+        """
+        try:
+            pid_int = int(pid) if pid else 0
+        except (TypeError, ValueError):
+            pid_int = 0
+        grace = cls._cancel_grace_seconds()
+        if not pid_int or grace <= 0:
+            return cls._hard_kill(pid_int, process_created_at), False
+
+        created_at = float(process_created_at or 0.0)
+        if created_at <= 0:
+            # PID markers carry the creation time so a leftover marker can never
+            # cancel a future process that reuses this PID.
+            try:
+                import psutil
+
+                created_at = float(psutil.Process(pid_int).create_time())
+            except Exception:
+                created_at = 0.0
+        if not pid_is_alive(pid_int, created_at or None):
+            return True, False
+
+        written = request_cancel(
+            session_id=str(session_id) if session_id else None,
+            pid=pid_int,
+            process_created_at=created_at,
+            reason=reason,
+        )
+        if not written:
+            return cls._hard_kill(pid_int, created_at), False
+
+        print(
+            f"[stop_tasks] Cancel requested for worker {pid_int}"
+            f" (session {session_id or 'n/a'}); forcing termination after {grace:.0f}s"
+        )
+        cls._schedule_forced_stop(pid_int, created_at, grace, session_id)
+        return True, True
+
+    @classmethod
+    def _stop_proc_gracefully(cls, proc: Any, session_id: Any) -> bool:
+        """Graceful variant for a locally spawned process; True when deferred."""
+        pid = getattr(proc, "pid", None)
+        if not pid or cls._cancel_grace_seconds() <= 0:
+            return False
+        try:
+            _stopped, deferred = cls._stop_worker_gracefully(
+                pid, session_id=str(session_id) if session_id else None
+            )
+        except Exception:
+            return False
+        return deferred
+
+    @classmethod
+    def _schedule_forced_stop(
+        cls, pid: int, process_created_at: float, grace: float, session_id: Any
+    ) -> None:
+        """Kill ``pid`` if it is still alive once ``grace`` seconds have passed."""
+
+        def _still_alive() -> bool:
+            return pid_is_alive(pid, process_created_at or None)
+
+        def _force() -> None:
+            print(
+                f"[stop_tasks] Worker {pid} (session {session_id or 'n/a'}) did not exit"
+                f" within {grace:.0f}s of the cancel request; forcing termination."
+            )
+            cls._hard_kill(pid, process_created_at)
+
+        async def _enforce_async() -> None:
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline:
+                if not _still_alive():
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                _force()
+            clear_cancel_request(session_id=str(session_id) if session_id else None, pid=pid)
+
+        def _enforce_sync() -> None:
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline:
+                if not _still_alive():
+                    break
+                time.sleep(0.5)
+            else:
+                _force()
+            clear_cancel_request(session_id=str(session_id) if session_id else None, pid=pid)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            task = loop.create_task(_enforce_async())
+            cls._forced_stop_tasks.add(task)
+            task.add_done_callback(cls._forced_stop_tasks.discard)
+            return
+        threading.Thread(
+            target=_enforce_sync, name=f"artemis-forced-stop-{pid}", daemon=True
+        ).start()
 
     @staticmethod
     def _task_target(task_item: dict[str, Any]) -> AdbTarget:
@@ -88,9 +243,7 @@ class TaskQueueService:
                 )
 
     @classmethod
-    def _broadcast_startup_progress(
-        cls, session_id: str | None, stage: str, message: str
-    ) -> None:
+    def _broadcast_startup_progress(cls, session_id: str | None, stage: str, message: str) -> None:
         if not session_id:
             return
         data = {
@@ -223,8 +376,7 @@ class TaskQueueService:
         inside each worker process.
         """
         print(
-            "[QueueWorker] Dispatcher initialized "
-            f"(concurrency mode: {cls._concurrency_mode()})."
+            f"[QueueWorker] Dispatcher initialized (concurrency mode: {cls._concurrency_mode()})."
         )
         try:
             DeviceExecutionLock.cleanup_stale_locks()
@@ -262,9 +414,7 @@ class TaskQueueService:
         # "running" state, so admission must count those too -- active_runs alone
         # lags behind by the subprocess startup latency.
         in_flight = [
-            i
-            for i in state.queue_items
-            if isinstance(i, dict) and i.get("status") == "running"
+            i for i in state.queue_items if isinstance(i, dict) and i.get("status") == "running"
         ]
         busy_devices = state.busy_device_ids | {
             cls._task_target(i).lock_key for i in in_flight if i.get("device_serial")
@@ -325,9 +475,7 @@ class TaskQueueService:
         state.current_profile = profile
         state.active_session_id = sess_id
 
-        cls._broadcast_startup_progress(
-            sess_id, "launching", "Starting the execution process"
-        )
+        cls._broadcast_startup_progress(sess_id, "launching", "Starting the execution process")
 
         # Broadcast session_started so all connected clients know the task has started
         cls._broadcast_event(
@@ -353,6 +501,8 @@ class TaskQueueService:
         """Assemble the worker subprocess command line and environment."""
         expected_output = task_item.get("expected_output")
         enable_outputter = task_item.get("enable_outputter")
+        verification_level = task_item.get("verification_level")
+        explorer_mode = task_item.get("explorer_mode")
         locked_app = task_item.get("locked_app_package") or task_item.get("locked_app")
         app_path = task_item.get("app_path")
 
@@ -395,6 +545,10 @@ class TaskQueueService:
             cmd.extend(["--output-description", str(expected_output)])
         if enable_outputter is not None:
             cmd.append("--enable-outputter" if enable_outputter else "--disable-outputter")
+        if verification_level:
+            cmd.extend(["--verification-level", str(verification_level)])
+        if explorer_mode:
+            cmd.extend(["--explorer-pro-mode", str(explorer_mode)])
         if locked_app:
             cmd.extend(["--locked-app", str(locked_app)])
         if app_path:
@@ -439,9 +593,7 @@ class TaskQueueService:
                 print(
                     f"[QueueWorker] Could not record worker pid in status.json for {sess_id}: {exc}"
                 )
-        cls._broadcast_startup_progress(
-            sess_id, "process_ready", "Execution process started"
-        )
+        cls._broadcast_startup_progress(sess_id, "process_ready", "Execution process started")
         ingress_type = str(task_item.get("ingress", "frontend"))
         DeviceExecutionLock.transfer_reservation(
             str(task_item.get("queue_ticket")),
@@ -467,9 +619,7 @@ class TaskQueueService:
             except Exception:
                 log_path = None
         if isinstance(proc.stdout, asyncio.StreamReader):
-            return asyncio.create_task(
-                cls._forward_worker_output(proc.stdout, log_path)
-            )
+            return asyncio.create_task(cls._forward_worker_output(proc.stdout, log_path))
         return None
 
     @classmethod
@@ -481,9 +631,7 @@ class TaskQueueService:
             str(sess_id) in getattr(state, "cancelled_session_ids", set())
             or run_key in state.manually_stopped_run_ids
         ):
-            print(
-                f"[QueueWorker] Task [{sess_id}] was cancelled during launch. Terminating."
-            )
+            print(f"[QueueWorker] Task [{sess_id}] was cancelled during launch. Terminating.")
             await cls._terminate_worker_process(proc)
 
     @classmethod
@@ -505,23 +653,21 @@ class TaskQueueService:
                 # against when status.json is stale, so a failed DB
                 # write must not pass silently.
                 logger.error(
-                    "[QueueWorker] Could not persist terminal DB status "
-                    "'%s' for session %s",
+                    "[QueueWorker] Could not persist terminal DB status '%s' for session %s",
                     new_status,
                     sess_id,
                 )
         else:
-            print(
-                f"[QueueWorker] Preserved authoritative session {sess_id} "
-                f"status '{new_status}'"
-            )
+            print(f"[QueueWorker] Preserved authoritative session {sess_id} status '{new_status}'")
         # A stale status.json would leave MCP pollers seeing "running"
         # until their next DB reconcile, so retry transient write
         # failures before giving up.
         for attempt in range(3):
             try:
                 if trace_store.read_status(str(sess_id)):
-                    canonical_mcp_status = "completed" if new_status in ("completed", "success") else new_status
+                    canonical_mcp_status = (
+                        "completed" if new_status in ("completed", "success") else new_status
+                    )
                     trace_store.update_trace_status(
                         str(sess_id),
                         canonical_mcp_status,
@@ -542,37 +688,68 @@ class TaskQueueService:
 
     @classmethod
     async def _recover_or_fail_recording(cls, sess_id: Any) -> None:
-        """Attempt recovery of a not-yet-ready recording, else mark it failed."""
+        """Finalize a recording whose worker died before it could, else mark it failed.
+
+        A worker that stops gracefully finalizes its own recording and this is
+        a no-op. A hard-killed (or crashed) worker leaves the raw scrcpy file it
+        registered at recording start; remuxing that file is all that is
+        needed to publish the full video.
+        """
         rec_info = session_repo.get_video_recording_for_session(sess_id)
         rec_status = (rec_info or {}).get("status")
-        recovered_video_path = None
-        if rec_status != "ready":
+        if rec_status == "ready":
+            return
+
+        recovered_url = None
+        # 1. Direct recovery from the recording row written at recording start.
+        try:
+            local_video_path = (rec_info or {}).get("local_video_path")
+            if local_video_path:
+                start_time = (rec_info or {}).get("start_time")
+                if not start_time:
+                    session_row = session_repo.get_session_by_id(sess_id)
+                    start_time = dict(session_row).get("start_time") if session_row else None
+                final_path = await asyncio.to_thread(
+                    media_service.recover_orphaned_recording,
+                    local_video_path,
+                    start_time,
+                )
+                if final_path:
+                    session_repo.mark_recording_ready(sess_id, str(final_path))
+                    recovered_url = media_service.path_to_video_url(Path(final_path))
+        except Exception as rec_err:
+            print(f"[QueueWorker] Error finalizing orphaned recording: {rec_err}")
+
+        # 2. Fallback: locate an already finalized file by folder / session naming.
+        if not recovered_url:
             try:
                 video_rec_map = session_repo.get_video_recordings_map()
                 video_idx = await asyncio.to_thread(media_service.build_video_index)
-                recovered_url = await asyncio.to_thread(
+                fallback_url = await asyncio.to_thread(
                     media_service.resolve_video_url,
                     {"session_id": sess_id},
                     video_rec_map,
                     video_idx,
                 )
-                if recovered_url:
-                    session_repo.mark_recording_ready(sess_id, recovered_url)
-                    cls._broadcast_event(
-                        "recording_ready",
-                        {"session_id": sess_id, "video_url": recovered_url},
-                    )
-                    recovered_video_path = recovered_url
+                if fallback_url:
+                    session_repo.mark_recording_ready(sess_id, fallback_url)
+                    recovered_url = fallback_url
             except Exception as rec_err:
                 print(f"[QueueWorker] Error attempting recording recovery: {rec_err}")
 
-        if not recovered_video_path and rec_status != "ready":
-            recording_error = "Task worker exited before recording finalization completed"
-            if session_repo.mark_recording_failed_if_pending(sess_id, recording_error):
-                cls._broadcast_event(
-                    "recording_failed",
-                    {"session_id": sess_id, "error": recording_error},
-                )
+        if recovered_url:
+            cls._broadcast_event(
+                "recording_ready",
+                {"session_id": sess_id, "video_url": recovered_url},
+            )
+            return
+
+        recording_error = "Task worker exited before recording finalization completed"
+        if session_repo.mark_recording_failed_if_pending(sess_id, recording_error):
+            cls._broadcast_event(
+                "recording_failed",
+                {"session_id": sess_id, "error": recording_error},
+            )
 
     @classmethod
     def _announce_session_end(
@@ -624,6 +801,15 @@ class TaskQueueService:
             state.cancelled_session_ids.discard(str(sess_id))
         state.cancelled_session_ids.discard(run_key)
         state.manually_stopped_run_ids.discard(run_key)
+        try:
+            clear_cancel_request(
+                session_id=str(sess_id) if sess_id else None,
+                pid=getattr(proc, "pid", None),
+            )
+        except (OSError, TypeError, ValueError):
+            # Marker cleanup is best-effort: an unwritable temp dir or an odd
+            # pid value must not block releasing the run slot.
+            pass
         state.active_runs.pop(run_key, None)
         if proc is not None and state.current_process is proc:
             state.current_process = None
@@ -665,9 +851,7 @@ class TaskQueueService:
                 env=env,
                 **cls._subprocess_creation_kwargs(),
             )
-            cls._register_worker_run(
-                task_item, run_key, sess_id, goal, profile, target, proc
-            )
+            cls._register_worker_run(task_item, run_key, sess_id, goal, profile, target, proc)
             output_task = cls._start_output_forwarder(sess_id, proc)
             await cls._terminate_if_cancelled_during_launch(run_key, sess_id, proc)
 
@@ -685,9 +869,7 @@ class TaskQueueService:
                     sess_id, returncode, manual_stop
                 )
                 await cls._recover_or_fail_recording(sess_id)
-                cls._announce_session_end(
-                    task_item, sess_id, goal, new_status, manual_stop
-                )
+                cls._announce_session_end(task_item, sess_id, goal, new_status, manual_stop)
 
         except asyncio.CancelledError:
             print(f"[QueueWorker] Task [{sess_id}] received cancellation signal.")
@@ -763,9 +945,7 @@ class TaskQueueService:
         return None
 
     @classmethod
-    async def _reject_unavailable_device(
-        cls, device_serial: str | None
-    ) -> dict[str, Any] | None:
+    async def _reject_unavailable_device(cls, device_serial: str | None) -> dict[str, Any] | None:
         """Return the rejection response for an unattached explicit serial, if any."""
         # Strict device binding: reject an explicitly requested serial that is not
         # attached and authorized, instead of silently running on another device.
@@ -804,6 +984,8 @@ class TaskQueueService:
         device_serial: str | None,
         ingress: str,
         conversation_id: str | None,
+        verification_level: str | None = None,
+        explorer_mode: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -829,6 +1011,8 @@ class TaskQueueService:
             "profile": profile or "flash",
             "expected_output": expected_output,
             "enable_outputter": enable_outputter,
+            "verification_level": verification_level,
+            "explorer_mode": explorer_mode,
             "locked_app_package": locked_app_package,
             "app_path": app_path,
             "device_serial": assigned_serial,
@@ -854,8 +1038,19 @@ class TaskQueueService:
         ingress: str = "frontend",
         session_id: str | None = None,
         conversation_id: str | None = None,
+        verification_level: str | None = None,
+        explorer_mode: str | None = None,
     ) -> dict[str, Any]:
-        """Enqueues one or more goals and wakes up the background worker."""
+        """Enqueues one or more goals and wakes up the background worker.
+
+        ``verification_level`` and ``explorer_mode`` are Pro-profile tuning knobs
+        forwarded to the worker as ``--verification-level`` / ``--explorer-pro-mode``;
+        they are normalised here so the queue item and the CLI see one spelling.
+        """
+        verification_level = (
+            str(verification_level).strip().lower() or None if verification_level else None
+        )
+        explorer_mode = str(explorer_mode).strip().lower() or None if explorer_mode else None
         cls.ensure_worker_running()
 
         enqueued_tasks = []
@@ -888,6 +1083,8 @@ class TaskQueueService:
                 device_serial,
                 ingress,
                 conversation_id,
+                verification_level=verification_level,
+                explorer_mode=explorer_mode,
             )
             state.queue_items.append(task_item)
             enqueued_tasks.append(task_item)
@@ -931,9 +1128,10 @@ class TaskQueueService:
 
         for dev_owner in list(active_owners.values()):
             if dev_owner and DeviceExecutionLock.is_active_owner(dev_owner):
-                process_supervisor.terminate_tree_verified(
+                cls._stop_worker_gracefully(
                     dev_owner.pid,
                     dev_owner.process_created_at,
+                    session_id=dev_owner.session_id,
                 )
                 DeviceExecutionLock.cleanup_stale_locks(dev_owner.device_id)
                 sid = dev_owner.session_id
@@ -973,20 +1171,22 @@ class TaskQueueService:
             state.cancelled_session_ids.add(str(run_key))
             run_proc = run.get("process")
             if run_proc is not None and run_proc.returncode is None:
-                try:
-                    run_proc.kill()
-                except (ProcessLookupError, OSError):
-                    # Process already exited between the check and the kill.
-                    pass
+                if not cls._stop_proc_gracefully(run_proc, run.get("session_id") or run_key):
+                    try:
+                        run_proc.kill()
+                    except (ProcessLookupError, OSError):
+                        # Process already exited between the check and the kill.
+                        pass
         # active_runs entries are popped by each run's finalizer once the
         # process exit is observed; clearing them here would free the device
         # slots before the processes are actually gone.
         if state.current_process:
-            try:
-                state.current_process.kill()
-            except (ProcessLookupError, OSError):
-                # Process already exited between the check and the kill.
-                pass
+            if not cls._stop_proc_gracefully(state.current_process, state.active_session_id):
+                try:
+                    state.current_process.kill()
+                except (ProcessLookupError, OSError):
+                    # Process already exited between the check and the kill.
+                    pass
             state.current_process = None
 
     @classmethod
@@ -1167,19 +1367,24 @@ class TaskQueueService:
         stopped = False
         reservation_cancelled = False
         if owner and DeviceExecutionLock.is_active_owner(owner):
-            stopped = process_supervisor.terminate_tree_verified(
+            stopped, _deferred = cls._stop_worker_gracefully(
                 owner.pid,
                 owner.process_created_at,
+                session_id=owner.session_id or target_sid,
             )
             DeviceExecutionLock.cleanup_stale_locks(owner.device_id)
         elif owner is None and owner_record_exists and not target_sid:
             # Never fall back to a frontend PID while another process has an
             # owner record that is still being published or cannot be parsed.
             return None
-        elif owner is None and local_proc is not None and (
-            local_run is not None
-            or not target_sid
-            or str(state.active_session_id) == target_sid
+        elif (
+            owner is None
+            and local_proc is not None
+            and (
+                local_run is not None
+                or not target_sid
+                or str(state.active_session_id) == target_sid
+            )
         ):
             # The locally-managed worker can be stopped during its short
             # initialization window before Agent acquires the device lease.
@@ -1187,21 +1392,28 @@ class TaskQueueService:
                 state.cancelled_session_ids.add(target_sid)
             elif local_run_key is not None:
                 state.manually_stopped_run_ids.add(str(local_run_key))
+            deferred = False
             if local_pid:
                 try:
-                    stopped = process_supervisor.terminate_tree(local_pid)
+                    stopped, deferred = cls._stop_worker_gracefully(
+                        local_pid,
+                        session_id=target_sid or (local_run or {}).get("session_id"),
+                    )
                 except Exception:
                     stopped = False
-            try:
-                local_proc.kill()
-                stopped = True
-            except (ProcessLookupError, OSError):
-                # Process already exited; terminate_tree above may have got it.
-                pass
+            if not deferred:
+                try:
+                    local_proc.kill()
+                    stopped = True
+                except (ProcessLookupError, OSError):
+                    # Process already exited; the stop above may have got it.
+                    pass
             stopped = True
             is_local_owner = True
-        elif owner is None and local_item and (
-            not target_sid or str(local_item.get("session_id")) == target_sid
+        elif (
+            owner is None
+            and local_item
+            and (not target_sid or str(local_item.get("session_id")) == target_sid)
         ):
             # Cancel a frontend submission before its worker has started. This
             # does not touch pending reservations created by other ingresses.
@@ -1226,12 +1438,10 @@ class TaskQueueService:
                     row_pid = row.get("pid")
                     if row_pid and session_repo.process_is_alive(row_pid):
                         try:
-                            process_supervisor.terminate_tree(int(row_pid))
+                            cls._stop_worker_gracefully(int(row_pid), session_id=target_sid)
                         except Exception as exc:
                             # Report it: a surviving worker keeps the device busy.
-                            print(
-                                f"[stop_tasks] Could not terminate worker pid {row_pid}: {exc}"
-                            )
+                            print(f"[stop_tasks] Could not terminate worker pid {row_pid}: {exc}")
                     DeviceExecutionLock.cleanup_stale_locks()
                     stopped = True
         return stopped, is_local_owner, reservation_cancelled
@@ -1264,9 +1474,7 @@ class TaskQueueService:
                 state.active_connections.pop(sid, None)
 
         if stopped_session_id:
-            session_repo.update_session_status(
-                str(stopped_session_id), "cancelled", time.time()
-            )
+            session_repo.update_session_status(str(stopped_session_id), "cancelled", time.time())
             try:
                 is_mcp = bool(owner and owner.ingress == "mcp")
                 if is_mcp or trace_store.read_status(str(stopped_session_id)):
@@ -1287,8 +1495,7 @@ class TaskQueueService:
             )
 
         if state.active_session_id and (
-            not stopped_session_id
-            or str(state.active_session_id) == str(stopped_session_id)
+            not stopped_session_id or str(state.active_session_id) == str(stopped_session_id)
         ):
             state.active_session_id = None
             state.current_goal = None
@@ -1305,8 +1512,7 @@ class TaskQueueService:
             (
                 item
                 for item in state.queue_items
-                if isinstance(item, dict)
-                and str(item.get("session_id")) == str(stopped_session_id)
+                if isinstance(item, dict) and str(item.get("session_id")) == str(stopped_session_id)
             ),
             None,
         )
@@ -1316,15 +1522,12 @@ class TaskQueueService:
             item
             for item in state.queue_items
             if not (
-                isinstance(item, dict)
-                and str(item.get("session_id")) == str(stopped_session_id)
+                isinstance(item, dict) and str(item.get("session_id")) == str(stopped_session_id)
             )
         ]
 
     @classmethod
-    def _stop_targeted_task(
-        cls, target_sid: str | None, target_device: str | None
-    ) -> bool:
+    def _stop_targeted_task(cls, target_sid: str | None, target_device: str | None) -> bool:
         """Stop a specific task (or default single-device active task)."""
         active_owners = {}
         try:
@@ -1338,9 +1541,7 @@ class TaskQueueService:
         owner_record_exists = DeviceExecutionLock.has_owner_record(target_device)
         owner_pid = owner.pid if owner else None
 
-        local_run_key, local_run, local_proc = cls._resolve_local_run(
-            target_sid, target_device
-        )
+        local_run_key, local_run, local_proc = cls._resolve_local_run(target_sid, target_device)
         local_pid = getattr(local_proc, "pid", None)
         is_local_owner = bool(owner_pid and local_pid and owner_pid == local_pid)
 
@@ -1409,13 +1610,46 @@ class TaskQueueService:
 
         return cls._stop_targeted_task(target_sid, target_device)
 
-
     @classmethod
     def resume_task(cls) -> bool:
         if PAUSE_FILE.exists():
             PAUSE_FILE.unlink()
             return True
         return False
+
+    @classmethod
+    def recover_orphaned_recordings_on_launch(cls) -> int:
+        """Finalize recordings left behind by workers that died with the daemon.
+
+        The per-run finalizer handles workers that exit while the daemon is up;
+        this sweep covers everything else (daemon crash, machine reboot, tasks
+        cancelled before this recovery path existed). Returns the number of
+        recordings published.
+        """
+        recovered = 0
+        try:
+            pending = session_repo.get_unfinalized_video_recordings()
+        except Exception as exc:
+            print(f"[ServerStartup] Could not enumerate unfinalized recordings: {exc}")
+            return 0
+        for row in pending:
+            sess_id = row.get("session_id")
+            try:
+                final_path = media_service.recover_orphaned_recording(
+                    row.get("local_video_path"),
+                    row.get("start_time") or row.get("session_start_time"),
+                )
+            except Exception as exc:
+                print(f"[ServerStartup] Recording recovery failed for {sess_id}: {exc}")
+                continue
+            if not final_path:
+                continue
+            if session_repo.mark_recording_ready(str(sess_id), str(final_path)):
+                recovered += 1
+                print(f"[ServerStartup] Recovered recording for session {sess_id}: {final_path}")
+        if recovered:
+            print(f"[ServerStartup] Recovered {recovered} orphaned recording(s).")
+        return recovered
 
     @staticmethod
     def archive_older_replays_on_launch():

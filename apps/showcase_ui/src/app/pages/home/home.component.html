@@ -580,7 +580,7 @@
                 <span class="provider-dot"></span>
                 <span class="provider-name">{{ modelConfigEnv()?.default_model?.provider || 'google' }}</span>
                 <span class="model-divider">/</span>
-                <span class="model-name">{{ modelConfigEnv()?.default_model?.model || 'gemini-3.7-flash' }}</span>
+                <span class="model-name">{{ modelConfigEnv()?.default_model?.model || 'gemini-3.8-flash' }}</span>
               </div>
             </div>
           
@@ -1761,14 +1761,14 @@
                 <p class="desc-line">
                   <span class="mode-name">Flash</span>
                   <span class="bullet">·</span>
-                  <span>Token-efficient, rapid <strong>3–5s/step</strong> reactive decisions. Best for routine daily tasks within <strong>25 steps</strong>.</span>
-                  <span class="limitation-tag">(No long-term monitoring or video analysis)</span>
+                  <span>Token-efficient, rapid <strong>3–5s/step</strong> decisions straight from the live screen. Best for everyday tasks with a clear path, however long they run.</span>
+                  <span class="limitation-tag">(No plan, no result check, no ADB commands)</span>
                 </p>
               } @else {
                 <p class="desc-line">
                   <span class="mode-name">Pro</span>
                   <span class="bullet">·</span>
-                  <span>Our most powerful agent architecture. Handles <strong>100+ step</strong> workflows and direct phone state monitoring (<strong>20–40s</strong> / step).</span>
+                  <span>Our most powerful mode. Plans first, checks its own results and recovers when a tap is blocked. Handles <strong>100+ step</strong> workflows and live phone monitoring (<strong>15–40s</strong> / step).</span>
                 </p>
               }
             </div>
@@ -1792,7 +1792,7 @@
                   class="model-toggle-btn btn-flash"
                   [class.active]="selectedProfile() === 'flash'"
                   (click)="setProfile('flash')"
-                  title="Flash: Reactive fast-loop architecture for standard app workflows (3–5s/step)"
+                  title="Flash: fast single-look loop for everyday app tasks (3–5s/step)"
                 >
                   <span class="material-symbols-outlined btn-icon">bolt</span>
                   <span class="btn-text">Flash</span>
@@ -1802,7 +1802,7 @@
                   class="model-toggle-btn btn-pro"
                   [class.active]="selectedProfile() === 'pro'"
                   (click)="setProfile('pro')"
-                  title="Pro: Multi-agent graph architecture with planner & closed-loop verification for complex tasks"
+                  title="Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks (15–40s/step)"
                 >
                   <span class="material-symbols-outlined btn-icon">psychology</span>
                   <span class="btn-text">Pro</span>
@@ -1860,6 +1860,120 @@
                 >
                   <span class="material-symbols-outlined">close</span>
                 </button>
+              }
+            </div>
+          </div>
+
+          <!-- Pro Mode Tuning Card: verification depth & explorer perception sliders -->
+          <div class="pro-tuning-card" [class.tip-open]="activeTuningTip() !== null">
+            <div class="tuning-card-header">
+              <span class="tuning-title">Pro settings</span>
+              @if (!isTuningDefault()) {
+                <button type="button" class="btn-tuning-reset" (click)="resetTuning()" title="Back to the defaults">Reset</button>
+              }
+            </div>
+
+            <div class="tuning-sliders">
+              @for (slider of tuningSliders(); track slider.kind) {
+                <div
+                  class="tuning-slider"
+                  [class.verify]="slider.kind === 'verify'"
+                  [class.explore]="slider.kind === 'explore'"
+                  [class.dragging]="activeTuningTip() === slider.kind"
+                  [style.--pct]="slider.fraction"
+                >
+                  <div class="slider-head">
+                    <span class="slider-name">{{ slider.name }}</span>
+                    <span class="slider-value">{{ slider.level.label }}</span>
+                  </div>
+                  <div class="slider-ends" aria-hidden="true">
+                    <span>{{ slider.ends[0] }}</span>
+                    <span>{{ slider.ends[1] }}</span>
+                  </div>
+
+                  <div
+                    class="slider-track-wrap"
+                    (pointerenter)="showTuningTip(slider.kind)"
+                    (pointerleave)="hideTuningTip(slider.kind)"
+                  >
+                    <div class="slider-rail" aria-hidden="true">
+                      <div class="slider-fill"></div>
+                      @for (lvl of slider.ladder; track lvl.id; let i = $index) {
+                        <span
+                          class="slider-notch"
+                          [class.reached]="i <= slider.index"
+                          [style.--n]="notchFraction(i, slider.ladder.length)"
+                        ></span>
+                      }
+                      @if (slider.index === slider.ladder.length - 1) {
+                        <!-- Re-created each time the thumb reaches the end, so the spread replays. -->
+                        <div class="slider-solid"></div>
+                        <svg class="slider-dither" width="100%" height="6" aria-hidden="true">
+                          @for (px of ditherPixels; track $index) {
+                            <rect
+                              [attr.x]="px.x + '%'"
+                              [attr.y]="px.y"
+                              width="2"
+                              height="2"
+                              [style.opacity]="px.opacity"
+                              [style.animation-delay.ms]="px.delay"
+                            />
+                          }
+                        </svg>
+                      }
+                    </div>
+                    <div class="slider-thumb" aria-hidden="true"></div>
+                    @if (slider.index === slider.ladder.length - 1) {
+                      <span class="thumb-ripple" aria-hidden="true"></span>
+                    }
+                    <input
+                      type="range"
+                      class="slider-input"
+                      min="0"
+                      [max]="slider.ladder.length - 1"
+                      step="1"
+                      [value]="slider.index"
+                      (input)="setTuningIndex(slider.kind, $any($event.target).value)"
+                      (focus)="showTuningTip(slider.kind)"
+                      (blur)="hideTuningTip(slider.kind)"
+                      [attr.aria-label]="slider.name"
+                      [attr.aria-valuetext]="slider.level.label + ': ' + slider.level.tagline"
+                    />
+
+                    @if (activeTuningTip() === slider.kind) {
+                      <div class="tuning-tip-arrow" aria-hidden="true"></div>
+                      <div class="tuning-tip" role="tooltip">
+                        <div class="tip-heading">
+                          <span class="tip-title">{{ slider.level.label }}</span>
+                          <span class="tip-latency">{{ slider.level.latency }}</span>
+                        </div>
+                        <p class="tip-tagline">{{ slider.level.tagline }}</p>
+                        <div class="tip-section">
+                          <span class="tip-section-title">What happens</span>
+                          <ul>
+                            @for (line of slider.level.runs; track $index) {
+                              <li>{{ line }}</li>
+                            }
+                          </ul>
+                        </div>
+                        @if (slider.level.skips?.length) {
+                          <div class="tip-section skips">
+                            <span class="tip-section-title">Not included</span>
+                            <ul>
+                              @for (line of slider.level.skips; track $index) {
+                                <li>{{ line }}</li>
+                              }
+                            </ul>
+                          </div>
+                        }
+                        <div class="tip-best">
+                          <span class="tip-section-title">Use it for</span>
+                          <span>{{ slider.level.bestFor }}</span>
+                        </div>
+                      </div>
+                    }
+                  </div>
+                </div>
               }
             </div>
           </div>

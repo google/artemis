@@ -30,7 +30,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from artemis.agents.validator.failure_analyzer import ValidationErrorCategory
+from artemis.agents.validator.categories import ValidationErrorCategory
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.services.llm import acomplete_structured
@@ -191,8 +191,7 @@ async def _run_attempt(
         )
 
     logger.warning(
-        "Pixel validation failed but confidence"
-        f" ({confidence:.2f}) is below 0.7. Bypassing check."
+        f"Pixel validation failed but confidence ({confidence:.2f}) is below 0.7. Bypassing check."
     )
     return True, ValidationErrorCategory.PIXEL_BYPASSED, ""
 
@@ -237,18 +236,14 @@ async def validate_action_precondition_pixel(
             orig_bytes, orig_coords, crop_size=None, dot_radius=15
         )
     except Exception as e:
-        logger.error(
-            f"Failed to prepare original crop for pixel safety net: {e}. Bypassing check."
-        )
+        logger.error(f"Failed to prepare original crop for pixel safety net: {e}. Bypassing check.")
         return True, ValidationErrorCategory.PIXEL_BYPASSED, ""
 
     # 3. Get LLM Configuration once outside the loop
     try:
         llm, prompt = _init_llm_and_prompt(ctx, get_llm_fn)
     except Exception as e:
-        logger.error(
-            f"Failed to initialize LLM/prompt for pixel safety net: {e}. Bypassing check."
-        )
+        logger.error(f"Failed to initialize LLM/prompt for pixel safety net: {e}. Bypassing check.")
         return True, ValidationErrorCategory.PIXEL_BYPASSED, ""
 
     # 4. Start high-precision execution validation retry loop

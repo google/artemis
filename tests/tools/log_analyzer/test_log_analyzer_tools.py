@@ -17,6 +17,7 @@ import pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_spawn_log_reader(artemis_context, mock_state):
     """Test the spawn_log_reader tool exposed by LogAnalyzerNode."""
     from artemis.sdk.utils import load_llm_config_override
@@ -42,6 +43,7 @@ async def test_spawn_log_reader(artemis_context, mock_state):
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_log_analyzer_run(artemis_context, mock_state):
     """Test LogAnalyzerNode.run end-to-end execution with grounding configuration."""
     from artemis.config.llm import parse_llm_config

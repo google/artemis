@@ -28,6 +28,9 @@ from artemis.memory.context_policy import (
 )
 from artemis.memory.step_memory import StepLens, StepMemoryService
 from artemis.memory.transcript import TranscriptLedger, format_session_offset
+from artemis.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def ensure_step_memory(ctx):
@@ -56,13 +59,16 @@ def ensure_step_memory(ctx):
             "max_concurrency": cfg.memory.runtime.max_concurrency,
             "flush_timeout_s": cfg.memory.runtime.flush_timeout_s,
         }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            f"Agent config unavailable; using step-memory service defaults: {exc}",
+            exc_info=True,
+        )
 
     service = VisualStepSummarizer(ctx, model_name=model_name, **kwargs)
     try:
         ctx.step_memory = service
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         pass
     return service
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 from pathlib import Path
 import re
@@ -25,12 +26,15 @@ if _REPO_ROOT not in sys.path:
 # pylint: disable=wrong-import-position
 from mcp.server.fastmcp import FastMCP
 
+logger = logging.getLogger(__name__)
+
 try:
     from mcp.server.fastmcp.server import Settings as FastMCPSettings
 
     FastMCPSettings.model_rebuild()
-except Exception:
-    pass
+except Exception as exc:  # pylint: disable=broad-exception-caught
+    # Best-effort compatibility shim for FastMCP/pydantic version drift.
+    logger.debug("FastMCP Settings model_rebuild skipped: %s", exc, exc_info=True)
 
 from artemis.data_engine.storage import StorageManager
 

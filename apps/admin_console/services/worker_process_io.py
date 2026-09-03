@@ -47,9 +47,7 @@ def subprocess_creation_kwargs() -> dict[str, Any]:
         "stderr": asyncio.subprocess.STDOUT,
     }
     if sys.platform == "win32":
-        kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-        )
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     return kwargs
 
 

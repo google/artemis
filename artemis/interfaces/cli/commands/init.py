@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-from artemis.config import ROOT_DIR
+from artemis.config.paths import get_env_file
 
 
 def init_command() -> None:
@@ -132,7 +132,8 @@ def init_command() -> None:
         ]
     )
 
-    env_path = ROOT_DIR / ".env"
+    env_path = get_env_file()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
     env_path.write_text("\n".join(env_content), encoding="utf-8")
 
     # 5. Configure MCP for AI IDEs
@@ -146,7 +147,9 @@ def init_command() -> None:
     console.print("  [7] All supported IDEs")
     console.print("  [8] Skip for now")
     mcp_choice = Prompt.ask(
-        "Select IDE for MCP auto-install", choices=["1", "2", "3", "4", "5", "6", "7", "8"], default="1"
+        "Select IDE for MCP auto-install",
+        choices=["1", "2", "3", "4", "5", "6", "7", "8"],
+        default="1",
     )
     if mcp_choice != "8":
         target_map = {

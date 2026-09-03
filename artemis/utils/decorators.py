@@ -15,6 +15,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from functools import wraps
+import inspect
 from typing import Any, TypeVar, cast, overload
 
 R = TypeVar("R")
@@ -115,7 +116,7 @@ def wrap_with_callbacks(
     suppress_exceptions: bool = False,
 ) -> Any:
     def decorator(func: Callable[..., Any]) -> Any:
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             return wrap_with_callbacks_async(
                 cast(Callable[..., Awaitable[Any]], func),
                 before=before,

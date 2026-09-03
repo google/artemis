@@ -68,7 +68,9 @@ async def test_stream_events_active_session_replay():
     state.current_goal = "Replay Goal"
     state.current_profile = "flash"
 
-    with patch("apps.admin_console.database.repositories.step_repository.step_repo") as mock_step_repo:
+    with patch(
+        "apps.admin_console.database.repositories.step_repository.step_repo"
+    ) as mock_step_repo:
         mock_step_repo.get_session_steps.return_value = [
             {"step_number": 1, "description": "Step 1", "status": "completed"}
         ]
@@ -83,7 +85,6 @@ async def test_stream_events_active_session_replay():
         assert "step_recorded" in third_event
         assert "Step 1" in third_event
         await iterator.aclose()
-
 
 
 @pytest.mark.asyncio

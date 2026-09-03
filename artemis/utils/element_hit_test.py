@@ -98,9 +98,7 @@ def find_element_at_point(
     return None, "none"
 
 
-def hit_test_semantics(
-    elements: list[dict[str, Any]] | None, x: int, y: int
-) -> dict[str, Any]:
+def hit_test_semantics(elements: list[dict[str, Any]] | None, x: int, y: int) -> dict[str, Any]:
     """Best-effort semantic fields for a bare-coordinate action at pixel (x, y).
 
     Always returns a dict containing ``target_label_source``; the

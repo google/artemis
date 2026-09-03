@@ -136,9 +136,7 @@ async def test_summarizer_falls_back_to_structured_decisions(mock_context):
     kwargs = mock_context.step_memory.dispatch.call_args.kwargs
     assert kwargs["action_name"] == "swipe"
     assert kwargs["action_args"]["coordinates"] == [1, 2, 3, 4]
-    assert kwargs["action_args"]["additional_actions"] == [
-        {"action": "tap", "coordinates": [9, 9]}
-    ]
+    assert kwargs["action_args"]["additional_actions"] == [{"action": "tap", "coordinates": [9, 9]}]
 
 
 @pytest.mark.asyncio

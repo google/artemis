@@ -29,6 +29,8 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 
 import pytest
 
+pytestmark = [pytest.mark.integration, pytest.mark.android]
+
 
 @pytest.mark.asyncio
 async def test_actions():
@@ -38,8 +40,7 @@ async def test_actions():
     adb = AdbClient(host="localhost", port=5037)
     devices = adb.device_list()
     if not devices:
-        print("❌ Error: No active Android emulator or physical device detected.")
-        return
+        pytest.skip("No active Android emulator or physical device detected")
     device_id = devices[0].serial
     print(f"✅ Target device locked: {device_id}")
 

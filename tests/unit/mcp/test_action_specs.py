@@ -127,7 +127,6 @@ def test_validator_declaration_order_is_stable():
         "list_notes",
         "manage_app",
         "wait_for_delay",
-        "report_failure_analysis",
     ]
 
 

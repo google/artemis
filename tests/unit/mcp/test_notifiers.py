@@ -107,9 +107,13 @@ def test_desktop_notifier_enabled_by_default(monkeypatch):
     import sys
 
     if sys.platform == "linux":
-        monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/notify-send" if cmd == "notify-send" else None)
+        monkeypatch.setattr(
+            shutil, "which", lambda cmd: "/usr/bin/notify-send" if cmd == "notify-send" else None
+        )
     elif sys.platform == "darwin":
-        monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/osascript" if cmd == "osascript" else None)
+        monkeypatch.setattr(
+            shutil, "which", lambda cmd: "/usr/bin/osascript" if cmd == "osascript" else None
+        )
     notifier = DesktopNotifier()
     assert notifier.is_available() is True
 
@@ -228,4 +232,3 @@ def test_agentapi_notifier_candidate_recovery_and_retry(monkeypatch, tmp_path):
     assert saved_sessions == [("localhost:1234", "good-token")]
     assert os.environ["ANTIGRAVITY_LS_ADDRESS"] == "localhost:1234"
     assert os.environ["ANTIGRAVITY_CSRF_TOKEN"] == "good-token"
-

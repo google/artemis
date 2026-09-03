@@ -97,9 +97,7 @@ async def cleanup_abandoned_gemini_files(client) -> None:
         logger.warning(f"Routine cloud maintenance skipped: {e}")
 
 
-async def upload_and_poll_file(
-    client, compressed_path: Path, cloud_files_to_cleanup: set
-) -> any:
+async def upload_and_poll_file(client, compressed_path: Path, cloud_files_to_cleanup: set) -> any:
     """Upload a media file to the Gemini File API and poll until it is ACTIVE."""
     logger.info(f"Uploading {compressed_path} to Gemini File API...")
     file_size_mb = compressed_path.stat().st_size / (1024 * 1024)
@@ -120,9 +118,7 @@ async def upload_and_poll_file(
 
     while True:
         try:
-            f_state = await asyncio.wait_for(
-                client.aio.files.get(name=file.name), timeout=20
-            )
+            f_state = await asyncio.wait_for(client.aio.files.get(name=file.name), timeout=20)
             retry_count = 0
         except Exception as poll_error:
             retry_count += 1

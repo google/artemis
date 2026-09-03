@@ -142,9 +142,7 @@ def test_adb_probe_parses_device_lock_state(policy_output, trust_output, expecte
 
 def test_modern_unlock_state_is_not_overridden_by_legacy_fields():
     policy = (
-        "KeyguardServiceDelegate\n"
-        "  showing=false\n"
-        "mShowingLockscreen=true mKeyguardOccluded=false"
+        "KeyguardServiceDelegate\n  showing=false\nmShowingLockscreen=true mKeyguardOccluded=false"
     )
     trust = 'User "Owner" (current): deviceLocked=0'
 
@@ -167,9 +165,7 @@ async def test_positive_lock_state_requires_confirmation(monkeypatch):
 async def test_dashboard_reuses_recent_confirmed_state_on_one_timeout(monkeypatch):
     probe = AdbDeviceProbe()
     confirmed_probe = AsyncMock(side_effect=[False, None])
-    monkeypatch.setattr(
-        probe, "_get_confirmed_device_lock_state", confirmed_probe
-    )
+    monkeypatch.setattr(probe, "_get_confirmed_device_lock_state", confirmed_probe)
 
     assert await probe._get_dashboard_lock_state("adb", "device-1") is False
     assert await probe._get_dashboard_lock_state("adb", "device-1") is False
@@ -265,9 +261,7 @@ async def test_invalidation_prevents_in_flight_report_from_becoming_shared_cache
 @pytest.mark.asyncio
 async def test_submission_probe_skips_full_device_enrichment(monkeypatch):
     probe = AdbDeviceProbe(target_serial="device-2")
-    get_states = AsyncMock(
-        return_value=[("device-1", "device"), ("device-2", "device")]
-    )
+    get_states = AsyncMock(return_value=[("device-1", "device"), ("device-2", "device")])
     get_lock_state = AsyncMock(return_value=False)
     full_probe = AsyncMock()
     monkeypatch.setattr(
@@ -283,9 +277,7 @@ async def test_submission_probe_skips_full_device_enrichment(monkeypatch):
     assert result.summary == "Connected"
     assert result.metadata["submission_probe"] is True
     get_states.assert_awaited_once_with("adb")
-    get_lock_state.assert_awaited_once_with(
-        "adb", "device-2", timeout_seconds=1.0
-    )
+    get_lock_state.assert_awaited_once_with("adb", "device-2", timeout_seconds=1.0)
     full_probe.assert_not_awaited()
 
 
@@ -359,7 +351,6 @@ async def test_adb_probe_prefers_unlocked_device_when_one_is_locked(monkeypatch)
     assert result.summary == "Connected"
     assert result.metadata["active_device"]["serial"] == "dev-unlocked-2"
     assert result.metadata["active_device"]["is_locked"] is False
-
 
 
 @pytest.mark.asyncio

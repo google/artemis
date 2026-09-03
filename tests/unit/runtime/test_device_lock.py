@@ -197,9 +197,7 @@ def test_pending_reservation_at_queue_head_does_not_block_other_devices():
     pending_ticket = DeviceExecutionLock.reserve("unclaimed submission")
     # device-alpha is a known idle device (a queued submission targets it), so
     # the pending ticket parks there; device-beta must stay schedulable.
-    alpha_ticket = DeviceExecutionLock.reserve(
-        "task for device alpha", device_id="device-alpha"
-    )
+    alpha_ticket = DeviceExecutionLock.reserve("task for device alpha", device_id="device-alpha")
     try:
         beta = DeviceExecutionLock("device-beta", "task for device beta")
         # Must acquire immediately even though the older pending ticket is at

@@ -43,7 +43,7 @@ instead of leaving the rest of the run to fail on a corpse.
 
 The single owner loop also serializes calls, which enforces ARTEMIS's
 single-device policy at the one choke point all agents share -- in particular it
-stops a nested Validator -> FailureAnalyzer flow from interleaving two device
+stops nested device flows (e.g. Validator and a sub-agent) from interleaving two device
 actions.
 """
 
@@ -109,9 +109,7 @@ class ActionSession:
                     # The transport is dead; no future call on this session can
                     # succeed. Exit so `started` flips False and the next
                     # get_action_session() builds a fresh session.
-                    logger.error(
-                        "Action session transport failed (%r); retiring this session.", e
-                    )
+                    logger.error("Action session transport failed (%r); retiring this session.", e)
                     return
             else:
                 if not fut.cancelled():
@@ -172,9 +170,7 @@ class ActionSession:
         result = await self.call_raw(name, args)
         return ActionResult.model_validate(result.structuredContent)
 
-    async def observe(
-        self, settle_ms: int = 400, include_image: bool = False
-    ) -> ObserveResult:
+    async def observe(self, settle_ms: int = 400, include_image: bool = False) -> ObserveResult:
         """Captures and indexes the current screen via the internal observe tool."""
         result = await self.call_raw(
             "observe_screen", {"settle_ms": settle_ms, "include_image": include_image}

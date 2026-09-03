@@ -25,8 +25,12 @@ def test_watchdog_passes_when_runner_creates_logs(tmp_path):
 
     with _patch_trace_dir(tmp_path), patch.object(spawn_tool, "_kill_process_tree") as kill:
         assert spawn_tool._watch_spawn(
-            trace_id, pid=999999, queue_ticket="t", conversation_id=None,
-            deadline_seconds=0.2, poll_interval=0.05,
+            trace_id,
+            pid=999999,
+            queue_ticket="t",
+            conversation_id=None,
+            deadline_seconds=0.2,
+            poll_interval=0.05,
         )
     kill.assert_not_called()
 
@@ -38,8 +42,12 @@ def test_watchdog_skips_already_terminal_task(tmp_path):
 
     with _patch_trace_dir(tmp_path), patch.object(spawn_tool, "_kill_process_tree") as kill:
         assert spawn_tool._watch_spawn(
-            trace_id, pid=999999, queue_ticket="t", conversation_id=None,
-            deadline_seconds=0.2, poll_interval=0.05,
+            trace_id,
+            pid=999999,
+            queue_ticket="t",
+            conversation_id=None,
+            deadline_seconds=0.2,
+            poll_interval=0.05,
         )
     kill.assert_not_called()
 
@@ -56,8 +64,12 @@ def test_watchdog_kills_and_fails_hung_runner(tmp_path):
         patch.object(spawn_tool, "notify") as notifier,
     ):
         assert not spawn_tool._watch_spawn(
-            trace_id, pid=424242, queue_ticket="ticket-1", conversation_id="conv-1",
-            deadline_seconds=0.2, poll_interval=0.05,
+            trace_id,
+            pid=424242,
+            queue_ticket="ticket-1",
+            conversation_id="conv-1",
+            deadline_seconds=0.2,
+            poll_interval=0.05,
         )
 
     kill.assert_called_once_with(424242)
@@ -91,7 +103,11 @@ def test_watchdog_tolerates_logs_appearing_at_deadline(tmp_path):
         patch.object(spawn_tool, "_kill_process_tree") as kill,
     ):
         assert spawn_tool._watch_spawn(
-            trace_id, pid=999999, queue_ticket="t", conversation_id=None,
-            deadline_seconds=0.15, poll_interval=0.2,
+            trace_id,
+            pid=999999,
+            queue_ticket="t",
+            conversation_id=None,
+            deadline_seconds=0.15,
+            poll_interval=0.2,
         )
     kill.assert_not_called()

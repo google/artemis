@@ -144,9 +144,7 @@ async def test_end_to_end_thoughts_non_duplication(temp_workspace):
 
     # 8. Build history and check for duplications
     plan = "- [ ] Search for books"
-    history = build_plan_and_history(
-        plan, steps, "default", last_n_detailed=1, for_failure_analyzer=True
-    )
+    history = build_plan_and_history(plan, steps, "default", last_n_detailed=1)
 
     print("\n--- Generated History Output ---")
     print(history)

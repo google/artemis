@@ -16,10 +16,21 @@
 
 Executes autonomous reactive mobile workflows across Google Gemini,
 OpenAI GPT-4o/o3, Anthropic Claude 3.5/3.7, and OpenRouter endpoints.
+
+Conversation shape (shared with the Pro operator, history redesign §3.2):
+the prompt is built every turn from a session :class:`TranscriptLedger` —
+a byte-stable system prefix, the committed earlier turns (append-only; old UI
+lists stripped at depth 1, screenshots resolved to visual summaries at depth
+K, long spans chunk-compressed), and a fresh tail carrying the current
+observation under a ``# CURRENT OBSERVATION [T+mm:ss]`` header. Each
+committed turn ends with an ``--- Action Execution Result (T+mm:ss) ---``
+message, so every timestamp the model sees is a session-relative offset — the
+same clock the video analyzer uses for the session recording.
 """
 
 import asyncio
 import base64
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
@@ -33,7 +44,6 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from artemis.agents.flash.context_compressor import ScrubEdgeCompressor
 from artemis.agents.flash.summarizer import VisualStepSummarizer
 from artemis.agents.validator.tool_declarations import (
     ASK_EXPLORER_TOOL,
@@ -56,6 +66,7 @@ from artemis.graph.perception import _check_injected_instruction_file
 from artemis.graph.state import State
 from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.mcp.action_executor import McpActionExecutor
+from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger
 from artemis.services.llm import (
     RobustChatModelWrapper,
     acomplete,
@@ -67,6 +78,47 @@ from artemis.utils.coordinates import parse_swipe_parameters
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+#: Reminder carried by the first observation only (the system prompt states the rule).
+_REASONING_FIRST_REMINDER = (
+    "CRITICAL RULE: In every single turn, you MUST FIRST output a natural"
+    " language reasoning/explanation paragraph BEFORE invoking any tool call."
+)
+
+_NO_TOOL_CALL_NOTICE = (
+    "You did not call any tools last turn. Please make progress by calling an"
+    " action tool or 'report_task_status'."
+)
+
+_FINAL_TURN_WARNING = "[WARNING] This is your final turn; only 'report_task_status' is available."
+
+
+@dataclass
+class _TurnRecord:
+    """What one reactive turn produced, for committing it into the ledger.
+
+    ``step_keys`` are the DataEngine step ids recorded this turn (one per
+    executed action; the tool_call_id stands in without a DataEngine) — the
+    first keys the observation screenshot to its visual-transition summary,
+    all of them feed the chunk ledger. ``actions`` collects the outcome of
+    every device action so the turn's execution result can be rendered.
+    """
+
+    step_keys: list[str] = field(default_factory=list)
+    actions: list[tuple[str, str, str]] = field(default_factory=list)
+
+    def result(self) -> dict | None:
+        """The turn's execution result in the validator-report shape.
+
+        ``None`` when no device action ran (helper-only turns have no result
+        message, as in Pro).
+        """
+        if not self.actions:
+            return None
+        for name, status, text in self.actions:
+            if status != "success":
+                return {"status": "failed", "error": f"{name}: {text}"}
+        return {"status": "success"}
 
 
 class FlashRunner:
@@ -81,14 +133,18 @@ class FlashRunner:
             self.step_summarizer_cfg = cfg.flash.step_summarizer
             self.memory_runtime_cfg = cfg.memory.runtime
             self.transcript_cfg = cfg.memory.transcript
+            self.chunking_cfg = cfg.memory.chunking
         except Exception:
-            self.max_turns = max_turns if max_turns is not None else 30
+            self.max_turns = max_turns if max_turns is not None else 0
             self.step_summarizer_cfg = StepSummarizerConfig()
             self.memory_runtime_cfg = MemoryRuntimeConfig()
             self.transcript_cfg = MemoryTranscriptConfig()
+            self.chunking_cfg = None
 
         self.controller = UnifiedMobileController(ctx)
-        self.executor = McpActionExecutor(ctx, self.controller)
+        # ``agent_name="flash"`` makes ask_explorer follow ``explorer.flash_mode``
+        # (the Flash profile knob) instead of the Pro profile's tier.
+        self.executor = McpActionExecutor(ctx, self.controller, agent_name="flash")
         self.summarizer = (
             VisualStepSummarizer(
                 ctx,
@@ -105,13 +161,46 @@ class FlashRunner:
         if self.summarizer is not None and getattr(ctx, "step_memory", None) is None:
             try:
                 ctx.step_memory = self.summarizer
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 pass
 
+    @property
+    def turn_limit(self) -> int | None:
+        """The reactive turn cap, or ``None`` when the loop is unbounded."""
+        try:
+            limit = int(self.max_turns) if self.max_turns is not None else 0
+        except (TypeError, ValueError):
+            return None
+        return limit if limit > 0 else None
+
+    def _video_tools_enabled(self) -> bool:
+        """Same gate the Pro graph applies before binding ``video_analyzer``."""
+        setup = getattr(self.ctx, "execution_setup", None)
+        return getattr(setup, "video_recording_tools_enabled", False) is True
+
+    def _recall_enabled(self) -> bool:
+        """Same gate as the Pro operator: a DataEngine session and the recall config."""
+        from artemis.tools.history_recall import _recall_available
+
+        try:
+            return bool(_recall_available(self.ctx))
+        except Exception:
+            return False
+
     def _get_tools(self) -> list:
-        tools = [t for t in VALIDATOR_TOOLS_DECLARATION if t.name != "report_failure_analysis"]
+        tools = list(VALIDATOR_TOOLS_DECLARATION)
         tools.insert(1, CLICK_SEQUENCE_TOOL)
         tools.append(ASK_EXPLORER_TOOL)
+        # Helper tools shared with the Pro operator, declared next to their
+        # LangChain tools so each contract has one owner.
+        if self._recall_enabled():
+            from artemis.tools.history_recall import RECALL_HISTORY_TOOL
+
+            tools.append(RECALL_HISTORY_TOOL)
+        if self._video_tools_enabled():
+            from artemis.tools.video_tool import VIDEO_ANALYZER_TOOL
+
+            tools.append(VIDEO_ANALYZER_TOOL)
         tools.append(REPORT_TASK_STATUS_TOOL)
         # With an actuator installed, drop declarations for device actions the
         # backend does not implement (and append its extension tools); without
@@ -131,19 +220,46 @@ class FlashRunner:
     # run() setup helpers
     # ------------------------------------------------------------------
 
-    def _build_compressor(self) -> ScrubEdgeCompressor:
-        """Builds the per-run scrub-edge compressor.
+    def _build_ledger(self) -> TranscriptLedger:
+        """Builds the session transcript ledger with the shared Pro history policy.
 
-        Fresh scrub-edge ledger per run: the frozen/watermark bookkeeping is
-        execution state bound to this run's append-only message list.
+        The ``T+mm:ss`` clock is anchored to the DataEngine session start so
+        the observation headers, the chunk ledger lines and the video
+        analyzer's action timeline share one origin. L2/L3 chunk compression
+        needs DataEngine step records; without an engine the ledger runs
+        scrub-edge-only.
         """
-        return ScrubEdgeCompressor(
-            summarizer=self.summarizer,
+        engine = getattr(self.ctx, "data_engine", None)
+        session_start = getattr(engine, "session_start_time", None) if engine else None
+        cfg = self.transcript_cfg
+        ledger = TranscriptLedger(
+            step_memory=self.summarizer,
             prune_history_xml=self.step_summarizer_cfg.prune_history_xml,
-            image_scrub_depth=self.transcript_cfg.image_scrub_depth,
-            pending_grace_steps=self.transcript_cfg.pending_grace_steps,
-            xml_scrub_depth=self.transcript_cfg.xml_scrub_depth,
+            image_scrub_depth=getattr(cfg, "image_scrub_depth", 3),
+            pending_grace_steps=getattr(cfg, "pending_grace_steps", 3),
+            xml_scrub_depth=getattr(cfg, "xml_scrub_depth", 1),
+            session_start=session_start if isinstance(session_start, (int, float)) else None,
         )
+        if engine is not None:
+            try:
+                from artemis.memory import HistoryChunkManager
+
+                ledger.attach_chunker(
+                    HistoryChunkManager(
+                        engine=engine,
+                        ctx=self.ctx,
+                        chunking_config=self.chunking_cfg,
+                        transcript_config=cfg,
+                        goal=self.goal,
+                    )
+                )
+            except Exception as e:
+                logger.error(f"History chunk manager unavailable for FlashRunner: {e}")
+        try:
+            self.ctx.transcript_ledger = ledger
+        except (AttributeError, TypeError, ValueError):
+            pass
+        return ledger
 
     def _init_llm(self):
         """Initializes the Universal LLM via the Service Layer."""
@@ -153,37 +269,6 @@ class FlashRunner:
             logger.warning(f"Failed to get operator LLM from config, using default: {e}")
 
             return RobustChatModelWrapper(get_google_llm(model_name="gemini-2.5-flash"), self.ctx)
-
-    def _build_initial_user_content(self, img_bytes, xml_list) -> list[dict]:
-        """Builds the first HumanMessage content (goal + screenshot + UI tree)."""
-        user_content: list[dict] = [
-            {"type": "text", "text": f"Your objective is: {self.goal}"},
-        ]
-        if img_bytes:
-            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-            user_content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
-                }
-            )
-        if xml_list:
-            user_content.append(
-                {
-                    "type": "text",
-                    "text": f"--- UI Element List ---\n{xml_list}",
-                }
-            )
-        user_content.append(
-            {
-                "type": "text",
-                "text": (
-                    "CRITICAL RULE: In every single turn, you MUST FIRST output a natural"
-                    " language reasoning/explanation paragraph BEFORE invoking any tool call."
-                ),
-            }
-        )
-        return user_content
 
     def _render_system_prompt(self, tools_declaration: list) -> str:
         """Renders the system prompt from the flash_runner.md template.
@@ -195,62 +280,83 @@ class FlashRunner:
         prompt_path = Path(__file__).parent / "flash_runner.md"
         prompt_template = prompt_path.read_text(encoding="utf-8")
         available_tools = frozenset(t.name for t in tools_declaration)
-        return Template(prompt_template).render(
-            goal=self.goal, available_tools=available_tools
-        )
+        return Template(prompt_template).render(goal=self.goal, available_tools=available_tools)
 
     # ------------------------------------------------------------------
     # Per-turn helpers (observe / think)
     # ------------------------------------------------------------------
 
-    async def _append_injected_instruction(self, messages: list[BaseMessage]) -> None:
-        """Checks for real-time injected instructions and appends them."""
-        if self.ctx.data_engine and self.ctx.data_engine.base_dir:
-            try:
-                injected_payload = await asyncio.to_thread(
-                    _check_injected_instruction_file,
-                    str(self.ctx.data_engine.base_dir),
-                )
-                if injected_payload and injected_payload.get("instruction"):
-                    injected_text = (
-                        "[REAL-TIME INJECTED INSTRUCTION from user]:"
-                        f" {injected_payload['instruction']}\nYou MUST immediately"
-                        " follow this instruction and adjust your plan/actions."
-                    )
-                    if injected_payload.get("release_loop"):
-                        injected_text += (
-                            "\nThe user has explicitly authorized stopping any"
-                            " ongoing monitoring loop; you may now wrap up and"
-                            " complete the task."
-                        )
-                    messages.append(HumanMessage(content=injected_text))
-            except Exception as e:
-                logger.warning(f"Failed to check injected instruction in FlashRunner: {e}")
-
-    def _select_turn_tools(
-        self, turns: int, tools_declaration: list, messages: list[BaseMessage]
-    ) -> list:
-        """Applies the tool restriction on the final turn."""
-        if turns == self.max_turns:
-            messages.append(
-                HumanMessage(
-                    content=(
-                        "[WARNING] This is your final turn; only"
-                        " 'report_task_status' is available."
-                    )
-                )
+    async def _read_injected_instruction(self) -> str | None:
+        """Returns the real-time injected instruction text for this turn, if any."""
+        if not (self.ctx.data_engine and self.ctx.data_engine.base_dir):
+            return None
+        try:
+            injected_payload = await asyncio.to_thread(
+                _check_injected_instruction_file,
+                str(self.ctx.data_engine.base_dir),
             )
-            return [t for t in tools_declaration if t.name == "report_task_status"]
-        return tools_declaration
+        except (OSError, ValueError, AttributeError) as e:
+            logger.warning(f"Failed to check injected instruction in FlashRunner: {e}")
+            return None
+        if not (injected_payload and injected_payload.get("instruction")):
+            return None
+        injected_text = (
+            "[REAL-TIME INJECTED INSTRUCTION from user]:"
+            f" {injected_payload['instruction']}\nYou MUST immediately"
+            " follow this instruction and adjust your plan/actions."
+        )
+        if injected_payload.get("release_loop"):
+            injected_text += (
+                "\nThe user has explicitly authorized stopping any"
+                " ongoing monitoring loop; you may now wrap up and"
+                " complete the task."
+            )
+        return injected_text
+
+    def _build_tail(
+        self,
+        ledger: TranscriptLedger,
+        turns: int,
+        img_bytes,
+        xml_list,
+        *,
+        injected: str | None = None,
+        notices: list[str] | None = None,
+        is_final: bool = False,
+    ) -> HumanMessage:
+        """Builds this turn's observation tail (Pro observation shape).
+
+        Header, screenshot and UI list carry the same markers as the Pro
+        operator's tail so the ledger's scrub edge treats both alike.
+        """
+        blocks: list[dict] = []
+        if turns == 1:
+            blocks.append({"type": "text", "text": f"Your objective is: {self.goal}"})
+        blocks.append({"type": "text", "text": f"# CURRENT OBSERVATION [{ledger.elapsed_label()}]"})
+        if img_bytes:
+            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+            blocks.append({"type": "text", "text": "--- Current Screenshot ---"})
+            blocks.append(
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+            )
+        if xml_list:
+            blocks.append({"type": "text", "text": f"{PRO_UI_LIST_MARKER}\n{xml_list}"})
+        for notice in notices or []:
+            blocks.append({"type": "text", "text": notice})
+        if injected:
+            blocks.append({"type": "text", "text": injected})
+        if is_final:
+            blocks.append({"type": "text", "text": _FINAL_TURN_WARNING})
+        if turns == 1:
+            blocks.append({"type": "text", "text": _REASONING_FIRST_REMINDER})
+        return HumanMessage(content=blocks)
 
     def _extract_response_text(self, response) -> str:
         """Extracts the natural-language thought text from the model response."""
         raw_text = response.content if isinstance(response.content, str) else ""
         if isinstance(response.content, list):
             raw_text = "".join(
-                b.get("text", "")
-                for b in response.content
-                if isinstance(b, dict) and "text" in b
+                b.get("text", "") for b in response.content if isinstance(b, dict) and "text" in b
             )
         return raw_text
 
@@ -271,9 +377,9 @@ class FlashRunner:
         elif hasattr(response, "response_metadata") and isinstance(
             response.response_metadata, dict
         ):
-            u = response.response_metadata.get(
-                "usage_metadata"
-            ) or response.response_metadata.get("token_usage")
+            u = response.response_metadata.get("usage_metadata") or response.response_metadata.get(
+                "token_usage"
+            )
             if isinstance(u, dict):
                 pr = (
                     u.get("input_tokens")
@@ -321,9 +427,7 @@ class FlashRunner:
             "total_tokens": max(1, prompt_tokens + completion_tokens),
         }
 
-    def _resolve_token_usage(
-        self, response, messages: list[BaseMessage], raw_text: str
-    ) -> dict:
+    def _resolve_token_usage(self, response, messages: list[BaseMessage], raw_text: str) -> dict:
         """Extracts token usage from response metadata, estimating as fallback."""
         step_token_usage = self._token_usage_from_response(response)
         if not step_token_usage or step_token_usage.get("total_tokens", 0) <= 0:
@@ -390,9 +494,7 @@ class FlashRunner:
                     ui_tree=xml_list,
                     action_taken={"action": "report_task_status", "args": args},
                     operator_raw_thinking=raw_text,
-                    last_execution_result={
-                        "result": "Task completed with final report."
-                    },
+                    last_execution_result={"result": "Task completed with final report."},
                     extra_metadata={"token_usage": step_token_usage},
                 )
             except Exception as step_err:
@@ -420,9 +522,7 @@ class FlashRunner:
                 if not exec_result.ui_elements_text:
                     exec_result.ui_elements_text = screen_data.elements
             except Exception as shot_err:
-                logger.warning(
-                    f"Failed to capture fallback screenshot in FlashRunner: {shot_err}"
-                )
+                logger.warning(f"Failed to capture fallback screenshot in FlashRunner: {shot_err}")
         return post_img_bytes
 
     def _extract_normalized_coordinates(self, name: str, args: dict):
@@ -432,11 +532,7 @@ class FlashRunner:
         norm_end = None
         if name == "swipe":
             kind, target_val, _ = parse_swipe_parameters(args)
-            if (
-                kind == "coords"
-                and isinstance(target_val, list)
-                and len(target_val) == 4
-            ):
+            if kind == "coords" and isinstance(target_val, list) and len(target_val) == 4:
                 norm_coords = target_val
                 norm_start = target_val[:2]
                 norm_end = target_val[2:]
@@ -473,6 +569,7 @@ class FlashRunner:
         pre_screenshot_bytes,
         xml_list,
         post_img_bytes,
+        injected: str | None = None,
     ):
         """Records telemetry / step in DataEngine; returns the step id or None."""
         recorded_step_id = None
@@ -480,9 +577,7 @@ class FlashRunner:
             if self.ctx.data_engine.current_step_id is None:
                 self.ctx.data_engine.allocate_step_id()
 
-            norm_coords, norm_start, norm_end = self._extract_normalized_coordinates(
-                name, args
-            )
+            norm_coords, norm_start, norm_end = self._extract_normalized_coordinates(name, args)
 
             action_dict = {
                 "action": name,
@@ -503,11 +598,23 @@ class FlashRunner:
             # Record-time enrichment computed by the executor from
             # the pre-action frame (target_text / target_class /
             # target_resource_id / target_label_source).
-            target_semantics = (exec_result.metadata or {}).get(
-                "target_semantics"
-            )
+            target_semantics = (exec_result.metadata or {}).get("target_semantics")
             if isinstance(target_semantics, dict):
                 action_dict.update(target_semantics)
+
+            succeeded = exec_result.status == "success"
+            last_execution_result = {
+                "status": "success" if succeeded else "failed",
+                "result": exec_result.text_summary,
+            }
+            if not succeeded:
+                last_execution_result["error"] = exec_result.text_summary
+
+            extra_metadata: dict = {"token_usage": step_token_usage}
+            if injected:
+                # Stamped verbatim on the step it reached: the chunk ledger
+                # keeps it as a never-evicted line at every compression level.
+                extra_metadata["injected_instruction"] = injected
 
             recorded_step_id = self.ctx.data_engine.record_step(
                 pre_screenshot_bytes=pre_screenshot_bytes,
@@ -515,12 +622,24 @@ class FlashRunner:
                 ui_tree=(exec_result.ui_elements_text or xml_list),
                 action_taken=action_dict,
                 operator_raw_thinking=raw_text,
-                last_execution_result={"result": exec_result.text_summary},
-                extra_metadata={"token_usage": step_token_usage},
+                last_execution_result=last_execution_result,
+                extra_metadata=extra_metadata,
             )
+            self._notify_history_chunker(recorded_step_id)
         except Exception as step_err:
             logger.warning(f"Error recording step in FlashRunner: {step_err}")
         return recorded_step_id
+
+    def _notify_history_chunker(self, step_id) -> None:
+        """Stamps the recorded step for the chunk manager (single segment, no plan)."""
+        ledger = getattr(self.ctx, "transcript_ledger", None)
+        chunker = getattr(ledger, "chunker", None) if ledger is not None else None
+        if chunker is None or step_id is None:
+            return
+        try:
+            chunker.on_step_stamped(str(step_id), None)
+        except Exception as e:
+            logger.warning(f"History chunker step stamp failed: {e}")
 
     async def _execute_and_record_action(
         self,
@@ -534,22 +653,23 @@ class FlashRunner:
         pre_screenshot_bytes,
         xml_list,
         action_sequence: int,
+        turn: _TurnRecord,
+        injected: str | None = None,
     ):
-        """Executes one action tool call, records it, and updates loop state.
+        """Executes one tool call, records it, and updates loop state.
 
+        The tool message carries the outcome text only; the post-action
+        screenshot and UI list become the next turn's observation tail.
         Returns the (possibly updated) pre_screenshot_bytes, xml_list, and
         action_sequence for the next iteration.
         """
+        # Dynamic dispatch set: manifest device actions plus any backend
+        # extension tools, so extension steps are recorded like actions.
+        action_names = self.executor.action_tool_names
         try:
             exec_result = await self.executor.execute(name, args, tc_id, state)
 
-            # Dynamic dispatch set: manifest device actions plus any backend
-            # extension tools, so extension steps are recorded like actions.
-            action_names = self.executor.action_tool_names
-
-            post_img_bytes = await self._capture_post_screenshot(
-                exec_result, name, action_names
-            )
+            post_img_bytes = await self._capture_post_screenshot(exec_result, name, action_names)
 
             # Record telemetry / step in DataEngine
             recorded_step_id = None
@@ -563,7 +683,12 @@ class FlashRunner:
                     pre_screenshot_bytes,
                     xml_list,
                     post_img_bytes,
+                    injected=injected,
                 )
+
+            if name in action_names:
+                turn.step_keys.append(str(recorded_step_id) if recorded_step_id else str(tc_id))
+                turn.actions.append((name, exec_result.status, exec_result.text_summary))
 
             # ⚡ Non-blocking dispatch of objective visual transition summarizer
             if self.summarizer and name in action_names:
@@ -584,10 +709,29 @@ class FlashRunner:
             if exec_result.ui_elements_text:
                 xml_list = exec_result.ui_elements_text
 
-            messages.append(exec_result.to_langchain_tool_message())
+            # Helper tools may return multimodal blocks (recalled screenshots);
+            # device actions always report text — their post screenshot is the
+            # next observation tail, never a tool-message image.
+            raw_blocks = exec_result.raw_result if name not in action_names else None
+            content = (
+                raw_blocks
+                if isinstance(raw_blocks, list) and raw_blocks
+                else exec_result.text_summary or f"Action '{name}' completed."
+            )
+            messages.append(
+                ToolMessage(
+                    tool_call_id=tc_id,
+                    name=name,
+                    content=content,
+                    status=exec_result.status,
+                )
+            )
 
         except Exception as e:
             logger.error(f"Error executing tool {name}: {e}")
+            if name in action_names:
+                turn.step_keys.append(str(tc_id))
+                turn.actions.append((name, "error", f"Error executing tool {name}: {e}"))
             messages.append(
                 ToolMessage(
                     tool_call_id=tc_id,
@@ -620,6 +764,8 @@ class FlashRunner:
         pre_screenshot_bytes,
         xml_list,
         action_sequence: int,
+        turn: _TurnRecord,
+        injected: str | None = None,
     ):
         """Dispatches the turn's tool calls.
 
@@ -634,71 +780,113 @@ class FlashRunner:
 
             if name == "report_task_status":
                 final_report = await self._finalize_task_report(
-                    name, args, tc_id, raw_text, step_token_usage,
-                    pre_screenshot_bytes, xml_list, messages,
+                    name,
+                    args,
+                    tc_id,
+                    raw_text,
+                    step_token_usage,
+                    pre_screenshot_bytes,
+                    xml_list,
+                    messages,
                 )
                 return final_report, pre_screenshot_bytes, xml_list, action_sequence
 
-            pre_screenshot_bytes, xml_list, action_sequence = (
-                await self._execute_and_record_action(
-                    name, args, tc_id, state, messages, raw_text, step_token_usage,
-                    pre_screenshot_bytes, xml_list, action_sequence,
-                )
+            pre_screenshot_bytes, xml_list, action_sequence = await self._execute_and_record_action(
+                name,
+                args,
+                tc_id,
+                state,
+                messages,
+                raw_text,
+                step_token_usage,
+                pre_screenshot_bytes,
+                xml_list,
+                action_sequence,
+                turn,
+                injected=injected,
             )
         return None, pre_screenshot_bytes, xml_list, action_sequence
 
     async def _prepare_conversation(self, state: State, tools_declaration: list):
-        """Captures the initial device state and builds the seed messages."""
-        # 2. Capture Initial State (Screenshot + UI Tree)
+        """Installs the static prefix and captures the initial device state."""
+        ledger = self._build_ledger()
+        ledger.set_static_prefix(
+            [SystemMessage(content=self._render_system_prompt(tools_declaration))]
+        )
+
+        # Capture Initial State (Screenshot + UI Tree)
         shot_path, img_bytes, xml_list = await capture_screenshot_and_parse_ui(
             self.ctx, state, self.controller, skip_settling=False
         )
         state.latest_screenshot = shot_path
+        return ledger, img_bytes, xml_list
 
-        messages: list[BaseMessage] = [
-            SystemMessage(content=self._render_system_prompt(tools_declaration)),
-            HumanMessage(content=self._build_initial_user_content(img_bytes, xml_list)),
-        ]
-        return messages, img_bytes, xml_list
+    @staticmethod
+    def _commit_turn(ledger: TranscriptLedger, turn: _TurnRecord | None) -> None:
+        """Commits the previous turn once its step ids and outcomes are known."""
+        if turn is None:
+            return
+        ledger.commit_staged(
+            step_key=turn.step_keys[0] if turn.step_keys else None,
+            validator_result=turn.result(),
+            extra_step_keys=turn.step_keys[1:],
+        )
 
     @trace(type="agent", name="FlashRunner")
     async def run(self, state: State) -> dict:
-        logger.info(f"Starting Artemis Flash reactive loop for goal: {self.goal}")
-
-        compressor = self._build_compressor()
+        limit = self.turn_limit
+        logger.info(
+            f"Starting Artemis Flash reactive loop for goal: {self.goal}"
+            f" (turn limit: {limit if limit else 'unlimited'})"
+        )
 
         # 1. Initialize Universal LLM via Service Layer
         llm = self._init_llm()
 
         tools_declaration = self._get_tools()
+        report_only_tools = [t for t in tools_declaration if t.name == "report_task_status"]
 
-        messages, img_bytes, xml_list = await self._prepare_conversation(
-            state, tools_declaration
-        )
+        ledger, img_bytes, xml_list = await self._prepare_conversation(state, tools_declaration)
 
         turns = 0
         action_sequence = 0
         final_report = None
         current_pre_screenshot_bytes = img_bytes
         current_xml_list = xml_list
+        previous_turn: _TurnRecord | None = None
+        pending_notices: list[str] = []
 
-        while turns < self.max_turns:
+        while limit is None or turns < limit:
             turns += 1
-            logger.info(f"--- Artemis Flash Turn {turns}/{self.max_turns} ---")
+            logger.info(f"--- Artemis Flash Turn {turns}{f'/{limit}' if limit else ''} ---")
 
             if self.ctx.data_engine:
                 self.ctx.data_engine.allocate_step_id()
 
+            # Commit the previous turn: its step ids and outcomes exist now.
+            self._commit_turn(ledger, previous_turn)
+            previous_turn = None
+
             # Check for real-time injected instructions
-            await self._append_injected_instruction(messages)
+            injected = await self._read_injected_instruction()
 
-            # Advance the scrub edge even when visual summarization is
-            # disabled, so screenshot and historical XML pruning keep one
-            # code path. Messages behind the edge are frozen permanently.
-            compressor.compress(messages)
+            # Tool restriction on the final turn (bounded loops only)
+            is_final = limit is not None and turns == limit
+            tail = self._build_tail(
+                ledger,
+                turns,
+                current_pre_screenshot_bytes,
+                current_xml_list,
+                injected=injected,
+                notices=pending_notices,
+                is_final=is_final,
+            )
+            pending_notices = []
 
-            # Tool restriction on the final turn
-            current_tools = self._select_turn_tools(turns, tools_declaration, messages)
+            # S + F + A + tail: chunk compression and the scrub edge advance here.
+            messages = ledger.render([tail])
+            turn_base = len(messages) - 1
+            current_tools = report_only_tools if is_final else tools_declaration
 
             response = await self._invoke_model(llm, current_tools, messages)
 
@@ -722,36 +910,46 @@ class FlashRunner:
                     f"FlashRunner received response without tool calls at turn {turns}:"
                     f" {raw_text[:100]}..."
                 )
-                if turns == self.max_turns:
+                if is_final:
                     final_report = {"status": "failed", "explanation": raw_text}
                     break
-                messages.append(
-                    HumanMessage(
-                        content=(
-                            "You did not call any tools. Please make progress"
-                            " by calling an action tool or 'report_task_status'."
-                        )
-                    )
-                )
+                pending_notices.append(_NO_TOOL_CALL_NOTICE)
+                ledger.stage_turn(messages[turn_base:])
+                previous_turn = _TurnRecord()
                 continue
 
             # Process tool calls
+            turn = _TurnRecord()
             (
                 final_report_from_calls,
                 current_pre_screenshot_bytes,
                 current_xml_list,
                 action_sequence,
             ) = await self._process_tool_calls(
-                tool_calls, state, messages, raw_text, step_token_usage,
-                current_pre_screenshot_bytes, current_xml_list, action_sequence,
+                tool_calls,
+                state,
+                messages,
+                raw_text,
+                step_token_usage,
+                current_pre_screenshot_bytes,
+                current_xml_list,
+                action_sequence,
+                turn,
+                injected=injected,
             )
+            ledger.stage_turn(messages[turn_base:])
+            previous_turn = turn
             if final_report_from_calls is not None:
                 return final_report_from_calls
 
         if self.summarizer:
             await self.summarizer.flush()
 
-        return final_report or {
-            "status": "failed",
-            "explanation": "Max turns reached without final status report.",
-        }
+        if final_report is None:
+            explanation = (
+                "Max turns reached without final status report."
+                if limit is not None and turns >= limit
+                else "The model returned no response; the reactive loop stopped."
+            )
+            final_report = {"status": "failed", "explanation": explanation}
+        return final_report

@@ -303,8 +303,8 @@ def _handle_llm_pause_and_resume(last_error: Exception) -> Path:
     llm_logger.warning(f"LLM Error: {err_msg}. Pausing execution to wait for resume signal...")
     pause_file = PAUSE_FILE
     try:
-        pause_file.write_text(f"LLM Error: {err_msg}")
-    except Exception:
+        pause_file.write_text(f"LLM Error: {err_msg}", encoding="utf-8")
+    except (OSError, UnicodeError):
         pass
 
     current_engine = _get_current_data_engine()
@@ -896,7 +896,7 @@ async def invoke_llm_with_timeout_message[T](
 
 # Backward compatible factory functions delegating to ModelFactory
 def get_google_llm(
-    model_name: str = "gemini-3.7-flash",
+    model_name: str = "gemini-3.8-flash",
     temperature: float | None = None,
     timeout: float | None = None,
     thinking_budget: int | None = None,
@@ -918,7 +918,7 @@ def get_google_llm(
 
 
 def get_vertex_llm(
-    model_name: str = "gemini-3.7-flash",
+    model_name: str = "gemini-3.8-flash",
     temperature: float | None = None,
     timeout: float | None = None,
     thinking_budget: int | None = None,
@@ -1029,8 +1029,13 @@ def _resolve_endpoint(
     if getattr(ctx, "llm_config", None) is None:
         try:
             ctx.llm_config = get_default_llm_config()
-        except Exception:
-            pass
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            # Config loading has open-ended failure modes; surface the real cause
+            # instead of letting the attribute access below fail with a misleading
+            # AttributeError on the still-missing config.
+            raise RuntimeError(
+                f"Default LLM config could not be loaded while resolving '{name}': {exc}"
+            ) from exc
 
     cfg = ctx.llm_config.get_utils(name) if is_utils else ctx.llm_config.get_agent(name)
 

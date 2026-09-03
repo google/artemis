@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: help test install install-deps setup start ui restart stop status build-ui doctor clean precommit-install precommit lint format typecheck
+.PHONY: help test test-integration test-device test-all install install-deps setup start ui restart stop status build-ui doctor clean precommit-install precommit lint format typecheck quality-ratchet
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -42,9 +42,21 @@ build-ui: ## Build the Showcase UI Angular frontend
 doctor: ## Run system, device, and toolchain diagnostics
 	@uv run artemis doctor
 
-test: ## Run all tests
-	@echo "🧪 Running all tests..."
-	@uv run pytest -v
+test: ## Run deterministic tests that need no device, credentials, or private services
+	@echo "🧪 Running deterministic tests..."
+	@uv run pytest
+
+test-integration: ## Run non-device integration tests (may require configured model credentials)
+	@echo "🧪 Running integration tests..."
+	@uv run pytest tests/integration tests/tools -m "integration and not android and not cloud and not manual"
+
+test-device: ## Run Android and end-to-end tests explicitly
+	@echo "📱 Running device and end-to-end tests..."
+	@uv run pytest tests/integration tests/e2e -m "android or e2e"
+
+test-all: ## Run every test tree; external prerequisites must be available
+	@echo "🧪 Running the complete test tree..."
+	@uv run pytest tests packages/artemis-client/tests -m "integration or not integration"
 
 install: ## Install python dependencies via uv
 	@echo "📦 Installing python dependencies..."
@@ -66,6 +78,7 @@ lint: ## Run linting checks
 	@echo "🔍 Running linting checks..."
 	@uv run ruff format --check
 	@uv run ruff check
+	@uv run python scripts/quality_ratchet.py
 
 format: ## Format code
 	@echo "✨ Formatting code..."
@@ -74,7 +87,10 @@ format: ## Format code
 
 typecheck: ## Run type checking
 	@echo "🔍 Running type checks..."
-	@uv run pyright
+	@uv run pyright --project pyright-core.json
+
+quality-ratchet: ## Prevent broad exception and type-ignore debt from increasing
+	@uv run python scripts/quality_ratchet.py
 
 precommit-install: ## Install pre-commit hooks
 	@echo "🔧 Installing pre-commit hooks..."

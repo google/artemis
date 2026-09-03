@@ -61,9 +61,7 @@ class UnifiedMobileController:
     def __init__(self, ctx: ArtemisContext):
         self.ctx = ctx
         self._driver: BaseDeviceDriver = get_driver(ctx)
-        self._segment_cache: dict[
-            tuple[str, int, float, float], VideoRecordingResult
-        ] = {}
+        self._segment_cache: dict[tuple[str, int, float, float], VideoRecordingResult] = {}
 
     @property
     def driver(self) -> BaseDeviceDriver:
@@ -323,7 +321,12 @@ class UnifiedMobileController:
                 round(end_time, 1),
             )
             cached_res = self._segment_cache.get(cache_key)
-            if cached_res and cached_res.success and cached_res.video_path and cached_res.video_path.exists():
+            if (
+                cached_res
+                and cached_res.success
+                and cached_res.video_path
+                and cached_res.video_path.exists()
+            ):
                 logger.info(
                     "Reusing generation-scoped trimmed video segment for range "
                     f"{cache_key[2]}s to {cache_key[3]}s"
@@ -434,9 +437,7 @@ class UnifiedMobileController:
                 video_id=session.video_id,
                 generation=session.generation,
                 sealed_until=session.sealed_until,
-                source_revision=(
-                    f"{session.video_id}:{session.generation}:{round(actual_end, 3)}"
-                ),
+                source_revision=(f"{session.video_id}:{session.generation}:{round(actual_end, 3)}"),
             )
             if cache_key is not None:
                 self._segment_cache[cache_key] = res
@@ -451,7 +452,9 @@ class UnifiedMobileController:
 
     @staticmethod
     def _segment_mp4_path(source_path: Path, index: int) -> Path:
-        return source_path.parent / ("recording.mp4" if index == 0 else f"recording_{index:03d}.mp4")
+        return source_path.parent / (
+            "recording.mp4" if index == 0 else f"recording_{index:03d}.mp4"
+        )
 
     @staticmethod
     async def _remux_segment_record(record: dict[str, Any]) -> bool:
@@ -549,7 +552,9 @@ class UnifiedMobileController:
                 if not crashed:
                     await self._stop_scrcpy(session.process)
                 self._finalize_current_segment(session, time.time())
-                reason = "rotation" if rotated else "time limit" if not crashed else "recorder crash"
+                reason = (
+                    "rotation" if rotated else "time limit" if not crashed else "recorder crash"
+                )
                 logger.info(f"Rolling screen recording segment after {reason}")
                 if not await self._start_next_recording_segment(session, display_state):
                     return
@@ -699,8 +704,12 @@ class UnifiedMobileController:
             session.watchdog_task.cancel()
             try:
                 await session.watchdog_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.debug(
+                    f"Recording watchdog for {device_id} ended with an error: {exc}", exc_info=True
+                )
 
         try:
             process = session.process
@@ -711,12 +720,9 @@ class UnifiedMobileController:
                     logger.warning(f"Error terminating scrcpy process: {proc_e}")
 
             output_path = session.local_video_path
-            has_existing_recording = (
-                (output_path and output_path.exists())
-                or any(
-                    Path(r.get("output_path", "")).exists() or Path(r.get("path", "")).exists()
-                    for r in session.android_segment_records
-                )
+            has_existing_recording = (output_path and output_path.exists()) or any(
+                Path(r.get("output_path", "")).exists() or Path(r.get("path", "")).exists()
+                for r in session.android_segment_records
             )
             if not has_existing_recording:
                 message = "Recording file not found on disk"
@@ -732,22 +738,24 @@ class UnifiedMobileController:
                 if not record.get("conversion_scheduled"):
                     record["conversion_scheduled"] = True
                     session.android_conversion_tasks.append(
-                        asyncio.create_task(
-                            self._remux_segment_record(record)
-                        )
+                        asyncio.create_task(self._remux_segment_record(record))
                     )
             if session.android_conversion_tasks:
-                await asyncio.gather(
-                    *session.android_conversion_tasks, return_exceptions=True
-                )
+                await asyncio.gather(*session.android_conversion_tasks, return_exceptions=True)
             mp4_paths = [
                 Path(record["output_path"])
                 for record in session.android_segment_records
-                if Path(record["output_path"]).exists() and Path(record["output_path"]).stat().st_size > 0
+                if Path(record["output_path"]).exists()
+                and Path(record["output_path"]).stat().st_size > 0
             ]
 
             # Emergency fallback: if no segment MP4 was produced, attempt to remux local_video_path directly
-            if not mp4_paths and output_path and output_path.exists() and output_path.stat().st_size > 0:
+            if (
+                not mp4_paths
+                and output_path
+                and output_path.exists()
+                and output_path.stat().st_size > 0
+            ):
                 fallback_mp4 = (
                     output_path.parent / "recording.mp4"
                     if output_path.name != "recording.mp4"
@@ -757,7 +765,9 @@ class UnifiedMobileController:
                     mp4_paths.append(fallback_mp4)
 
             if not mp4_paths:
-                message = "Recording finalization failed; no complete browser-safe video was produced"
+                message = (
+                    "Recording finalization failed; no complete browser-safe video was produced"
+                )
                 self._record_recording_failure(session, message)
                 remove_active_session(device_id)
                 return VideoRecordingResult(success=False, message=message)

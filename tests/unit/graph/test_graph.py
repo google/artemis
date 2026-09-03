@@ -39,7 +39,6 @@ def _make_ctx(base_dir, *, disable_checker=True, disable_planner_validation=Fals
     ctx.pending_checkpoints = []
     ctx.checkpoint_tasks = {}
     ctx.pending_validated_plan = None
-    ctx.task_plan_content_before = None
     return ctx
 
 
@@ -192,8 +191,6 @@ async def test_ratchet_baseline_survives_consecutive_small_edits(tmp_path):
     # Both validation runs were anchored to the original baseline
     for call in mock_validation.call_args_list:
         assert call.args[2] == ORIGINAL_PLAN
-    # Rollback target preserves the last baseline-consistent content
-    assert ctx.task_plan_content_before == ORIGINAL_PLAN
 
 
 @pytest.mark.asyncio

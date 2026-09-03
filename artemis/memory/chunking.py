@@ -27,10 +27,10 @@ width, never the step count. Every chunk renders as three bands:
   gap forces regeneration, bounded retries degrade to pending).
 - **③ Per-step action ledger** (mechanical, zero-distortion,
   :func:`build_action_ledger`): one line per step — step number, ``T+mm:ss``
-  session offset, ``format_action_clean`` semantic action, controller/
-  validator result phrase; Failure-Analyzer recovery actions as indented
-  sub-lines; user-injected instructions verbatim on their own never-evicted
-  lines.
+  session offset, ``format_actions_clean`` semantic action (a fast-action
+  burst lists every member), controller/validator result phrase (an execution
+  incident renders as the ``Error:`` phrase); user-injected instructions
+  verbatim on their own never-evicted lines.
 
 Triggers (:class:`HistoryChunkManager`): milestone switch (sole fact source:
 the *stamped* ``subgoal_hash`` changing between consecutive recorded steps;
@@ -83,9 +83,7 @@ logger = get_logger(__name__)
 
 #: Recall guidance line rendered under an extreme-layer period paragraph
 #: (an era whose per-step ledger overflowed to recall-only; §3.3).
-RECALL_GUIDANCE_TEMPLATE = (
-    "  (Step-level ledger via recall_history for steps {start}–{end})"
-)
+RECALL_GUIDANCE_TEMPLATE = "  (Step-level ledger via recall_history for steps {start}–{end})"
 
 CHUNK_PENDING_NOTE = (
     "①/② capsule pending (background generation); the mechanical"
@@ -121,37 +119,14 @@ def _result_phrase(result: Any) -> str:
 
 
 def _action_phrase(step: dict) -> str:
-    """Semantic action phrase for one step (``format_action_clean``)."""
-    from artemis.utils.task_tree import format_action_clean
+    """Semantic action phrase for one step (``format_actions_clean``).
 
-    action = step.get("action_taken")
-    text = format_action_clean(action)
-    if isinstance(action, list) and len(action) > 1:
-        text += f" (+{len(action) - 1} more actions)"
-    return text
+    A fast-action burst (2+ actions in one turn) lists every member so the
+    ledger stays zero-distortion.
+    """
+    from artemis.utils.task_tree import format_actions_clean
 
-
-def _fa_recovery_lines(step: dict) -> list[str]:
-    """Failure-Analyzer device actions of a step, rendered mechanically."""
-    from artemis.utils.task_tree import format_tool_call_clean
-
-    lines: list[str] = []
-    for event in step.get("interleaved_events") or []:
-        name = event.get("name") or ""
-        if (
-            event.get("type") == "tool_call"
-            and name.startswith("_exec_")
-            and name != "report_failure_analysis"
-        ):
-            try:
-                rendered = format_tool_call_clean(
-                    name, event.get("args") or {}, event.get("result")
-                )
-            except Exception:
-                rendered = None
-            if rendered:
-                lines.append(rendered)
-    return lines
+    return format_actions_clean(step.get("action_taken"))
 
 
 def step_offset_label(step: dict, session_start: float | None) -> str:
@@ -190,9 +165,9 @@ def build_action_ledger(
         if minimal:
             lines.append(f"- Step {number} ({offset}): {action}")
         else:
-            lines.append(f"- Step {number} ({offset}): {action} -> {_result_phrase(step.get('last_execution_result'))}")
-            for recovery in _fa_recovery_lines(step):
-                lines.append(f"    FA: {recovery}")
+            lines.append(
+                f"- Step {number} ({offset}): {action} -> {_result_phrase(step.get('last_execution_result'))}"
+            )
         user_line = injected_instruction_line(step)
         if user_line:
             lines.append(user_line)
@@ -285,7 +260,7 @@ class StepCapsuleLens(StepLens):
         fallback_model_name: str | None = None,
         fallback_llm: Any | None = None,
     ):
-        self._model_name = model_name or "gemini-3.7-flash"
+        self._model_name = model_name or "gemini-3.8-flash"
         self._llm = llm
         self._ctx = ctx
         # Availability hardening: `chunking.model` is a dedicated model with no
@@ -352,15 +327,9 @@ class StepCapsuleLens(StepLens):
             if step.get("thinking_excerpt"):
                 part.append(f"Reasoning excerpt: {step['thinking_excerpt']}")
             for write in step.get("note_writes", []):
-                part.append(
-                    f"Note written ({write['tool']} -> {write['key']}): {write['gist']}"
-                )
+                part.append(f"Note written ({write['tool']} -> {write['key']}): {write['gist']}")
             if step.get("injected_instruction"):
-                part.append(
-                    f'User injected instruction: "{step["injected_instruction"]}"'
-                )
-            for fa in step.get("fa_actions", []):
-                part.append(f"Failure-Analyzer recovery: {fa}")
+                part.append(f'User injected instruction: "{step["injected_instruction"]}"')
             blocks.append("\n".join(part))
 
         return [
@@ -430,8 +399,8 @@ class StepCapsuleLens(StepLens):
                     source=f"lens:step_capsule:{model_label}",
                     update_last_prompt=False,
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"Capsule LLM usage metering skipped: {exc}", exc_info=True)
         return response
 
     async def render(self, key: JobKey, payload: dict[str, Any]) -> str | None:
@@ -577,9 +546,7 @@ def render_chunk_block(chunk: ChunkState) -> str:
         parts.append(f"  What this segment was doing: {b1.get('doing', '')}")
         parts.append(f"  What was actually done: {b1.get('did', '')}")
         parts.append(f"  Effects / left behind: {b1.get('effect', '')}")
-        parts.append(
-            f"  Entry: {b1.get('entry_state', '')}    Exit: {b1.get('exit_state', '')}"
-        )
+        parts.append(f"  Entry: {b1.get('entry_state', '')}    Exit: {b1.get('exit_state', '')}")
         parts.append(f"  Verified: {'; '.join(b1.get('verified_facts') or []) or '-'}")
         parts.append(f"  Unresolved: {'; '.join(b1.get('unresolved') or []) or '-'}")
         parts.append(f"  Failed paths: {'; '.join(b1.get('failed_paths') or []) or '-'}")
@@ -627,10 +594,7 @@ def render_era_period_paragraph(era: EraState) -> str:
     """
     ready = [c for c in era.chunks if c.band1]
     if not ready:
-        labels = [
-            f"{c.milestone_label or 'segment'} ({c.step_range_label})"
-            for c in era.chunks
-        ]
+        labels = [f"{c.milestone_label or 'segment'} ({c.step_range_label})" for c in era.chunks]
         return "Milestones: " + "; ".join(labels) + "."
 
     sentences: list[str] = []
@@ -643,7 +607,9 @@ def render_era_period_paragraph(era: EraState) -> str:
         "",
     )
     if doing:
-        sentences.append(doing if doing.endswith((".", "!", "?", "。", "！", "？")) else doing + ".")
+        sentences.append(
+            doing if doing.endswith((".", "!", "?", "。", "！", "？")) else doing + "."
+        )
 
     did_parts: list[str] = []
     for chunk in era.chunks:
@@ -685,9 +651,7 @@ def render_era_block(era: EraState) -> str:
                 f" | {era.chunks[0].start_offset} → {era.chunks[-1].end_offset}]"
                 f" {render_era_period_paragraph(era)}"
             ),
-            RECALL_GUIDANCE_TEMPLATE.format(
-                start=era.start_step_number, end=era.end_step_number
-            ),
+            RECALL_GUIDANCE_TEMPLATE.format(start=era.start_step_number, end=era.end_step_number),
         ]
         # Never-evict: user-injected instruction lines survive even recall-only.
         for chunk in era.chunks:
@@ -805,7 +769,7 @@ class HistoryChunkManager:
         cc = chunking_config
         self._max_steps = int(getattr(cc, "max_steps", 12) or 12)
         self._target_source_tokens = int(getattr(cc, "target_source_tokens", 2000) or 2000)
-        self._model_name = getattr(cc, "model", None) or "gemini-3.7-flash"
+        self._model_name = getattr(cc, "model", None) or "gemini-3.8-flash"
         self._max_chunks = int(getattr(cc, "max_chunks", 8) or 8)
         # Independent era cap (M5): None follows max_chunks (pre-M5 behavior).
         self._max_eras = int(getattr(cc, "max_eras", None) or self._max_chunks)
@@ -847,8 +811,11 @@ class HistoryChunkManager:
                 "max_concurrency": runtime.max_concurrency,
                 "flush_timeout_s": runtime.flush_timeout_s,
             }
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                f"Memory runtime config unavailable; using capsule service defaults: {exc}",
+                exc_info=True,
+            )
         lens = StepCapsuleLens(
             self._model_name,
             ctx=ctx,
@@ -874,8 +841,8 @@ class HistoryChunkManager:
             model = getattr(fallback, "model", None)
             if model and provider in ("google", "gemini") and model != self._model_name:
                 return str(model)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"Capsule fallback model resolution skipped: {exc}", exc_info=True)
         return None
 
     @property
@@ -927,9 +894,7 @@ class HistoryChunkManager:
             self._boundary_hint_pending = False
         self._last_hash = stamped
 
-    def annotate_from_checkpoint(
-        self, checkpoint_id: str, verdicts: list[dict[str, Any]]
-    ) -> bool:
+    def annotate_from_checkpoint(self, checkpoint_id: str, verdicts: list[dict[str, Any]]) -> bool:
         """Post-hoc annotation: a harvested checkpoint verdict landed after its
         segment was chunked. The matching chunk gains an annotation and a
         version bump (DB immediately; the frozen text re-renders only at the
@@ -954,8 +919,8 @@ class HistoryChunkManager:
             base_dir = getattr(self._engine, "base_dir", None)
             if base_dir:
                 aliases |= set(get_all_subgoal_aliases(checkpoint_id, base_dir))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"Subgoal alias lookup for {checkpoint_id} skipped: {exc}", exc_info=True)
         return aliases
 
     def _all_chunks(self) -> list[ChunkState]:
@@ -1148,8 +1113,7 @@ class HistoryChunkManager:
 
     def _slices(self, seg_turns: list[dict]) -> list[list[dict]]:
         return [
-            seg_turns[i : i + self._max_steps]
-            for i in range(0, len(seg_turns), self._max_steps)
+            seg_turns[i : i + self._max_steps] for i in range(0, len(seg_turns), self._max_steps)
         ]
 
     def _context_base_tokens(self) -> int | None:
@@ -1191,7 +1155,14 @@ class HistoryChunkManager:
         seg_hash: str | None,
         steps_by_id: dict[str, dict],
     ) -> ChunkState | None:
-        step_keys = [str(t.get("step_key")) for t in slice_turns if t.get("step_key")]
+        # A turn carries every step id it recorded (``step_keys``, Flash
+        # multi-action turns); older ledgers only expose ``step_key``.
+        step_keys: list[str] = []
+        for turn in slice_turns:
+            keys = turn.get("step_keys") or ([turn.get("step_key")] if turn.get("step_key") else [])
+            for key in keys:
+                if key and str(key) not in step_keys:
+                    step_keys.append(str(key))
         steps = [steps_by_id[k] for k in step_keys if k in steps_by_id]
         steps.sort(key=lambda s: s.get("step_number") or 0)
         if not steps:
@@ -1217,9 +1188,7 @@ class HistoryChunkManager:
             end_offset=step_offset_label(end_step, session_start),
             band3=build_action_ledger(steps, session_start),
             minimal_index=build_action_ledger(steps, session_start, minimal=True),
-            user_lines=[
-                line for line in (injected_instruction_line(s) for s in steps) if line
-            ],
+            user_lines=[line for line in (injected_instruction_line(s) for s in steps) if line],
         )
         # Ready gating: the caller queues the chunk as awaiting — it only
         # enters self._chunks (and the frozen region) once its capsule is
@@ -1240,13 +1209,11 @@ class HistoryChunkManager:
                     "action": _action_phrase(step),
                     "outcome": _result_phrase(step.get("last_execution_result")),
                     "visual_summary": step.get("summary"),
-                    "thinking_excerpt": (step.get("operator_raw_thinking") or "")[:1200]
-                    or None,
+                    "thinking_excerpt": (step.get("operator_raw_thinking") or "")[:1200] or None,
                     "note_writes": extract_note_writes(step),
                     "injected_instruction": (step.get("extra_metadata") or {}).get(
                         "injected_instruction"
                     ),
-                    "fa_actions": _fa_recovery_lines(step),
                 }
             )
         payload = {
@@ -1363,9 +1330,7 @@ class HistoryChunkManager:
             return [HumanMessage(content=[{"type": "text", "text": text}])]
         blocks: list[BaseMessage] = []
         for era in self._eras:
-            blocks.append(
-                HumanMessage(content=[{"type": "text", "text": render_era_block(era)}])
-            )
+            blocks.append(HumanMessage(content=[{"type": "text", "text": render_era_block(era)}]))
         for chunk in self._chunks:
             blocks.append(
                 HumanMessage(content=[{"type": "text", "text": render_chunk_block(chunk)}])
@@ -1397,8 +1362,8 @@ class HistoryChunkManager:
         """
         try:
             await self._capsule_service.flush(timeout_seconds)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"Capsule service flush failed; skipped: {exc}", exc_info=True)
         try:
             self._harvest_capsules()
         except Exception as e:

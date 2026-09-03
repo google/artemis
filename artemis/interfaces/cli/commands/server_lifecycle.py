@@ -128,7 +128,9 @@ def restart_command(
     existing_pids = find_server_pids(port)
     if existing_pids:
         pid_str = ", ".join(map(str, existing_pids))
-        console.print(f"   [yellow]🛑 Terminating running Artemis instance (PID: {pid_str})...[/yellow]")
+        console.print(
+            f"   [yellow]🛑 Terminating running Artemis instance (PID: {pid_str})...[/yellow]"
+        )
     else:
         console.print(f"   [dim]ℹ No active Artemis server found on port {port}.[/dim]")
 
@@ -191,7 +193,9 @@ def restart_command(
         return
 
     # Foreground mode (--foreground / --reload)
-    console.print("   [cyan]🚀 Launching unified Artemis Showcase UI in current terminal...[/cyan]\n")
+    console.print(
+        "   [cyan]🚀 Launching unified Artemis Showcase UI in current terminal...[/cyan]\n"
+    )
     ui_command(host=host, port=port, open_browser=open_browser, reload=reload)
 
 
@@ -214,7 +218,9 @@ def stop_command(
     existing_pids = find_server_pids(port)
     if existing_pids:
         pid_str = ", ".join(map(str, existing_pids))
-        console.print(f"   [yellow]🛑 Stopping Artemis server on port {port} (PID: {pid_str})...[/yellow]")
+        console.print(
+            f"   [yellow]🛑 Stopping Artemis server on port {port} (PID: {pid_str})...[/yellow]"
+        )
     else:
         console.print(f"   [dim]Scanning port {port}...[/dim]")
 
@@ -262,7 +268,11 @@ def status_command(
     status = get_server_status(port=port)
 
     if status["running"]:
-        pids_str = ", ".join(map(str, status["pids"])) if status["pids"] else str(status["active_pid"] or "Unknown")
+        pids_str = (
+            ", ".join(map(str, status["pids"]))
+            if status["pids"]
+            else str(status["active_pid"] or "Unknown")
+        )
         uptime_str = _format_uptime(status["uptime_seconds"])
         metadata = status.get("metadata") or {}
 
@@ -276,13 +286,17 @@ def status_command(
                 pass
 
         table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_row("[bold cyan]Status[/bold cyan]", "[bold green]● ONLINE / RUNNING[/bold green]")
+        table.add_row(
+            "[bold cyan]Status[/bold cyan]", "[bold green]● ONLINE / RUNNING[/bold green]"
+        )
         table.add_row("[bold cyan]PID(s)[/bold cyan]", f"[yellow]{pids_str}[/yellow]")
         table.add_row("[bold cyan]Port[/bold cyan]", f"[white]{port}[/white]")
         table.add_row("[bold cyan]Uptime[/bold cyan]", f"[white]{uptime_str}[/white]")
         table.add_row("[bold cyan]Started At[/bold cyan]", f"[dim]{started_at_str}[/dim]")
         table.add_row("[bold cyan]Showcase UI[/bold cyan]", f"[cyan]{status['url']}[/cyan]")
-        table.add_row("[bold cyan]Admin Debug[/bold cyan]", f"[magenta]{status['admin_url']}[/magenta]")
+        table.add_row(
+            "[bold cyan]Admin Debug[/bold cyan]", f"[magenta]{status['admin_url']}[/magenta]"
+        )
 
         if metadata.get("cwd"):
             table.add_row("[bold cyan]Workspace[/bold cyan]", f"[dim]{metadata['cwd']}[/dim]")
@@ -295,7 +309,9 @@ def status_command(
                 expand=False,
             )
         )
-        console.print("   [dim]💡 To restart: [bold]artemis restart[/bold] | To stop: [bold]artemis stop[/bold][/dim]\n")
+        console.print(
+            "   [dim]💡 To restart: [bold]artemis restart[/bold] | To stop: [bold]artemis stop[/bold][/dim]\n"
+        )
     else:
         console.print(
             Panel(
@@ -307,4 +323,6 @@ def status_command(
                 expand=False,
             )
         )
-        console.print("   [dim]💡 To start: [bold]artemis ui[/bold] or [bold]./start.sh[/bold][/dim]\n")
+        console.print(
+            "   [dim]💡 To start: [bold]artemis ui[/bold] or [bold]./start.sh[/bold][/dim]\n"
+        )

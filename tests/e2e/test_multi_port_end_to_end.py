@@ -95,7 +95,9 @@ def test_02_daemon_device_discovery_sees_phone_and_emulator():
 
         # Must detect both devices
         assert any(s.startswith("emulator") for s in serials), f"Emulator not found in {serials}"
-        assert any(not s.startswith("emulator") for s in serials), f"Physical phone not found in {serials}"
+        assert any(not s.startswith("emulator") for s in serials), (
+            f"Physical phone not found in {serials}"
+        )
 
         # Check is_emulator flag classification
         for d in devices:
@@ -182,7 +184,9 @@ def test_05_sdk_client_targeting_and_concurrency():
     assert acq1 is True, "Failed to acquire emulator lock"
     try:
         acq2 = lock_phone.acquire(timeout=5.0)
-        assert acq2 is True, "Failed to acquire phone lock concurrently (multi-device parallel mode)"
+        assert acq2 is True, (
+            "Failed to acquire phone lock concurrently (multi-device parallel mode)"
+        )
         lock_phone.release()
     finally:
         lock_emu.release()
@@ -191,18 +195,24 @@ def test_05_sdk_client_targeting_and_concurrency():
 def test_06_cli_daemon_and_standalone_options():
     """Verify CLI commands properly expose and route through Daemon or standalone."""
     # artemis status
-    res = subprocess.run([sys.executable, "-m", "artemis.main", "status"], capture_output=True, text=True)
+    res = subprocess.run(
+        [sys.executable, "-m", "artemis.main", "status"], capture_output=True, text=True
+    )
     assert res.returncode == 0
     assert "online" in res.stdout.lower() or "running" in res.stdout.lower()
 
     # artemis run --help exposes --standalone and --device
-    res_run = subprocess.run([sys.executable, "-m", "artemis.main", "run", "--help"], capture_output=True, text=True)
+    res_run = subprocess.run(
+        [sys.executable, "-m", "artemis.main", "run", "--help"], capture_output=True, text=True
+    )
     assert res_run.returncode == 0
     assert "--standalone" in res_run.stdout
     assert "--device" in res_run.stdout
 
     # artemis batch --help exposes --standalone
-    res_batch = subprocess.run([sys.executable, "-m", "artemis.main", "batch", "--help"], capture_output=True, text=True)
+    res_batch = subprocess.run(
+        [sys.executable, "-m", "artemis.main", "batch", "--help"], capture_output=True, text=True
+    )
     assert res_batch.returncode == 0
     assert "--standalone" in res_batch.stdout
 

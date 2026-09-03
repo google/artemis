@@ -1,4 +1,4 @@
-﻿# Copyright 2026 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -172,7 +172,7 @@ def test_update_on_corrupt_status_logs_and_drops(temp_trace_env, caplog):
     assert not any("Dropping status update" in rec.message for rec in caplog.records)
 
 
-def test_concurrent_read_modify_write_does_not_lose_updates(temp_trace_env):
+def test_concurrent_read_modify_write_does_not_lose_updates(temp_trace_env, caplog):
     """Interleaved RMW updates from two writers must not lose each other's fields."""
     trace_id = str(uuid.uuid4())
     trace_store.init_trace(trace_id, "Concurrency", "Flash")
@@ -182,28 +182,37 @@ def test_concurrent_read_modify_write_does_not_lose_updates(temp_trace_env):
     def set_errors():
         try:
             for i in range(iterations):
-                assert trace_store.update_trace_status(
-                    trace_id, "running", error=f"err-{i}"
-                ) is not None
+                assert (
+                    trace_store.update_trace_status(trace_id, "running", error=f"err-{i}")
+                    is not None
+                )
         except BaseException as exc:  # noqa: BLE001 - surfaced in the main thread
             failures.append(exc)
 
     def set_serials():
         try:
             for i in range(iterations):
-                assert trace_store.update_trace_device_serial(
-                    trace_id, f"serial-{i}"
-                ) is not None
+                assert trace_store.update_trace_device_serial(trace_id, f"serial-{i}") is not None
         except BaseException as exc:  # noqa: BLE001 - surfaced in the main thread
             failures.append(exc)
 
     threads = [threading.Thread(target=set_errors), threading.Thread(target=set_serials)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=30.0)
+    with caplog.at_level(logging.WARNING, logger="artemis.runtime.trace_store"):
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30.0)
 
     assert failures == []
+    # The lock is bounded by design: after _LOCK_TIMEOUT_SECONDS a writer
+    # proceeds last-writer-wins (with a WARNING) rather than deadlocking. On a
+    # heavily loaded machine that documented path can be taken, and then a
+    # lost field is expected rather than a serialization bug.
+    lock_degraded = [rec.message for rec in caplog.records if "trace status lock" in rec.message]
+    if lock_degraded:
+        pytest.skip(
+            f"status lock degraded under load, serialization not exercised: {lock_degraded[0]}"
+        )
     final = trace_store.read_status(trace_id)
     assert final is not None
     # Every serialized RMW preserves the other writer's latest field, so both

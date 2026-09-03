@@ -85,9 +85,7 @@ def _fingerprint(msg) -> str:
 
 
 def _has_image(msg) -> bool:
-    return any(
-        isinstance(b, dict) and b.get("type") in ("image_url", "image") for b in msg.content
-    )
+    return any(isinstance(b, dict) and b.get("type") in ("image_url", "image") for b in msg.content)
 
 
 def test_format_session_offset():
@@ -139,8 +137,7 @@ def test_validator_result_message_carries_session_offset():
     result_messages = [
         m
         for m in ledger.active_messages
-        if isinstance(m, HumanMessage)
-        and str(m.content).find(EXECUTION_RESULT_MARKER) >= 0
+        if isinstance(m, HumanMessage) and str(m.content).find(EXECUTION_RESULT_MARKER) >= 0
     ]
     assert len(result_messages) == 1
     text = result_messages[0].content[0]["text"]
@@ -153,9 +150,7 @@ def test_validator_result_skipped_for_actionless_turn():
     ledger = TranscriptLedger(step_memory=_service())
     _play_turn(ledger, 1)
     _play_turn(ledger, 2, prev_key="step-1", prev_result=None)
-    assert not any(
-        EXECUTION_RESULT_MARKER in str(m.content) for m in ledger.active_messages
-    )
+    assert not any(EXECUTION_RESULT_MARKER in str(m.content) for m in ledger.active_messages)
 
 
 def test_old_turn_recitation_and_ui_list_stripped_at_depth_1():
@@ -197,18 +192,14 @@ def test_pending_grace_then_placeholder_never_backfilled():
     service = _service()
     service._step_inputs["step-1"] = {"step_number": 1}  # pending job, no summary
 
-    ledger = TranscriptLedger(
-        step_memory=service, image_scrub_depth=2, pending_grace_steps=1
-    )
+    ledger = TranscriptLedger(step_memory=service, image_scrub_depth=2, pending_grace_steps=1)
     # Enough turns to push turn 1 past K + grace.
     for i in range(1, 7):
         _play_turn(ledger, i, prev_key=f"step-{i - 1}" if i > 1 else None)
 
     first_obs = ledger.active_messages[0]
     assert not _has_image(first_obs)
-    assert "[visual summary pending; evidence at DataEngine step 1]" in str(
-        first_obs.content
-    )
+    assert "[visual summary pending; evidence at DataEngine step 1]" in str(first_obs.content)
     frozen = _fingerprint(first_obs)
 
     # A late summary must never mutate the frozen message.
@@ -222,17 +213,13 @@ def test_failed_summary_becomes_unavailable_placeholder():
     service._step_inputs["step-1"] = {"step_number": 1}
     service._failed.add("step-1")
 
-    ledger = TranscriptLedger(
-        step_memory=service, image_scrub_depth=2, pending_grace_steps=5
-    )
+    ledger = TranscriptLedger(step_memory=service, image_scrub_depth=2, pending_grace_steps=5)
     for i in range(1, 4):
         _play_turn(ledger, i, prev_key=f"step-{i - 1}" if i > 1 else None)
 
     first_obs = ledger.active_messages[0]
     assert not _has_image(first_obs)
-    assert "[visual summary unavailable; evidence at DataEngine step 1]" in str(
-        first_obs.content
-    )
+    assert "[visual summary unavailable; evidence at DataEngine step 1]" in str(first_obs.content)
 
 
 def test_tool_call_response_pairs_are_never_split():
@@ -296,3 +283,40 @@ def test_no_ago_wording_in_ledger_output():
         )
     blob = " ".join(str(m.content) for m in ledger.active_messages)
     assert " ago" not in blob
+
+
+# ---------------------------------------------------------------------------
+# Session-start anchoring and multi-step turns (Flash profile reuse)
+# ---------------------------------------------------------------------------
+
+
+def test_session_start_anchors_offsets_to_the_data_engine_clock():
+    """With a ``session_start`` epoch the ledger reads the wall clock, so the
+    ``T+mm:ss`` labels are relative to the recorded session start (the same
+    origin as the chunk ledger lines and the video analyzer's timeline)."""
+    now = {"t": 1000.0}
+    ledger = TranscriptLedger(step_memory=_service(), clock=lambda: now["t"], session_start=940.0)
+    assert ledger.elapsed_label() == "T+01:00"
+    now["t"] = 1075.5
+    assert ledger.elapsed_label() == "T+02:15"
+
+
+def test_without_session_start_the_ledger_keeps_its_own_origin():
+    now = {"t": 500.0}
+    ledger = TranscriptLedger(step_memory=_service(), clock=lambda: now["t"])
+    assert ledger.elapsed_label() == "T+00:00"
+    now["t"] = 512.0
+    assert ledger.elapsed_label() == "T+00:12"
+
+
+def test_commit_records_every_step_key_of_a_multi_action_turn():
+    ledger = TranscriptLedger(step_memory=_service())
+    ledger.stage_turn(_turn(1, tool_call_count=2))
+    ledger.commit_staged(step_key="s1", extra_step_keys=["s2", "s1", "s3"])
+    turn = ledger.unchunked_turns()[0]
+    assert turn["step_key"] == "s1"
+    assert turn["step_keys"] == ["s1", "s2", "s3"]
+
+    ledger.stage_turn(_turn(2))
+    ledger.commit_staged(step_key=None)
+    assert ledger.unchunked_turns()[1]["step_keys"] == []

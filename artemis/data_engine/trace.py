@@ -59,7 +59,7 @@ def smart_serialize(obj: Any) -> str:
                 if len(img_bytes) > 1000:
                     sha = hashlib.sha256(img_bytes).hexdigest()
                     return f"<ImageRef: sha256={sha} length={len(obj)}>"
-            except Exception:
+            except (ValueError, TypeError):
                 pass
             return (
                 f"<Massive String length={len(obj)} characters (truncated for"
@@ -89,7 +89,7 @@ def _deep_smart_clean(obj: Any) -> Any:
                 if len(img_bytes) > 1000:
                     sha = hashlib.sha256(img_bytes).hexdigest()
                     return f"<ImageRef: sha256={sha} length={len(obj)}>"
-            except Exception:
+            except (ValueError, TypeError):
                 pass
             return (
                 f"<Massive String length={len(obj)} characters (truncated for"
@@ -480,7 +480,7 @@ def trace(
                         and state_arg.current_step_id
                     ):
                         step_id = UUID(str(state_arg.current_step_id))
-                except Exception:
+                except (TypeError, ValueError, AttributeError):
                     pass
 
             ctx_obj.data_engine.record_trace(
@@ -613,9 +613,9 @@ class TraceSpan:
         self.parent_id = None
         self.token = None
         self.status = "success"
-        self.result = None
-        self.error = None
-        self.payload = {}
+        self.result: Any = None
+        self.error: Any = None
+        self.payload: dict[str, Any] = {}
 
     def __enter__(self):
         self.start_time = time.time()

@@ -675,10 +675,20 @@ export function getToolDisplayLabel(tool: any, isFirstSaveNote: boolean = false)
       const q = args.specific_query || args.query || '';
       return q ? `Analyzing audio track: "${q}"` : 'Analyzing recording audio track';
     }
-    case 'get_step_details':
-      return 'Retrieving step execution details';
-    case 'get_step_screenshot':
-      return 'Inspecting screenshot evidence';
+    case 'get_step_detail':
+    case 'get_step_details': {
+      const n = args.step_no ?? args.step_number ?? args.step;
+      return n !== undefined && n !== '' ? `Reviewing step ${n}` : 'Reviewing step details';
+    }
+    case 'get_step_screenshot': {
+      const n = args.step_no ?? args.step_number ?? args.step;
+      const which = String(args.which || '').toLowerCase() === 'post' ? 'after' : 'before';
+      return n !== undefined && n !== '' ? `Looking at the screen ${which} step ${n}` : 'Looking at a step screenshot';
+    }
+    case 'probe_device': {
+      const kind = args.kind ? String(args.kind).replace(/_/g, ' ') : '';
+      return kind ? `Reading ${kind} from the device` : 'Reading device state';
+    }
     case 'search_history_for_text': {
       const q = args.text || args.query || '';
       return q ? `Searching execution trace for "${q}"` : 'Searching execution trace';
@@ -754,10 +764,13 @@ export function getToolIcon(tool: any): string {
       return 'smart_toy';
     case 'analyze_audio_only':
       return 'graphic_eq';
+    case 'get_step_detail':
     case 'get_step_details':
       return 'manage_search';
     case 'get_step_screenshot':
       return 'image_search';
+    case 'probe_device':
+      return 'sensors';
     case 'search_history_for_text':
       return 'find_in_page';
     case 'outputter':

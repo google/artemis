@@ -277,7 +277,7 @@ limitations under the License.
                         }
                       </div>
                     }
-                    <!-- Verification Box (Pulled out into a minimalist framed card) -->
+                    <!-- Verification result -->
                     @if (milestone.checks.length > 0) {
                       <div class="milestone-checks-container">
                         @for (check of milestone.checks; track trackMarkdownLine($index, check)) {
@@ -505,7 +505,7 @@ limitations under the License.
                 class="phase-header"
                 [class.first-phase]="first && startupWorkItems().length === 0"
                 >
-                <span class="phase-worked-time">Worked for {{ phase.durationSeconds }}s</span>
+                <span class="phase-worked-time">{{ isCheckerPhase(phase) ? 'Checked' : 'Worked' }} for {{ phase.durationSeconds }}s</span>
                 @if (phase.tokens) {
                   <span class="phase-token-usage" [title]="getTokenTooltip(phase)">
                     <span class="token-dot">·</span>
@@ -524,12 +524,68 @@ limitations under the License.
                       >
                       <!-- Unified Step / Stream Body -->
                       <div class="step-body">
+                        <!-- Check block (verifier lane): header, then the declared check items
+                             and how each is judged; the chronological stream follows, and the
+                             result rows close the block (see check-result below). -->
+                        @if (isCheckerBlock(block)) {
+                          <div class="check-lane" [ngClass]="'tone-' + getCheckerTone(block)">
+                            <div class="check-header">
+                              <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                              <span class="check-title">{{ getCheckerPhaseLabel(block) }}</span>
+                              @if (block.data.phase !== 'outcome' && block.data.subgoal_text) {
+                                <span class="check-subject" [title]="block.data.subgoal_text">{{ block.data.subgoal_text }}</span>
+                              }
+                              <span class="check-status">{{ getCheckerStatusLabel(block) }}</span>
+                            </div>
+                            @if (!isCheckerMuted(block) && getCheckerItems(block).length > 0) {
+                              <ol class="check-items">
+                                @for (item of getCheckerItems(block); track $index) {
+                                  <li class="check-item">
+                                    <span class="check-index">{{ $index + 1 }}</span>
+                                    <span class="check-text">{{ item.text }}</span>
+                                    <span class="check-method">{{ getCheckMethodLabel(item, block) }}</span>
+                                  </li>
+                                }
+                              </ol>
+                            }
+                          </div>
+                        }
                         <!-- Text, tool calls, and actions share one chronological timeline. -->
                         @if (getSortedStepEvents(block.data).length > 0) {
                           <div class="step-actions-container">
                             @for (item of getSortedStepEvents(block.data); track trackStepEvent(itemIdx, item); let itemIdx = $index) {
+                              <!-- Check block: one Thought / Work entry per streamed turn, in time order with its tool calls -->
+                              @if (isCheckerBlock(block) && item.type === 'thinking') {
+                                <div
+                                  class="thinking-stream-details native-thinking-details"
+                                  [class.is-running]="isCheckerSegmentRunning(block, itemIdx)"
+                                  [class.collapsed]="isCheckerSegmentCollapsed(block, itemIdx)">
+                                  <div class="details-summary" (click)="toggleCheckerSegment(block, itemIdx)">
+                                    <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx)"></span>
+                                    Thought
+                                  </div>
+                                  <div class="details-content-wrapper">
+                                    <div class="details-content stream-box">
+                                      <div class="stream-text" [innerHTML]="renderMarkdown(item.data.text, block.id + '-seg-' + itemIdx)"></div>
+                                    </div>
+                                  </div>
+                                </div>
+                              }
+                              @if (isCheckerBlock(block) && item.type === 'text' && isCheckerTextVisible(item)) {
+                                <div
+                                  class="step-raw-thinking-message"
+                                  [class.is-running]="isCheckerSegmentRunning(block, itemIdx)">
+                                  <div class="report-header">
+                                    <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx)"></span>
+                                    Work
+                                  </div>
+                                  <div class="report-content stream-box">
+                                    <div class="stream-text" [innerHTML]="renderMarkdown(item.data.text, block.id + '-seg-' + itemIdx)"></div>
+                                  </div>
+                                </div>
+                              }
                               <!-- Native Thinking (Thought) -->
-                              @if (item.type === 'thinking') {
+                              @if (!isCheckerBlock(block) && item.type === 'thinking') {
                                 <div
                                   class="thinking-stream-details native-thinking-details"
                                   [class.is-running]="isBlockRunning(block)"
@@ -546,7 +602,7 @@ limitations under the License.
                                 </div>
                               }
                               <!-- Raw Thinking / Plan / Message (Work) -->
-                              @if (item.type === 'text' && getRawThinking(block)) {
+                              @if (!isCheckerBlock(block) && item.type === 'text' && getRawThinking(block)) {
                                 <div
                                   class="step-raw-thinking-message"
                                   [class.is-running]="isBlockRunning(block)">
@@ -1090,6 +1146,26 @@ limitations under the License.
                                   </div>
                                 }
                               }
+                            }
+                          </div>
+                        }
+                        <!-- Check block result: one row per check item, keyed by its number above -->
+                        @if (hasCheckerResult(block)) {
+                          <div class="check-result" [ngClass]="'tone-' + getCheckerTone(block)">
+                            @for (verdict of getCheckerVerdicts(block); track $index) {
+                              <div class="check-verdict" [ngClass]="verdict.status">
+                                <span class="check-index">{{ getVerdictItemNumber(block, verdict, $index) }}</span>
+                                <span class="material-symbols-outlined verdict-icon">{{ getVerdictIcon(verdict.status) }}</span>
+                                <span class="verdict-body">
+                                  <span class="verdict-evidence">{{ verdict.evidence || getVerdictStatusText(verdict.status) }}</span>
+                                  @if (verdict.suggestion) {
+                                    <span class="verdict-suggestion">{{ verdict.suggestion }}</span>
+                                  }
+                                </span>
+                              </div>
+                            }
+                            @for (note of getCheckerNotes(block); track note) {
+                              <div class="check-note">{{ note }}</div>
                             }
                           </div>
                         }

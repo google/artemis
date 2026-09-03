@@ -94,8 +94,7 @@ async def test_secure_keyguard_is_rejected_without_guessing_credentials():
     agent._device_context = MagicMock(device_id="device-123")
     agent._adb_client = MagicMock()
     agent._adb_client.device.return_value.shell.return_value = (
-        'User "Owner" (id=0): deviceLocked=1\n'
-        'User "Work" (id=10): deviceLocked=1\n'
+        'User "Owner" (id=0): deviceLocked=1\nUser "Work" (id=10): deviceLocked=1\n'
     )
 
     with pytest.raises(AgentError, match="Unlock the device manually"):
@@ -108,8 +107,7 @@ async def test_locked_work_profile_does_not_block_unlocked_device_owner():
     agent._device_context = MagicMock(device_id="device-123")
     agent._adb_client = MagicMock()
     agent._adb_client.device.return_value.shell.return_value = (
-        'User "Owner" (id=0): deviceLocked=0\n'
-        'User "Work" (id=10): deviceLocked=1\n'
+        'User "Owner" (id=0): deviceLocked=0\nUser "Work" (id=10): deviceLocked=1\n'
     )
 
     await agent._ensure_device_unlocked()

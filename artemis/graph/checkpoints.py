@@ -58,6 +58,12 @@ logger = get_logger(__name__)
 LEDGER_FILENAME = "check_ledger.jsonl"
 RUN_OUTCOME_FILENAME = "run_outcome.json"
 
+#: Event type published on the DataEngine bus (and forwarded over IPC/SSE to the
+#: admin console) for every visible step of the Checker's process.
+CHECKER_EVENT = "checker_event"
+FINAL_CHECKPOINT_ID = "final"
+FINAL_SUBGOAL_TEXT = "Final review against the user's original goal"
+
 # --- Config accessors (all fail-safe against a missing execution_setup) --------------
 
 
@@ -131,6 +137,116 @@ class RunOutcome(BaseModel):
 
     task_status: Literal["completed", "partial", "blocked"]
     tests: TestSummary
+
+
+# --- Live process events --------------------------------------------------------------
+
+
+def publish_checker_event(ctx, payload: dict) -> None:
+    """Publishes one ``checker_event`` on the DataEngine bus.
+
+    The event is a *projection* for observers (admin console / SSE): the
+    append-only ledger stays the single source of truth, and publishing never
+    influences booking or release. Best-effort: a missing engine or a failing
+    subscriber is logged and ignored.
+    """
+    engine = getattr(ctx, "data_engine", None)
+    publish = getattr(engine, "_publish", None)
+    if not callable(publish):
+        return
+    now = time.time()
+    try:
+        # ``timestamp`` mirrors the other bus events so the UI orders checker
+        # blocks on the same timeline as steps and traces.
+        publish(CHECKER_EVENT, {"ts": now, "timestamp": now, **payload})
+    except Exception as e:
+        logger.debug(f"Failed to publish checker event: {e}")
+
+
+def announce_checker_attempt(
+    ctx,
+    *,
+    attempt_id: str | None,
+    phase: str,
+    checkpoint_id: str,
+    subgoal_text: str,
+    anchor_step_id: str | None,
+    check_items,
+) -> None:
+    """Publishes ``attempt_started`` from inside the Checker's traced scope.
+
+    Called at the entry of the checker functions so the event can carry the
+    Checker's own ``trace_id``: the UI uses it to route the Checker's streamed
+    reasoning (``llm_stream``) and tool traces into the attempt's timeline
+    block instead of the Operator step that happens to be current.
+    """
+    if not attempt_id:
+        return
+    try:
+        from artemis.data_engine.context_vars import CURRENT_TRACE_ID
+
+        trace_id = CURRENT_TRACE_ID.get()
+    except (ImportError, LookupError):
+        trace_id = None
+    if trace_id:
+        _attempt_traces(ctx)[attempt_id] = str(trace_id)
+    publish_checker_event(
+        ctx,
+        {
+            "event": "attempt_started",
+            "phase": phase,
+            "attempt_id": attempt_id,
+            "checkpoint_id": checkpoint_id,
+            "subgoal_text": subgoal_text,
+            "anchor_step_id": anchor_step_id,
+            "trace_id": str(trace_id) if trace_id else None,
+            "items": check_item_payloads(check_items),
+        },
+    )
+
+
+def _attempt_traces(ctx) -> dict:
+    """attempt_id -> the Checker's trace id for that attempt (set at announce
+    time). Persisted on ledger records so the UI backfill can re-attach the
+    attempt's tool traces (which carry that trace as parent) to its block."""
+    traces = getattr(ctx, "checker_attempt_traces", None)
+    if not isinstance(traces, dict):
+        traces = {}
+        try:
+            ctx.checker_attempt_traces = traces
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return traces
+
+
+def attempt_trace_id(ctx, attempt_id: str | None) -> str | None:
+    if not attempt_id:
+        return None
+    value = _attempt_traces(ctx).get(attempt_id)
+    return str(value) if value else None
+
+
+def verdict_payloads(verdicts) -> list[dict]:
+    """Plain-dict projection of verdict objects (pydantic or attribute bags)."""
+    out: list[dict] = []
+    for v in verdicts or []:
+        out.append(
+            {
+                "item_text": str(getattr(v, "item_text", "") or ""),
+                "kind": str(getattr(v, "kind", "") or ""),
+                "status": str(getattr(v, "status", "") or ""),
+                "evidence": str(getattr(v, "evidence", "") or ""),
+                "suggestion": str(getattr(v, "suggestion", "") or ""),
+            }
+        )
+    return out
+
+
+def check_item_payloads(check_items) -> list[dict]:
+    return [
+        {"kind": ci.kind, "text": ci.text, "when": getattr(ci, "when", "on_complete")}
+        for ci in (check_items or [])
+    ]
 
 
 # --- Ledger (append-only) ------------------------------------------------------------
@@ -279,7 +395,7 @@ def _finding_registry(ctx) -> dict:
         registry = {}
         try:
             ctx.checker_findings = registry
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             pass
     return registry
 
@@ -419,6 +535,8 @@ def _record_verdicts(
             {
                 "attempt_id": run.attempt_id,
                 "checkpoint_id": run.checkpoint.checkpoint_id,
+                "subgoal_text": run.checkpoint.subgoal_text,
+                "trace_id": attempt_trace_id(ctx, run.attempt_id),
                 "item_text": v.item_text,
                 "kind": v.kind,
                 "when": when_by_text.get((v.kind, v.item_text), "on_complete"),
@@ -460,6 +578,8 @@ def _record_attempt_failure(ctx, run: CheckpointRun, status: str, evidence: str)
             {
                 "attempt_id": run.attempt_id,
                 "checkpoint_id": run.checkpoint.checkpoint_id,
+                "subgoal_text": run.checkpoint.subgoal_text,
+                "trace_id": attempt_trace_id(ctx, run.attempt_id),
                 "item_text": ci.text,
                 "kind": ci.kind,
                 "when": ci.when,
@@ -490,6 +610,35 @@ def harvest_run(
     findings: list[str] = []
     checkpoint = run.checkpoint
 
+    def _event(status: str, verdicts_payload: list[dict], **extra) -> None:
+        publish_checker_event(
+            ctx,
+            {
+                "event": "attempt_finished",
+                "phase": "checkpoint",
+                "attempt_id": run.attempt_id,
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "subgoal_text": checkpoint.subgoal_text,
+                "trace_id": attempt_trace_id(ctx, run.attempt_id),
+                "status": status,
+                "verdicts": verdicts_payload,
+                "findings": list(findings),
+                **extra,
+            },
+        )
+
+    def _failure_verdicts(status: str, evidence: str) -> list[dict]:
+        return [
+            {
+                "item_text": ci.text,
+                "kind": ci.kind,
+                "status": status,
+                "evidence": evidence,
+                "suggestion": "",
+            }
+            for ci in checkpoint.check_items
+        ]
+
     if task.cancelled():
         evidence = (
             "attempt superseded by a newer completion of the same subgoal"
@@ -497,6 +646,7 @@ def harvest_run(
             else "cancelled at exit settlement (settlement timeout)"
         )
         _record_attempt_failure(ctx, run, cancelled_status, evidence)
+        _event(cancelled_status, _failure_verdicts(cancelled_status, evidence))
         return findings
 
     exc = task.exception()
@@ -512,6 +662,7 @@ def harvest_run(
             f" ({reason}); releasing (fail-open) but recording inconclusive."
         )
         _record_attempt_failure(ctx, run, status, reason)
+        _event("error", _failure_verdicts(status, reason), error=reason)
         return findings
 
     report = task.result()
@@ -532,6 +683,7 @@ def harvest_run(
 
     registry = _finding_registry(ctx)
     registry_changed = False
+    reverted = False
 
     if verify_failures and applicable and not user_stopped:
         max_repairs = int(_setting(ctx, "checkpoint_max_repairs", 2))
@@ -584,6 +736,13 @@ def harvest_run(
                 "Assert failure under 'halt' policy: latching halt flag for exit settlement."
             )
 
+    _event(
+        "done",
+        verdict_payloads(verdicts),
+        applicable=bool(applicable),
+        reverted=bool(reverted),
+        repairs_used=int(ctx.checkpoint_repairs.get(checkpoint.checkpoint_id, 0)),
+    )
     return findings
 
 
@@ -638,8 +797,12 @@ async def spawn_pending_checkpoints(ctx, state, anchor_step_id: str | None) -> l
                 old_run.task.cancel()
                 try:
                     await old_run.task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                except (asyncio.CancelledError, Exception) as exc:
+                    logger.debug(
+                        f"Superseded checkpoint attempt {old_run.attempt_id} ended with "
+                        f"{exc!r}; harvesting anyway",
+                        exc_info=True,
+                    )
                 harvest_run(ctx, state, old_run, allow_side_effects=False)
 
         seq = ctx.checkpoint_attempt_seq.get(cid, 0) + 1
@@ -658,6 +821,7 @@ async def spawn_pending_checkpoints(ctx, state, anchor_step_id: str | None) -> l
                     anchor=anchor,
                     goal=goal,
                     subgoal_text=pending.subgoal_text,
+                    attempt_id=attempt_id,
                 ),
                 timeout=timeout,
             )
@@ -699,8 +863,11 @@ async def settle_all_checkpoints(ctx, state) -> None:
     for t in pending:
         try:
             await t
-        except (asyncio.CancelledError, Exception):
-            pass
+        except (asyncio.CancelledError, Exception) as exc:
+            logger.debug(
+                f"Cancelled checkpoint attempt ended with {exc!r} at settlement; harvesting anyway",
+                exc_info=True,
+            )
 
     for run in runs:
         # Settlement is bookkeeping, not a repair point: side effects off.

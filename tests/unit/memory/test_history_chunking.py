@@ -225,26 +225,47 @@ def test_action_ledger_lines_carry_step_number_offset_action_and_result():
     assert lines[1].startswith("- Step 2 (T+00:20): Tapped 'btn2' at [2, 2] -> Error: boom")
 
 
-def test_action_ledger_renders_fa_recovery_sublines_indented():
+def test_action_ledger_renders_incident_and_burst_on_the_step_line():
+    """No repair agent: a blocked step's ledger line carries the execution
+    incident phrase, and a fast-action burst lists every member."""
+    burst = [
+        {"action": "tap", "target_text": "player", "coordinates": [5, 6]},
+        {"action": "tap", "target_text": "Skip", "coordinates": [7, 8]},
+    ]
     steps = [
         _step(
             3,
-            interleaved_events=[
-                {
-                    "type": "tool_call",
-                    "name": "_exec_click",
-                    "args": {"target": [5, 6], "target_text": "Retry"},
-                    "result": "ok",
+            action_taken=burst,
+            last_execution_result={
+                "status": "failed",
+                "burst": True,
+                "execution": [
+                    {"action": "tap", "target_text": "player"},
+                    {"action": "tap", "target_text": "Skip", "attempts": ["Error: rejected"]},
+                ],
+                "incident": {
+                    "kind": "exec_error",
+                    "category": "general",
+                    "reason": "Error: rejected",
+                    "action": burst[1],
+                    "action_description": "Tapped 'Skip' at [7, 8]",
+                    "action_index": 1,
+                    "burst_size": 2,
+                    "consecutive_failures": 1,
                 },
-                {"type": "tool_call", "name": "report_failure_analysis", "args": {}, "result": ""},
-            ],
+            },
         )
     ]
     text = build_action_ledger(steps, SESSION_START)
     lines = text.splitlines()
-    assert lines[0].startswith("- Step 3 ")
-    assert lines[1].startswith("    FA: Tapped 'Retry'")
-    assert "report_failure_analysis" not in text
+    assert len(lines) == 1
+    assert lines[0].startswith(
+        "- Step 3 (T+00:30): Fast-action burst (2 actions, unvetted):"
+        " Tapped 'player' at [5, 6] -> Tapped 'Skip' at [7, 8] -> Error: Execution failed"
+        " (general, consecutive failure #1) on burst action 2/2 `Tapped 'Skip' at [7, 8]`:"
+        " Error: rejected"
+    )
+    assert "FA:" not in text
 
 
 def test_action_ledger_preserves_injected_instruction_verbatim():
@@ -272,11 +293,20 @@ def test_action_ledger_minimal_width_keeps_step_and_time_addressability():
 
 
 def test_interval_coverage_requires_seamless_union():
-    ok = [{"start_step": 3, "end_step": 5, "text": "a"}, {"start_step": 6, "end_step": 6, "text": "b"}]
+    ok = [
+        {"start_step": 3, "end_step": 5, "text": "a"},
+        {"start_step": 6, "end_step": 6, "text": "b"},
+    ]
     assert validate_interval_coverage(ok, 3, 6)
-    gap = [{"start_step": 3, "end_step": 4, "text": "a"}, {"start_step": 6, "end_step": 6, "text": "b"}]
+    gap = [
+        {"start_step": 3, "end_step": 4, "text": "a"},
+        {"start_step": 6, "end_step": 6, "text": "b"},
+    ]
     assert not validate_interval_coverage(gap, 3, 6)
-    overlap = [{"start_step": 3, "end_step": 5, "text": "a"}, {"start_step": 5, "end_step": 6, "text": "b"}]
+    overlap = [
+        {"start_step": 3, "end_step": 5, "text": "a"},
+        {"start_step": 5, "end_step": 6, "text": "b"},
+    ]
     assert not validate_interval_coverage(overlap, 3, 6)
     short = [{"start_step": 3, "end_step": 5, "text": "a"}]
     assert not validate_interval_coverage(short, 3, 6)
@@ -401,9 +431,7 @@ def test_segment_size_threshold_triggers_without_milestone():
     # Single milestone, but the open segment exceeded max_steps.
     assert len(chunker.chunks) >= 1
     assert chunker.chunks[0].start_step_number == 1
-    total = sum(
-        c.end_step_number - c.start_step_number + 1 for c in chunker.chunks
-    )
+    total = sum(c.end_step_number - c.start_step_number + 1 for c in chunker.chunks)
     assert total >= 4
     assert len(ledger.unchunked_turns()) >= 2  # floor respected
 
@@ -434,9 +462,7 @@ def test_soft_threshold_compresses_oldest_open_segment():
 
 def test_min_active_floor_blocks_all_triggers():
     steps = [_step(i, "hash-a" if i <= 2 else "hash-b") for i in range(1, 6)]
-    ledger, chunker, engine, _ = _make(
-        steps, min_active=5, max_steps=2, meter=lambda: 95_000
-    )
+    ledger, chunker, engine, _ = _make(steps, min_active=5, max_steps=2, meter=lambda: 95_000)
     _run_turns(ledger, chunker, 1, 6, _hashes(2))
     # Only 5 committed turns; the floor keeps everything raw.
     assert len(chunker.chunks) == 0
@@ -461,8 +487,12 @@ def test_compression_boundary_never_splits_tool_call_pairs():
             ]
     # And no orphan ToolMessage right after the frozen blocks.
     first_active = next(
-        (m for m in rendered if isinstance(m, (AIMessage, ToolMessage, HumanMessage))
-         and "# CURRENT OBSERVATION" in str(getattr(m, "content", ""))),
+        (
+            m
+            for m in rendered
+            if isinstance(m, (AIMessage, ToolMessage, HumanMessage))
+            and "# CURRENT OBSERVATION" in str(getattr(m, "content", ""))
+        ),
         None,
     )
     assert first_active is not None
@@ -521,9 +551,7 @@ def test_chunk_block_renders_three_bands_in_order():
     capsule.resolve("chunk:1-4", _capsule(1, 4))
     _run_turns(ledger, chunker, 9, 12, lambda i: "hash-c")  # second event
 
-    block = next(
-        str(m.content) for m in ledger.frozen_blocks if "[Chunk 1" in str(m.content)
-    )
+    block = next(str(m.content) for m in ledger.frozen_blocks if "[Chunk 1" in str(m.content))
     # §3.3 structure: header, then ① → ② → ③ strictly in order.
     i1 = block.index("① Synopsis & effects")
     i2 = block.index("② Compressed step summary")
@@ -560,7 +588,14 @@ def test_checkpoint_annotation_bumps_version_and_rerenders_at_next_event():
 
     annotated = chunker.annotate_from_checkpoint(
         "hash-a",
-        [{"kind": "verify", "item_text": "logged in", "status": "failed", "evidence": "no session"}],
+        [
+            {
+                "kind": "verify",
+                "item_text": "logged in",
+                "status": "failed",
+                "evidence": "no session",
+            }
+        ],
     )
     assert annotated
     assert chunk.version == version_before + 1
@@ -650,9 +685,7 @@ def test_era_merge_keeps_ledgers_and_merges_headers():
     merged_eras = [e for e in chunker.eras if not e.recall_only]
     assert merged_eras
     era_text = "\n".join(
-        str(m.content)
-        for m in ledger.frozen_blocks
-        if "① Merged synopsis" in str(m.content)
+        str(m.content) for m in ledger.frozen_blocks if "① Merged synopsis" in str(m.content)
     )
     assert "① Merged synopsis (structured fields, set-merged)" in era_text
     assert "② Segment titles" in era_text
@@ -787,9 +820,7 @@ def test_independent_max_eras_cap_decouples_from_max_chunks():
 def test_hard_threshold_renders_l3_snapshot_with_minimal_step_index():
     steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 13)]
     meter = {"value": None}
-    ledger, chunker, _, capsule = _make(
-        steps, min_active=2, meter=lambda: meter["value"]
-    )
+    ledger, chunker, _, capsule = _make(steps, min_active=2, meter=lambda: meter["value"])
     _run_turns(ledger, chunker, 1, 8, _hashes(4))
     capsule.resolve("chunk:1-4", _capsule(1, 4))
 
@@ -824,11 +855,7 @@ def test_step_addressability_survives_every_compression_level():
         if not era.recall_only
         for c in era.chunks
         for n in range(c.start_step_number, c.end_step_number + 1)
-    ] + [
-        n
-        for c in chunker.chunks
-        for n in range(c.start_step_number, c.end_step_number + 1)
-    ]
+    ] + [n for c in chunker.chunks for n in range(c.start_step_number, c.end_step_number + 1)]
     assert covered_steps
     for n in covered_steps:
         assert f"- Step {n} (T+" in frozen, f"step {n} lost its addressable line"
@@ -905,8 +932,7 @@ async def test_capsule_lens_falls_back_to_secondary_model_on_provider_outage():
         async def ainvoke(self, messages):
             self.calls += 1
             raise Exception(
-                "503 Service Unavailable. This model is currently experiencing"
-                " high demand."
+                "503 Service Unavailable. This model is currently experiencing high demand."
             )
 
     class HealthyFallback:
@@ -965,9 +991,7 @@ def test_capsule_fallback_model_resolution_google_only_and_not_primary():
     def ctx_with(provider, model):
         return SimpleNamespace(
             llm_config=SimpleNamespace(
-                summarizer=SimpleNamespace(
-                    fallback=SimpleNamespace(provider=provider, model=model)
-                )
+                summarizer=SimpleNamespace(fallback=SimpleNamespace(provider=provider, model=model))
             )
         )
 
@@ -978,9 +1002,7 @@ def test_capsule_fallback_model_resolution_google_only_and_not_primary():
     # Non-google fallbacks cannot ride the raw google model path.
     assert mgr._resolve_capsule_fallback_model(ctx_with("openai", "gpt-4o-mini")) is None
     # A fallback identical to the primary adds nothing.
-    assert (
-        mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.7-flash")) is None
-    )
+    assert mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.7-flash")) is None
 
 
 @pytest.mark.asyncio
@@ -1021,14 +1043,12 @@ def test_soft_pressure_alone_never_swaps_unready_segment():
     correctness over tokens — the original text stays until the header lands."""
     steps = [_step(i) for i in range(1, 9)]
     meter = {"value": 75_000}  # ≥ 0.7 * 100k, < 0.9 * 100k
-    ledger, chunker, _, _ = _make(
-        steps, min_active=2, max_steps=100, meter=lambda: meter["value"]
-    )
+    ledger, chunker, _, _ = _make(steps, min_active=2, max_steps=100, meter=lambda: meter["value"])
     _run_turns(ledger, chunker, 1, 8)
 
     assert len(chunker.awaiting_chunks) >= 1  # soft pressure closed a portion
-    assert chunker.chunks == ()               # ...but nothing swapped
-    assert ledger.frozen_blocks == ()         # original text retained
+    assert chunker.chunks == ()  # ...but nothing swapped
+    assert ledger.frozen_blocks == ()  # original text retained
 
 
 def test_failed_capsule_redispatches_and_retains_original():
@@ -1048,8 +1068,8 @@ def test_failed_capsule_redispatches_and_retains_original():
     ledger.render([_observation(9)])
 
     assert capsule.submitted.count(key) == 2  # re-dispatched
-    assert chunker.chunks == ()               # still not swapped
-    assert ledger.frozen_blocks == ()         # original text retained
+    assert chunker.chunks == ()  # still not swapped
+    assert ledger.frozen_blocks == ()  # original text retained
 
 
 def test_hard_threshold_force_swaps_pending_chunks_into_l3():
@@ -1093,15 +1113,11 @@ def test_capsule_note_coverage_is_machine_checked():
         "steps": [
             {
                 "step_number": 3,
-                "note_writes": [
-                    {"tool": "save_note", "key": "login_flow", "gist": "code entry"}
-                ],
+                "note_writes": [{"tool": "save_note", "key": "login_flow", "gist": "code entry"}],
             },
             {
                 "step_number": 5,
-                "note_writes": [
-                    {"tool": "append_note", "key": "prices", "gist": "totals"}
-                ],
+                "note_writes": [{"tool": "append_note", "key": "prices", "gist": "totals"}],
             },
         ],
     }
@@ -1143,3 +1159,20 @@ async def test_lens_backed_service_uses_lens_render():
     await service.flush()
     assert service.get_summary("k1") == "summary-for-k1"
     assert not service.has_failed("k1")
+
+
+def test_chunk_lists_every_step_of_a_multi_action_turn():
+    """A Flash turn that executed several actions records one step per action
+    and registers them all on the committed turn (``step_keys``); the chunk's
+    band-③ ledger must list each of them, never only the turn's first step."""
+    steps = [_step(i) for i in range(1, 4)]
+    _ledger, chunker, _engine, _capsule = _make(steps)
+    turns = [
+        {"step_key": "s1", "step_keys": ["s1", "s2"], "start": 0, "end": 4},
+        {"step_key": "s3", "start": 4, "end": 7},  # legacy shape: step_key only
+    ]
+    chunk = chunker._create_chunk(turns, None, {s["step_id"]: s for s in steps})
+    assert chunk is not None
+    assert chunk.source_step_ids == ["s1", "s2", "s3"]
+    assert chunk.start_step_number == 1 and chunk.end_step_number == 3
+    assert "- Step 2 (T+00:20)" in chunk.band3

@@ -149,7 +149,9 @@ def _get_session_video_sync(session_id: str):
     v_url = media_service.resolve_video_url(row_dict, video_rec_map, video_idx)
     video_segments = media_service.resolve_video_segments(v_url)
     if v_url:
-        version = int(float((recording or {}).get("end_time") or row_dict.get("end_time") or 0) * 1000)
+        version = int(
+            float((recording or {}).get("end_time") or row_dict.get("end_time") or 0) * 1000
+        )
         separator = "&" if "?" in v_url else "?"
         versioned_url = f"{v_url}{separator}v={version}" if version else v_url
         for segment in video_segments:
@@ -188,3 +190,9 @@ async def get_task_plan(session_id: str):
 @router.get("/api/sessions/{session_id}/notes")
 async def get_all_notes(session_id: str):
     return {"notes": media_service.get_session_notes_content(session_id)}
+
+
+@router.get("/api/sessions/{session_id}/checks")
+async def get_session_checks(session_id: str):
+    """Checker verdict ledger + run outcome (backfill for the Checker panel)."""
+    return media_service.get_session_checks(session_id)

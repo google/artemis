@@ -108,9 +108,7 @@ def test_keyword_search_finds_step_and_carries_step_number(engine):
 
 
 def test_step_range_filters_matches(engine):
-    out = search_history(
-        engine, query="popup", step_range=[1, 2], recall_config=_cfg()
-    )
+    out = search_history(engine, query="popup", step_range=[1, 2], recall_config=_cfg())
     # Step 3 (the popup step) is outside the range: only the range ledger and
     # a no-match line may appear.
     assert "A promo popup appeared" not in out
@@ -199,7 +197,11 @@ def test_images_only_for_a_single_step_and_only_real_files(engine):
     # Step 2 has a real pre and post screenshot on disk — but never more than
     # one step's worth of images.
     assert 1 <= len(images) <= 2
-    labels = [b["text"] for b in out if b.get("type") == "text" and "screenshot of Step" in b.get("text", "")]
+    labels = [
+        b["text"]
+        for b in out
+        if b.get("type") == "text" and "screenshot of Step" in b.get("text", "")
+    ]
     assert all("Step 2" in label for label in labels)
     for block in images:
         assert block["image_url"]["url"].startswith("data:image/jpeg;base64,")
@@ -249,6 +251,7 @@ def test_availability_requires_engine_and_config():
     assert recall_history.is_available(None) is False
     assert recall_history.is_available(SimpleNamespace(data_engine=None)) is False
     assert recall_history.is_available(SimpleNamespace(data_engine=object())) is True
+
 
 def test_foreground_app_stamp_joins_search_surface(tmp_path):
     """M5: a package-name query hits the record_step foreground_app stamp."""

@@ -388,9 +388,9 @@ class StorageManager:
                     start_time=row["start_time"],
                     end_time=row["end_time"],
                     local_video_path=row["local_video_path"],
-                    status=row["status"] if "status" in row.keys() else (
-                        "ready" if row["end_time"] is not None else "recording"
-                    ),
+                    status=row["status"]
+                    if "status" in row.keys()
+                    else ("ready" if row["end_time"] is not None else "recording"),
                     error=row["error"] if "error" in row.keys() else None,
                 )
         return None
@@ -839,7 +839,7 @@ class StorageManager:
                 if "action_taken" in row.keys() and row["action_taken"]:
                     try:
                         action_taken = json.loads(row["action_taken"])
-                    except Exception:
+                    except (ValueError, TypeError):
                         pass
 
                 operator_raw_thinking = None
@@ -854,7 +854,7 @@ class StorageManager:
                 if "last_execution_result" in row.keys() and row["last_execution_result"]:
                     try:
                         last_execution_result = json.loads(row["last_execution_result"])
-                    except Exception:
+                    except (ValueError, TypeError):
                         pass
 
                 steps.append(

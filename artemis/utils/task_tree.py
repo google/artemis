@@ -14,11 +14,14 @@
 
 import ast
 import json
+import logging
 from pathlib import Path
 import re
 from typing import Any
 
 from artemis.utils.plan_grammar import parse_plan
+
+logger = logging.getLogger(__name__)
 
 
 def format_action_clean(action_obj) -> str:
@@ -122,43 +125,79 @@ def format_action_clean(action_obj) -> str:
         return f"Action: {act_type} with args: {json.dumps(action_obj, ensure_ascii=False)}"
 
 
+def format_actions_clean(actions) -> str:
+    """Renders one action or a fast-action burst (a list of 2+ actions)."""
+    if isinstance(actions, list):
+        if not actions:
+            return "No Action"
+        if len(actions) > 1:
+            steps = " -> ".join(format_action_clean(a) for a in actions)
+            return f"Fast-action burst ({len(actions)} actions, unvetted): {steps}"
+        return format_action_clean(actions[0])
+    return format_action_clean(actions)
+
+
+def _is_terminal_attempt_failure(attempts) -> bool:
+    if not attempts:
+        return False
+    last = str(attempts[-1])
+    return last != "Success" and not last.startswith("Skipped")
+
+
+def failed_execution_error(result_obj) -> str | None:
+    """The error text of the action that failed in an execution report, if any."""
+    if not isinstance(result_obj, dict):
+        return None
+    exec_list = result_obj.get("execution") or result_obj.get("executed_actions") or []
+    if isinstance(exec_list, list):
+        for entry in exec_list:
+            if isinstance(entry, dict) and _is_terminal_attempt_failure(entry.get("attempts")):
+                return " | ".join(str(a) for a in entry["attempts"])
+        first = exec_list[0] if exec_list and isinstance(exec_list[0], dict) else {}
+        if first.get("error"):
+            return str(first["error"])
+    error = result_obj.get("error") or result_obj.get("error_msg")
+    return str(error) if error else None
+
+
+def format_incident_clean(incident: dict) -> str:
+    """One-line rendering of an execution incident for history and result lines."""
+    kind = incident.get("kind") or "exec_error"
+    category = incident.get("category") or "general"
+    consecutive = incident.get("consecutive_failures") or 1
+    description = incident.get("action_description") or format_action_clean(incident.get("action"))
+    reason = str(incident.get("reason") or "").strip()
+    burst_size = int(incident.get("burst_size") or 1)
+    index = int(incident.get("action_index") or 0)
+    prefix = (
+        "Intercepted by Pre-Execution Safety Net" if kind == "safety_net" else "Execution failed"
+    )
+    where = f"burst action {index + 1}/{burst_size}" if burst_size > 1 else "action"
+    tail = ""
+    if burst_size > 1 and index < burst_size - 1:
+        tail = "; the remaining burst actions were not executed"
+    return (
+        f"Error: {prefix} ({category}, consecutive failure #{consecutive}) on"
+        f" {where} `{description}`: {reason}{tail}"
+    )
+
+
 def format_result_clean(result_obj) -> str | None:
     if not result_obj:
         return None
     if not isinstance(result_obj, dict):
         return str(result_obj)
 
+    incident = result_obj.get("incident")
+    if isinstance(incident, dict) and incident.get("reason"):
+        return format_incident_clean(incident)
+
     status = result_obj.get("status")
-    repair_status = result_obj.get("repair_status")
-
-    exec_list = result_obj.get("execution") or result_obj.get("executed_actions")
-    if isinstance(exec_list, list) and exec_list:
-        first_exec = exec_list[0]
-        if isinstance(first_exec, dict):
-            attempts = first_exec.get("attempts")
-            error = first_exec.get("error") or result_obj.get("error")
-            repair = first_exec.get("repair")
-
-            if repair:
-                if repair_status == "fixed":
-                    return f"Repaired: {repair}"
-                else:
-                    return f"Error: {repair}"
-            elif attempts and status == "failed":
-                return f"Error: {' | '.join(attempts)}"
-            elif error:
-                return f"Error: {error}"
-            elif status == "error":
-                return "Error"
-            else:
-                return None
-
-    error = result_obj.get("error")
+    error = failed_execution_error(result_obj)
+    if status in ("failed", "error"):
+        return f"Error: {error}" if error else "Error"
     if error:
         return f"Error: {error}"
-    elif status == "error":
-        return "Error"
-
     return None
 
 
@@ -182,7 +221,7 @@ def safe_parse_validation_result(result: Any) -> list:
         parsed = ast.literal_eval(cleaned)
         if isinstance(parsed, (list, tuple)):
             return list(parsed)
-    except Exception:
+    except (ValueError, SyntaxError, TypeError, RecursionError):
         pass
 
     # Fallback to json.loads if literal_eval failed
@@ -190,7 +229,7 @@ def safe_parse_validation_result(result: Any) -> list:
         parsed = json.loads(cleaned)
         if isinstance(parsed, (list, tuple)):
             return list(parsed)
-    except Exception:
+    except ValueError:
         pass
 
     return []
@@ -210,14 +249,6 @@ def format_tool_call_clean(name, args, result) -> str | None:
         "manage_app",
         "stop_app",
         "wait_for_delay",
-        "_exec_click",
-        "_exec_click_sequence",
-        "_exec_swipe",
-        "_exec_input_text",
-        "_exec_press_key",
-        "_exec_long_press",
-        "_exec_manage_app",
-        "_exec_wait_for_delay",
     }
 
     # Custom rendering for safety net validations
@@ -231,47 +262,12 @@ def format_tool_call_clean(name, args, result) -> str | None:
                 return f"Failed - {str(detail).strip()}"
         return "Passed" if result else "Failed"
 
-    # Custom rendering for Operator call to failure_analyzer agent
-    if name == "failure_analyzer":
-        clean_args = {
-            k: v
-            for k, v in args.items()
-            if k
-            not in (
-                "state",
-                "tool_call_id",
-                "pre_screenshot",
-                "post_screenshot",
-            )
-        }
-        args_str = json.dumps(clean_args, ensure_ascii=False)
-        if len(args_str) > 120:
-            args_str = args_str[:120] + "..."
-
-        if isinstance(result, dict):
-            status = result.get("status", "unknown")
-            analysis = result.get("analysis") or result.get("reason") or "No analysis provided."
-        else:
-            status = args.get("status", "unknown")
-            analysis = args.get("analysis", "No analysis provided.")
-        if len(analysis) > 120:
-            analysis = analysis[:120].strip() + "..."
-        return f"`failure_analyzer({args_str})` -> Outcome: {status.upper()} (Analysis: {analysis})"
-
-    # Custom rendering for Failure Analyzer final report
-    if name == "report_failure_analysis":
-        status = args.get("status", "unknown")
-        analysis = args.get("analysis", "No analysis provided.")
-        if len(analysis) > 120:
-            analysis = analysis[:120].strip() + "..."
-        return f"Outcome: {status.upper()} (Analysis: {analysis})"
-
     if name in ("read_note", "save_note", "update_note") and args.get("key") == "task_plan":
         return None
 
-    # Custom rendering for all Action Tools (including _exec_ tools)
+    # Custom rendering for all Action Tools
     if name in ACTION_TOOLS:
-        action_name = name[6:] if name.startswith("_exec_") else name
+        action_name = name
 
         # Convert arguments to action_obj format with thorough parameter mapping
         action_obj = {
@@ -400,92 +396,74 @@ def format_tool_call_clean(name, args, result) -> str | None:
     return f"`{name}({args_str})` -> {res_str}"
 
 
-def format_step_action_result(step: dict) -> str:
-    action = step.get("action_taken")
-    action_parsed = action[0] if isinstance(action, list) and action else action
-    action_clean = "No Action"
-    if action_parsed:
-        action_clean = format_action_clean(action_parsed)
-
-    intercepted = False
-    safety_net_detail = None
-    interleaved = step.get("interleaved_events") or []
-    for event in interleaved:
+def _detect_interception(interleaved: list, result: Any) -> tuple[bool, str | None]:
+    """Whether the pre-execution safety net intercepted the step's action."""
+    for event in interleaved or []:
         if event.get("type") == "tool_call" and event.get("name") in (
             "safety_net_validation",
             "safety_net_pixel_validation",
         ):
             res_list = safe_parse_validation_result(event.get("result"))
             if len(res_list) > 0 and not res_list[0]:
-                intercepted = True
-                if len(res_list) >= 3:
-                    safety_net_detail = res_list[2]
-                break
+                detail = res_list[2] if len(res_list) >= 3 else None
+                return True, detail
+            break
 
-    if not intercepted:
-        result_obj = step.get("last_execution_result")
-        if isinstance(result_obj, dict):
-            exec_list = result_obj.get("execution") or []
-            if exec_list:
-                attempts = exec_list[0].get("attempts") or []
-                if attempts and any(
-                    "pre-execution validation" in str(att).lower()
-                    or "validation failed" in str(att).lower()
-                    for att in attempts
-                ):
-                    intercepted = True
-                    safety_net_detail = attempts[0]
+    # Fallback on the result structure (legacy / non-interleaved steps).
+    if isinstance(result, dict):
+        incident = result.get("incident")
+        if isinstance(incident, dict) and incident.get("kind") == "safety_net":
+            return True, incident.get("reason")
+        exec_list = result.get("execution") or []
+        if exec_list and isinstance(exec_list[0], dict):
+            attempts = exec_list[0].get("attempts") or []
+            if attempts and any(
+                "pre-execution validation" in str(att).lower()
+                or "validation failed" in str(att).lower()
+                for att in attempts
+            ):
+                return True, attempts[0]
+    return False, None
 
-    recovery_actions = []
-    for event in interleaved:
-        e_type = event.get("type")
-        name = event.get("name") or ""
-        if (
-            e_type == "tool_call"
-            and name.startswith("_exec_")
-            and name != "report_failure_analysis"
-        ):
-            formatted = format_tool_call_clean(name, event.get("args") or {}, event.get("result"))
-            if formatted:
-                recovery_actions.append(formatted)
 
-    if not recovery_actions:
-        legacy_tool_calls = step.get("tool_calls") or []
-        for tc in legacy_tool_calls:
-            name = tc.get("name") or ""
-            if name.startswith("_exec_") and name != "report_failure_analysis":
-                payload = tc.get("payload") or {}
-                tc_args = payload.get("args") or tc.get("args") or {}
-                tc_result = (
-                    payload.get("result") or payload.get("error") or tc.get("result") or "No result"
-                )
-                formatted = format_tool_call_clean(name, tc_args, tc_result)
-                if formatted:
-                    recovery_actions.append(formatted)
+def format_step_action_result(step: dict) -> str:
+    action = step.get("action_taken")
+    action_clean = format_actions_clean(action) if action else "No Action"
+    result_obj = step.get("last_execution_result")
+
+    intercepted, safety_net_detail = _detect_interception(
+        step.get("interleaved_events") or [], result_obj
+    )
 
     output_parts = [action_clean]
 
     if intercepted:
         detail_msg = f": {str(safety_net_detail).strip()}" if safety_net_detail else ""
-        output_parts.append(f"(Action not executed{detail_msg})")
-
-    if not intercepted and not recovery_actions:
-        result_obj = step.get("last_execution_result")
-        if isinstance(result_obj, dict) and result_obj.get("status") == "failed":
-            error_msg = None
-            exec_list = result_obj.get("execution") or []
-            if exec_list and isinstance(exec_list[0], dict):
-                error_msg = exec_list[0].get("error")
-            if not error_msg:
-                error_msg = result_obj.get("error")
-            if error_msg:
-                output_parts.append(f"(Execution failed: {str(error_msg).strip()})")
-
-    if recovery_actions:
-        recovery_str = ", ".join(recovery_actions)
-        output_parts.append(f"Recovery Actions: [{recovery_str}]")
+        output_parts.append(f"(Intercepted by Pre-Execution Safety Net{detail_msg})")
+    elif isinstance(result_obj, dict) and result_obj.get("status") == "failed":
+        error_msg = failed_execution_error(result_obj)
+        if error_msg:
+            output_parts.append(f"(Execution failed: {str(error_msg).strip()})")
 
     return " -> ".join(output_parts)
+
+
+def _burst_member_status(result: Any, index: int) -> str:
+    """Per-action outcome suffix for one member of a fast-action burst."""
+    if not isinstance(result, dict):
+        return ""
+    exec_list = result.get("execution") or []
+    if index >= len(exec_list) or not isinstance(exec_list[index], dict):
+        return " (not executed)"
+    attempts = exec_list[index].get("attempts") or []
+    if not attempts:
+        return " (executed)"
+    last = str(attempts[-1])
+    if last == "Success":
+        return " (executed)"
+    if last.startswith("Skipped"):
+        return " (skipped)"
+    return f" (FAILED: {last.strip()})"
 
 
 def _render_step_detailed(
@@ -495,16 +473,9 @@ def _render_step_detailed(
     action: Any,
     result: Any,
     is_most_recent: bool,
-    for_failure_analyzer: bool = False,
 ) -> str:
     # 1. Step Header
-    if is_most_recent and for_failure_analyzer:
-        status_str = (
-            "Most Recent Step (Failed to execute, this is the step you need to"
-            " focus on and repair), "
-        )
-    else:
-        status_str = "Most Recent Step, " if is_most_recent else ""
+    status_str = "Most Recent Step, " if is_most_recent else ""
 
     # Summary is omitted from the detailed view header as it is already fully detailed below.
     step_line = f"- **Step {step['step_number']} ({status_str}Start: {relative_time})**"
@@ -512,43 +483,14 @@ def _render_step_detailed(
     interleaved = step.get("interleaved_events") or []
 
     # 2. Determine if Safety Net validation failed (intercepted)
-    intercepted = False
-    safety_net_detail = None
-    for event in interleaved:
-        if event.get("type") == "tool_call" and event.get("name") in (
-            "safety_net_validation",
-            "safety_net_pixel_validation",
-        ):
-            res_list = safe_parse_validation_result(event.get("result"))
-            if len(res_list) > 0 and not res_list[0]:
-                intercepted = True
-                if len(res_list) >= 3:
-                    safety_net_detail = res_list[2]
-                break
+    intercepted, safety_net_detail = _detect_interception(interleaved, result)
 
-    # Fallback check on result structure for legacy/non-interleaved steps
-    if not intercepted and result:
-        exec_list = result.get("execution") or []
-        if exec_list:
-            attempts = exec_list[0].get("attempts") or []
-            if attempts and any(
-                "pre-execution validation" in str(att).lower()
-                or "validation failed" in str(att).lower()
-                for att in attempts
-            ):
-                intercepted = True
-                safety_net_detail = attempts[0]
-
-    # 3. Categorize events into Operator and Failure Analyzer
+    # 3. Collect the Operator's own events (system guardians are rendered separately)
     operator_events = []
-    failure_analyzer_events = []
 
-    # Internal tools list to filter out from Operator
     INTERNAL_SYSTEM_TOOLS = {
         "safety_net_validation",
         "safety_net_pixel_validation",
-        "failure_analyzer",
-        "report_failure_analysis",
         "hopper",
     }
 
@@ -556,12 +498,6 @@ def _render_step_detailed(
         for event in interleaved:
             e_type = event.get("type")
             name = event.get("name") or ""
-            content = event.get("content") or ""
-
-            # Skip the failure_analyzer agent call itself to prevent duplicates
-            if name == "failure_analyzer":
-                continue
-
             if e_type in ("thought", "native_thought"):
                 operator_events.append(event)
             elif (
@@ -570,15 +506,6 @@ def _render_step_detailed(
                 and not name.startswith("_exec_")
             ):
                 operator_events.append(event)
-            elif e_type in (
-                "failure_analyzer_thought",
-                "failure_analyzer_native_thought",
-            ):
-                failure_analyzer_events.append(event)
-            elif e_type == "tool_call" and (
-                name.startswith("_exec_") or name == "report_failure_analysis"
-            ):
-                failure_analyzer_events.append(event)
     else:
         # Fallback for legacy/non-interleaved steps
         raw_thinking = step.get("operator_raw_thinking")
@@ -590,41 +517,22 @@ def _render_step_detailed(
 
         legacy_tool_calls = step.get("tool_calls") or []
         for tc in legacy_tool_calls:
-            name = tc.get("name")
+            name = tc.get("name") or ""
             if name in INTERNAL_SYSTEM_TOOLS or name.startswith("_exec_"):
-                # If it's failure analyzer tools in legacy steps, place them in failure analyzer
-                if name.startswith("_exec_") or name == "report_failure_analysis":
-                    # Convert to interleaved style format
-                    payload = tc.get("payload") or {}
-                    tc_args = payload.get("args") or tc.get("args") or {}
-                    tc_result = (
-                        payload.get("result")
-                        or payload.get("error")
-                        or tc.get("result")
-                        or "No result"
-                    )
-                    failure_analyzer_events.append(
-                        {
-                            "type": "tool_call",
-                            "name": name,
-                            "args": tc_args,
-                            "result": tc_result,
-                        }
-                    )
-            else:
-                payload = tc.get("payload") or {}
-                tc_args = payload.get("args") or tc.get("args") or {}
-                tc_result = (
-                    payload.get("result") or payload.get("error") or tc.get("result") or "No result"
-                )
-                operator_events.append(
-                    {
-                        "type": "tool_call",
-                        "name": name,
-                        "args": tc_args,
-                        "result": tc_result,
-                    }
-                )
+                continue
+            payload = tc.get("payload") or {}
+            tc_args = payload.get("args") or tc.get("args") or {}
+            tc_result = (
+                payload.get("result") or payload.get("error") or tc.get("result") or "No result"
+            )
+            operator_events.append(
+                {
+                    "type": "tool_call",
+                    "name": name,
+                    "args": tc_args,
+                    "result": tc_result,
+                }
+            )
 
     # Helper to check if a thought content is already in operator_events
     def thought_exists(content):
@@ -657,7 +565,7 @@ def _render_step_detailed(
         operator_events.append({"type": "thought", "content": raw_thinking.strip()})
 
     # 4. Render Operator Loop
-    if operator_events and (not for_failure_analyzer or is_most_recent):
+    if operator_events:
         step_line += "\n  * [Operator Decision Loop]:"
         ACTION_TOOLS = {
             "click",
@@ -695,29 +603,29 @@ def _render_step_detailed(
 
     # Check if the execution failed
     exec_error = None
-    if result and isinstance(result, dict):
-        status = result.get("status")
-        if status == "failed" or status == "error":
-            exec_list = result.get("execution") or result.get("executed_actions")
-            if isinstance(exec_list, list) and exec_list and isinstance(exec_list[0], dict):
-                first_exec = exec_list[0]
-                attempts = first_exec.get("attempts")
-                if attempts:
-                    exec_error = " | ".join(attempts)
-                else:
-                    exec_error = first_exec.get("error") or result.get("error")
-            else:
-                exec_error = result.get("error")
+    if isinstance(result, dict) and result.get("status") in ("failed", "error"):
+        exec_error = failed_execution_error(result)
 
-    # 5. Render Planned Action
+    # 5. Render Planned Action (single vetted action or fast-action burst)
     if action:
-        action_clean = format_action_clean(action)
-        if intercepted:
+        actions = action if isinstance(action, list) else [action]
+        if len(actions) > 1:
             step_line += (
-                f"\n  * [Planned Action]: {action_clean} (Intercepted by Pre-Execution Safety Net)"
+                f"\n  * [Planned Fast-Action Burst]: {len(actions)} actions fired back to"
+                " back without the safety net"
             )
+            for i, member in enumerate(actions):
+                step_line += (
+                    f"\n    {i + 1}. {format_action_clean(member)}{_burst_member_status(result, i)}"
+                )
         else:
-            if exec_error:
+            action_clean = format_action_clean(actions[0])
+            if intercepted:
+                step_line += (
+                    f"\n  * [Planned Action]: {action_clean}"
+                    " (Intercepted by Pre-Execution Safety Net)"
+                )
+            elif exec_error:
                 step_line += (
                     f"\n  * [Planned Action]: {action_clean} -> (Execution failed: {exec_error})"
                 )
@@ -728,65 +636,14 @@ def _render_step_detailed(
     if intercepted:
         step_line += "\n  * [Pre-Execution Safety Net]:"
         detail_str = (
-            f"(Action not executed: {str(safety_net_detail).strip()})"
+            f"(Intercepted by Pre-Execution Safety Net: {str(safety_net_detail).strip()})"
             if safety_net_detail
-            else "(Action not executed)"
+            else "(Intercepted by Pre-Execution Safety Net)"
         )
         step_line += f"\n    - [Safety Net Check]: {detail_str}"
 
-    # 7. Render Failure Analyzer Recovery Loop
-    if failure_analyzer_events:
-        step_line += "\n  * [Failure Analyzer Recovery Loop]:"
-        for event in failure_analyzer_events:
-            e_type = event["type"]
-            content = event.get("content") or ""
-            name = event.get("name") or ""
-            if not content.strip() and e_type != "tool_call":
-                continue
-            if e_type in (
-                "failure_analyzer_native_thought",
-                "failure_analyzer_thought",
-                "failure_analyzer_monologue",
-            ):
-                cleaned = content.strip()
-                if cleaned:
-                    step_line += f"\n    - {cleaned}"
-            elif e_type == "tool_call":
-                if name == "report_failure_analysis":
-                    continue
-                formatted = format_tool_call_clean(
-                    name, event.get("args") or {}, event.get("result")
-                )
-                if formatted:
-                    step_line += f"\n    - [Tool Call]: {formatted}"
-
-    # Check if Failure Analyzer was active and reported
-    has_fa = bool(failure_analyzer_events)
-
-    # We consider FA as reported if it called the report tool,
-    # OR if the step's last_execution_result already contains a legacy repair description!
-    has_repair_in_result = False
-    if result and isinstance(result, dict):
-        exec_list = result.get("execution") or result.get("executed_actions")
-        if isinstance(exec_list, list) and exec_list and isinstance(exec_list[0], dict):
-            if exec_list[0].get("repair"):
-                has_repair_in_result = True
-
-    fa_reported = (
-        any(
-            event.get("type") == "tool_call" and event.get("name") == "report_failure_analysis"
-            for event in failure_analyzer_events
-        )
-        or has_repair_in_result
-    )
-
-    # 8. Validator Execution Result
-    if has_fa and not fa_reported:
-        step_line += (
-            "\n  * [Result]: Unknown repair outcome (Failure Analyzer did not"
-            " submit a final report)"
-        )
-    elif result:
+    # 7. Validator Execution Result (an open incident renders as the result line)
+    if result:
         result_clean = format_result_clean(result)
         if result_clean:
             step_line += f"\n  * [Result]: {result_clean}"
@@ -804,7 +661,6 @@ def build_plan_and_history(
     all_detailed: bool = False,
     strict_milestone_pruning: bool = False,
     recent_window_size: int = 3,
-    for_failure_analyzer: bool = False,
     chunks: list | None = None,
 ) -> str:
     """Builds a clean plan list and separate flat chronological execution history with adaptive compression.
@@ -826,13 +682,9 @@ def build_plan_and_history(
     if has_subgoals:
         output_parts.append("--- Task Plan ---")
         output_parts.append(task_plan)
-        if for_failure_analyzer:
-            output_parts.append(
-                "*(Note: Provided for context only. Do not execute the remaining plan.)*"
-            )
         output_parts.append("")
-    elif not for_failure_analyzer:
-        # For non-failure_analyzer context, print fallback if not empty
+    else:
+        # Print the plan fallback if not empty
         if task_plan and task_plan != "No task plan yet.":
             output_parts.extend(
                 [
@@ -912,9 +764,7 @@ def build_plan_and_history(
         # detailed (recent window / most-recent step) are never suppressed.
         chunked_ranges: list[tuple[int, int]] = []
         if chunks:
-            for chunk in sorted(
-                chunks, key=lambda c: c.get("start_step_number") or 0
-            ):
+            for chunk in sorted(chunks, key=lambda c: c.get("start_step_number") or 0):
                 text = chunk.get("text")
                 if not text:
                     continue
@@ -962,7 +812,6 @@ def build_plan_and_history(
                     action,
                     result,
                     is_most_recent,
-                    for_failure_analyzer,
                 )
             else:
                 step_line = f"- *Step {step['step_number']} (Start: {relative_time}): {summary}*"
@@ -1007,8 +856,9 @@ def get_active_subgoal_hashes(task_plan: str) -> tuple[str, str | None]:
                 if item.is_pending:
                     return item.key, None
 
-    except Exception:
-        pass
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        # Unparseable plan text falls back to the default bucket.
+        logger.debug("Active subgoal lookup fell back to default: %s", exc, exc_info=True)
 
     return "default", None
 

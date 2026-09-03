@@ -32,6 +32,26 @@ class _Transport(Protocol):
     ) -> Any: ...
 
 
+#: Pro-profile Checker presets accepted by ``/api/run`` (``verification_level``).
+VerificationLevel = Literal["off", "final", "checkpoints", "strict"]
+VERIFICATION_LEVELS: tuple[str, ...] = ("off", "final", "checkpoints", "strict")
+#: Pro-profile Explorer perception versions accepted by ``/api/run`` (``explorer_mode``).
+ExplorerMode = Literal["flash", "pro", "ultra"]
+EXPLORER_MODES: tuple[str, ...] = ("flash", "pro", "ultra")
+
+
+def _normalize_choice(value: str | None, name: str, choices: tuple[str, ...]) -> str | None:
+    """Strip + lower-case an enumerated option, rejecting unknown values early."""
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    if normalized not in choices:
+        raise ValueError(f"{name} must be one of {', '.join(choices)}; got {value!r}")
+    return normalized
+
+
 class ArtemisClient:
     """Thin client for an Artemis daemon running on another host.
 
@@ -164,17 +184,27 @@ class ArtemisClient:
         app_path: str | None = None,
         conversation_id: str | None = None,
         task_id: str | None = None,
+        verification_level: VerificationLevel | None = None,
+        explorer_mode: ExplorerMode | None = None,
         options: Mapping[str, Any] | None = None,
     ) -> TaskHandle:
         """Submit one task and return immediately after scheduler admission.
 
         ``task_id`` is generated client-side and sent as the legacy
         ``session_id``. Reusing it makes submission retries idempotent.
-        Experimental, forward-compatible fields belong in ``options``.
+        ``verification_level`` (``off`` | ``final`` | ``checkpoints`` |
+        ``strict``: how much the Checker audits a Pro run) and
+        ``explorer_mode`` (``flash`` | ``pro`` | ``ultra``: the Pro Operator's
+        perception depth) are Pro-only tuning knobs; the Flash profile ignores
+        them. Experimental, forward-compatible fields belong in ``options``.
         """
         normalized_goal = goal.strip()
         if not normalized_goal:
             raise ValueError("goal must not be empty")
+        resolved_level = _normalize_choice(
+            verification_level, "verification_level", VERIFICATION_LEVELS
+        )
+        resolved_mode = _normalize_choice(explorer_mode, "explorer_mode", EXPLORER_MODES)
         if task_id is None:
             resolved_task_id = str(uuid.uuid4())
         else:
@@ -197,6 +227,8 @@ class ArtemisClient:
             "locked_app_package": locked_app_package,
             "app_path": app_path,
             "conversation_id": conversation_id,
+            "verification_level": resolved_level,
+            "explorer_mode": resolved_mode,
             "options": dict(options) if options is not None else None,
         }
         payload.update({key: value for key, value in optional_values.items() if value is not None})
@@ -272,11 +304,13 @@ class ArtemisClient:
         app_path: str | None = None,
         conversation_id: str | None = None,
         task_id: str | None = None,
+        verification_level: VerificationLevel | None = None,
+        explorer_mode: ExplorerMode | None = None,
         options: Mapping[str, Any] | None = None,
         timeout: float = 1800.0,
         poll_interval: float | None = None,
     ) -> TaskResult:
-        """Submit a task and wait for its terminal result."""
+        """Submit a task and wait for its terminal result (see :meth:`submit`)."""
         handle = await self.submit(
             goal,
             profile=profile,
@@ -287,6 +321,8 @@ class ArtemisClient:
             app_path=app_path,
             conversation_id=conversation_id,
             task_id=task_id,
+            verification_level=verification_level,
+            explorer_mode=explorer_mode,
             options=options,
         )
         return await self.wait_for_task(

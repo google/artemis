@@ -36,10 +36,10 @@ class AgentApiNotifier(BaseNotifier):
             token = os.environ.get("ANTIGRAVITY_CSRF_TOKEN")
             if addr and token:
                 self._save_shared_env(addr, token)
-        except Exception:
+        except Exception as exc:
             # Environment recovery is opportunistic; notifier construction
             # must never fail because of it.
-            pass
+            logger.debug("[EnvRecovery] Skipped saving shared env: %s", exc, exc_info=True)
 
     @property
     def name(self) -> str:
@@ -159,11 +159,7 @@ class AgentApiNotifier(BaseNotifier):
             for proc in psutil.process_iter(["create_time", "environ"]):
                 try:
                     env = proc.info.get("environ")
-                    if (
-                        env
-                        and "ANTIGRAVITY_LS_ADDRESS" in env
-                        and "ANTIGRAVITY_CSRF_TOKEN" in env
-                    ):
+                    if env and "ANTIGRAVITY_LS_ADDRESS" in env and "ANTIGRAVITY_CSRF_TOKEN" in env:
                         ctime = proc.info.get("create_time", 0.0) or 0.0
                         proc_matches.append(
                             (
@@ -188,13 +184,9 @@ class AgentApiNotifier(BaseNotifier):
                     local_token = None
                     for var in env_vars:
                         if var.startswith(b"ANTIGRAVITY_LS_ADDRESS="):
-                            local_addr = (
-                                var.split(b"=", 1)[1].decode("utf-8", errors="ignore")
-                            )
+                            local_addr = var.split(b"=", 1)[1].decode("utf-8", errors="ignore")
                         elif var.startswith(b"ANTIGRAVITY_CSRF_TOKEN="):
-                            local_token = (
-                                var.split(b"=", 1)[1].decode("utf-8", errors="ignore")
-                            )
+                            local_token = var.split(b"=", 1)[1].decode("utf-8", errors="ignore")
                     if local_addr and local_token:
                         proc_matches.append((mtime, local_addr, local_token))
                 except OSError:
@@ -262,9 +254,7 @@ class AgentApiNotifier(BaseNotifier):
                     logger.info(f"AgentAPI notification sent successfully via {addr}.")
                     return True
                 except Exception as err:
-                    logger.debug(
-                        f"Candidate session {addr} failed (attempt {attempt + 1}): {err}"
-                    )
+                    logger.debug(f"Candidate session {addr} failed (attempt {attempt + 1}): {err}")
 
             # If all initial candidates failed, force a fresh process scan in case a new session started
             fresh_candidates = self._get_candidate_envs(force_proc_scan=True)

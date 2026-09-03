@@ -16,8 +16,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from artemis.context import ArtemisContext
 from artemis.tools.command_tool import (
-    _BACKGROUND_TASKS,
-    _PERSISTENT_ENVIRONMENTS,
+    get_adb_task_registry,
     get_manage_task_tool,
     get_run_adb_command_tool,
     get_run_short_adb_command_tool,
@@ -120,7 +119,7 @@ async def test_run_command_sync(mock_exec, mock_ctx):
     mock_exec.assert_called_once()
     # Check that adb was called with device ID and "shell"
     args, kwargs = mock_exec.call_args
-    assert args[0] == "adb"
+    assert args[0].lower().replace(".exe", "").endswith("adb")
     assert args[1] == "-s"
     assert args[2] == "test_device_1234"
     assert args[3] == "shell"
@@ -149,8 +148,9 @@ async def test_run_command_persistent_env(mock_exec, mock_ctx):
         }
     )
     assert "completed with exit code 0" in res1
-    assert terminal_id in _PERSISTENT_ENVIRONMENTS
-    assert _PERSISTENT_ENVIRONMENTS[terminal_id].get("ARTEMIS_TEST_ENV") == "coffee"
+    envs = get_adb_task_registry(mock_ctx).persistent_envs
+    assert terminal_id in envs
+    assert envs[terminal_id].get("ARTEMIS_TEST_ENV") == "coffee"
 
     # 2. Query environment variable in subsequent command on same terminal
     mock_process_2 = MockProcess(
@@ -186,7 +186,8 @@ async def test_run_command_async_and_status(mock_exec, mock_ctx):
     run_command = get_run_adb_command_tool(mock_ctx)
     manage_task = get_manage_task_tool(mock_ctx)
 
-    _BACKGROUND_TASKS.clear()
+    registry = get_adb_task_registry(mock_ctx)
+    registry.background.clear()
 
     res = await run_command.ainvoke(
         {
@@ -204,7 +205,7 @@ async def test_run_command_async_and_status(mock_exec, mock_ctx):
     task_id_line = [line for line in lines if line.startswith("TaskId: ")][0]
     task_id = task_id_line.split(": ")[1]
 
-    assert task_id in _BACKGROUND_TASKS
+    assert task_id in registry.background
 
     # Check status (should be running)
     status_res = await manage_task.ainvoke(
@@ -219,7 +220,7 @@ async def test_run_command_async_and_status(mock_exec, mock_ctx):
     await asyncio.sleep(1.2)
 
     # Status should be completed (and task removed from active map)
-    assert task_id not in _BACKGROUND_TASKS
+    assert task_id not in registry.background
 
 
 @pytest.mark.asyncio
@@ -231,7 +232,8 @@ async def test_run_command_kill(mock_exec, mock_ctx):
     run_command = get_run_adb_command_tool(mock_ctx)
     manage_task = get_manage_task_tool(mock_ctx)
 
-    _BACKGROUND_TASKS.clear()
+    registry = get_adb_task_registry(mock_ctx)
+    registry.background.clear()
 
     res = await run_command.ainvoke(
         {
@@ -254,7 +256,7 @@ async def test_run_command_kill(mock_exec, mock_ctx):
         }
     )
     assert f"Task {task_id} successfully terminated" in kill_res
-    assert task_id not in _BACKGROUND_TASKS
+    assert task_id not in registry.background
 
 
 @pytest.mark.asyncio
@@ -275,7 +277,7 @@ async def test_run_short_command_success(mock_exec, mock_ctx):
     assert "short command success output" in result
     mock_exec.assert_called_once()
     args, kwargs = mock_exec.call_args
-    assert args[0] == "adb"
+    assert args[0].lower().replace(".exe", "").endswith("adb")
     assert args[1] == "-s"
     assert args[2] == "test_device_1234"
     assert args[3] == "shell"
@@ -453,12 +455,12 @@ def test_manage_task_tool_subclass_and_registry():
 async def test_manage_task_tool_direct_execute(mock_ctx):
     """Verify direct ManageTaskTool.execute execution."""
     from artemis.tools.command_tool import (
-        _BACKGROUND_TASKS,
         BackgroundTask,
         manage_task,
     )
 
-    _BACKGROUND_TASKS.clear()
+    registry = get_adb_task_registry(mock_ctx)
+    registry.background.clear()
     list_res = await manage_task.execute(ctx=mock_ctx, Action="list")
     assert "No active background tasks" in list_res
 
@@ -471,7 +473,7 @@ async def test_manage_task_tool_direct_execute(mock_ctx):
         terminal_id="term_1",
         cwd="/data/local/tmp",
     )
-    _BACKGROUND_TASKS["dummy_task_99"] = bg_task
+    registry.background["dummy_task_99"] = bg_task
 
     list_res2 = await manage_task.execute(ctx=mock_ctx, Action="list")
     assert "dummy_task_99" in list_res2
@@ -482,7 +484,8 @@ async def test_manage_task_tool_direct_execute(mock_ctx):
     assert "Status: running" in status_res
     assert "dummy_task_99" in status_res
 
-    _BACKGROUND_TASKS.clear()
+    registry = get_adb_task_registry(mock_ctx)
+    registry.background.clear()
 
 
 def test_analyze_task_output_tool_subclass_and_registry():
@@ -601,3 +604,153 @@ async def test_run_short_adb_command_tool_mock_driver_execute():
     )
     assert "mock_output: getprop ro.build.version.release" in result
     assert "getprop ro.build.version.release" in driver.action_history[-1]["command"]
+
+
+# ---------------------------------------------------------------------------
+# Registry, exit codes, stdin control, cloud timeout, shutdown
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("asyncio.create_subprocess_exec")
+async def test_persistent_reports_script_exit_code(mock_exec, mock_ctx):
+    """A failing command in a persistent terminal must not report exit code 0."""
+    mock_exec.return_value = MockProcess(
+        output_bytes=b"boom\n===EXIT_CODE===3\n===ENV_START===\nPATH=/bin\nFOO=bar baz\n",
+        exit_code=0,  # the trailing `env` succeeds, the command did not
+    )
+    run_command = get_run_adb_command_tool(mock_ctx)
+    res = await run_command.ainvoke(
+        {
+            "CommandLine": "false",
+            "RunPersistent": True,
+            "RequestedTerminalID": "term_exit",
+            "WaitMsBeforeAsync": 500,
+        }
+    )
+    assert "completed with exit code 3" in res
+    assert "===EXIT_CODE===" not in res
+    envs = get_adb_task_registry(mock_ctx).persistent_envs["term_exit"]
+    assert envs == {"FOO": "bar baz"}  # platform vars like PATH are dropped
+
+
+def test_build_phone_script_quotes_env_and_cwd():
+    import shlex
+
+    from artemis.tools.command_tool import _build_phone_script
+
+    script = _build_phone_script("echo hi", "/sdcard/my dir", {"FOO": "it's"}, True)
+    assert script.startswith("cd '/sdcard/my dir'\n")
+    expected_export = "export FOO=" + shlex.quote("it's") + "\n"
+    assert expected_export in script
+    assert "===EXIT_CODE===$_artemis_ec" in script
+    assert script.rstrip().endswith("env")
+
+
+@pytest.mark.asyncio
+@patch("asyncio.create_subprocess_exec")
+async def test_stdin_closed_unless_interactive(mock_exec, mock_ctx):
+    mock_exec.return_value = MockProcess(output_bytes=b"ok\n", exit_code=0)
+    run_command = get_run_adb_command_tool(mock_ctx)
+
+    await run_command.ainvoke({"CommandLine": "cat", "WaitMsBeforeAsync": 500})
+    assert mock_exec.call_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
+
+    mock_exec.return_value = MockProcess(output_bytes=b"ok\n", exit_code=0)
+    await run_command.ainvoke({"CommandLine": "cat", "Interactive": True, "WaitMsBeforeAsync": 500})
+    assert mock_exec.call_args.kwargs["stdin"] == asyncio.subprocess.PIPE
+
+
+@pytest.mark.asyncio
+@patch("asyncio.create_subprocess_exec")
+async def test_send_input_rejected_for_non_interactive_task(mock_exec, mock_ctx):
+    mock_exec.return_value = MockProcess(output_bytes=b"", exit_code=0, delay=5.0)
+    run_command = get_run_adb_command_tool(mock_ctx)
+    manage_task = get_manage_task_tool(mock_ctx)
+    registry = get_adb_task_registry(mock_ctx)
+
+    res = await run_command.ainvoke({"CommandLine": "sleep 10", "WaitMsBeforeAsync": 100})
+    task_id = [ln for ln in res.splitlines() if ln.startswith("TaskId: ")][0].split(": ")[1]
+    assert "stdin is closed" in res
+
+    reply = await manage_task.ainvoke({"Action": "send_input", "TaskId": task_id, "Input": "y\n"})
+    assert "Interactive=true" in reply
+
+    await manage_task.ainvoke({"Action": "kill", "TaskId": task_id})
+    assert task_id not in registry.background
+
+
+@pytest.mark.asyncio
+@patch("asyncio.create_subprocess_exec")
+async def test_shutdown_kills_background_tasks_and_records_them(mock_exec, mock_ctx):
+    from artemis.tools.command_tool import shutdown_adb_background_tasks
+
+    mock_exec.return_value = MockProcess(output_bytes=b"", exit_code=0, delay=5.0)
+    run_command = get_run_adb_command_tool(mock_ctx)
+    registry = get_adb_task_registry(mock_ctx)
+
+    res = await run_command.ainvoke({"CommandLine": "logcat", "WaitMsBeforeAsync": 100})
+    task_id = [ln for ln in res.splitlines() if ln.startswith("TaskId: ")][0].split(": ")[1]
+    assert task_id in registry.background
+
+    killed = await shutdown_adb_background_tasks(mock_ctx)
+    assert killed == 1
+    assert registry.background == {}
+    assert registry.finished[task_id]["status"] == "killed"
+    # A second shutdown is a no-op.
+    assert await shutdown_adb_background_tasks(mock_ctx) == 0
+    # A context that never used ADB tools has no registry and is a no-op too.
+    fresh = MagicMock(spec=ArtemisContext)
+    assert await shutdown_adb_background_tasks(fresh) == 0
+
+
+def test_registry_is_per_context_and_notifications_do_not_leak():
+    from artemis.tools.command_tool import _register_finished_task
+
+    ctx_a = MagicMock(spec=ArtemisContext)
+    ctx_b = MagicMock(spec=ArtemisContext)
+    reg_a = get_adb_task_registry(ctx_a)
+    reg_b = get_adb_task_registry(ctx_b)
+    assert reg_a is not reg_b
+    assert get_adb_task_registry(ctx_a) is reg_a
+
+    _register_finished_task("t_a", "logcat -d", None, None, "completed", 0, "out", ctx=ctx_a)
+    assert [t["task_id"] for t in reg_a.pop_unnotified_finished()] == ["t_a"]
+    assert reg_b.pop_unnotified_finished() == []
+    # Consumed once: the next Operator turn on ctx_a does not see it again.
+    assert reg_a.pop_unnotified_finished() == []
+
+
+@pytest.mark.asyncio
+@patch("asyncio.create_subprocess_exec")
+async def test_sync_long_output_is_not_reannounced(mock_exec, mock_ctx):
+    long_output = "\n".join(f"line {i}" for i in range(600))
+    mock_exec.return_value = MockProcess(output_bytes=long_output.encode(), exit_code=0)
+    run_command = get_run_adb_command_tool(mock_ctx)
+    registry = get_adb_task_registry(mock_ctx)
+    registry.finished.clear()
+
+    res = await run_command.ainvoke({"CommandLine": "dumpsys", "WaitMsBeforeAsync": 500})
+    assert "has been truncated" in res
+    assert registry.pop_unnotified_finished() == []
+    # ... but analyze_task_output can still reach the full text.
+    task_id = res.split("TaskId: ")[1].split(".")[0]
+    assert "line 0" in registry.get_task_info(task_id)["output"]
+
+
+@pytest.mark.asyncio
+async def test_cloud_mode_command_has_hard_timeout(mock_ctx, monkeypatch):
+    import time
+
+    monkeypatch.setenv("ARTEMIS_CLOUD_MODE", "1")
+    device = MagicMock()
+    device.shell = MagicMock(side_effect=lambda _script: time.sleep(1.0) or "late")
+    with patch("artemis.tools.command_tool.get_adb_device", return_value=device):
+        run_command = get_run_adb_command_tool(mock_ctx)
+        res = await run_command.ainvoke({"CommandLine": "logcat", "WaitMsBeforeAsync": 100})
+    assert "did not finish within" in res
+
+    device.shell = MagicMock(return_value="fast\n")
+    with patch("artemis.tools.command_tool.get_adb_device", return_value=device):
+        res = await run_command.ainvoke({"CommandLine": "echo fast", "WaitMsBeforeAsync": 500})
+    assert "fast" in res

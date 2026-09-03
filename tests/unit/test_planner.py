@@ -47,7 +47,7 @@ async def test_planner_validation():
     )
     mock_llm.with_structured_output.return_value = mock_structured
 
-    with patch("artemis.agents.planner.planner.get_llm", return_value=mock_llm):
+    with patch("artemis.agents.planner.planner.get_llm", return_value=mock_llm) as get_llm:
         res = await run_async_planner_validation(
             ctx=DummyCtx(),
             initial_goal="Do the task",
@@ -58,6 +58,22 @@ async def test_planner_validation():
         )
     assert res is not None
     assert res.get("status") == "success"
+    # The review runs on the lightweight judge node, never the Planner model.
+    assert get_llm.call_args.kwargs.get("name") == "planner_validation"
+
+
+def test_planner_validation_node_defaults_to_lightweight_judge():
+    """Unconfigured planner_validation resolves to the same flash-lite default
+    as the pixel safety net (cheap, temperature 0)."""
+    from artemis.config import get_default_llm_config
+
+    llm_cfg = get_default_llm_config()
+    node = llm_cfg.get_agent("planner_validation")
+    safety_net = llm_cfg.get_agent("validator_pixel_safety_net")
+    assert node.model == safety_net.model
+    assert node.provider == safety_net.provider
+    assert node.temperature == 0.0
+    assert "lite" in node.model
 
 
 if __name__ == "__main__":

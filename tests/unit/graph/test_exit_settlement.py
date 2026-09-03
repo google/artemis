@@ -143,6 +143,27 @@ def test_gate_incomplete_plan_continues(tmp_path):
     assert convergence_gate(_make_state(), ctx) == "continue"
 
 
+def test_gate_unevaluated_plan_validation_is_not_a_failure(tmp_path):
+    """First pass after the Planner node: ``checker_success`` is still None
+    (never evaluated). That must not short-circuit the gate — a fully done
+    plan still routes to the exit, and no "validation failed" log fires."""
+    _write_plan(tmp_path, DONE_PLAN_NO_CHECKS)
+    ctx = _make_ctx(tmp_path)
+    with patch("artemis.graph.graph.logger") as mock_logger:
+        assert convergence_gate(_make_state(checker_success=None), ctx) == "exit_settlement"
+    logged = " ".join(str(c.args[0]) for c in mock_logger.info.call_args_list if c.args)
+    assert "Plan validation failed" not in logged
+
+
+def test_gate_explicit_validation_failure_still_continues(tmp_path):
+    _write_plan(tmp_path, DONE_PLAN_NO_CHECKS)
+    ctx = _make_ctx(tmp_path)
+    with patch("artemis.graph.graph.logger") as mock_logger:
+        assert convergence_gate(_make_state(checker_success=False), ctx) == "continue"
+    logged = " ".join(str(c.args[0]) for c in mock_logger.info.call_args_list if c.args)
+    assert "Plan validation failed" in logged
+
+
 def test_gate_assert_halt_terminates_mid_plan(tmp_path):
     _write_plan(tmp_path, "- [/] Create alarm\n  - assert: toast appeared\n")
     ctx = _make_ctx(tmp_path)
@@ -217,7 +238,7 @@ async def test_final_check_receives_ledger_and_at_end_items(tmp_path):
 
     captured = {}
 
-    async def fake_final(ctx_arg, goal, plan_text, ledger, check_items):
+    async def fake_final(ctx_arg, goal, plan_text, ledger, check_items, attempt_id=None):
         captured["goal"] = goal
         captured["ledger"] = ledger
         captured["items"] = list(check_items)

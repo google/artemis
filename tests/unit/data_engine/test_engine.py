@@ -380,7 +380,6 @@ def test_update_step_summary_includes_step_number_in_sse(tmp_path):
     assert last_update["step_number"] == 1
 
 
-
 def _foreground_engine(tmp_path):
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_execution_setup = MagicMock()

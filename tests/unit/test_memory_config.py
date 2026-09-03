@@ -33,9 +33,7 @@ def test_memory_defaults():
 
 
 def test_memory_transcript_flag_explicit_disable_is_rollback_switch():
-    cfg = AgentGlobalConfig.model_validate(
-        {"memory": {"transcript": {"enabled": False}}}
-    )
+    cfg = AgentGlobalConfig.model_validate({"memory": {"transcript": {"enabled": False}}})
     assert cfg.memory.transcript.enabled is False
     # Sibling scrub defaults are unaffected by flipping the flag.
     assert cfg.memory.transcript.image_scrub_depth == 3
@@ -64,9 +62,7 @@ def test_memory_explicit_values():
 
 def test_legacy_step_summarizer_retry_limit_seeds_memory_runtime():
     """An explicit legacy flash.step_summarizer.retry_limit keeps working."""
-    cfg = AgentGlobalConfig.model_validate(
-        {"flash": {"step_summarizer": {"retry_limit": 7}}}
-    )
+    cfg = AgentGlobalConfig.model_validate({"flash": {"step_summarizer": {"retry_limit": 7}}})
     assert cfg.flash.step_summarizer.retry_limit == 7
     assert cfg.memory.runtime.retry_limit == 7
 
@@ -85,9 +81,7 @@ def test_explicit_memory_runtime_wins_over_legacy_alias():
 
 def test_legacy_default_does_not_override_memory_default():
     """A step_summarizer block without retry_limit must not seed anything."""
-    cfg = AgentGlobalConfig.model_validate(
-        {"flash": {"step_summarizer": {"enabled": True}}}
-    )
+    cfg = AgentGlobalConfig.model_validate({"flash": {"step_summarizer": {"enabled": True}}})
     assert cfg.memory.runtime.retry_limit == 3
 
 

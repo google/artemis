@@ -88,6 +88,49 @@ class ArtemisClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["ingress"], "python_sdk")
         self.assertEqual(body["options"], {"record_video": True})
 
+    async def test_submit_forwards_pro_tuning_knobs_normalised(self) -> None:
+        task_id = "00000000-0000-4000-8000-000000000321"
+        self.transport.add(
+            "POST",
+            "/api/run",
+            {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+        )
+
+        await self.client.submit(
+            "Audit checkout",
+            profile="pro",
+            task_id=task_id,
+            verification_level=" Strict ",
+            explorer_mode="ULTRA",
+        )
+
+        body = self.transport.calls[0][2]
+        assert body is not None
+        self.assertEqual(body["verification_level"], "strict")
+        self.assertEqual(body["explorer_mode"], "ultra")
+
+    async def test_submit_omits_pro_tuning_knobs_when_unset(self) -> None:
+        task_id = "00000000-0000-4000-8000-000000000322"
+        self.transport.add(
+            "POST",
+            "/api/run",
+            {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+        )
+
+        await self.client.submit("Open Settings", task_id=task_id, explorer_mode="  ")
+
+        body = self.transport.calls[0][2]
+        assert body is not None
+        self.assertNotIn("verification_level", body)
+        self.assertNotIn("explorer_mode", body)
+
+    async def test_submit_rejects_unknown_pro_tuning_values_before_any_request(self) -> None:
+        with self.assertRaisesRegex(ValueError, "verification_level"):
+            await self.client.submit("Open Settings", verification_level="paranoid")
+        with self.assertRaisesRegex(ValueError, "explorer_mode"):
+            await self.client.submit("Open Settings", explorer_mode="turbo")
+        self.assertEqual(self.transport.calls, [])
+
     async def test_submit_rejected_task_raises_specific_error(self) -> None:
         self.transport.add(
             "POST",

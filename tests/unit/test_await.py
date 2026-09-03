@@ -12,19 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
+import pytest
 
 
 async def f():
     return [1, 2]
 
 
-async def m():
-    try:
-        val = await f()[-1]
-        print(val)
-    except Exception as e:
-        print(repr(e))
-
-
-asyncio.run(m())
+@pytest.mark.asyncio
+async def test_await_result_before_indexing():
+    """Await the coroutine before indexing its returned list."""
+    val = (await f())[-1]
+    assert val == 2

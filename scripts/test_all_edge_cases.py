@@ -31,8 +31,12 @@ def _resolve_devices() -> tuple[str, str]:
     all_devs = device_pool.list_devices()
     real_dev = next((d for d in all_devs if not d.is_emulator and d.state == "device"), None)
     emu_dev = next((d for d in all_devs if d.is_emulator and d.state == "device"), None)
-    phone = os.environ.get("ARTEMIS_PHONE_SERIAL") or (real_dev.serial if real_dev else "63191FDKX00062")
-    emu = os.environ.get("ARTEMIS_EMULATOR_SERIAL") or (emu_dev.serial if emu_dev else "emulator-5554")
+    phone = os.environ.get("ARTEMIS_PHONE_SERIAL") or (
+        real_dev.serial if real_dev else "63191FDKX00062"
+    )
+    emu = os.environ.get("ARTEMIS_EMULATOR_SERIAL") or (
+        emu_dev.serial if emu_dev else "emulator-5554"
+    )
     return phone, emu
 
 
@@ -58,7 +62,7 @@ def print_status_snapshot(stage_name: str):
         print(f"     - Device: {a.get('device_id')} | Goal: {a.get('goal')} (PID: {a.get('pid')})")
     print(f"  ⏳ Queued Tasks ({len(queue)}):")
     for q in queue:
-        dev = q.get('device_serial') or q.get('device_id')
+        dev = q.get("device_serial") or q.get("device_id")
         print(f"     - Device: {dev} | Goal: {q.get('goal')} [status={q.get('status')}]")
     print(f"  📊 Total in Active Queue (Running + Pending) = {len(active) + len(queue)}\n")
 
@@ -83,7 +87,9 @@ async def stage_1_single_device_queueing():
     async def task_1b():
         # Small delay so 1A is definitely acquired first
         await asyncio.sleep(0.4)
-        print(f"🚀 [Task 1B] Launching on {PHONE_SERIAL}: Press HOME and open Clock (Should queue!)...")
+        print(
+            f"🚀 [Task 1B] Launching on {PHONE_SERIAL}: Press HOME and open Clock (Should queue!)..."
+        )
         res = await client_phone.run("Press HOME key and open Clock", profile="flash")
         print(f"✅ [Task 1B] Finished with status: {res.status}")
         return res
@@ -161,7 +167,9 @@ async def stage_3_global_concurrency_mode():
 
     async def task_emu_g():
         await asyncio.sleep(0.4)
-        print(f"💻 [Task 3B - Emulator] Requesting run on {EMULATOR_SERIAL} under global mode (Should queue!)...")
+        print(
+            f"💻 [Task 3B - Emulator] Requesting run on {EMULATOR_SERIAL} under global mode (Should queue!)..."
+        )
         res = await client_emu_global.run("Press HOME key and open Settings", profile="flash")
         print("✅ [Task 3B - Emulator] Finished.")
         return res
@@ -175,7 +183,9 @@ async def stage_3_global_concurrency_mode():
     print(f"Active count: {len(active)}, Queue count: {len(queue)}")
 
     await asyncio.gather(p_task, e_task)
-    print("✓ Stage 3 Complete: Global lock correctly serialized execution across physical phone and emulator!")
+    print(
+        "✓ Stage 3 Complete: Global lock correctly serialized execution across physical phone and emulator!"
+    )
 
 
 async def stage_4_mixed_queue_and_parallel():
@@ -214,6 +224,7 @@ async def stage_4_mixed_queue_and_parallel():
 
 async def main():
     import argparse
+
     global PHONE_SERIAL, EMULATOR_SERIAL
 
     parser = argparse.ArgumentParser(description="ARTEMIS All Edge-Cases Comprehensive Test Suite")

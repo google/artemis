@@ -51,9 +51,7 @@ def test_inspect_adb_keys_not_exist(monkeypatch, tmp_path):
     """When keys do not exist yet, they are considered valid (will auto-generate on first connect)."""
     priv = tmp_path / "adbkey"
     pub = tmp_path / "adbkey.pub"
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub)
-    )
+    monkeypatch.setattr("artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub))
 
     status = inspect_adb_keys()
     assert status.is_valid is True
@@ -68,9 +66,7 @@ def test_inspect_adb_keys_zero_bytes(monkeypatch, tmp_path):
     priv.write_text("")
     pub.write_text("")
 
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub)
-    )
+    monkeypatch.setattr("artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub))
 
     status = inspect_adb_keys()
     assert status.is_valid is False
@@ -87,9 +83,7 @@ def test_inspect_adb_keys_invalid_pem_header(monkeypatch, tmp_path):
     priv.write_text("GARBAGE DATA WITHOUT PEM HEADER " * 10)
     pub.write_text("some pubkey")
 
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub)
-    )
+    monkeypatch.setattr("artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub))
 
     status = inspect_adb_keys()
     assert status.is_valid is False
@@ -106,9 +100,7 @@ def test_inspect_adb_keys_valid(monkeypatch, tmp_path):
     )
     pub.write_text("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC... user@host")
 
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub)
-    )
+    monkeypatch.setattr("artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub))
 
     status = inspect_adb_keys()
     assert status.is_valid is True
@@ -127,9 +119,7 @@ def test_heal_adb_keys_healthy_no_op(monkeypatch, tmp_path):
     )
     pub.write_text("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC... user@host")
 
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub)
-    )
+    monkeypatch.setattr("artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub))
 
     res = heal_adb_keys(force=False)
     assert res["success"] is True
@@ -143,9 +133,7 @@ def test_heal_adb_keys_corrupted(monkeypatch, tmp_path):
     priv.write_text("")
     pub.write_text("")
 
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub)
-    )
+    monkeypatch.setattr("artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub))
 
     with patch("subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
@@ -163,9 +151,7 @@ async def test_adb_probe_detects_corrupted_key_with_unauthorized_device(monkeypa
     priv = tmp_path / "adbkey"
     pub = tmp_path / "adbkey.pub"
     priv.write_text("")
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub)
-    )
+    monkeypatch.setattr("artemis.core.diagnostics.adb_keys.get_adb_key_paths", lambda: (priv, pub))
 
     probe = AdbDeviceProbe()
     monkeypatch.setattr(probe, "_locate_adb", lambda: "/usr/bin/adb")

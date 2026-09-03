@@ -414,7 +414,9 @@ async def test_operator_dynamic_prompt():
     mock_llm.bind_tools.return_value = mock_llm
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
-        node = OperatorNode(mock_ctx, prompt_components=[MockComponent()], transcript_config=LEGACY_TRANSCRIPT)
+        node = OperatorNode(
+            mock_ctx, prompt_components=[MockComponent()], transcript_config=LEGACY_TRANSCRIPT
+        )
         node_update = await node(mock_state)
 
 
@@ -555,28 +557,6 @@ async def test_operator_history_compression():
 
 
 @pytest.mark.asyncio
-async def test_operator_loop_detection():
-    from artemis.agents.operator.operator import OperatorNode
-    from artemis.context import ArtemisContext
-    from unittest.mock import MagicMock
-
-    mock_ctx = MagicMock(spec=ArtemisContext)
-    mock_ctx.execution_setup = None
-    mock_ctx.data_engine = None
-
-    mock_state = MagicMock()
-    mock_state.subagent_calls = ["ask_explorer", "ask_explorer", "ask_explorer"]
-    mock_state.initial_goal = "Test goal"
-
-    node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
-
-    with pytest.raises(RuntimeError) as exc_info:
-        node_update = await node(mock_state)
-
-    assert "Infinite loop detected" in str(exc_info.value)
-
-
-@pytest.mark.asyncio
 async def test_operator_tracks_subagent_calls():
     from artemis.agents.operator.operator import OperatorNode
     from artemis.context import ArtemisContext
@@ -630,7 +610,9 @@ async def test_operator_tracks_subagent_calls():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_diagnoser_tool], transcript_config=LEGACY_TRANSCRIPT)
+        node = OperatorNode(
+            mock_ctx, tools=[mock_diagnoser_tool], transcript_config=LEGACY_TRANSCRIPT
+        )
         node_update = await node(mock_state)
 
         update_dict = node_update
@@ -722,7 +704,9 @@ async def test_operator_defer_action_for_gathering():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_diagnoser_tool], transcript_config=LEGACY_TRANSCRIPT)
+        node = OperatorNode(
+            mock_ctx, tools=[mock_diagnoser_tool], transcript_config=LEGACY_TRANSCRIPT
+        )
         node_update = await node(mock_state)
 
         # Subagent tool should have been executed
@@ -908,7 +892,9 @@ async def test_operator_no_defer_for_note_updating():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_update_note_tool], transcript_config=LEGACY_TRANSCRIPT)
+        node = OperatorNode(
+            mock_ctx, tools=[mock_update_note_tool], transcript_config=LEGACY_TRANSCRIPT
+        )
         node_update = await node(mock_state)
 
         # The update_note tool should have been executed immediately
@@ -998,7 +984,9 @@ async def test_operator_defer_for_note_reading():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_read_note_tool], transcript_config=LEGACY_TRANSCRIPT)
+        node = OperatorNode(
+            mock_ctx, tools=[mock_read_note_tool], transcript_config=LEGACY_TRANSCRIPT
+        )
         node_update = await node(mock_state)
 
         # The read_note tool should have been executed
@@ -1086,7 +1074,9 @@ async def test_operator_no_defer_for_note_appending():
             side_effect=lambda t, ctx: t,
         ),
     ):
-        node = OperatorNode(mock_ctx, tools=[mock_append_note_tool], transcript_config=LEGACY_TRANSCRIPT)
+        node = OperatorNode(
+            mock_ctx, tools=[mock_append_note_tool], transcript_config=LEGACY_TRANSCRIPT
+        )
         node_update = await node(mock_state)
 
         # The append_note tool should have been executed immediately
@@ -1106,7 +1096,7 @@ async def test_operator_no_defer_for_note_appending():
 async def test_operator_background_tasks_prompt_injection():
     from artemis.agents.operator.operator import OperatorNode
     from artemis.context import ArtemisContext
-    from artemis.tools.command_tool import _BACKGROUND_TASKS, BackgroundTask
+    from artemis.tools.command_tool import BackgroundTask, get_adb_task_registry
     from unittest.mock import AsyncMock, MagicMock, patch
 
     mock_ctx = MagicMock(spec=ArtemisContext)
@@ -1140,7 +1130,8 @@ async def test_operator_background_tasks_prompt_injection():
         cwd="/data/local/tmp",
     )
 
-    _BACKGROUND_TASKS["task_99999"] = bg_task
+    adb_registry = get_adb_task_registry(mock_ctx)
+    adb_registry.background["task_99999"] = bg_task
 
     try:
         captured_messages = []
@@ -1194,8 +1185,7 @@ async def test_operator_background_tasks_prompt_injection():
             assert "term_xyz" in full_content
             assert "Accumulated Output: 0 lines of logs" in full_content
     finally:
-        if "task_99999" in _BACKGROUND_TASKS:
-            del _BACKGROUND_TASKS["task_99999"]
+        adb_registry.background.pop("task_99999", None)
 
 
 @pytest.mark.asyncio
@@ -1225,22 +1215,22 @@ async def test_operator_task_plan_warning_prompt_injection():
     mock_llm.ainvoke = AsyncMock(return_value=mock_response)
     mock_llm.bind_tools.return_value = mock_llm
 
-    # Case 1: task_plan updated in the last two steps (using the "key" argument)
+    # Case 1: task_plan updated in the last step (using the "key" argument)
     steps_updated = [
         {
             "step_id": "step_1",
             "step_number": 1,
+            "tool_calls": [{"name": "click", "args": {"target": 1}}],
+        },
+        {
+            "step_id": "step_2",
+            "step_number": 2,
             "tool_calls": [
                 {
                     "name": "update_note",
                     "args": {"key": "task_plan", "target": "a", "replacement": "b"},
                 }
             ],
-        },
-        {
-            "step_id": "step_2",
-            "step_number": 2,
-            "tool_calls": [{"name": "click", "args": {"target": 1}}],
         },
     ]
 
@@ -1278,12 +1268,9 @@ async def test_operator_task_plan_warning_prompt_injection():
             elif isinstance(m.content, str):
                 full_content_1 += m.content + "\n"
 
-        assert (
-            "Reminder: You have not updated the task_plan for two consecutive"
-            " turns." not in full_content_1
-        )
+        assert "Reminder: your last turn executed a Turn-Ending Action" not in full_content_1
 
-    # Case 2: task_plan NOT updated in the last two steps
+    # Case 2: an action turn that did NOT update task_plan
     steps_not_updated = [
         {
             "step_id": "step_1",
@@ -1294,6 +1281,7 @@ async def test_operator_task_plan_warning_prompt_injection():
             "step_id": "step_2",
             "step_number": 2,
             "tool_calls": [{"name": "click", "args": {"target": 2}}],
+            "action_taken": {"action": "click", "target": 2},
         },
     ]
 
@@ -1331,10 +1319,7 @@ async def test_operator_task_plan_warning_prompt_injection():
             elif isinstance(m.content, str):
                 full_content_2 += m.content + "\n"
 
-        assert (
-            "Reminder: You have not updated the task_plan for two consecutive"
-            " turns." in full_content_2
-        )
+        assert "Reminder: your last turn executed a Turn-Ending Action" in full_content_2
 
 
 @pytest.mark.asyncio
@@ -1399,7 +1384,8 @@ async def test_operator_tool_limit_exceeded_warning():
                 full_content += m.content + "\n"
 
         assert (
-            "You did not execute any screen interaction actions in your last turn" in full_content
+            "your last turn used up its tool-call budget without a Turn-Ending Action"
+            in full_content
         )
 
         assert node_update.get("operator_tool_limit_exceeded") is False

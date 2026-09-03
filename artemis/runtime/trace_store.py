@@ -270,9 +270,7 @@ def read_status(trace_id: str) -> dict[str, Any] | None:
         try:
             _replace_with_retry(path, f"{path}.corrupt")
         except OSError as move_exc:
-            logger.warning(
-                f"Could not quarantine corrupt status file {path}: {move_exc}"
-            )
+            logger.warning(f"Could not quarantine corrupt status file {path}: {move_exc}")
         return None
     except OSError as exc:
         logger.warning(f"Could not read status.json for trace {trace_id} at {path}: {exc}")

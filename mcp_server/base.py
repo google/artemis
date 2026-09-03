@@ -14,16 +14,20 @@
 
 """Shared FastMCP instance definition for the mobile automation MCP server."""
 
+import logging
+
 from mcp.server.fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 try:
     from mcp.server.fastmcp.server import Settings as FastMCPSettings
 
     FastMCPSettings.model_rebuild()
-except Exception:
+except Exception as exc:
     # Version-compat shim: older/newer FastMCP releases may not expose
     # Settings or need the rebuild; the server works without it.
-    pass
+    logger.debug("FastMCP Settings.model_rebuild skipped: %s", exc, exc_info=True)
 
 # Define the shared FastMCP instance for external IDE and agent clients.
 mcp = FastMCP(

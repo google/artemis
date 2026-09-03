@@ -396,7 +396,7 @@ Every checklist line MUST match `<indent>- [<status>] <text>`:
 - Status characters: `[{STATUS_PENDING}]` pending, `[{STATUS_ACTIVE}]` in progress, `[{STATUS_DONE}]` completed, `[{STATUS_BLOCKED}]` blocked.
 - Top-level lines (no indentation) are strategic milestones; their sub-tasks are indented by 2 spaces. All other text in the note is free-form context.
 - `{LOOP_TAG}` tags a BOUNDED iterative milestone: declare its exit boundary (e.g., `(Exit: <condition>; Interval: <cadence>)`) and mark it `[{STATUS_DONE}]` only once that exit condition is verifiably met.
-- `{CONTINUOUS_LOOP_TAG}` tags an UNBOUNDED continuous-monitoring milestone: it must stay `[{STATUS_ACTIVE}]` and can never be marked `[{STATUS_DONE}]`, deleted, or untagged by you — the system mechanically rejects such edits. Only an explicit external stop signal injected by the user unlocks its completion.
+- `{CONTINUOUS_LOOP_TAG}` tags an UNBOUNDED continuous-monitoring milestone: it must stay `[{STATUS_ACTIVE}]` and can never be marked `[{STATUS_DONE}]`, deleted, or untagged by you — the system mechanically rejects such edits. Only an explicit external stop signal injected by the user unlocks its completion; that signal is an external interruption delivered by the system, never something inferred from the screen or the plan.
 - The task terminates only when every top-level milestone is `[{STATUS_DONE}]`."""
 
 _CHECK_GRAMMAR_EXTENSION = """### Check Line Grammar (declared verification standards)

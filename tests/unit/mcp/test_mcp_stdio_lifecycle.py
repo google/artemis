@@ -66,7 +66,9 @@ def test_mcp_stdio_handshake_immediate_input():
 
     without hanging, even when stdin data is pushed concurrently with process startup.
     """
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
     python_exe = sys.executable
 
     p = subprocess.Popen(
@@ -118,7 +120,9 @@ def test_mcp_stdio_handshake_immediate_input():
         # Read initialize response with a strict timeout
         init_resp_line = _readline_with_timeout(p.stdout, 6.0)
 
-        assert init_resp_line is not None, "MCP server failed to respond to initialize request within 6 seconds (deadlock detected)!"
+        assert init_resp_line is not None, (
+            "MCP server failed to respond to initialize request within 6 seconds (deadlock detected)!"
+        )
         init_data = json.loads(init_resp_line)
         assert init_data.get("id") == 1
         assert "result" in init_data
@@ -160,7 +164,9 @@ def test_awake_service_adb_command_isolates_stdin():
 
         assert mock_run.called
         kwargs = mock_run.call_args.kwargs
-        assert kwargs.get("stdin") == subprocess.DEVNULL, "Expected stdin=subprocess.DEVNULL to prevent stdin hijacking!"
+        assert kwargs.get("stdin") == subprocess.DEVNULL, (
+            "Expected stdin=subprocess.DEVNULL to prevent stdin hijacking!"
+        )
 
 
 def test_awake_lease_run_isolates_stdin():
@@ -172,19 +178,25 @@ def test_awake_lease_run_isolates_stdin():
 
         assert mock_run.called
         kwargs = mock_run.call_args.kwargs
-        assert kwargs.get("stdin") == subprocess.DEVNULL, "Expected stdin=subprocess.DEVNULL to prevent stdin hijacking!"
+        assert kwargs.get("stdin") == subprocess.DEVNULL, (
+            "Expected stdin=subprocess.DEVNULL to prevent stdin hijacking!"
+        )
 
 
 def test_detached_process_kwargs_isolates_stdin():
     """Verify get_detached_process_kwargs always sets stdin=subprocess.DEVNULL."""
     kwargs = env_utils.get_detached_process_kwargs()
-    assert kwargs.get("stdin") == subprocess.DEVNULL, "Expected stdin=subprocess.DEVNULL for detached background tasks!"
+    assert kwargs.get("stdin") == subprocess.DEVNULL, (
+        "Expected stdin=subprocess.DEVNULL for detached background tasks!"
+    )
 
 
 def test_device_utils_isolates_stdin():
     """Verify device_utils subprocess calls always set stdin=subprocess.DEVNULL."""
     with patch("mcp_server.utils.device_utils.subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="List of devices attached\n", stderr="")
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="List of devices attached\n", stderr=""
+        )
         device_utils.get_connected_devices()
         assert mock_run.called
         assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL

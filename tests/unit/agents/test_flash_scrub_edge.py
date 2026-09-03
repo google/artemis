@@ -74,9 +74,7 @@ def _content_fingerprint(msg) -> str:
 
 
 def _has_image(msg) -> bool:
-    return any(
-        isinstance(b, dict) and b.get("type") in ("image_url", "image") for b in msg.content
-    )
+    return any(isinstance(b, dict) and b.get("type") in ("image_url", "image") for b in msg.content)
 
 
 def test_success_path_product_behind_the_scrub_edge(mock_context):
@@ -204,9 +202,7 @@ def test_race_failed_summary_becomes_unavailable_placeholder(mock_context):
     _simulate_turns(compressor, messages, [_step(1), _step(2), _step(3)])
 
     assert not _has_image(messages[0])
-    assert "[visual summary unavailable; evidence at DataEngine step 1]" in str(
-        messages[0].content
-    )
+    assert "[visual summary unavailable; evidence at DataEngine step 1]" in str(messages[0].content)
 
 
 def test_freeze_invariant_bytes_never_change(mock_context):
@@ -232,9 +228,7 @@ def test_freeze_invariant_bytes_never_change(mock_context):
         for idx in compressor._frozen:
             fingerprint = _content_fingerprint(messages[idx])
             if idx in frozen_fingerprints:
-                assert frozen_fingerprints[idx] == fingerprint, (
-                    f"frozen message {idx} mutated"
-                )
+                assert frozen_fingerprints[idx] == fingerprint, f"frozen message {idx} mutated"
             else:
                 frozen_fingerprints[idx] = fingerprint
 

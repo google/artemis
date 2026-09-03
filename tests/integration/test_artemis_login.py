@@ -13,11 +13,18 @@
 # limitations under the License.
 
 import os
-import pty
 import select
 import sys
 import time
+
 import pytest
+
+pytestmark = [pytest.mark.integration, pytest.mark.manual]
+
+if sys.platform == "win32":
+    pytest.skip("PTY-based SSH login test requires a POSIX host", allow_module_level=True)
+
+import pty
 
 
 @pytest.mark.skip(reason="Manual integration test requiring remote host")

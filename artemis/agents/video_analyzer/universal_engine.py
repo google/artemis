@@ -55,9 +55,7 @@ async def exec_single_chunk_universal(
     force_fallback: bool = False,
 ) -> str:
     """Executes sub-agent chunk analysis via keyframe extraction and LangChain ChatModel."""
-    keyframes = _gather_universal_frames(
-        analyzer, raw_path, start_time, end_time, actual_start
-    )
+    keyframes = _gather_universal_frames(analyzer, raw_path, start_time, end_time, actual_start)
 
     user_blocks, audio_block = await _build_universal_user_blocks(
         analyzer, keyframes, actual_start, prompt_with_context, raw_path
@@ -100,8 +98,7 @@ async def exec_single_chunk_universal(
 
     end_str = f"{end_time:.1f}s" if end_time is not None else "unknown"
     return (
-        f"[from {start_time:.1f}s to {end_str}] Summary: {final_summary}"
-        f" Analysis: {final_analysis}"
+        f"[from {start_time:.1f}s to {end_str}] Summary: {final_summary} Analysis: {final_analysis}"
     )
 
 
@@ -133,9 +130,7 @@ def _gather_universal_frames(
         max_dimension=1080,
     )
     merged_frames = {round(timestamp, 3): data for timestamp, data in keyframes}
-    merged_frames.update(
-        {round(timestamp, 3): data for timestamp, data in targeted_frames}
-    )
+    merged_frames.update({round(timestamp, 3): data for timestamp, data in targeted_frames})
     return sorted(merged_frames.items())
 
 
@@ -218,9 +213,7 @@ async def _invoke_universal_with_visual_retry(
                 label="Universal visual-only sub-agent",
                 force_fallback=force_fallback,
             )
-        span.result = (
-            f"Received response (tool_calls={len(getattr(response, 'tool_calls', []))})"
-        )
+        span.result = f"Received response (tool_calls={len(getattr(response, 'tool_calls', []))})"
     return response
 
 

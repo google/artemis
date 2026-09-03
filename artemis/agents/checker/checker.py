@@ -39,10 +39,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from artemis.constants import CHECKER_MAX_ITERATIONS
 from artemis.context import ArtemisContext
@@ -416,14 +416,23 @@ def _format_check_items(check_items: list) -> str:
 
 async def _structured_report(llm, messages) -> CheckReport:
     structured_llm = llm.with_structured_output(CheckReport)
+    # A conversation must end with a user turn: Gemini rejects requests whose
+    # last message is the model's own answer ("Requests ending with a model
+    # turn are not supported"), which is exactly the state after the loop's
+    # final tool-free reply. Nudge with an explicit verdict request instead.
+    if messages and isinstance(messages[-1], AIMessage):
+        messages = [
+            *messages,
+            HumanMessage(content="Now provide your structured verdict report."),
+        ]
     result = await invoke_llm_with_timeout_message(structured_llm.ainvoke(messages))
     if isinstance(result, CheckReport):
         return result
     if isinstance(result, dict):
         try:
             return CheckReport.model_validate(result)
-        except Exception:
-            pass
+        except ValidationError as exc:
+            logger.debug("Structured verdict dict failed CheckReport validation: %s", exc)
     return CheckReport(verdicts=[])
 
 
@@ -502,6 +511,17 @@ async def _run_check_loop(
                 shot = _load_step_screenshot(
                     ctx, int(args.get("step_no", -1)), str(args.get("which", "pre"))
                 )
+                # The image is spliced in below; invoking the (traced) tool as
+                # well records the lookup as a tool trace so the timeline shows
+                # it in order with the rest of the check.
+                screenshot_tool = next((t for t in traced_tools if t.name == tool_name), None)
+                if screenshot_tool is not None:
+                    try:
+                        await invoke_tool_with_injection(
+                            tool=screenshot_tool, args=args, tool_call_id=tc["id"]
+                        )
+                    except Exception as e:
+                        logger.debug(f"Screenshot lookup trace not recorded: {e}")
                 messages.append(ToolMessage(tool_call_id=tc["id"], content=shot.description))
                 if shot.image_b64:
                     messages.append(
@@ -547,6 +567,16 @@ async def _run_check_loop(
 # --- Entry points --------------------------------------------------------------------
 
 
+def _announce(ctx: ArtemisContext, **kwargs) -> None:
+    """Lazy bridge to the checkpoint bus (avoids an import cycle at module load)."""
+    try:
+        from artemis.graph.checkpoints import announce_checker_attempt
+
+        announce_checker_attempt(ctx, **kwargs)
+    except Exception as e:
+        logger.debug(f"Checker attempt announcement skipped: {e}")
+
+
 @trace(type="agent", name="checker")
 async def run_checkpoint_check(
     ctx: ArtemisContext,
@@ -554,6 +584,7 @@ async def run_checkpoint_check(
     anchor,
     goal: str,
     subgoal_text: str,
+    attempt_id: str | None = None,
 ) -> CheckReport:
     """Audits one completed subgoal's on_complete check items.
 
@@ -563,6 +594,15 @@ async def run_checkpoint_check(
     """
     items = list(check_items)
     logger.info(f"Starting checkpoint check for '{subgoal_text}' ({len(items)} item(s))")
+    _announce(
+        ctx,
+        attempt_id=attempt_id,
+        phase="checkpoint",
+        checkpoint_id=attempt_id.split("#", 1)[0] if attempt_id else "",
+        subgoal_text=subgoal_text,
+        anchor_step_id=getattr(anchor, "anchor_step_id", None),
+        check_items=items,
+    )
     prompts = _load_prompts()
     tools = build_checker_tools(ctx, "checkpoint")
     probe_registered = any(t.name == "probe_device" for t in tools)
@@ -655,11 +695,21 @@ async def run_final_check(
     plan_text: str,
     ledger: list[dict],
     check_items,
+    attempt_id: str | None = None,
 ) -> CheckReport:
     """Final review at task exit: audits the user's original goal and all
     declared check items, with the final screen state available."""
     items = list(check_items)
     logger.info(f"Starting final check ({len(items)} declared item(s))")
+    _announce(
+        ctx,
+        attempt_id=attempt_id,
+        phase="final",
+        checkpoint_id="final",
+        subgoal_text="Final review against the user's original goal",
+        anchor_step_id=None,
+        check_items=items,
+    )
     prompts = _load_prompts()
     tools = build_checker_tools(ctx, "final")
     probe_registered = any(t.name == "probe_device" for t in tools)

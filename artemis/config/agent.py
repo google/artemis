@@ -117,11 +117,12 @@ class PlannerValidationConfig(BaseModel):
 
     enabled: bool = Field(
         default=True,
-        description="Whether to enable async planner validation when task plan milestones change.",
-    )
-    similarity_threshold: float = Field(
-        default=0.85,
-        description="Difflib similarity threshold below which milestone text changes trigger re-validation.",
+        description=(
+            "Whether every top-level milestone text change is reviewed by the"
+            " lightweight async planner validator. The review is advisory: a"
+            " flagged change is never rolled back, the Operator only receives"
+            " the concern and its reason as feedback."
+        ),
     )
     model_config = {"extra": "allow"}
 
@@ -208,6 +209,63 @@ class CheckerConfig(BaseModel):
     model_config = {"extra": "allow"}
 
 
+#: Coarse verification presets exposed to the CLI (``--verification-level``)
+#: and the admin console (``verification_level`` on ``/api/run``). Each preset
+#: is a partial :class:`CheckerConfig` override; unspecified fields keep the
+#: values from ``artemis.jsonc``. ``final`` mirrors the factory layering.
+VerificationLevel = Literal["off", "final", "checkpoints", "strict"]
+DEFAULT_VERIFICATION_LEVEL: VerificationLevel = "final"
+VERIFICATION_LEVEL_PRESETS: dict[str, dict[str, Any]] = {
+    # No Checker at all: the Operator self-reports completion, nothing audits it.
+    "off": {"enabled": False},
+    # Factory layering: one exit audit against the user's goal, no midway checkpoints.
+    "final": {"enabled": True, "midway_checks": False, "final_check": True},
+    # Every plan-declared checkpoint runs at its subgoal's completion, plus the exit audit.
+    "checkpoints": {"enabled": True, "midway_checks": True, "final_check": True},
+    # Checkpoints + exit audit with a larger repair budget; a failed assert halts the run.
+    "strict": {
+        "enabled": True,
+        "midway_checks": True,
+        "final_check": True,
+        "assert_failure_policy": "halt",
+        "checkpoint_max_repairs": 4,
+        "final_check_max_attempts": 5,
+        "max_iterations": 30,
+    },
+}
+
+
+def checker_overrides_for_level(level: str | None) -> dict[str, Any]:
+    """Return the :class:`CheckerConfig` field overrides for a verification level.
+
+    Args:
+        level: One of ``off``, ``final``, ``checkpoints`` or ``strict``
+            (case-insensitive, surrounding whitespace ignored).
+
+    Raises:
+        ValueError: when ``level`` is not a known preset.
+    """
+    key = str(level or "").strip().lower()
+    preset = VERIFICATION_LEVEL_PRESETS.get(key)
+    if preset is None:
+        known = ", ".join(VERIFICATION_LEVEL_PRESETS)
+        raise ValueError(f"Unknown verification level {level!r}; expected one of: {known}")
+    return dict(preset)
+
+
+def verification_level_for_checker(checker: "CheckerConfig") -> VerificationLevel:
+    """Classify an effective :class:`CheckerConfig` back onto the coarse ladder.
+
+    Used by launcher UIs to show where the configured defaults sit; the inverse of
+    :func:`checker_overrides_for_level` for the fields the presets control.
+    """
+    if not checker.enabled or (not checker.midway_checks and not checker.final_check):
+        return "off"
+    if checker.midway_checks:
+        return "strict" if checker.assert_failure_policy == "halt" else "checkpoints"
+    return "final"
+
+
 class OutputterConfig(BaseModel):
     """Configuration specific to Outputter post-execution report synthesis agent."""
 
@@ -237,9 +295,12 @@ class ExplorerConfig(BaseModel):
         default="flash",
         description="Explorer version mode when main system runs under Pro profile (Graph / Operator / Validator).",
     )
-    caching: bool = Field(
-        default=True,
-        description="Whether to enable context caching for multi-turn pro/ultra Explorer.",
+    caching: bool | None = Field(
+        default=None,
+        description=(
+            "Gemini explicit context caching for multi-turn Explorer tiers. ``None``"
+            " (default) uses the tier's own default: off for pro, on for ultra."
+        ),
     )
     model_config = {"extra": "allow"}
 
@@ -497,7 +558,7 @@ class MemoryChunkingConfig(BaseModel):
         ),
     )
     model: str = Field(
-        default="gemini-3.7-flash",
+        default="gemini-3.8-flash",
         description="Model used for the chunk-level StepCapsuleLens (bands ①+②).",
     )
     max_chunks: int = Field(
@@ -555,10 +616,14 @@ class FlashProfileConfig(BaseModel):
     """Configuration options specific to the ⚡ Flash execution profile (FlashRunner/ReactiveRunner)."""
 
     max_turns: int = Field(
-        default=30,
-        ge=1,
-        le=100,
-        description="Maximum reactive turns for Flash execution before timeout.",
+        default=0,
+        ge=0,
+        description=(
+            "Maximum reactive turns for Flash execution; 0 (the default) means"
+            " unlimited. Context growth is bounded by the transcript ledger's"
+            " scrub edge and chunk compression, not by a turn cap, so a long"
+            " task simply runs until it reports its status."
+        ),
     )
     explorer_mode: ExplorerVersion = Field(
         default="flash",
@@ -585,9 +650,28 @@ class ProExplorerConfig(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class ExecutionConfig(BaseModel):
+    """Validator execution tiers for the Pro profile."""
+
+    max_burst_actions: int = Field(
+        default=4,
+        ge=2,
+        le=10,
+        description=(
+            "Maximum turn-ending actions the Operator may chain into one fast-action"
+            " burst (executed back to back without the safety net). A longer turn is"
+            " rejected before execution and fed back to the Operator."
+        ),
+    )
+
+
 class ProProfileConfig(BaseModel):
     """Configuration options specific to the 🚀 Pro execution profile (LangGraph / Multi-Agent Closed-Loop)."""
 
+    execution: ExecutionConfig = Field(
+        default_factory=ExecutionConfig,
+        description="Validator execution tiers (vetted single action vs fast-action burst).",
+    )
     explorer: ProExplorerConfig = Field(
         default_factory=ProExplorerConfig,
         description="Explorer perception settings for Pro profile.",
@@ -602,7 +686,7 @@ class ProProfileConfig(BaseModel):
     )
     checker: CheckerConfig = Field(
         default_factory=CheckerConfig,
-        description="Checker visual verification and rollback settings.",
+        description="Checker checkpoint verification and exit final review settings.",
     )
     video_analyzer: VideoAnalyzerConfig = Field(
         default_factory=VideoAnalyzerConfig,
@@ -630,8 +714,12 @@ class AgentGlobalConfig(BaseModel):
         description="UI Explorer sub-agent runtime options.",
     )
     explorer_versions: dict[str, str] = Field(
-        default_factory=lambda: {"operator": "flash", "validator": "flash"},
-        description="Per-agent mapping of UI explorer version (e.g. flash, pro, ultra).",
+        default_factory=dict,
+        description=(
+            "Advanced per-agent override of the Explorer tier (e.g."
+            ' {"validator": "ultra"}). Empty by default so that'
+            " ``explorer.flash_mode`` / ``explorer.pro_mode`` decide."
+        ),
     )
     planner_validation: PlannerValidationConfig = Field(
         default_factory=PlannerValidationConfig,
@@ -643,7 +731,7 @@ class AgentGlobalConfig(BaseModel):
     )
     checker: CheckerConfig = Field(
         default_factory=CheckerConfig,
-        description="Checker subgoal verification and rollback runtime options.",
+        description="Checker checkpoint verification and exit final review runtime options.",
     )
     outputter: OutputterConfig = Field(
         default_factory=OutputterConfig,
@@ -792,47 +880,29 @@ def resolve_explorer_version(
     explicit_version: str | None = None,
     agent_or_profile_name: str | None = "operator",
 ) -> ExplorerVersion:
-    """Resolves active Explorer version based on explicit args, env vars, agent_config, and execution setup."""
-    if explicit_version:
-        v = str(explicit_version).strip().lower()
-        if v in ("flash", "pro", "ultra"):
-            return v  # type: ignore
+    """Resolves the active Explorer tier for a calling agent or profile.
 
-    env_v = os.getenv("ARTEMIS_EXPLORER_VERSION", "").strip().lower()
-    if env_v in ("flash", "pro", "ultra"):
-        return env_v  # type: ignore
-
-    if ctx:
-        agent_cfg = getattr(ctx, "agent_config", None)
-        exec_setup = getattr(ctx, "execution_setup", None)
-
-        if agent_cfg:
-            if hasattr(agent_cfg, "get_explorer_version"):
-                return agent_cfg.get_explorer_version(
-                    explicit_version=explicit_version,
-                    agent_name=agent_or_profile_name,
-                )
-            if hasattr(agent_cfg, "explorer") and hasattr(agent_cfg.explorer, "resolve"):
-                overrides = getattr(agent_cfg, "explorer_versions", None)
-                return agent_cfg.explorer.resolve(
-                    explicit_version=explicit_version,
-                    agent_name=agent_or_profile_name,
-                    per_agent_overrides=overrides,
-                )
-
-        if (
-            exec_setup
-            and hasattr(exec_setup, "explorer")
-            and hasattr(exec_setup.explorer, "resolve")
-        ):
-            overrides = getattr(exec_setup, "explorer_versions", None)
-            return exec_setup.explorer.resolve(
+    Precedence: explicit argument, ``ARTEMIS_EXPLORER_VERSION`` environment
+    override, then the user's agent configuration (per-agent override, profile
+    mode, default version) found on ``ctx.agent_config`` or, failing that, on
+    ``ctx.execution_setup``.  The tier is a user setting: calling agents never
+    pass it themselves.
+    """
+    for source in (
+        getattr(ctx, "agent_config", None),
+        getattr(ctx, "execution_setup", None),
+    ):
+        explorer_cfg = getattr(source, "explorer", None)
+        if explorer_cfg is not None and hasattr(explorer_cfg, "resolve"):
+            return explorer_cfg.resolve(
                 explicit_version=explicit_version,
                 agent_name=agent_or_profile_name,
-                per_agent_overrides=overrides,
+                per_agent_overrides=getattr(source, "explorer_versions", None),
             )
 
-    return "flash"
+    return ExplorerConfig().resolve(
+        explicit_version=explicit_version, agent_name=agent_or_profile_name
+    )
 
 
 def load_agent_config(

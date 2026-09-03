@@ -218,8 +218,7 @@ def build_native_tools_declaration() -> list[types.FunctionDeclaration]:
                     "end_time": types.Schema(
                         type=types.Type.NUMBER,
                         description=(
-                            "End time in seconds. Use the maximum available"
-                            " time if not specified."
+                            "End time in seconds. Use the maximum available time if not specified."
                         ),
                     ),
                     "specific_query": types.Schema(

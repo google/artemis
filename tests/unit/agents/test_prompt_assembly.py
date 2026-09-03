@@ -26,13 +26,6 @@ from artemis.agents.operator.prompts import (
     apply_operator_prompt_contract,
 )
 from artemis.agents.prompt_assembly import gate_segment, render_tool_enum
-from artemis.agents.validator.failure_analyzer import (
-    FailureAnalysisStrategy,
-    FailureAnalyzer,
-    PixelTargetDisappearedStrategy,
-    TargetDisappearedStrategy,
-)
-from artemis.agents.validator.validator import ValidationErrorCategory
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -115,12 +108,15 @@ def test_removed_swipe_takes_its_teaching_along():
 
 
 def test_removed_wait_for_delay_keeps_interval_line_coherent():
-    """Only the wait_for_delay parenthetical goes; the SOP grammar line stays."""
+    """Only the wait_for_delay parenthetical goes; the SOP pacing step stays."""
     template = load_operator_prompts()["main_template"]
     out = apply_operator_prompt_contract(
         template, available_tools=OPERATOR_PROMPT_TOOLSET - {"wait_for_delay"}
     )
-    assert "`Interval: <Interval>`: Declared polling cadence." in out
+    assert (
+        "Adhere strictly to the exact duration declared in `<Interval>`, then execute"
+        " a refresh action" in out
+    )
     assert "Loading & Transitions" not in out
 
 
@@ -131,12 +127,10 @@ def test_reduced_enums_stay_well_formed():
         available_tools=OPERATOR_PROMPT_TOOLSET - {"manage_app", "wait_for_delay"},
     )
     assert (
-        "Physical device actions (`click`, `input_text`, `swipe`, `press_key`,"
-        " `long_press`)" in out
+        "Physical device actions (`click`, `input_text`, `swipe`, `press_key`, `long_press`)" in out
     )
     assert (
-        "Turn-Ending Action (`click`, `swipe`, `input_text`, `long_press`, or"
-        " `press_key`)" in out
+        "Turn-Ending Action (`click`, `swipe`, `input_text`, `long_press`, or `press_key`)" in out
     )
 
 
@@ -152,20 +146,20 @@ def test_full_set_enum_slots_render_verbatim():
         "Turn-Ending Action (`click`, `swipe`, `input_text`, `long_press`,"
         " `press_key`, `manage_app`, or `wait_for_delay`)" in out
     )
-    assert (
-        "(`ask_explorer`, `ask_diagnoser`, `video_analyzer`, `run_adb_command`,"
-        " `manage_task`, `analyze_task_output`, `read_note`, `list_notes`,"
-        " `save_note`, and `recall_history`)" in out
-    )
+    assert "Helper/Subagent tools (`ask_explorer`, `ask_diagnoser`, `video_analyzer`)" in out
+    assert "ADB/task tools (`run_adb_command`, `manage_task`)" in out
+    assert "(`read_note`, `list_notes`, `recall_history`)" in out
+    # save_note is a write-through tool, never a result-dependent one; the on-demand
+    # analyze_task_output is not advertised.
+    assert "`save_note`, and" not in out
+    assert "analyze_task_output" not in out
 
 
 # --- Flash prompt assembly -----------------------------------------------------------
 
 
 def _render_flash(available_tools: frozenset[str]) -> str:
-    template_text = (REPO_ROOT / "artemis/agents/flash/flash_runner.md").read_text(
-        encoding="utf-8"
-    )
+    template_text = (REPO_ROOT / "artemis/agents/flash/flash_runner.md").read_text(encoding="utf-8")
     return Template(template_text).render(goal="test goal", available_tools=available_tools)
 
 
@@ -184,7 +178,7 @@ def test_flash_without_manage_app_drops_app_launching():
     assert "**App Launching**" not in out
     assert not _tool_refs(out, "manage_app")
     # The neighbouring numbered rule survives.
-    assert "**Screenshot Pruning Awareness**" in out
+    assert "**Do not determine element coordinates based on guesswork.**" in out
 
 
 def test_flash_without_wait_for_delay_drops_timed_waiting():
@@ -192,42 +186,3 @@ def test_flash_without_wait_for_delay_drops_timed_waiting():
     assert "**Timed Waiting & Transitions**" not in out
     assert not _tool_refs(out, "wait_for_delay")
     assert "**State Drift & Progression Tolerance**" in out
-
-
-# --- FailureAnalyzer strategy gating -------------------------------------------------
-
-
-def _analyzer() -> FailureAnalyzer:
-    return FailureAnalyzer.__new__(FailureAnalyzer)  # _select_strategy needs no ctx
-
-
-def test_strategy_selection_unchanged_without_gating():
-    analyzer = _analyzer()
-    assert isinstance(
-        analyzer._select_strategy(ValidationErrorCategory.TARGET_DISAPPEARED),
-        TargetDisappearedStrategy,
-    )
-    assert isinstance(
-        analyzer._select_strategy(ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED),
-        PixelTargetDisappearedStrategy,
-    )
-
-
-def test_strategy_falls_back_when_required_tool_missing():
-    """Strategy + prompt are one unit: no click_sequence, no disappeared-prompts."""
-    analyzer = _analyzer()
-    strategy = analyzer._select_strategy(
-        ValidationErrorCategory.TARGET_DISAPPEARED,
-        available_tools=frozenset({"click", "swipe"}),
-    )
-    assert type(strategy) is FailureAnalysisStrategy
-    assert strategy.get_prompt_template_name() == "failure_analyzer.md"
-
-
-def test_strategy_kept_when_required_tool_present():
-    analyzer = _analyzer()
-    strategy = analyzer._select_strategy(
-        ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED,
-        available_tools=frozenset({"click_sequence"}),
-    )
-    assert isinstance(strategy, PixelTargetDisappearedStrategy)

@@ -90,8 +90,7 @@ async def run_task(request: RunRequest):
             (
                 item
                 for item in state.queue_items
-                if isinstance(item, dict)
-                and str(item.get("session_id")) == requested_sid
+                if isinstance(item, dict) and str(item.get("session_id")) == requested_sid
             ),
             None,
         )
@@ -122,9 +121,7 @@ async def run_task(request: RunRequest):
     # fail downstream with a clear error instead.
     if request.device_serial:
         try:
-            rejection = await device_pool.validate_explicit_serial_async(
-                request.device_serial
-            )
+            rejection = await device_pool.validate_explicit_serial_async(request.device_serial)
         except Exception:
             rejection = None
         if rejection:
@@ -144,19 +141,19 @@ async def run_task(request: RunRequest):
     # prefers the diagnostics target preference, then any unlocked ready
     # device); the verified serial is bound below.
     target_serial = request.device_serial
-    device_probe = await readiness_engine.run_device_submission_probe(
-        target_serial=target_serial
-    )
+    device_probe = await readiness_engine.run_device_submission_probe(target_serial=target_serial)
     if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
         locked_serial = (
-            device_probe.metadata.get("active_device", {}).get("serial")
-            or target_serial
-            or ""
+            device_probe.metadata.get("active_device", {}).get("serial") or target_serial or ""
         )
         detail = (
-            f"Android device {locked_serial} is locked. Unlock it and enter the home screen before running a task.".replace("  ", " ").strip()
+            f"Android device {locked_serial} is locked. Unlock it and enter the home screen before running a task.".replace(
+                "  ", " "
+            ).strip()
             if device_probe.summary == "Device Locked"
-            else f"Android device {locked_serial} lock state could not be verified. Keep it unlocked on the home screen and try again.".replace("  ", " ").strip()
+            else f"Android device {locked_serial} lock state could not be verified. Keep it unlocked on the home screen and try again.".replace(
+                "  ", " "
+            ).strip()
         )
         raise HTTPException(status_code=409, detail=detail)
 
@@ -173,6 +170,8 @@ async def run_task(request: RunRequest):
         profile=request.profile or "flash",
         expected_output=request.expected_output,
         enable_outputter=request.enable_outputter,
+        verification_level=request.verification_level,
+        explorer_mode=request.explorer_mode,
         locked_app_package=request.locked_app_package,
         app_path=request.app_path,
         device_serial=target_serial,
@@ -180,6 +179,22 @@ async def run_task(request: RunRequest):
         session_id=request.session_id,
         conversation_id=request.conversation_id,
     )
+
+
+@router.get("/api/run/defaults")
+async def get_run_defaults():
+    """Effective Pro-profile tuning defaults from the agent config.
+
+    The launcher's sliders start here so they reflect ``artemis.jsonc`` (and the
+    ``ARTEMIS_EXPLORER_VERSION`` override) instead of a hard-coded guess.
+    """
+    from artemis.config import load_agent_config, verification_level_for_checker
+
+    agent_cfg = load_agent_config()
+    return {
+        "verification_level": verification_level_for_checker(agent_cfg.checker),
+        "explorer_mode": agent_cfg.explorer.resolve(profile="pro"),
+    }
 
 
 @router.get("/api/devices")
@@ -221,7 +236,6 @@ async def stop_task(
     if stopped:
         return {"status": "stopped", "session_id": target_sid}
     return {"status": "no_running_task"}
-
 
 
 @router.post("/api/resume")
@@ -269,12 +283,14 @@ async def get_status():
         (global_owner.session_id if global_owner else None)
         or state.active_session_id
         or (running_task.get("session_id") if running_task else None)
-        or (active_tasks[0]["session_id"] if active_tasks and active_tasks[0].get("session_id") else None)
+        or (
+            active_tasks[0]["session_id"]
+            if active_tasks and active_tasks[0].get("session_id")
+            else None
+        )
         or (session_repo.get_running_session_id() if is_running else None)
     )
-    owner_connection = (
-        state.active_connections.get(str(running_sid), {}) if running_sid else {}
-    )
+    owner_connection = state.active_connections.get(str(running_sid), {}) if running_sid else {}
     running_goal = (
         owner_connection.get("goal")
         or (global_owner.description if global_owner else None)
@@ -283,8 +299,10 @@ async def get_status():
         or (active_tasks[0]["goal"] if active_tasks else None)
     )
 
-    active_profile = owner_connection.get("profile") or state.current_profile or (
-        running_task.get("profile") if running_task and not global_owner else None
+    active_profile = (
+        owner_connection.get("profile")
+        or state.current_profile
+        or (running_task.get("profile") if running_task and not global_owner else None)
     )
     if not active_profile and (running_sid or latest_session_id):
         check_sid = running_sid or latest_session_id
@@ -407,7 +425,11 @@ async def stream_events(session_id: str = "active", client: str | None = None):
             active_sid = state.active_session_id
             if not active_sid:
                 running_item = next(
-                    (t for t in state.queue_items if isinstance(t, dict) and t.get("status") == "running"),
+                    (
+                        t
+                        for t in state.queue_items
+                        if isinstance(t, dict) and t.get("status") == "running"
+                    ),
                     None,
                 )
                 if running_item:
@@ -435,16 +457,14 @@ async def stream_events(session_id: str = "active", client: str | None = None):
                     recorded_steps = step_repo.get_session_steps(str(active_sid))
                     for step_dict in recorded_steps:
                         yield (
-                            "event: step_recorded\n"
-                            f"data: {json.dumps(step_dict, default=str)}\n\n"
+                            f"event: step_recorded\ndata: {json.dumps(step_dict, default=str)}\n\n"
                         )
                 except Exception as exc:
                     print(f"[Stream] Could not replay active steps: {exc}")
         else:
             for progress_event in state.get_startup_progress(session_id):
                 yield (
-                    "event: startup_progress\n"
-                    f"data: {json.dumps(progress_event, default=str)}\n\n"
+                    f"event: startup_progress\ndata: {json.dumps(progress_event, default=str)}\n\n"
                 )
 
         shutdown_waiter = asyncio.create_task(state.shutdown_event.wait())

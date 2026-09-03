@@ -1,0 +1,17 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "artemis/graph/state.py",
+    "artemis/graph/visibility.py",
+    "artemis/runtime/adb_endpoint.py",
+    "artemis/runtime/process_probe.py",
+    "artemis/mcp/action_types.py",
+    "artemis/data_engine/models.py",
+    "artemis/agents/explorer/native_runner.py",
+    "artemis/agents/explorer/perception_tools.py",
+    "mcp_server/utils/device_utils.py",
+    "packages/artemis-client/src/artemis_client"
+  ],
+  "exclude": [".venv/**"]
+}

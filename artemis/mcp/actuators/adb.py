@@ -158,16 +158,12 @@ class AdbActuator:
 
     # --- Optional actions ------------------------------------------------------------
 
-    async def click(
-        self, nx: int, ny: int, times: int = 1, delay_ms: int = 100
-    ) -> ActionResult:
+    async def click(self, nx: int, ny: int, times: int = 1, delay_ms: int = 100) -> ActionResult:
         x, y = self._to_px(nx, ny)
         result = await self.controller.tap_at(x, y, times=times, delay_ms=delay_ms)
         err = getattr(result, "error", None) if result else None
         if err is not None:
-            return ActionResult.failure(
-                "click", f"Error executing click: {err}", detail=str(err)
-            )
+            return ActionResult.failure("click", f"Error executing click: {err}", detail=str(err))
         return ActionResult.success(
             "click",
             f"Clicked at [{nx}, {ny}] (normalized) successfully.",
@@ -283,9 +279,7 @@ class AdbActuator:
                     detail=str(err),
                 )
             if not res:
-                return ActionResult.failure(
-                    "press_key", f"Error executing key press '{key}'."
-                )
+                return ActionResult.failure("press_key", f"Error executing key press '{key}'.")
 
         return ActionResult.success("press_key", f"Executed key press '{key}'.")
 
@@ -328,9 +322,7 @@ class AdbActuator:
                 res_term = self.controller.terminate_app(target_pkg)
                 if inspect.iscoroutine(res_term):
                     await res_term
-            return ActionResult.success(
-                "manage_app", f"Terminated app '{app_name}' successfully."
-            )
+            return ActionResult.success("manage_app", f"Terminated app '{app_name}' successfully.")
         return ActionResult.failure(
             "manage_app",
             f"Invalid manage_app action: {action}",

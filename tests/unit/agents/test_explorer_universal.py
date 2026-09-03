@@ -116,9 +116,8 @@ async def test_run_universal_explorer_success(mock_context, tmp_path):
             screenshot_path=str(fake_screenshot),
             state=mock_state,
             minimal_list="",
-            version="pro",
             prompt_template="You are an explorer.",
-            max_iterations=3,
+            max_turns=3,
         )
 
         res = json.loads(res_str)

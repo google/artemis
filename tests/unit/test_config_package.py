@@ -172,15 +172,16 @@ def test_agent_config_loading():
     """Test AgentGlobalConfig parsing from agent_config.json / artemis.jsonc."""
     agent_cfg = load_agent_config()
     assert isinstance(agent_cfg, AgentGlobalConfig)
-    assert "operator" in agent_cfg.explorer_versions
+    # The per-agent override ships empty so the profile knobs decide; caching
+    # ships unset so each tier applies its own default (off pro, on ultra).
+    assert agent_cfg.explorer_versions == {}
     assert agent_cfg.explorer.default_version == "flash"
     assert agent_cfg.explorer.flash_mode == "flash"
     assert agent_cfg.explorer.pro_mode == "flash"
-    assert agent_cfg.explorer.caching is True
+    assert agent_cfg.explorer.caching is None
     assert "explorer" in agent_cfg.denylisted_tools
     assert agent_cfg.video_analyzer.enable_ledger is True
     assert agent_cfg.planner_validation.enabled is True
-    assert agent_cfg.planner_validation.similarity_threshold == 0.85
     assert agent_cfg.committee.enabled is False
     assert agent_cfg.committee.debate_rounds == 2
     assert agent_cfg.checker.enabled is True
@@ -191,7 +192,7 @@ def test_agent_config_loading():
     assert agent_cfg.checker.device_probes is True
     assert agent_cfg.outputter.enabled is True
     assert agent_cfg.outputter.force_synthesis is False
-    assert agent_cfg.flash.max_turns == 30
+    assert agent_cfg.flash.max_turns == 0
     assert agent_cfg.flash.explorer_mode == "flash"
     assert agent_cfg.pro.explorer.mode == "flash"
     assert agent_cfg.pro.checker.enabled is True
@@ -255,20 +256,17 @@ def test_planner_validation_builder_and_milestones():
     from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
     from artemis.utils.plan_grammar import milestones_changed, parse_plan
 
-    # Default builder inherits from artemis.jsonc (enabled=True, similarity_threshold=0.85)
+    # Default builder inherits from artemis.jsonc (enabled=True)
     builder = AgentConfigBuilder()
     cfg = builder.build()
     assert cfg.disable_planner_validation is False
-    assert cfg.planner_validation_threshold == 0.85
+    # The dead similarity-threshold knob is gone: validation has no tunable
+    # trigger, every milestone text change is reviewed.
+    assert not hasattr(cfg, "planner_validation_threshold")
 
     # Fluent enabling
-    cfg_enabled = (
-        AgentConfigBuilder()
-        .with_planner_validation(enabled=True, similarity_threshold=0.90)
-        .build()
-    )
+    cfg_enabled = AgentConfigBuilder().with_planner_validation(enabled=True).build()
     assert cfg_enabled.disable_planner_validation is False
-    assert cfg_enabled.planner_validation_threshold == 0.90
 
     # Fluent disabling
     cfg_disabled = AgentConfigBuilder().with_disable_planner_validation(True).build()
@@ -326,9 +324,10 @@ async def test_committee_builder_and_graph_mounting():
     graph_enabled = await get_graph(ctx_enabled)
     op_node_enabled = graph_enabled.nodes.get("operator")
     assert op_node_enabled is not None
-    # Verify ask_committee is mounted when enabled
+    # ask_committee is deliberately never mounted on the Operator (it sits outside
+    # the pre-decision / turn-ending tool contract), even when the flag is on.
     op_tools_enabled = [t.name for t in op_node_enabled.bound.afunc.tools]
-    assert "ask_committee" in op_tools_enabled
+    assert "ask_committee" not in op_tools_enabled
 
 
 def test_checker_builder_and_context_propagation():
@@ -450,13 +449,27 @@ def test_explorer_builder_and_resolution(monkeypatch):
     from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
     from artemis.tools.explorer_tool import resolve_explorer_version
 
-    # Default builder inherits from artemis.jsonc (default="flash", flash_mode="flash", pro_mode="flash", caching=True)
+    monkeypatch.delenv("ARTEMIS_EXPLORER_VERSION", raising=False)
+
+    # Default builder inherits from artemis.jsonc (default="flash", flash_mode="flash",
+    # pro_mode="flash", caching unset, no per-agent override).
     builder = AgentConfigBuilder()
     cfg = builder.build()
     assert cfg.explorer.default_version == "flash"
     assert cfg.explorer.flash_mode == "flash"
     assert cfg.explorer.pro_mode == "flash"
-    assert cfg.explorer.caching is True
+    assert cfg.explorer.caching is None
+    assert cfg.explorer_versions == {}
+
+    # With the shipped (empty) override the profile knobs actually win: the
+    # Pro agents follow pro_mode and the Flash runner follows flash_mode.
+    cfg_pro_ultra = AgentConfigBuilder().with_explorer(pro_mode="ultra").build()
+    assert cfg_pro_ultra.get_explorer_version(agent_name="operator") == "ultra"
+    assert cfg_pro_ultra.get_explorer_version(agent_name="validator") == "ultra"
+    assert cfg_pro_ultra.get_explorer_version(agent_name="flash") == "flash"
+    cfg_flash_pro = AgentConfigBuilder().with_explorer(flash_mode="pro").build()
+    assert cfg_flash_pro.get_explorer_version(agent_name="flash") == "pro"
+    assert cfg_flash_pro.get_explorer_version(agent_name="operator") == "flash"
 
     # Fluent configuration with with_explorer
     cfg_custom = (
@@ -709,3 +722,89 @@ def test_admin_console_config_facade_backward_compatibility():
     assert DB_PATH == ac.DB_PATH
     assert TRACES_PATH == ac.TRACES_PATH
     assert callable(init_ls_address)
+
+
+class TestVerificationLevelPresets:
+    """The coarse Checker presets behind ``--verification-level``."""
+
+    def test_every_preset_is_a_valid_checker_override(self):
+        from artemis.config import (
+            DEFAULT_VERIFICATION_LEVEL,
+            VERIFICATION_LEVEL_PRESETS,
+            CheckerConfig,
+            checker_overrides_for_level,
+        )
+
+        assert DEFAULT_VERIFICATION_LEVEL in VERIFICATION_LEVEL_PRESETS
+        for level in VERIFICATION_LEVEL_PRESETS:
+            cfg = CheckerConfig(**checker_overrides_for_level(level))
+            assert isinstance(cfg, CheckerConfig)
+
+    def test_presets_form_a_monotonic_ladder(self):
+        from artemis.config import CheckerConfig, checker_overrides_for_level
+
+        off = CheckerConfig(**checker_overrides_for_level("off"))
+        final = CheckerConfig(**checker_overrides_for_level("final"))
+        checkpoints = CheckerConfig(**checker_overrides_for_level("checkpoints"))
+        strict = CheckerConfig(**checker_overrides_for_level("strict"))
+
+        assert off.enabled is False
+        assert final.enabled and final.final_check and not final.midway_checks
+        # ``final`` is the factory layering: identical to a default CheckerConfig.
+        assert final == CheckerConfig()
+        assert checkpoints.midway_checks and checkpoints.final_check
+        assert checkpoints.assert_failure_policy == "continue"
+        assert strict.midway_checks and strict.final_check
+        assert strict.assert_failure_policy == "halt"
+        assert strict.checkpoint_max_repairs > checkpoints.checkpoint_max_repairs
+        assert strict.final_check_max_attempts > checkpoints.final_check_max_attempts
+        assert strict.max_iterations > checkpoints.max_iterations
+
+    def test_level_lookup_is_case_and_whitespace_insensitive(self):
+        from artemis.config import checker_overrides_for_level
+
+        assert checker_overrides_for_level(" STRICT ") == checker_overrides_for_level("strict")
+        # A copy is returned so callers cannot mutate the shared preset table.
+        overrides = checker_overrides_for_level("off")
+        overrides["enabled"] = True
+        assert checker_overrides_for_level("off")["enabled"] is False
+
+    @pytest.mark.parametrize("bad", [None, "", "maximum", "ultra"])
+    def test_unknown_level_raises(self, bad):
+        from artemis.config import checker_overrides_for_level
+
+        with pytest.raises(ValueError, match="Unknown verification level"):
+            checker_overrides_for_level(bad)
+
+    def test_level_preset_survives_explicit_master_switch(self):
+        """``--verification-level strict --disable-checker`` keeps the master switch off."""
+        from artemis.config import checker_overrides_for_level
+        from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
+
+        builder = AgentConfigBuilder()
+        builder.with_checker(**checker_overrides_for_level("strict"))
+        assert builder._disable_checker is False
+        assert builder._disable_midway_checks is False
+        assert builder._assert_failure_policy == "halt"
+        builder.with_checker(enabled=False)
+        assert builder._disable_checker is True
+        # The preset's finer-grained fields survive the master switch flip.
+        assert builder._assert_failure_policy == "halt"
+
+    @pytest.mark.parametrize("level", ["off", "final", "checkpoints", "strict"])
+    def test_effective_config_classifies_back_onto_the_ladder(self, level):
+        from artemis.config import (
+            CheckerConfig,
+            checker_overrides_for_level,
+            verification_level_for_checker,
+        )
+
+        cfg = CheckerConfig(**checker_overrides_for_level(level))
+        assert verification_level_for_checker(cfg) == level
+        # A config with both gates switched off is "off" even if enabled=True.
+        assert (
+            verification_level_for_checker(
+                CheckerConfig(enabled=True, midway_checks=False, final_check=False)
+            )
+            == "off"
+        )

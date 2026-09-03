@@ -40,10 +40,7 @@ from artemis.agents.validator import (
     precondition_pixel,
     precondition_xml,
 )
-from artemis.agents.validator.failure_analyzer import (
-    FailureAnalyzer,  # noqa: F401  (re-exported for backward compatibility)
-    ValidationErrorCategory,
-)
+from artemis.agents.validator.categories import ValidationErrorCategory
 from artemis.constants import (  # noqa: F401  (patchable seams; the UI-change
     # polling path that consumed the poll constants was removed as dead code,
     # but the names stay importable/patchable at this module path.)
@@ -137,8 +134,13 @@ class ValidatorNode:
                             "traceback": err_stack,
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as record_err:
+                    logger.debug(
+                        "Could not persist validator error status for step %s: %s",
+                        step_id,
+                        record_err,
+                        exc_info=True,
+                    )
             raise e
         finally:
             if self.ctx.data_engine:

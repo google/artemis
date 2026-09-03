@@ -34,6 +34,7 @@ from artemis.config.constants import (
     TEST_OUTPUTS_DIRNAME,
 )
 from artemis.platform import platform
+from artemis.resources import get_bundled_config_path
 
 # Project root directory (3 levels up from artemis/config/paths.py)
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -43,6 +44,27 @@ CONFIG_DIR = ROOT_DIR / "config"
 def is_frozen_bundle() -> bool:
     """Check if running inside a PyInstaller / Nuitka standalone compiled binary."""
     return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+
+
+def is_source_checkout() -> bool:
+    """Return whether ``ROOT_DIR`` is an Artemis source checkout.
+
+    Installed wheels also contain an ``artemis`` directory, so the repository
+    metadata file is the important discriminator.  Runtime code must not treat
+    a wheel's ``site-packages`` directory as writable application state.
+    """
+    return (ROOT_DIR / "pyproject.toml").is_file() and (ROOT_DIR / "artemis").is_dir()
+
+
+def _use_user_app_dir() -> bool:
+    """Return whether mutable runtime state belongs in the PAL user directory."""
+    return (
+        is_frozen_bundle()
+        or not is_source_checkout()
+        or os.getenv(ENV_ARTEMIS_USE_USER_DIR) == "true"
+        or bool(os.getenv(ENV_ARTEMIS_APP_DIR))
+        or bool(os.getenv(ENV_ANTIGRAVITY_APP_DIR))
+    )
 
 
 def get_app_dir() -> Path:
@@ -56,6 +78,11 @@ def get_app_dir() -> Path:
     return platform.paths.resolve_app_dir()
 
 
+def get_env_file() -> Path:
+    """Return the canonical writable dotenv file for this installation mode."""
+    return get_app_dir() / ".env" if _use_user_app_dir() else ROOT_DIR / ".env"
+
+
 def get_default_traces_path() -> Path:
     """Returns default traces directory.
 
@@ -64,12 +91,7 @@ def get_default_traces_path() -> Path:
     env_traces = os.getenv(ENV_ARTEMIS_TRACES_DIR)
     if env_traces:
         traces_dir = Path(env_traces)
-    elif (
-        is_frozen_bundle()
-        or os.getenv(ENV_ARTEMIS_USE_USER_DIR) == "true"
-        or os.getenv(ENV_ARTEMIS_APP_DIR)
-        or os.getenv(ENV_ANTIGRAVITY_APP_DIR)
-    ):
+    elif _use_user_app_dir():
         traces_dir = get_app_dir() / "traces"
     else:
         traces_dir = ROOT_DIR / "traces"
@@ -103,7 +125,7 @@ def get_data_engine_db_path() -> Path:
 def get_ipc_port_file() -> Path:
     """Returns the location of the IPC port synchronization file."""
     app_dir_file = get_app_dir() / IPC_PORT_FILENAME
-    if app_dir_file.exists():
+    if _use_user_app_dir() or app_dir_file.exists():
         return app_dir_file
     return ROOT_DIR / IPC_PORT_FILENAME
 
@@ -111,7 +133,7 @@ def get_ipc_port_file() -> Path:
 def get_ls_address_file() -> Path:
     """Returns the location of the Language Server address synchronization file."""
     app_dir_file = get_app_dir() / LS_ADDRESS_FILENAME
-    if app_dir_file.exists():
+    if _use_user_app_dir() or app_dir_file.exists():
         return app_dir_file
     return ROOT_DIR / LS_ADDRESS_FILENAME
 
@@ -119,7 +141,7 @@ def get_ls_address_file() -> Path:
 def get_server_info_file() -> Path:
     """Returns the location of the Artemis server metadata file."""
     app_dir_file = get_app_dir() / SERVER_INFO_FILENAME
-    if app_dir_file.exists():
+    if _use_user_app_dir() or app_dir_file.exists():
         return app_dir_file
     return ROOT_DIR / SERVER_INFO_FILENAME
 
@@ -131,8 +153,8 @@ def get_config_path(filename: str, default_bundled_path: Path | None = None) -> 
     1. Environment variable override: `ARTEMIS_<FILENAME_UPPER>`
     2. Central `config/` directory: `<ROOT_DIR>/config/<filename>`
     3. Project root directory: `<ROOT_DIR>/<filename>`
-    4. Custom default bundled path (if provided and exists)
-    5. User application/config directory via PAL: `<CONFIG_DIR>/<filename>` or `<APP_DIR>/<filename>`
+    4. User application/config directory via PAL: `<CONFIG_DIR>/<filename>` or `<APP_DIR>/<filename>`
+    5. Custom bundled path, then the immutable template included in the wheel
     """
     env_var = f"ARTEMIS_{filename.upper().replace('.', '_').replace('-', '_')}"
     env_path_str = os.getenv(env_var)
@@ -151,10 +173,6 @@ def get_config_path(filename: str, default_bundled_path: Path | None = None) -> 
     if project_path.exists():
         return project_path
 
-    # Check bundled fallback
-    if default_bundled_path and default_bundled_path.exists():
-        return default_bundled_path
-
     # Check user PAL config directory
     pal_config_path = platform.paths.config_dir / filename
     if pal_config_path.exists():
@@ -165,9 +183,16 @@ def get_config_path(filename: str, default_bundled_path: Path | None = None) -> 
     if app_dir_path.exists():
         return app_dir_path
 
+    # Explicit and wheel-bundled defaults are immutable last-resort templates.
+    if default_bundled_path and default_bundled_path.exists():
+        return default_bundled_path
+    bundled_path = get_bundled_config_path(filename)
+    if bundled_path is not None:
+        return bundled_path
+
     raise FileNotFoundError(
         f"Configuration file '{filename}' not found in config dir ({config_dir_path}), "
-        f"project root ({project_path}), or app dir ({app_dir_path})."
+        f"project root ({project_path}), app dir ({app_dir_path}), or bundled resources."
     )
 
 
@@ -177,7 +202,7 @@ GLOBAL_JETSKI_DIR = GLOBAL_APP_DIR  # Backward-compatibility alias
 
 def get_pause_file() -> Path:
     """Returns the central pause signal file path."""
-    return ROOT_DIR / PAUSE_FILENAME
+    return get_app_dir() / PAUSE_FILENAME if _use_user_app_dir() else ROOT_DIR / PAUSE_FILENAME
 
 
 def get_replay_dir() -> Path:

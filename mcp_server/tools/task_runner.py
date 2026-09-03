@@ -20,12 +20,13 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, get_args
 import uuid
 
 from mcp_server.base import mcp
 from mcp_server.notifiers import notify
 from mcp_server.utils import env_utils
+from artemis.config import ExplorerVersion, checker_overrides_for_level
 from artemis.config.runtime import read_ipc_port
 from artemis.runtime import (
     DeviceExecutionLock,
@@ -116,10 +117,15 @@ def _watch_spawn(
                 event_type="failed",
                 payload={"trace_id": trace_id, "error": error_text},
             )
-        except Exception:
+        except Exception as exc:
             # Notification dispatch is best-effort; the failure verdict is
             # already persisted in status.json.
-            pass
+            logging.getLogger("mcp_server").debug(
+                "Spawn-failure notification skipped for trace %s: %s",
+                trace_id,
+                exc,
+                exc_info=True,
+            )
     return False
 
 
@@ -164,6 +170,37 @@ def _validate_device_serial(device_serial: str) -> dict[str, Any] | None:
     }
 
 
+_EXPLORER_MODES: tuple[str, ...] = get_args(ExplorerVersion)
+
+
+def _normalize_pro_tuning(
+    verification_level: str | None, explorer_mode: str | None
+) -> tuple[str | None, str | None]:
+    """Validate and normalise the Pro-profile tuning knobs (strip + lower).
+
+    Raises:
+        ValueError: with a caller-facing message when a value is not a known
+            preset, so the tool rejects the call before any trace is created.
+    """
+    level: str | None = None
+    if verification_level is not None and str(verification_level).strip():
+        level = str(verification_level).strip().lower()
+        try:
+            checker_overrides_for_level(level)
+        except ValueError as exc:
+            raise ValueError(f"Invalid verification_level: {exc}") from exc
+
+    mode: str | None = None
+    if explorer_mode is not None and str(explorer_mode).strip():
+        mode = str(explorer_mode).strip().lower()
+        if mode not in _EXPLORER_MODES:
+            raise ValueError(
+                f"Invalid explorer_mode {explorer_mode!r}. Must be one of: "
+                + ", ".join(_EXPLORER_MODES)
+            )
+    return level, mode
+
+
 @mcp.tool()
 def mobile_run_task(
     task_desc: str,
@@ -173,6 +210,8 @@ def mobile_run_task(
     app_path: str | None = None,
     expected_output_desc: str | None = None,
     device_serial: str | None = None,
+    verification_level: str | None = None,
+    explorer_mode: str | None = None,
 ) -> dict[str, Any]:
     """Starts an autonomous mobile UI automation subagent on a connected Android device.
 
@@ -183,15 +222,17 @@ def mobile_run_task(
     when `conversation_id` was provided; without it, rely on your fallback timer.
 
     ### Model selection (routing)
-    - **Flash** (default, preferred): simple, deterministic tasks completable
-      within ~30 UI steps. No log/video analysis, no ADB shell, no persistent
-      plan or notes — unsuitable for exploration, complex error recovery,
-      monitoring/polling, or tasks that must report back large amounts of
-      detail.
+    - **Flash** (default, preferred): simple, deterministic tasks with a clear
+      UI path. No step cap by default (history is compressed, and the agent
+      can recall earlier steps and query the session recording), but no ADB
+      shell, no pre-execution safety net, no persistent plan or notes, and
+      no verification or written report — unsuitable for exploration,
+      multi-branch recovery, structured monitoring/polling, or tasks that
+      must report back large amounts of detail.
     - **Pro**: complex, exploratory, or multi-branch tasks; continuous
-      monitoring/polling; tasks needing ADB shell, system logs, video analysis,
-      multi-step planning, or detailed written output (via notes and
-      `expected_output_desc`).
+      monitoring/polling; tasks needing ADB shell, system logs, verified
+      checkpoints, multi-step planning, or detailed written output (via notes
+      and `expected_output_desc`).
 
     Timing is not precise: the agent's own inference adds ~5 s per step (Flash)
     or ~30 s per turn (Pro) on top of any requested waits — account for this
@@ -226,11 +267,24 @@ def mobile_run_task(
           If omitted, an available device is selected automatically. When
           several devices are attached, confirm the target with the user first
           (`adb devices -l` lists serials and authorization states).
+        verification_level: Optional, Pro only. Coarse Checker preset: `"off"`
+          (no audit; the Operator self-reports), `"final"` (one exit review
+          against the goal, the default), `"checkpoints"` (every plan
+          checkpoint is verified + exit review), `"strict"` (checkpoints with
+          a larger repair budget; a failed assert halts the run). Ignored for
+          Flash.
+        explorer_mode: Optional, Pro only. Explorer perception version used
+          by the Operator: `"flash"` (1-shot detection, the default),
+          `"pro"` (3-turn ReAct), `"ultra"` (deep pixel reasoning; slowest).
+          Ignored for Flash.
     """
     # 0. Validate and normalize model
     if model.lower() not in ("flash", "pro"):
         raise ValueError(f"Invalid model '{model}'. Must be either 'Flash' or 'Pro'.")
     canonical_model = "Flash" if model.lower() == "flash" else "Pro"
+    # 0b. Validate the Pro tuning knobs before any trace exists so a typo is a
+    # plain tool error rather than a failed trace on disk.
+    verification_level, explorer_mode = _normalize_pro_tuning(verification_level, explorer_mode)
 
     # 1. Generate a unique trace_id
     trace_id = str(uuid.uuid4())
@@ -269,6 +323,8 @@ def mobile_run_task(
                     session_id=trace_id,
                     ingress="mcp",
                     conversation_id=conversation_id,
+                    verification_level=verification_level,
+                    explorer_mode=explorer_mode,
                     base_url=base_url,
                 )
                 if resp and resp.get("status") == "rejected":
@@ -368,9 +424,7 @@ def mobile_run_task(
                     "message": "Task rejected or timed out in Artemis Daemon. Standalone fallback blocked to prevent runner collision.",
                 }
         except Exception as exc:
-            logging.getLogger("mcp_server").warning(
-                f"Daemon dispatch failed: {exc}"
-            )
+            logging.getLogger("mcp_server").warning(f"Daemon dispatch failed: {exc}")
             return {
                 "trace_id": trace_id,
                 "status": "failed",
@@ -413,6 +467,10 @@ def mobile_run_task(
             cmd.extend(["--expected-output-desc", expected_output_desc])
         if device_serial:
             cmd.extend(["--device-serial", device_serial])
+        if verification_level:
+            cmd.extend(["--verification-level", verification_level])
+        if explorer_mode:
+            cmd.extend(["--explorer-pro-mode", explorer_mode])
 
         env = os.environ.copy()
         env["ARTEMIS_SESSION_ID"] = trace_id

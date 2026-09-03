@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import logging
+import os
+import sqlite3
 import time
 from typing import Any
 
@@ -74,10 +76,12 @@ class SessionRepository:
             )
             if cursor.fetchone() is None:
                 return {}
-            columns = {
-                str(row[1]) for row in cursor.execute("PRAGMA table_info(video_recordings)")
-            }
-            ready_clause = "status = 'ready'" if "status" in columns else "end_time IS NOT NULL"
+            columns = {str(row[1]) for row in cursor.execute("PRAGMA table_info(video_recordings)")}
+            # Failed recordings may still be recoverable from disk.
+            # Callers exclude in-progress sessions before resolving paths.
+            ready_clause = (
+                "status IN ('ready', 'failed')" if "status" in columns else "end_time IS NOT NULL"
+            )
             cursor.execute(
                 "SELECT session_id, local_video_path FROM video_recordings "
                 "WHERE session_id IS NOT NULL AND local_video_path IS NOT NULL "
@@ -104,7 +108,9 @@ class SessionRepository:
                     return None
                 result = dict(row)
                 if "status" not in result:
-                    result["status"] = "ready" if result.get("end_time") is not None else "recording"
+                    result["status"] = (
+                        "ready" if result.get("end_time") is not None else "recording"
+                    )
                 result.setdefault("error", None)
                 return result
         except Exception:
@@ -147,6 +153,40 @@ class SessionRepository:
         except Exception:
             return {}
 
+    def get_unfinalized_video_recordings(self) -> list[dict[str, Any]]:
+        """Recordings whose worker never finalized them, oldest first.
+
+        Rows of sessions that are still ``running`` are skipped: their worker
+        (possibly owned by another daemon) may still be writing the file.
+        """
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='video_recordings'"
+                )
+                if cursor.fetchone() is None:
+                    return []
+                columns = {
+                    str(row[1]) for row in cursor.execute("PRAGMA table_info(video_recordings)")
+                }
+                pending_clause = (
+                    "v.status IN ('recording', 'finalizing', 'failed')"
+                    if "status" in columns
+                    else "v.end_time IS NULL"
+                )
+                cursor.execute(
+                    "SELECT v.session_id, v.local_video_path, v.start_time, "
+                    "s.status AS session_status, s.start_time AS session_start_time "
+                    "FROM video_recordings v LEFT JOIN sessions s ON s.session_id = v.session_id "
+                    f"WHERE v.session_id IS NOT NULL AND v.local_video_path IS NOT NULL "
+                    f"AND {pending_clause} ORDER BY v.start_time ASC"
+                )
+                rows = [dict(r) for r in cursor.fetchall()]
+        except (OSError, sqlite3.Error):
+            return []
+        return [row for row in rows if str(row.get("session_status") or "").lower() != "running"]
+
     def mark_recording_failed_if_pending(self, session_id: str, error: str) -> bool:
         """Close a recording lifecycle when its worker exits before finalization."""
         try:
@@ -174,8 +214,16 @@ class SessionRepository:
                     "WHERE session_id = ?",
                     (str(local_video_path), time.time(), str(session_id)),
                 )
+                updated = cursor.rowcount > 0
+                if os.path.exists(str(local_video_path)):
+                    # Mirror the worker's own finalization so the session row
+                    # and trace tooling see the recovered file too.
+                    cursor.execute(
+                        "UPDATE sessions SET video_filepath = ? WHERE session_id = ?",
+                        (str(local_video_path), str(session_id)),
+                    )
                 conn.commit()
-                return cursor.rowcount > 0
+                return updated
         except Exception:
             return False
 
@@ -324,8 +372,7 @@ class SessionRepository:
                         # read_status itself never raises; this guards the
                         # lock/write side of update_trace_status.
                         logger.warning(
-                            "Could not mark trace %s failed during orphan "
-                            "reconciliation: %s",
+                            "Could not mark trace %s failed during orphan reconciliation: %s",
                             row["session_id"],
                             exc,
                         )

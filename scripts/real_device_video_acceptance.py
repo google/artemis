@@ -78,9 +78,13 @@ def _element_value(element: dict[str, Any] | None) -> str:
 
 
 def _compact(value: str) -> str:
-    return re.sub(r"[\s`*_\[\](){}:;,.，。：；]", "", value.lower()).replace(
-        "×", "x"
-    ).replace("＊", "x").replace("=", "=").replace("＝", "=")
+    return (
+        re.sub(r"[\s`*_\[\](){}:;,.，。：；]", "", value.lower())
+        .replace("×", "x")
+        .replace("＊", "x")
+        .replace("=", "=")
+        .replace("＝", "=")
+    )
 
 
 def _contains_any(value: str, candidates: tuple[str, ...]) -> bool:
@@ -182,7 +186,9 @@ def _assert_calculation(
         )
 
 
-async def _run_ui_sequence(controller, recording_started: float) -> tuple[list[GroundTruthEvent], dict[str, str]]:
+async def _run_ui_sequence(
+    controller, recording_started: float
+) -> tuple[list[GroundTruthEvent], dict[str, str]]:
     device = controller.driver.device
     await asyncio.to_thread(
         device.shell,
@@ -268,9 +274,7 @@ async def _run_ui_sequence(controller, recording_started: float) -> tuple[list[G
         )
     )
 
-    locator_methods["history_close"] = await _tap(
-        controller, "history_toggle_button", settle=0.7
-    )
+    locator_methods["history_close"] = await _tap(controller, "history_toggle_button", settle=0.7)
     formula, result, history_state, _ = await _observe(controller)
     if not _contains_any(_compact(history_state), ("已关闭", "close", "off")):
         raise AssertionError(f"History panel did not close; state={history_state!r}")

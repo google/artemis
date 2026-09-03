@@ -123,7 +123,6 @@ class AgentConfig(BaseModel):
     assert_failure_policy: Literal["continue", "halt"] = "continue"
     disable_device_probes: bool = False
     disable_planner_validation: bool = False
-    planner_validation_threshold: float = 0.85
     enable_committee: bool = False
     committee_debate_rounds: int = 2
     disable_outputter: bool = False
@@ -132,8 +131,10 @@ class AgentConfig(BaseModel):
     flash: FlashProfileConfig = Field(default_factory=FlashProfileConfig)
     pro: ProProfileConfig = Field(default_factory=ProProfileConfig)
     explorer: ExplorerConfig = Field(default_factory=ExplorerConfig)
-    explorer_versions: dict[str, Literal["flash", "pro", "ultra"]]
-    denylisted_tools: dict[str, list[str]]
+    # Advanced per-agent tier override; empty so the per-profile knobs
+    # (``explorer.flash_mode`` / ``explorer.pro_mode``) decide by default.
+    explorer_versions: dict[str, Literal["flash", "pro", "ultra"]] = Field(default_factory=dict)
+    denylisted_tools: dict[str, list[str]] = Field(default_factory=dict)
     enable_video_ledger: bool = True
     video_analyzer: VideoAnalyzerConfig = Field(default_factory=VideoAnalyzerConfig)
     concurrency_mode: Literal["global", "per_device"] = "per_device"

@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from artemis.agents.video_analyzer.video_analyzer import VideoAnalyzer
 from artemis.context import ArtemisContext
+from artemis.core.tool_declaration import ToolDeclaration
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
@@ -78,6 +79,25 @@ OPERATOR_VIDEO_ANALYZER_DOCSTRING = (
     "  - Please specify a narrow time range when possible to ensure faster"
     " processing.\n"
     "  - If only audio analysis is needed, state it clearly in your purpose.\n"
+)
+
+#: Flash-profile declaration of the same tool (FlashRunner binds JSON-schema
+#: declarations rather than LangChain tools). Description and parameters are
+#: derived from the operator contract above so the two never drift.
+VIDEO_ANALYZER_TOOL = ToolDeclaration(
+    name="video_analyzer",
+    description=OPERATOR_VIDEO_ANALYZER_DOCSTRING,
+    parameters={
+        "type": "object",
+        "properties": {
+            field_name: {
+                "type": "string",
+                "description": field_info.description or "",
+            }
+            for field_name, field_info in VideoAnalyzerArgs.model_fields.items()
+        },
+        "required": list(VideoAnalyzerArgs.model_fields),
+    },
 )
 
 DIAGNOSER_VIDEO_ANALYZER_DOCSTRING = (

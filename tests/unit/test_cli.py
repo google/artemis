@@ -46,6 +46,8 @@ def test_cli_run_help():
     assert "--profile" in result.output
     assert "--locked-app" in result.output
     assert "--traces-path" in result.output
+    assert "--verification-level" in result.output
+    assert "--explorer-pro-mode" in result.output
 
 
 def test_cli_batch_help():
@@ -54,6 +56,101 @@ def test_cli_batch_help():
     assert result.exit_code == 0
     assert "--file" in result.output
     assert "--delay" in result.output
+    assert "--verification-level" in result.output
+    assert "--explorer-pro-mode" in result.output
+
+
+def test_cli_batch_forwards_pro_tuning_in_standalone_mode(monkeypatch):
+    """`artemis batch --standalone` threads both knobs into run_batch_tasks."""
+    import artemis.interfaces.cli.commands.batch as batch_module
+
+    captured: dict = {}
+
+    async def fake_run_batch_tasks(tasks, **kwargs):
+        captured["tasks"] = tasks
+        captured.update(kwargs)
+
+    monkeypatch.setattr(batch_module, "run_batch_tasks", fake_run_batch_tasks)
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--standalone",
+            "--profile",
+            "pro",
+            "--verification-level",
+            "strict",
+            "--explorer-pro-mode",
+            "ultra",
+            "Open Settings",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["tasks"] == ["Open Settings"]
+    assert captured["profile_name"] == "pro"
+    assert captured["verification_level"] == "strict"
+    assert captured["explorer_pro_mode"] == "ultra"
+
+
+def test_cli_batch_forwards_pro_tuning_to_daemon(monkeypatch):
+    """Daemon-routed batches carry the knobs as /api/run JSON fields."""
+    import artemis.runtime as runtime
+
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    captured: dict = {}
+
+    def fake_submit_batch(goals, **kwargs):
+        captured["goals"] = goals
+        captured.update(kwargs)
+        return {"tasks": [{"session_id": "sid-1", "goal": goals[0]}]}
+
+    monkeypatch.setattr(runtime, "ensure_daemon_running", lambda **_: (True, "http://x:1"))
+    monkeypatch.setattr(runtime, "submit_batch_to_daemon", fake_submit_batch)
+    monkeypatch.setattr(runtime, "wait_for_daemon_task", lambda *_, **__: {"status": "completed"})
+
+    result = runner.invoke(
+        app,
+        ["batch", "--verification-level", "checkpoints", "--explorer-pro-mode", "pro", "Goal A"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["goals"] == ["Goal A"]
+    assert captured["verification_level"] == "checkpoints"
+    assert captured["explorer_mode"] == "pro"
+
+
+def test_run_batch_tasks_applies_pro_tuning_to_agent_config(monkeypatch):
+    """The standalone batch runner applies the knobs on the AgentConfig builder."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import artemis.interfaces.cli.commands.batch as batch_module
+
+    fake_builder = MagicMock()
+    fake_builders = MagicMock()
+    fake_builders.AgentConfig.with_default_profile.return_value = fake_builder
+    fake_agent = MagicMock()
+    fake_agent.init = AsyncMock()
+    fake_agent.run_task = AsyncMock(return_value="ok")
+    fake_agent.clean = AsyncMock()
+
+    monkeypatch.setattr(batch_module, "initialize_llm_config", lambda: MagicMock())
+    monkeypatch.setattr(batch_module, "AgentProfile", MagicMock())
+    monkeypatch.setattr(batch_module, "Builders", fake_builders)
+    monkeypatch.setattr(batch_module, "Agent", MagicMock(return_value=fake_agent))
+
+    import asyncio
+
+    asyncio.run(
+        batch_module.run_batch_tasks(
+            ["Goal A"],
+            profile_name="pro",
+            delay_seconds=0,
+            verification_level="strict",
+            explorer_pro_mode="ultra",
+        )
+    )
+    fake_builder.with_verification_level.assert_called_once_with("strict")
+    fake_builder.with_explorer.assert_called_once_with(pro_mode="ultra")
+    fake_agent.run_task.assert_awaited_once_with(goal="Goal A", profile="pro")
 
 
 def test_cli_trace_help():
@@ -93,9 +190,7 @@ def test_cli_mcp_generate_config_antigravity():
     assert server_config["disabledTools"] == []
     assert "tools" not in server_config
 
-    legacy_config = _get_config_snippet("jetski", "python", "/project")["mcpServers"][
-        "artemis"
-    ]
+    legacy_config = _get_config_snippet("jetski", "python", "/project")["mcpServers"]["artemis"]
     assert set(legacy_config["tools"]) == {
         "mobile_run_task",
         "mobile_manage_task",
@@ -152,6 +247,7 @@ def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
     jetski_file = tmp_path / ".gemini" / "jetski" / "mcp_config.json"
     assert jetski_file.exists()
     import json
+
     data = json.loads(jetski_file.read_text())
     assert "artemis" in data["mcpServers"]
     assert "mobile_run_task" in data["mcpServers"]["artemis"]["tools"]
@@ -190,15 +286,14 @@ def test_cli_mcp_install_all(tmp_path, monkeypatch):
     cursor_data = json.loads((tmp_path / ".cursor" / "mcp.json").read_text())
     assert cursor_data["mcpServers"]["artemis"]["command"]
 
-    windsurf_data = json.loads(
-        (tmp_path / ".codeium" / "windsurf" / "mcp_config.json").read_text()
-    )
+    windsurf_data = json.loads((tmp_path / ".codeium" / "windsurf" / "mcp_config.json").read_text())
     assert windsurf_data["mcpServers"]["artemis"]["command"]
 
     claude_data = json.loads((tmp_path / ".claude.json").read_text())
     assert claude_data["mcpServers"]["artemis"]["type"] == "stdio"
 
     from artemis.interfaces.cli.commands.mcp import _get_vscode_user_dir
+
     vscode_data = json.loads((_get_vscode_user_dir() / "mcp.json").read_text())
     assert vscode_data["servers"]["artemis"]["type"] == "stdio"
     assert "mcpServers" not in vscode_data
@@ -321,6 +416,7 @@ def test_cli_mcp_install_codex_preserves_config_and_is_idempotent(tmp_path, monk
     assert result2.exit_code == 0
 
     import tomllib
+
     config_text = config_file.read_text(encoding="utf-8")
     data = tomllib.loads(config_text)
     assert data["model"] == "test-model"
@@ -361,6 +457,7 @@ def test_cli_mcp_install_jsonc_and_backup(tmp_path, monkeypatch):
     result = runner.invoke(app, ["mcp", "--install", "cursor"])
     assert result.exit_code == 0
     import json
+
     data = json.loads(mcp_json.read_text(encoding="utf-8"))
     assert "test" in data["mcpServers"]
     assert "artemis" in data["mcpServers"]

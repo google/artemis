@@ -207,13 +207,22 @@ class ScreenAwakeService:
                 break
             if device_id:
                 results[device_id] = self.ensure_device(device_id)
-        if _awake_enabled() and os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not self._shutdown_requested:
+        if (
+            _awake_enabled()
+            and os.environ.get("ARTEMIS_CLOUD_MODE") != "1"
+            and not self._shutdown_requested
+        ):
             self._start_device_monitor()
         return results
 
     def ensure_device(self, device_id: str) -> str | None:
         """Configure one device once per process; Android owns unplug behavior."""
-        if not device_id or not _awake_enabled() or os.environ.get("ARTEMIS_CLOUD_MODE") == "1" or self._shutdown_requested:
+        if (
+            not device_id
+            or not _awake_enabled()
+            or os.environ.get("ARTEMIS_CLOUD_MODE") == "1"
+            or self._shutdown_requested
+        ):
             return None
         with self._lock:
             existing = self._strategies.get(device_id)

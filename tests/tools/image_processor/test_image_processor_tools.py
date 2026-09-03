@@ -17,6 +17,7 @@ import pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_ask_image_processor_tool(artemis_context, mock_state):
     """Tests the ask_image_processor tool as a blackbox.
 

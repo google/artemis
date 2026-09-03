@@ -231,7 +231,9 @@ class DevicePool:
             if self._async_inflight is not None and self._async_inflight[1] is task:
                 self._async_inflight = None
 
-    async def _enumerate_async_uncached(self) -> list[tuple[str, str, str | None, str | None]] | None:
+    async def _enumerate_async_uncached(
+        self,
+    ) -> list[tuple[str, str, str | None, str | None]] | None:
         raw = await self._query_adb_devices_async()
         if raw is None:
             return self._cached_snapshot(allow_stale=True)
@@ -300,7 +302,9 @@ class DevicePool:
 
         devices: list[DeviceStatus] = []
         for serial, state, model, product in raw_devices:
-            is_emu = serial.startswith("emulator-") or "127.0.0.1" in serial or "localhost" in serial
+            is_emu = (
+                serial.startswith("emulator-") or "127.0.0.1" in serial or "localhost" in serial
+            )
             clean_id = DeviceExecutionLock._normalize_lock_id(
                 serial,
                 os.getenv(DeviceExecutionLock.LOCK_SCOPE_ENV) or None,
@@ -388,9 +392,7 @@ class DevicePool:
 
     async def validate_explicit_serial_async(self, requested_serial: str) -> str | None:
         """Async variant of validate_explicit_serial."""
-        return self._explicit_serial_error(
-            requested_serial, await self.try_list_devices_async()
-        )
+        return self._explicit_serial_error(requested_serial, await self.try_list_devices_async())
 
     def get_ready_devices(self) -> list[DeviceStatus]:
         """Return devices in authorized 'device' state."""

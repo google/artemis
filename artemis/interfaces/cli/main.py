@@ -14,9 +14,9 @@
 
 """ARTEMIS Unified Command Line Interface (CLI)."""
 
-import importlib.metadata
 from typing import Annotated
 
+from artemis._version import __version__
 from artemis.interfaces.cli.commands.batch import batch_command
 from artemis.interfaces.cli.commands.doctor import doctor_command
 from artemis.interfaces.cli.commands.init import init_command
@@ -67,14 +67,10 @@ app.add_typer(trace_app, name="trace", help="Inspect and query execution traces.
 
 def version_callback(value: bool):
     if value:
-        try:
-            ver = importlib.metadata.version("artemis")
-        except Exception:
-            ver = "3.6.3"
         console = Console()
         console.print(
             Panel(
-                f"[bold cyan]Artemis Agent Platform[/bold cyan] v{ver}\n"
+                f"[bold cyan]Artemis Agent Platform[/bold cyan] v{__version__}\n"
                 "[dim]Autonomous Multimodal Mobile AI Engine[/dim]",
                 title="☕ Artemis",
                 expand=False,

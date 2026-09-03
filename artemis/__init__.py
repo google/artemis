@@ -14,7 +14,7 @@
 
 """☕ ARTEMIS: Autonomous Multimodal Android Agent & Testing Framework."""
 
-__version__ = "0.2.0"
+from artemis._version import __version__
 
 from artemis.interfaces.sdk.client import ArtemisClient, ConcurrencyMode
 from artemis.interfaces.sdk.task import StreamEvent, StreamEventType, Task

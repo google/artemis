@@ -14,9 +14,21 @@
 
 """Per-turn action execution loop for the Validator.
 
-Orchestrates, for each Operator decision: precondition safety-net checks
-(XML-first with pixel fallback), local execution with retries, screenshot and
-trace bookkeeping, and FailureAnalyzer-driven local repair.
+Two execution tiers, selected by how many turn-ending actions the Operator
+emitted in the turn:
+
+* **Vetted single action** (one action): the pre-execution Safety Net runs
+  first (XML-first with pixel fallback), then the action executes locally with
+  a short retry loop.
+* **Fast-action burst** (two or more actions): the actions fire back to back
+  with no safety net, no retries and no screenshots in between. The burst is
+  the Operator's tool against turn latency (transient menus, toasts, control
+  bars); the Operator owns the risk. The first failure aborts the rest.
+
+Either way, a failure does not spawn a repair agent. The loop opens an
+*execution incident* (:mod:`artemis.agents.validator.incidents`) that rides in
+graph state and in the step's execution report, and the Operator resolves it
+on its next turn with the live screen in front of it.
 
 Extracted from ``validator.py``; the public entry point remains
 ``ValidatorNode.__call__``, which delegates here. All patchable seams
@@ -27,20 +39,25 @@ are dispatched through the node so existing test patches keep working.
 import asyncio
 import base64
 from dataclasses import dataclass
-from pathlib import Path
 import time
 import uuid
 from uuid import UUID
 
-from artemis.agents.validator.failure_analyzer import (
-    FailureAnalyzer,
-    ValidationErrorCategory,
+from artemis.agents.validator.categories import ValidationErrorCategory
+from artemis.agents.validator.incidents import (
+    KIND_EXEC_ERROR,
+    KIND_SAFETY_NET,
+    open_incident,
 )
 from artemis.data_engine.trace import CURRENT_TRACE_ID
 from artemis.graph.state import State
 from artemis.utils.logger import get_logger
+from artemis.utils.task_tree import format_action_clean
 
 logger = get_logger(__name__)
+
+#: ``attempts`` marker for actions a burst never reached.
+BURST_SKIPPED_MARKER = "Skipped (burst aborted)"
 
 
 @dataclass
@@ -51,6 +68,7 @@ class _ActionOutcome:
     success: bool = False
     error_msg: str = ""
     error_category: ValidationErrorCategory = ValidationErrorCategory.GENERAL
+    intercepted: bool = False
     post_screenshot_b64: str | None = None
 
 
@@ -109,19 +127,16 @@ async def _run_precondition_gate(
         session, action_item, pre_screenshot_b64, original_coords, state=state
     )
     if pixel_passed and pixel_category == ValidationErrorCategory.NONE:
-        logger.success(
-            "Pixel-based validation fallback PASSED! Overriding XML validation failure."
-        )
+        logger.success("Pixel-based validation fallback PASSED! Overriding XML validation failure.")
         return True, ValidationErrorCategory.NONE, ""
 
     return validation_passed, validation_category, validation_error
 
 
 async def _attempt_local_execution(
-    node, session, action_item: dict, action_name, attempts_log: list
+    node, session, action_item: dict, action_name, attempts_log: list, *, max_local_retries: int
 ) -> tuple[bool, str]:
     """Executes the action locally with a short retry loop."""
-    max_local_retries = 1 if action_name == "launch_app" else 2
     success = False
     error_msg = ""
     for attempt in range(max_local_retries):
@@ -157,43 +172,57 @@ async def _capture_live_screenshot(session, context_desc: str) -> str | None:
 
 
 async def _process_action(
-    node, state: State, session, action_item: dict, action_name, pre_screenshot_b64: str
+    node,
+    state: State,
+    session,
+    action_item: dict,
+    action_name,
+    pre_screenshot_b64: str,
+    *,
+    burst: bool,
 ) -> _ActionOutcome:
-    """Runs precondition checks and execution for one action item."""
+    """Runs precondition checks (vetted tier only) and execution for one action item."""
     action_item = dict(action_item)  # Make a copy to avoid mutating original state actions
     outcome = _ActionOutcome(action_item=action_item)
     attempts_log = []
 
-    # 1. Pre-execution validation (Safety Net)
-    original_coords = list(action_item.get("coordinates") or [])
-    (
-        validation_passed,
-        validation_category,
-        validation_error,
-    ) = await _run_precondition_gate(
-        node, session, action_item, state, pre_screenshot_b64, original_coords
-    )
-
-    if not validation_passed:
-        outcome.success = False
-        outcome.error_msg = f"Pre-execution validation failed: {validation_error}"
-        outcome.error_category = validation_category
-        attempts_log.append(outcome.error_msg)
-
-        # Capture the live mismatch screenshot to provide context for FailureAnalyzer
-        outcome.post_screenshot_b64 = await _capture_live_screenshot(
-            session, "live screenshot for failure analysis"
+    validation_passed = True
+    if not burst:
+        # 1. Pre-execution validation (Safety Net)
+        original_coords = list(action_item.get("coordinates") or [])
+        (
+            validation_passed,
+            validation_category,
+            validation_error,
+        ) = await _run_precondition_gate(
+            node, session, action_item, state, pre_screenshot_b64, original_coords
         )
-    else:
-        # 2. Local execution attempts
+        if not validation_passed:
+            outcome.success = False
+            outcome.intercepted = True
+            outcome.error_msg = f"Pre-execution validation failed: {validation_error}"
+            outcome.error_category = validation_category
+            attempts_log.append(outcome.error_msg)
+
+    if validation_passed:
+        # 2. Local execution: a vetted action gets a short retry loop, a burst
+        # member fires exactly once (retries would break the burst's timing).
+        if burst:
+            max_local_retries = 1
+        else:
+            max_local_retries = 1 if action_name == "launch_app" else 2
         outcome.success, outcome.error_msg = await _attempt_local_execution(
-            node, session, action_item, action_name, attempts_log
+            node,
+            session,
+            action_item,
+            action_name,
+            attempts_log,
+            max_local_retries=max_local_retries,
         )
-        if not outcome.success and not outcome.post_screenshot_b64:
-            logger.info("Action failed, capturing failure screenshot...")
-            outcome.post_screenshot_b64 = await _capture_live_screenshot(
-                session, "failure screenshot"
-            )
+
+    if not outcome.success:
+        logger.info("Action failed, capturing failure screenshot...")
+        outcome.post_screenshot_b64 = await _capture_live_screenshot(session, "failure screenshot")
 
     # Enrich the executed action record
     if len(attempts_log) > 1 or not outcome.success:
@@ -241,6 +270,8 @@ def _record_action_end(
     parent_id,
     action_trace_id,
     start_time: float,
+    *,
+    burst: bool,
 ):
     duration = time.time() - start_time
     if ctx.data_engine and step_id:
@@ -255,6 +286,7 @@ def _record_action_end(
                 "post_screenshot": post_image_name,
                 "timestamp": time.time(),
                 "relative_time": relative_time,
+                "burst": burst,
             },
             status="success" if outcome.success else "failed",
             duration=duration,
@@ -264,55 +296,61 @@ def _record_action_end(
         )
 
 
-def _reload_post_repair_screenshot(
-    ctx, state: State, last_screenshot_b64: str, last_screenshot_name: str | None
-) -> tuple[str, str | None]:
-    """Reloads the latest screenshot updated by FailureAnalyzer during repair."""
+def _normalize_point(ctx, point) -> list[int] | None:
+    """Pixel [x, y] -> normalized 0-1000 [x, y] using the device dims."""
     try:
-        screenshot_path = getattr(state, "latest_screenshot", None)
-        if screenshot_path:
-            if Path(screenshot_path).exists():
-                with open(screenshot_path, "rb") as f:
-                    last_screenshot_b64 = base64.b64encode(f.read()).decode("utf-8")
-                if ctx.data_engine:
-                    last_screenshot_name = ctx.data_engine.get_or_create_image(
-                        base64.b64decode(last_screenshot_b64)
-                    )
-                logger.info(f"Validator reloaded post-repair screenshot from: {screenshot_path}")
-    except Exception as e:
-        logger.error(f"Failed to reload post-repair screenshot: {e}")
-    return last_screenshot_b64, last_screenshot_name
+        x, y = int(point[0]), int(point[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    width = getattr(getattr(ctx, "device", None), "device_width", None) or 1080
+    height = getattr(getattr(ctx, "device", None), "device_height", None) or 2400
+    return [
+        max(0, min(1000, round(x * 1000 / width))),
+        max(0, min(1000, round(y * 1000 / height))),
+    ]
 
 
-async def _analyze_failure(
-    node,
-    state: State,
-    outcome: _ActionOutcome,
-    *,
-    decision_screenshot_b64,
-    decision_screenshot_name,
-    post_image_name,
-    executed_actions,
-    unexecuted_actions,
-) -> dict:
-    """Triggers the FailureAnalyzer for a failed action and records its analysis."""
-    logger.warning(f"Action failed: {outcome.action_item}. Triggering failure analysis.")
+def _incident_evidence(ctx, outcome: _ActionOutcome) -> dict:
+    """Structured facts the safety net attached to the action item, normalized."""
+    raw = outcome.action_item.pop("safety_net_evidence", None) or {}
+    evidence: dict = {}
+    if raw.get("new_center"):
+        normalized = _normalize_point(ctx, raw["new_center"])
+        if normalized:
+            evidence["new_location"] = normalized
+        if raw.get("new_bounds") is not None:
+            evidence["new_bounds"] = raw["new_bounds"]
+    if raw.get("occupant"):
+        evidence["occupant"] = raw["occupant"]
+        if raw.get("occupant_bounds") is not None:
+            evidence["occupant_bounds"] = raw["occupant_bounds"]
+    return evidence
 
-    analyzer = FailureAnalyzer(node.ctx)
-    analysis_result = await analyzer.analyze(
-        state,
-        outcome.action_item,
-        outcome.error_msg,
-        pre_screenshot=decision_screenshot_b64,
-        post_screenshot=outcome.post_screenshot_b64,
-        pre_screenshot_name=decision_screenshot_name,
-        post_screenshot_name=post_image_name,
-        executed_actions=executed_actions,
-        unexecuted_actions=unexecuted_actions,
-        error_category=outcome.error_category,
+
+def _current_step_number(ctx, state: State) -> int | None:
+    step_id = getattr(state, "current_step_id", None)
+    if ctx.data_engine and step_id:
+        try:
+            return ctx.data_engine.get_step_number(UUID(step_id))
+        except Exception:
+            return None
+    return None
+
+
+def _build_incident(ctx, state: State, outcome: _ActionOutcome, *, index: int, total: int) -> dict:
+    step_number = _current_step_number(ctx, state)
+    return open_incident(
+        previous=getattr(state, "open_incident", None),
+        kind=KIND_SAFETY_NET if outcome.intercepted else KIND_EXEC_ERROR,
+        category=outcome.error_category,
+        reason=outcome.error_msg,
+        action_item=outcome.action_item,
+        action_description=format_action_clean(outcome.action_item),
+        action_index=index,
+        burst_size=total,
+        step_number=step_number,
+        evidence=_incident_evidence(ctx, outcome),
     )
-    outcome.action_item["repair"] = analysis_result.get("analysis", "No analysis provided.")
-    return analysis_result
 
 
 async def run_validation_loop(node, state: State) -> dict:
@@ -328,8 +366,14 @@ async def run_validation_loop(node, state: State) -> dict:
         return {}
 
     execution: list[dict] = []
-    failed_action = None
     actions_to_execute = list(actions)
+    total_actions = len(actions_to_execute)
+    burst = total_actions > 1
+    if burst:
+        logger.info(
+            f"Fast-action burst: {total_actions} actions will fire back to back"
+            " without the safety net."
+        )
 
     session = await node._get_mcp_session()
 
@@ -338,15 +382,15 @@ async def run_validation_loop(node, state: State) -> dict:
             session, state
         )
         # Preserve the turn-initial screenshot (what the operator saw when making decisions)
-        decision_screenshot_b64 = last_screenshot_b64
         decision_screenshot_name = last_screenshot_name
     except Exception:
         return {}
 
     step_id = UUID(state.current_step_id) if state.current_step_id else None
 
-    analysis_result: dict = {}
+    incident: dict | None = None
     success = False
+    index = 0
 
     while actions_to_execute:
         action_item = actions_to_execute.pop(0)
@@ -363,16 +407,14 @@ async def run_validation_loop(node, state: State) -> dict:
 
         try:
             outcome = await _process_action(
-                node, state, session, action_item, action_name, last_screenshot_b64
+                node, state, session, action_item, action_name, last_screenshot_b64, burst=burst
             )
             success = outcome.success
             execution.append(outcome.action_item)
 
             post_image_name = None
             if outcome.post_screenshot_b64:
-                post_image_name = _absorb_post_screenshot(
-                    ctx, state, outcome.post_screenshot_b64
-                )
+                post_image_name = _absorb_post_screenshot(ctx, state, outcome.post_screenshot_b64)
                 last_screenshot_b64 = outcome.post_screenshot_b64
                 if post_image_name:
                     last_screenshot_name = post_image_name
@@ -386,48 +428,32 @@ async def run_validation_loop(node, state: State) -> dict:
                 parent_id,
                 action_trace_id,
                 start_time,
+                burst=burst,
             )
         finally:
             CURRENT_TRACE_ID.reset(token)
 
         if not success:
-            failed_action = outcome.action_item
-
-            analysis_result = await _analyze_failure(
-                node,
-                state,
-                outcome,
-                decision_screenshot_b64=decision_screenshot_b64,
-                decision_screenshot_name=decision_screenshot_name,
-                post_image_name=post_image_name,
-                executed_actions=execution[:-1],
-                unexecuted_actions=list(actions_to_execute),
+            incident = _build_incident(ctx, state, outcome, index=index, total=total_actions)
+            logger.warning(
+                f"Action failed: {outcome.action_item}. Opened execution incident"
+                f" ({incident['kind']}/{incident['category']},"
+                f" consecutive={incident['consecutive_failures']}) for the Operator."
             )
-
-            if analysis_result.get("status") == "fixed":
-                logger.success("Failure repaired locally!")
-                actions_to_execute = []
-                last_screenshot_b64, last_screenshot_name = _reload_post_repair_screenshot(
-                    ctx, state, last_screenshot_b64, last_screenshot_name
-                )
-                continue
-            else:
-                break
+            break
+        index += 1
 
     # Append any skipped actions to the execution log
     for skipped in actions_to_execute:
         skipped_copy = dict(skipped)
-        skipped_copy["attempts"] = ["Skipped"]
+        skipped_copy["attempts"] = [BURST_SKIPPED_MARKER if burst else "Skipped"]
         execution.append(skipped_copy)
 
     report = {
         "execution": execution,
-        "status": (
-            "success"
-            if success or (failed_action and analysis_result.get("status") == "fixed")
-            else "failed"
-        ),
-        "repair_status": (analysis_result.get("status") if failed_action else None),
+        "status": "success" if success else "failed",
+        "burst": burst,
+        "incident": incident,
     }
 
     # Determine if a distinct post-action screenshot was captured
@@ -442,4 +468,15 @@ async def run_validation_loop(node, state: State) -> dict:
             step_id, report, post_image_name=distinct_post_image_name
         )
 
-    return {"last_execution_result": report}
+    # A successful turn closes whatever incident was open (handing the Operator
+    # a one-turn CLOSED notice); a failed one keeps and escalates it.
+    closed = None
+    previous = getattr(state, "open_incident", None)
+    if success and isinstance(previous, dict) and previous.get("kind"):
+        closed = dict(previous)
+        closed["closed_at_step"] = _current_step_number(ctx, state)
+    return {
+        "last_execution_result": report,
+        "open_incident": incident,
+        "last_closed_incident": closed,
+    }

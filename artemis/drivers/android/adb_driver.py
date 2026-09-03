@@ -323,11 +323,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
                 )
 
             # Normalize literal escaped newlines from LLM / tool call serialization
-            norm_text = (
-                text.replace(r"\r\n", "\n")
-                .replace(r"\n", "\n")
-                .replace(r"\r", "\n")
-            )
+            norm_text = text.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "\n")
 
             # 1. Tier 1: Try clipboard injection + KEYCODE_PASTE (Zero IME interference, preserves multiline, works for all charsets)
             if self._ui_adb_client:
@@ -469,7 +465,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
             try:
                 self._scrcpy_process.terminate()
                 await asyncio.wait_for(self._scrcpy_process.wait(), timeout=5.0)
-            except (ProcessLookupError, OSError, asyncio.TimeoutError) as e:
+            except (TimeoutError, ProcessLookupError, OSError) as e:
                 # Already exited, or did not stop within the timeout; a lingering
                 # scrcpy may keep the MKV file locked on Windows.
                 logger.debug(f"scrcpy process did not terminate cleanly: {e}")

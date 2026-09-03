@@ -19,6 +19,7 @@ import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse } from '../core/models/session.model';
+import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
 import { StepItemData, StepReplayFrame } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame };
@@ -347,7 +348,7 @@ export class AgentService {
 
   // Streaming chunks are coalesced into one signal update per short window so a
   // chatty LLM stream cannot force a full recompute pass per SSE chunk.
-  private pendingStreamChunks = new Map<string, { execId: any; stepId: any; streamType: string; chunk: string }>();
+  private pendingStreamChunks = new Map<string, { execId: any; stepId: any; parentTraceId?: any; streamType: string; chunk: string }>();
   private streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private lastQueueSignature: string | null = null;
   private lastActiveTasksSignature: string | null = null;
@@ -379,13 +380,22 @@ export class AgentService {
   });
 
   /**
+   * Effective Pro tuning defaults (verification level, explorer mode) from the
+   * backend agent config, so the launcher sliders start where the config is.
+   */
+  public getProTuningDefaults(): Observable<ProTuningDefaults> {
+    return this.http.get<ProTuningDefaults>('/api/run/defaults');
+  }
+
+  /**
    * Run a new task by submitting to backend queue
    */
   public runTask(
     goal: string,
     profile: string = 'flash',
     expectedOutput?: string,
-    enableOutputter?: boolean
+    enableOutputter?: boolean,
+    proTuning?: ProTuningOptions
   ): Observable<any> {
     return new Observable((obs) => {
       const submittedEvent: StartupProgressEvent = {
@@ -400,6 +410,12 @@ export class AgentService {
       }
       if (enableOutputter !== undefined) {
         payload.enable_outputter = enableOutputter;
+      }
+      if (proTuning?.verificationLevel) {
+        payload.verification_level = proTuning.verificationLevel;
+      }
+      if (proTuning?.explorerMode) {
+        payload.explorer_mode = proTuning.explorerMode;
       }
       this.clearUserPinnedSession();
       this.http.post<any>('/api/run', payload).subscribe({
@@ -702,6 +718,7 @@ export class AgentService {
     this.isPaused.set(false);
     this.pausedError.set(null);
     this.fetchNotes(sessionId);
+    this.fetchChecks(sessionId);
     this.updateModelForCurrentView();
 
     // If video window is currently open, dynamically sync/refresh video for new session
@@ -709,7 +726,7 @@ export class AgentService {
       this.openVideoPlayer(sessionId);
     }
 
-    console.log(`Selecting session: ${sessionId}`);
+    console.debug(`Selecting session: ${sessionId}`);
     // Start reading the persisted snapshot immediately
     this.backfillSessionSteps(sessionId, loadGeneration);
     this.ensureLiveStream();
@@ -724,7 +741,7 @@ export class AgentService {
       return;
     }
 
-    console.log('Establishing persistent unified live stream via /api/stream');
+    console.debug('Establishing persistent unified live stream via /api/stream');
     // The stream is registered outside the Angular zone: high-frequency SSE
     // callbacks must not schedule a change-detection pass each. Signal writes
     // still notify the render scheduler, so the UI stays live.
@@ -756,7 +773,8 @@ export class AgentService {
       'session_started',
       'session_ended',
       'recording_ready',
-      'recording_failed'
+      'recording_failed',
+      'checker_event'
     ];
 
     eventTypes.forEach((eventType) => {
@@ -843,6 +861,11 @@ export class AgentService {
             this.fetchStatus();
             if (endedId) {
               this.fetchNotes(endedId);
+              if (String(endedId) === String(this.currentSessionId() || '')) {
+                // The exit final review / run outcome may have landed while the
+                // stream was reconnecting: reconcile from the persisted ledger.
+                this.fetchChecks(endedId);
+              }
               if (
                 this.isVideoWindowOpen()
                 && this.activeVideoSessionId === endedId
@@ -1010,14 +1033,19 @@ export class AgentService {
   private queueStreamChunk(parsedData: any): void {
     const execId = parsedData.execution_id;
     const stepId = parsedData.step_id;
+    // The emitting agent's trace: lets the aggregator route a concurrent
+    // agent's stream (e.g. the Checker) to its own block instead of the
+    // Operator step that happens to be current.
+    const parentTraceId = parsedData.parent_trace_id || null;
     const streamType = parsedData.stream_type || 'text';
     const key = `${execId}|${streamType}`;
     const pending = this.pendingStreamChunks.get(key);
     if (pending) {
       pending.chunk += parsedData.chunk;
       if (stepId) pending.stepId = stepId;
+      if (parentTraceId) pending.parentTraceId = parentTraceId;
     } else {
-      this.pendingStreamChunks.set(key, { execId, stepId, streamType, chunk: parsedData.chunk });
+      this.pendingStreamChunks.set(key, { execId, stepId, parentTraceId, streamType, chunk: parsedData.chunk });
     }
     if (!this.streamFlushTimer) {
       const delay = typeof document !== 'undefined' && document.hidden ? 500 : 80;
@@ -1058,14 +1086,18 @@ export class AgentService {
             data: {
               ...existingLog.data,
               text: existingLog.data.text + batch.chunk,
-              step_id: batch.stepId || existingLog.data.step_id
+              step_id: batch.stepId || existingLog.data.step_id,
+              parent_trace_id: batch.parentTraceId || existingLog.data.parent_trace_id || null
             }
           };
         } else {
+          // A new execution closes the previous open stream of the same agent
+          // lane only; concurrent agents (Operator vs. Checker) keep theirs.
           next = next.map((l) => {
             if (l.type === 'llm_stream' &&
                 (l.data.stream_type || 'text') === batch.streamType &&
-                !l.data.isCompleted) {
+                !l.data.isCompleted &&
+                (l.data.parent_trace_id || null) === (batch.parentTraceId || null)) {
               return { ...l, data: { ...l.data, isCompleted: true } };
             }
             return l;
@@ -1076,6 +1108,7 @@ export class AgentService {
             data: {
               execution_id: batch.execId,
               step_id: batch.stepId,
+              parent_trace_id: batch.parentTraceId || null,
               text: batch.chunk,
               stream_type: batch.streamType,
               isCompleted: false
@@ -1511,6 +1544,105 @@ export class AgentService {
   /**
    * Fetch notes for a specific session
    */
+  /**
+   * Backfill the Checker's attempts and run outcome from the persisted verdict
+   * ledger (`/api/sessions/{id}/checks`) as synthetic `checker_event` logs, so
+   * historical sessions show the same timeline blocks as live ones. Live
+   * events for attempts already known are merged by attempt id in the
+   * aggregator, so re-fetching is idempotent.
+   */
+  public fetchChecks(sessionId: string): void {
+    if (!sessionId) return;
+    this.http.get<{ records?: any[]; run_outcome?: any }>(`/api/sessions/${sessionId}/checks`).subscribe({
+      next: (res) => {
+        if (this.currentSessionId() !== sessionId) return;
+        const snapshot = this.buildCheckerSnapshotLogs(sessionId, res?.records || [], res?.run_outcome || null);
+        this.sessionLogs.update((logs) => [
+          ...logs.filter((log) => !log.checks_snapshot),
+          ...snapshot
+        ]);
+      },
+      error: (err) => {
+        console.error(`Failed to fetch checks for session ${sessionId}:`, err);
+      }
+    });
+  }
+
+  private buildCheckerSnapshotLogs(sessionId: string, records: any[], runOutcome: any): any[] {
+    const byAttempt = new Map<string, any>();
+    for (const rec of records) {
+      if (!rec || !rec.attempt_id) continue;
+      const attemptId = String(rec.attempt_id);
+      const checkpointId = String(rec.checkpoint_id || '');
+      let attempt = byAttempt.get(attemptId);
+      if (!attempt) {
+        attempt = {
+          event: 'attempt_finished',
+          phase: checkpointId === 'final' ? 'final' : 'checkpoint',
+          attempt_id: attemptId,
+          checkpoint_id: checkpointId,
+          subgoal_text: String(rec.subgoal_text || (checkpointId === 'final'
+            ? "Final review against the user's original goal"
+            : `Subgoal ${checkpointId.slice(0, 8)}`)),
+          anchor_step_id: rec.anchor_step_id ?? null,
+          trace_id: rec.trace_id ?? null,
+          status: 'done',
+          verdicts: [],
+          findings: [],
+          ts: typeof rec.ts === 'number' ? rec.ts : undefined,
+          session_id: sessionId
+        };
+        byAttempt.set(attemptId, attempt);
+      }
+      if (typeof rec.ts === 'number') {
+        attempt.ts = attempt.ts === undefined ? rec.ts : Math.min(attempt.ts, rec.ts);
+      }
+      if (!attempt.trace_id && rec.trace_id) {
+        attempt.trace_id = rec.trace_id;
+      }
+      attempt.verdicts.push({
+        item_text: String(rec.item_text || ''),
+        kind: String(rec.kind || ''),
+        status: String(rec.status || ''),
+        evidence: String(rec.evidence || ''),
+        suggestion: rec.suggestion ? String(rec.suggestion) : '',
+        when: rec.when ? String(rec.when) : undefined
+      });
+    }
+
+    const logs: any[] = [];
+    for (const attempt of byAttempt.values()) {
+      const statuses = new Set(attempt.verdicts.map((v: any) => v.status));
+      if (statuses.size === 1) {
+        const only = [...statuses][0];
+        if (only === 'superseded' || only === 'unchecked') attempt.status = only;
+      }
+      const ts = attempt.ts ?? Date.now() / 1000;
+      attempt.timestamp = ts;
+      logs.push({
+        type: 'checker_event',
+        session_id: sessionId,
+        timestamp: new Date(ts * 1000).toISOString(),
+        checks_snapshot: true,
+        data: attempt
+      });
+    }
+    if (runOutcome && typeof runOutcome === 'object') {
+      const lastTs = logs.length > 0
+        ? Math.max(...logs.map((l) => new Date(l.timestamp).getTime() / 1000))
+        : Date.now() / 1000;
+      const ts = lastTs + 0.001;
+      logs.push({
+        type: 'checker_event',
+        session_id: sessionId,
+        timestamp: new Date(ts * 1000).toISOString(),
+        checks_snapshot: true,
+        data: { event: 'run_outcome', phase: 'outcome', ...runOutcome, ts, timestamp: ts, session_id: sessionId }
+      });
+    }
+    return logs;
+  }
+
   public fetchNotes(sessionId: string): void {
     if (!sessionId) {
       this.currentNotes.set({});

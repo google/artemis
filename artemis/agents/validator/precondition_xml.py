@@ -17,7 +17,7 @@
 Checks that the element the Operator decided to interact with is still present
 on the live screen (via the UI hierarchy) and substantially consistent, with
 coordinate self-healing for small drifts and a structured failure taxonomy
-(shifted / occupied / disappeared) consumed by the FailureAnalyzer.
+(shifted / occupied / disappeared) surfaced to the Operator as an execution incident.
 
 Extracted from ``validator.py``; the public entry points remain the
 ``ValidatorNode`` methods, which delegate here.
@@ -28,7 +28,7 @@ import difflib
 import math
 import re
 
-from artemis.agents.validator.failure_analyzer import ValidationErrorCategory
+from artemis.agents.validator.categories import ValidationErrorCategory
 from artemis.constants import VALIDATOR_UI_HIERARCHY_TIMEOUT
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
@@ -125,8 +125,7 @@ async def _fetch_live_elements(session):
             elements = await session.ui_hierarchy(timeout=VALIDATOR_UI_HIERARCHY_TIMEOUT)
         except Exception as e:
             logger.warning(
-                f"Failed to get live XML via MCP: {e!r}. Falling back to"
-                " Pixel-based validation."
+                f"Failed to get live XML via MCP: {e!r}. Falling back to Pixel-based validation."
             )
             return None, (
                 False,
@@ -146,8 +145,7 @@ async def _fetch_live_elements(session):
 
     except Exception as e:
         logger.error(
-            f"Unexpected error during live XML fetch: {e}. Falling back to"
-            " Pixel-based validation."
+            f"Unexpected error during live XML fetch: {e}. Falling back to Pixel-based validation."
         )
         return None, (
             False,
@@ -278,9 +276,7 @@ def _combine_signals(
         signals.append(W_COORD * (1.0 if contains_coord else 0.0))
 
     score = sum(signals) / sum(weights) if weights else 1.0
-    identity_score = (
-        sum(identity_signals) / sum(identity_weights) if identity_weights else 1.0
-    )
+    identity_score = sum(identity_signals) / sum(identity_weights) if identity_weights else 1.0
     return score, identity_score
 
 
@@ -554,6 +550,11 @@ def _classify_failure(
             f" has shifted.\n- New location: {best['center']} (bounds:"
             f" {best['bounds']})"
         )
+        # Structured facts for the execution incident handed to the Operator.
+        action_item["safety_net_evidence"] = {
+            "new_center": list(best["center"]),
+            "new_bounds": best.get("bounds"),
+        }
         return False, ValidationErrorCategory.TARGET_SHIFTED, reason
 
     # 2. Occupied Case
@@ -568,6 +569,10 @@ def _classify_failure(
             " occupied/intercepted by a different element:"
             f" {occupant_desc} at bounds {occupant_bounds}."
         )
+        action_item["safety_net_evidence"] = {
+            "occupant": occupant_desc,
+            "occupant_bounds": occupant_bounds,
+        }
         return False, ValidationErrorCategory.TARGET_OCCUPIED, reason
 
     # 3. Completely Missing Case

@@ -105,8 +105,8 @@ limitations under the License.
                   rows="1"
                   [disabled]="isSubmitting()"
                   [placeholder]="selectedProfile() === 'pro' 
-                    ? 'Pro: Multi-agent cognitive graph architecture for complex multi-step tasks' 
-                    : 'Flash: Reactive fast loop for standard app workflows within 25 steps'"
+                    ? 'Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks'
+                    : 'Flash: fast single-look loop for everyday app tasks'"
                   class="dock-textarea"
                   spellcheck="false"
                 ></textarea>
@@ -155,13 +155,13 @@ limitations under the License.
                 <div class="model-profile-toggle" role="group" aria-label="Select Agent Architecture">
                   <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'flash'"
                     (mousedown)="$event.preventDefault()" (click)="setProfile('flash', $event)"
-                    title="Flash: Reactive fast-loop architecture for standard app workflows (3–5s/step)">
+                    title="Flash: fast single-look loop for everyday app tasks (3–5s/step)">
                     <span class="material-symbols-outlined pill-icon icon-flash">bolt</span>
                     <span class="pill-label">Flash</span>
                   </button>
                   <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'pro'"
                     (mousedown)="$event.preventDefault()" (click)="setProfile('pro', $event)"
-                    title="Pro: Multi-agent cognitive graph architecture with planner & closed-loop verification for complex tasks">
+                    title="Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks (15–40s/step)">
                     <span class="material-symbols-outlined pill-icon icon-pro">psychology</span>
                     <span class="pill-label">Pro</span>
                   </button>

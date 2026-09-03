@@ -297,7 +297,11 @@ async def get_credentials():
     providers = ("google", "openai", "anthropic", "openrouter", "ocr")
     status = {name: bool(settings.get_api_key(name)) for name in providers}
     status["gemini"] = status["google"]
-    return {"providers": [{"name": name, "configured": configured} for name, configured in status.items()]}
+    return {
+        "providers": [
+            {"name": name, "configured": configured} for name, configured in status.items()
+        ]
+    }
 
 
 @router.post("/credentials/test")
@@ -370,7 +374,7 @@ async def update_credentials(request: UpdateCredentialsRequest):
 async def get_model_config_and_env():
     """Retrieve the current active artemis.jsonc configuration and .env status for custom setup."""
     import os
-    from artemis.config.paths import ROOT_DIR, get_config_path
+    from artemis.config.paths import get_config_path, get_env_file
     from artemis.config import settings
     from artemis.utils.file import load_jsonc
 
@@ -390,7 +394,7 @@ async def get_model_config_and_env():
         config_content = f"// Error reading config: {e}"
 
     # 2. Env file resolution
-    env_path = ROOT_DIR / ".env"
+    env_path = get_env_file()
 
     # 3. Relevant Env Variables status
     def get_real_env_value(key_name: str, provider: str) -> str | None:

@@ -113,9 +113,7 @@ class SessionTokenMeter:
         self.cache_hit_calls = 0
         self.last_prompt_tokens = 0
 
-    def record(
-        self, usage: dict[str, int], *, update_last_prompt: bool = True
-    ) -> dict[str, int]:
+    def record(self, usage: dict[str, int], *, update_last_prompt: bool = True) -> dict[str, int]:
         """Accumulates one call's usage; returns a session snapshot.
 
         ``update_last_prompt=False`` accumulates the totals without touching
@@ -178,9 +176,7 @@ def record_llm_usage(
         if not session_id or usage is None:
             return None
 
-        snapshot = get_meter(session_id).record(
-            usage, update_last_prompt=update_last_prompt
-        )
+        snapshot = get_meter(session_id).record(usage, update_last_prompt=update_last_prompt)
         payload: dict[str, Any] = {
             **usage,
             "context_base_tokens": usage["prompt_tokens"],

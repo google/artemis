@@ -45,9 +45,7 @@ async def exec_single_chunk(
     current_start = round(start_time, 1) if isinstance(start_time, (int, float)) else start_time
     current_end = round(end_time, 1) if isinstance(end_time, (int, float)) else end_time
 
-    if not isinstance(current_start, (int, float)) or not isinstance(
-        current_end, (int, float)
-    ):
+    if not isinstance(current_start, (int, float)) or not isinstance(current_end, (int, float)):
         raise ValueError("Child video analysis requires a closed numeric interval")
 
     device_id = getattr(getattr(analyzer.ctx, "device", None), "device_id", None)
@@ -57,9 +55,7 @@ async def exec_single_chunk(
         current_end,
         specific_query,
         model_name=analyzer.model_name,
-        source_generation=(
-            active_session.generation if active_session is not None else None
-        ),
+        source_generation=(active_session.generation if active_session is not None else None),
     )
     if claim.state == "cached":
         cached = (
@@ -213,9 +209,7 @@ async def _finish_failed_chunk(
         and media.prompt_with_context is not None
     ):
         try:
-            logger.warning(
-                "Native video chunk exhausted retries; using universal fallback"
-            )
+            logger.warning("Native video chunk exhausted retries; using universal fallback")
             _va._record_llm_event(
                 "llm_fallback",
                 {
@@ -281,10 +275,7 @@ async def _prepare_chunk_media(
     media.actual_start = actual_start
 
     slowdown_factor = 1.0
-    if (
-        current_end is not None
-        and (current_end - current_start) <= _va.SLOWDOWN_THRESHOLD_SECONDS
-    ):
+    if current_end is not None and (current_end - current_start) <= _va.SLOWDOWN_THRESHOLD_SECONDS:
         slowdown_factor = _va.SLOWDOWN_FACTOR
 
     async with _va.TRANSCODE_SEMAPHORE:
@@ -319,32 +310,22 @@ def _build_chunk_prompt(
     warnings = analyzer.get_overlapping_warnings(start_time, end_time)
     warning_block = ""
     if warnings:
-        lines = [
-            "WARNING: The following queries were already tried in this timeframe:\n"
-        ]
+        lines = ["WARNING: The following queries were already tried in this timeframe:\n"]
         for w in warnings:
             lines.append(f"Searched for: {w['target']} -> {w['summary']}")
         warning_block = "\n".join(lines) + "\n\n"
 
     duration_secs = getattr(result, "duration_seconds", None)
-    actual_end = (
-        actual_start + duration_secs
-        if isinstance(duration_secs, (int, float))
-        else None
-    )
+    actual_end = actual_start + duration_secs if isinstance(duration_secs, (int, float)) else None
     end_str = f" to {actual_end:.1f}s" if actual_end is not None else ""
     warning_val = getattr(result, "warning", None)
     truncation_note = (
-        f" (NOTE: {warning_val})"
-        if isinstance(warning_val, str) and warning_val
-        else ""
+        f" (NOTE: {warning_val})" if isinstance(warning_val, str) and warning_val else ""
     )
 
     slowdown_note = ""
     if slowdown_factor != 1.0:
-        slowdown_note = (
-            "WARNING: This video is slowed down to capture fast micro-actions.\n\n"
-        )
+        slowdown_note = "WARNING: This video is slowed down to capture fast micro-actions.\n\n"
 
     prompt_with_context = (
         "IMPORTANT CONTEXT: This video segment corresponds to"

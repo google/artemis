@@ -267,7 +267,10 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                 all_detailed=False,
             )
             if device_serial and not summary_markdown.startswith("**Session ID:"):
-                summary_markdown = f"**Session ID:** `{trace_id}` | **Model:** Pro{device_info_str}\n\n" + summary_markdown
+                summary_markdown = (
+                    f"**Session ID:** `{trace_id}` | **Model:** Pro{device_info_str}\n\n"
+                    + summary_markdown
+                )
             return summary_markdown
         except Exception as e:
             return {
@@ -381,7 +384,9 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                         action_obj[0] if isinstance(action_obj, list) and action_obj else action_obj
                     )
 
-                    if isinstance(action_parsed, dict) and (action_parsed.get("action") or action_parsed.get("name")):
+                    if isinstance(action_parsed, dict) and (
+                        action_parsed.get("action") or action_parsed.get("name")
+                    ):
                         if not os.path.exists(overlay_abs_path):
                             success_draw = _draw_action_overlay(
                                 path, action_parsed, overlay_abs_path
@@ -422,7 +427,6 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                 action=step_dict.get("action_taken"),
                 result=step_dict.get("last_execution_result"),
                 is_most_recent=False,
-                for_failure_analyzer=False,
             )
 
             return {

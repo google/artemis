@@ -36,13 +36,30 @@ async def run_batch_tasks(
     tasks: list[str],
     profile_name: str = "pro",
     delay_seconds: float = 5.0,
+    verification_level: str | None = None,
+    explorer_pro_mode: str | None = None,
 ) -> None:
-    """Executes a list of automation tasks sequentially."""
+    """Executes a list of automation tasks sequentially.
+
+    Args:
+        tasks: Goals to run one after another on a single agent.
+        profile_name: Execution profile ('flash' or 'pro') applied to every goal.
+        delay_seconds: Pause between successive goals.
+        verification_level: Coarse Checker preset ('off', 'final', 'checkpoints',
+            'strict') for the Pro profile; ignored by Flash.
+        explorer_pro_mode: Explorer tier ('flash', 'pro', 'ultra') behind
+            ``ask_explorer`` under the Pro profile; ignored by Flash.
+    """
     if not os.environ.get("ARTEMIS_TASK_INGRESS"):
         os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
     llm_config = initialize_llm_config()
     profile = AgentProfile(name="default", llm_config=llm_config)
-    config = Builders.AgentConfig.with_default_profile(profile).build()
+    config_builder = Builders.AgentConfig.with_default_profile(profile)
+    if verification_level is not None:
+        config_builder.with_verification_level(verification_level)
+    if explorer_pro_mode is not None:
+        config_builder.with_explorer(pro_mode=explorer_pro_mode)
+    config = config_builder.build()
 
     agent = Agent(config=config)
     await agent.init()
@@ -126,6 +143,25 @@ def batch_command(
             help="Run in standalone embedded mode without routing through Artemis Daemon.",
         ),
     ] = False,
+    verification_level: Annotated[
+        str | None,
+        typer.Option(
+            "--verification-level",
+            help=(
+                "Checker preset for the Pro profile, applied to every goal: 'off' (no audit),"
+                " 'final' (exit review only, the default), 'checkpoints' (every plan"
+                " checkpoint + exit review), 'strict' (checkpoints with a larger repair"
+                " budget; a failed assert halts)."
+            ),
+        ),
+    ] = None,
+    explorer_pro_mode: Annotated[
+        str | None,
+        typer.Option(
+            "--explorer-pro-mode",
+            help="Explorer tier behind ask_explorer under the Pro profile ('flash', 'pro', 'ultra').",
+        ),
+    ] = None,
 ) -> None:
     """Execute multiple automation tasks in sequence."""
     task_list: list[str] = []
@@ -180,23 +216,37 @@ def batch_command(
             console.print("[dim]Connecting to Artemis Daemon scheduler...[/dim]")
             is_running, base_url = ensure_daemon_running(timeout=8.0, wait_ready=True)
             if is_running and base_url:
-                console.print(f"[bold green]✓[/bold green] Artemis Daemon active at [cyan]{base_url}[/cyan]")
-                resp = submit_batch_to_daemon(task_list, profile=profile, base_url=base_url)
+                console.print(
+                    f"[bold green]✓[/bold green] Artemis Daemon active at [cyan]{base_url}[/cyan]"
+                )
+                resp = submit_batch_to_daemon(
+                    task_list,
+                    profile=profile,
+                    verification_level=verification_level,
+                    explorer_mode=explorer_pro_mode,
+                    base_url=base_url,
+                )
                 if resp and resp.get("tasks"):
-                    console.print(f"[bold green]✓[/bold green] Enqueued {len(task_list)} batch tasks in Daemon scheduler.\n")
+                    console.print(
+                        f"[bold green]✓[/bold green] Enqueued {len(task_list)} batch tasks in Daemon scheduler.\n"
+                    )
                     results = []
                     for idx, t_item in enumerate(resp["tasks"], 1):
                         sid = t_item.get("session_id")
                         goal = t_item.get("goal")
-                        console.print(f"[cyan]Waiting for Task {idx}/{len(task_list)}: '{goal}' (Session: {sid})...[/cyan]")
+                        console.print(
+                            f"[cyan]Waiting for Task {idx}/{len(task_list)}: '{goal}' (Session: {sid})...[/cyan]"
+                        )
                         final_sess = wait_for_daemon_task(sid, base_url=base_url, timeout=1800.0)
                         st = final_sess.get("status")
                         err = final_sess.get("error") or ""
-                        results.append({
-                            "task": goal,
-                            "status": "SUCCESS" if st in ("completed", "success") else "FAILED",
-                            "error": err,
-                        })
+                        results.append(
+                            {
+                                "task": goal,
+                                "status": "SUCCESS" if st in ("completed", "success") else "FAILED",
+                                "error": err,
+                            }
+                        )
 
                     table = Table(title="Batch Execution Summary")
                     table.add_column("#", justify="right", style="cyan")
@@ -217,4 +267,12 @@ def batch_command(
         except Exception as exc:
             logger.debug(f"Batch daemon routing notice: {exc}")
 
-    asyncio.run(run_batch_tasks(task_list, profile_name=profile, delay_seconds=delay))
+    asyncio.run(
+        run_batch_tasks(
+            task_list,
+            profile_name=profile,
+            delay_seconds=delay,
+            verification_level=verification_level,
+            explorer_pro_mode=explorer_pro_mode,
+        )
+    )

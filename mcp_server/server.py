@@ -74,7 +74,7 @@ try:
             self.log_file.flush()
 
     sys.stderr = StderrTee(sys.stderr, os.path.join(_mcp_log_dir, "mcp_stderr.log"))
-except Exception:
+except OSError:
     # Debug logging and the stderr tee are optional diagnostics; they must
     # never prevent the MCP stdio server from starting.
     pass
@@ -89,11 +89,10 @@ from artemis.runtime import shutdown_awake_service, start_awake_service
 
 import threading
 
+
 def main(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8001):
     """Main entrypoint to run the Artemis Mobile Agent MCP server."""
-    threading.Thread(
-        target=start_awake_service, daemon=True, name="artemis-awake-init"
-    ).start()
+    threading.Thread(target=start_awake_service, daemon=True, name="artemis-awake-init").start()
     try:
         if transport.lower() == "sse":
             mcp.run(transport="sse", host=host, port=port)

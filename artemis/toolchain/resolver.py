@@ -14,12 +14,15 @@
 
 """Multi-tier cross-platform binary resolution and discovery engine."""
 
+import logging
 import os
 from pathlib import Path
 import shutil
 
 from artemis.platform import OSType, platform
 from artemis.toolchain.descriptors import TOOLS, ToolDescriptor
+
+logger = logging.getLogger(__name__)
 
 
 class ToolchainResolver:
@@ -102,10 +105,12 @@ class ToolchainResolver:
                     resolved = str(Path(embedded).resolve())
                     self._cache[key] = resolved
                     return resolved
-            except Exception:
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 # Probing an optional third-party embedded binary; any failure
                 # simply means "tool not found" and the caller handles None.
-                pass
+                logger.debug(
+                    "Embedded binary fallback for %s skipped: %s", desc.name, exc, exc_info=True
+                )
 
         # Do not permanently cache negative lookups so dynamic installs are detected immediately
         self._cache.pop(key, None)

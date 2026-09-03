@@ -323,7 +323,11 @@ async def remux_recording_to_mp4(source_path: Path, output_path: Path) -> bool:
             stderr=asyncio.subprocess.PIPE,
         )
         _fout, _ferr = await fallback_proc.communicate()
-        if fallback_proc.returncode == 0 and temporary_path.exists() and temporary_path.stat().st_size > 0:
+        if (
+            fallback_proc.returncode == 0
+            and temporary_path.exists()
+            and temporary_path.stat().st_size > 0
+        ):
             temporary_path.replace(output_path)
             return True
 
@@ -360,12 +364,13 @@ async def probe_video_segment(video_path: Path) -> dict[str, float | int]:
         streams = payload.get("streams") or []
         video_stream = next(
             (s for s in streams if s.get("width") and s.get("height")),
-            next((s for s in streams if s.get("codec_type") == "video"), streams[0] if streams else {})
+            next(
+                (s for s in streams if s.get("codec_type") == "video"),
+                streams[0] if streams else {},
+            ),
         )
         duration = float(
-            (payload.get("format") or {}).get("duration")
-            or video_stream.get("duration")
-            or 0
+            (payload.get("format") or {}).get("duration") or video_stream.get("duration") or 0
         )
         return {
             "duration": duration,
@@ -526,6 +531,7 @@ async def render_timeline_clip(
     if output_path.exists():
         output_path.unlink()
     return False
+
 
 def is_scrcpy_installed() -> bool:
     """Check if scrcpy is available in the system PATH."""
@@ -988,9 +994,7 @@ def extract_frames_at_timestamps(
                     (max(1, int(w * scale)), max(1, int(h * scale))),
                     interpolation=cv2.INTER_AREA,
                 )
-            encoded, buffer = cv2.imencode(
-                ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85]
-            )
+            encoded, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             if encoded:
                 frames.append((timestamp, buffer.tobytes()))
     finally:

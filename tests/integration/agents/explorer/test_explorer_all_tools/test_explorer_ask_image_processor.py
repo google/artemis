@@ -194,7 +194,7 @@ async def test_explorer_ask_image_processor_tool():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.image_processor.image_processor.ImageProcessor",
+            "artemis.agents.explorer.perception_tools.ImageProcessor",
             return_value=mock_image_processor_instance,
         ),
     ):

@@ -38,7 +38,11 @@ class DesktopNotifier(BaseNotifier):
             val = os.getenv("ARTEMIS_DESKTOP_NOTIFY", "").lower()
             if val in ("0", "false", "no", "off"):
                 return False
-            if os.getenv("CI", "").lower() in ("1", "true", "yes") and val not in ("1", "true", "yes"):
+            if os.getenv("CI", "").lower() in ("1", "true", "yes") and val not in (
+                "1",
+                "true",
+                "yes",
+            ):
                 return False
             if sys.platform == "linux" and not shutil.which("notify-send"):
                 return False

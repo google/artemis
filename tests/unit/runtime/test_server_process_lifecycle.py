@@ -202,9 +202,7 @@ def test_stop_server_terminates_tree(monkeypatch):
         lambda: 1,
     )
     reconcile = MagicMock(return_value=1)
-    monkeypatch.setattr(
-        "artemis.runtime.server_lifecycle._reconcile_orphaned_sessions", reconcile
-    )
+    monkeypatch.setattr("artemis.runtime.server_lifecycle._reconcile_orphaned_sessions", reconcile)
 
     success, msg, stopped = stop_server(8000)
     assert success is True
@@ -218,9 +216,7 @@ def test_stop_server_terminates_tree(monkeypatch):
 @pytest.mark.asyncio
 async def test_api_server_status():
     """Verify GET /api/system/server-status returns server runtime metadata."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://localhost"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as client:
         response = await client.get("/api/system/server-status")
         assert response.status_code == 200
         data = response.json()
@@ -243,7 +239,9 @@ async def test_api_restart_endpoint():
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "restarting"
-            assert "reconnection" in data["message"].lower() or "restarting" in data["message"].lower()
+            assert (
+                "reconnection" in data["message"].lower() or "restarting" in data["message"].lower()
+            )
             mock_thread.assert_called_once()
             mock_instance.start.assert_called_once()
 
@@ -254,9 +252,7 @@ async def test_api_shutdown_endpoint():
     fake_server = MagicMock(should_exit=False)
     app.state.uvicorn_server = fake_server
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://localhost"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as client:
         denied = await client.post("/api/system/shutdown")
         assert denied.status_code == 403
 

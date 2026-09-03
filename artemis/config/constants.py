@@ -134,7 +134,6 @@ AgentNode = Literal[
     "log_reader_sub_agent",
     "log_analyzer",
     "diagnoser",
-    "validator_failure_analyzer",
     "checker",
     "planner_avatar",
     "history_analyzer_expert",
@@ -142,6 +141,7 @@ AgentNode = Literal[
     "explorer",
     "history_analyzer",
     "validator_pixel_safety_net",
+    "planner_validation",
     "validator",
     "output_analyzer",
 ]

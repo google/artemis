@@ -36,9 +36,7 @@ def no_persistence(monkeypatch):
     monkeypatch.setattr(task_manager, "_find_data_engine_db", lambda: None)
     monkeypatch.setattr(task_manager, "_session_tracked_by_lock", lambda _tid: False)
     monkeypatch.setattr(task_manager.trace_store, "write_status", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        task_manager.trace_store, "update_trace_status", lambda *_a, **_k: None
-    )
+    monkeypatch.setattr(task_manager.trace_store, "update_trace_status", lambda *_a, **_k: None)
     monkeypatch.setattr(task_manager, "notify", lambda *_a, **_k: None)
 
 
@@ -48,9 +46,7 @@ def _db_with_session(tmp_path, trace_id: str, status: str, pid: int | None = 424
     conn.execute(
         "CREATE TABLE sessions (session_id TEXT, status TEXT, pid INTEGER, start_time REAL)"
     )
-    conn.execute(
-        "INSERT INTO sessions VALUES (?, ?, ?, ?)", (trace_id, status, pid, time.time())
-    )
+    conn.execute("INSERT INTO sessions VALUES (?, ?, ?, ?)", (trace_id, status, pid, time.time()))
     conn.commit()
     conn.close()
     return str(db_path)

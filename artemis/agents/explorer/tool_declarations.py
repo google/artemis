@@ -30,7 +30,7 @@ UNIVERSAL_EXPLORER_TOOLS = [
             "name": "ask_perception_tool",
             "description": (
                 "[Perception] Concurrently executes and awaits three sub-tasks in parallel,"
-                " including database search, coordinate search, and visual object detection."
+                " including UI-tree text search, coordinate audit, and visual object detection."
             ),
             "parameters": {
                 "type": "object",
@@ -154,7 +154,7 @@ UNIVERSAL_EXPLORER_TOOLS = [
                             "properties": {
                                 "label": {
                                     "type": "string",
-                                    "description": "Reference label (e.g. S1, D2, T3)",
+                                    "description": "Reference label (e.g. X1, O2, D3, or a number like 3)",
                                 },
                                 "description": {
                                     "type": "string",
@@ -191,7 +191,7 @@ NATIVE_EXPLORER_TOOL_DECLARATIONS = [
         name="ask_perception_tool",
         description=(
             "[Perception] Concurrently executes and awaits three sub-tasks"
-            " in parallel, including database search, coordinate search,"
+            " in parallel, including UI-tree text search, coordinate audit,"
             " and visual object detection on the screen.\n\nOutput"
             " Format:\nReturns:'text' (str): A single string consolidating"
             " results with 0-1000 normalized coordinates, including UI"
@@ -264,7 +264,7 @@ NATIVE_EXPLORER_TOOL_DECLARATIONS = [
             "[Perception] Retrieves all text elements detected on the"
             " original, unprocessed screen via OCR. Returns their"
             " normalized coordinates (in a [0, 1000] scale) labeled with"
-            " [T1], [T2] etc. in the text output, along with an annotated"
+            " [O1], [O2] etc. in the text output, along with an annotated"
             " image containing corresponding visual label dots."
         ),
         parameters=types.Schema(
@@ -324,7 +324,7 @@ NATIVE_EXPLORER_TOOL_DECLARATIONS = [
                             "label": types.Schema(
                                 type=types.Type.STRING,
                                 description=(
-                                    "Reference label (e.g., S1, D2, T3, or number like 3)"
+                                    "Reference label (e.g. X1, O2, D3, or a number like 3)"
                                 ),
                             ),
                             "coords": types.Schema(

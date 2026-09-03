@@ -17,7 +17,7 @@
 The Explorer implementation is split across several modules, but external
 callers (and ``unittest.mock.patch`` targets in the test suite) address
 collaborators such as ``settings``, ``StorageManager``, ``draw_dots``,
-``search_ui_func``, ``get_llm`` etc. through the historical module path
+``get_llm`` etc. through the historical module path
 ``artemis.agents.explorer.explorer``.  Split-out code therefore resolves those
 names at call time via :func:`facade` instead of importing them directly, so
 patches applied to the facade module keep affecting the split-out code.

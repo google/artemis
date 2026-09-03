@@ -98,7 +98,7 @@ async def invoke_tool_with_injection(
                         final_args[param_name] = state
                     elif InjectedToolCallId in args_list:
                         final_args[param_name] = tool_call_id
-        except Exception:  # pylint: disable=broad-exception-caught
+        except (ValueError, TypeError):
             # If inspection fails, fall back to just using provided args
             pass
 

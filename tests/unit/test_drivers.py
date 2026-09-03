@@ -118,7 +118,7 @@ async def test_android_driver_preserves_elements_from_combined_screen_data():
             "text": "Start",
             "class": "android.widget.Button",
             "bounds": "[10,20][100,80]",
-        }
+        },
     ]
     mock_ui_client.get_screen_data.return_value = SimpleNamespace(
         base64=_ONE_PIXEL_PNG,

@@ -38,27 +38,32 @@ from artemis.agents.validator.validator import ValidatorNode
 from artemis.context import ArtemisContext
 from artemis.graph.checkpoints import (
     append_ledger_record,
+    attempt_trace_id,
     compute_run_outcome,
     final_check_enabled,
+    FINAL_CHECKPOINT_ID,
+    FINAL_SUBGOAL_TEXT,
     harvest_finished_checkpoints,
     has_ledger_records,
     is_checker_note_key,
+    publish_checker_event,
     queue_checkpoints,
     read_ledger,
     revert_subgoal_status,
     settle_all_checkpoints,
     spawn_pending_checkpoints,
     sync_finding_lines,
+    verdict_payloads,
     write_run_outcome,
 )
 from artemis.graph.perception import perception_node
 from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
 from artemis.tools.command_tool import (
+    HANG_GUIDANCE,
     manage_task_wrapper,
     run_adb_command_wrapper,
 )
-from artemis.tools.committee_tool import ask_committee_wrapper
 from artemis.tools.diagnostic_tool import ask_diagnoser_wrapper
 from artemis.tools.explorer_tool import ask_explorer_wrapper
 from artemis.tools.index import get_tools_from_wrappers
@@ -173,6 +178,7 @@ async def execution_check_node(state: State, ctx: ArtemisContext):
 
     # Harvest finished checkpoint attempts (non-blocking: done() tasks only).
     check_findings = harvest_finished_checkpoints(ctx, state)
+    turn_metadata: dict = {}
 
     if hasattr(ctx, "planner_task") and ctx.planner_task:
         logger.info("Waiting for planner validation task to complete...")
@@ -181,50 +187,32 @@ async def execution_check_node(state: State, ctx: ArtemisContext):
             planner_result = await awaited_planner_task
             ctx.planner_task = None
 
-            if planner_result and planner_result.get("status") == "failed":
-                logger.warning("Planner rejected the task plan changes.")
-
-                # Targeted rollback: restore task_plan.md to the last content
-                # consistent with the validated baseline
-                if ctx.task_plan_content_before is not None:
-                    task_plan_path = get_note_file_path(ctx.data_engine.base_dir, "task_plan")
-                    if task_plan_path.exists():
-                        task_plan_path.write_text(ctx.task_plan_content_before, encoding="utf-8")
-                        logger.info("Rolled back task_plan.md to its original state.")
-                ctx.pending_validated_plan = None
-                ctx.task_plan_content_before = None
-
-                # Surface the rejection through operator_feedback — the only
-                # feedback channel the Operator's next prompt actually renders.
-                feedback = planner_result.get("feedback", "Your task plan changes were rejected.")
-                check_findings.append(
-                    "[planner] Your recent modification to the top-level task"
-                    " plan was rejected and the plan was rolled back to its"
-                    f" previous state. Reason: {feedback} Any terminal actions"
-                    " you outputted were not executed. Review the task goal"
-                    " again and consider what the optimal strategy is now."
+            flagged = bool(planner_result and planner_result.get("status") == "failed")
+            if flagged:
+                # Advisory outcome: the plan change stays applied and the
+                # turn's actions run. The Operator only receives the concern
+                # and its reason through operator_feedback — the one feedback
+                # channel its next prompt renders.
+                logger.warning("Planner validation flagged the task plan changes.")
+                feedback = planner_result.get(
+                    "feedback", "The reviewer had a concern about this plan change."
                 )
-
-                # Even a rejected turn leaves a step record: the record reflects
-                # the decision made and the fact that its terminal actions were
-                # intercepted before execution.
-                rejected_step_id = _record_turn({"planner_rejected": True})
-
-                return {
-                    "checker_success": False,
-                    "structured_decisions": "",
-                    "current_step_id": rejected_step_id,
-                    "operator_feedback": check_findings or None,
-                }
-
+                check_findings.append(
+                    "[planner] Advisory review of your recent top-level plan"
+                    f" change: {feedback} The change was NOT rolled back —"
+                    " weigh this concern against your own observations and"
+                    " correct the plan only if you agree."
+                )
+                turn_metadata["planner_flagged"] = True
             else:
-                logger.info("Planner approved the task plan changes.")
-                # Advance the ratchet baseline: the validated content becomes
-                # the new reference for future drift comparisons.
-                if ctx.pending_validated_plan is not None:
-                    ctx.last_validated_plan = ctx.pending_validated_plan
-                ctx.pending_validated_plan = None
-                ctx.task_plan_content_before = None
+                logger.info("Planner validation approved the task plan changes.")
+
+            # Advance the ratchet baseline either way: the reviewed content is
+            # the new reference, so an already-flagged change is not re-flagged
+            # on every subsequent write.
+            if ctx.pending_validated_plan is not None:
+                ctx.last_validated_plan = ctx.pending_validated_plan
+            ctx.pending_validated_plan = None
         except asyncio.CancelledError:
             if not awaited_planner_task.cancelled():
                 raise  # this node itself is being cancelled, not the awaited task
@@ -234,7 +222,7 @@ async def execution_check_node(state: State, ctx: ArtemisContext):
             logger.error(f"Planner validation task failed: {e}")
 
     # Every Operator turn is recorded — verification never gates history.
-    current_step_id = _record_turn({})
+    current_step_id = _record_turn(turn_metadata)
 
     # Spawn queued checkpoints only now: the just-recorded step is the evidence
     # anchor (its pre screenshot plus the previous turn's post state capture
@@ -295,8 +283,26 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
     if final_check_enabled(ctx):
         attempt_no = ctx.final_check_attempts + 1
         ctx.final_check_attempts = attempt_no
+        final_attempt_id = f"final#{attempt_no}"
         checkpoint_timeout = float(getattr(setup, "checkpoint_timeout", 180.0) or 180.0)
         ledger = read_ledger(base_dir)
+
+        def _final_event(status: str, verdicts: list[dict], **extra) -> None:
+            publish_checker_event(
+                ctx,
+                {
+                    "event": "attempt_finished",
+                    "phase": "final",
+                    "attempt_id": final_attempt_id,
+                    "checkpoint_id": FINAL_CHECKPOINT_ID,
+                    "subgoal_text": FINAL_SUBGOAL_TEXT,
+                    "trace_id": attempt_trace_id(ctx, final_attempt_id),
+                    "status": status,
+                    "verdicts": verdicts,
+                    **extra,
+                },
+            )
+
         try:
             report = await asyncio.wait_for(
                 run_final_check(
@@ -305,18 +311,22 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
                     plan_text=plan_text,
                     ledger=ledger,
                     check_items=list(snapshot.all_check_items),
+                    attempt_id=final_attempt_id,
                 ),
                 timeout=checkpoint_timeout,
             )
         except Exception as e:
             # Fail-open: release, but the verdict value stays inconclusive.
             logger.warning(f"Final check errored ({e}); releasing fail-open.")
+            error_verdicts: list[dict] = []
             for ci in snapshot.all_check_items:
                 append_ledger_record(
                     base_dir,
                     {
-                        "attempt_id": f"final#{attempt_no}",
-                        "checkpoint_id": "final",
+                        "attempt_id": final_attempt_id,
+                        "checkpoint_id": FINAL_CHECKPOINT_ID,
+                        "subgoal_text": FINAL_SUBGOAL_TEXT,
+                        "trace_id": attempt_trace_id(ctx, final_attempt_id),
                         "item_text": ci.text,
                         "kind": ci.kind,
                         "when": ci.when,
@@ -325,6 +335,16 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
                         "anchor_step_id": None,
                     },
                 )
+                error_verdicts.append(
+                    {
+                        "item_text": ci.text,
+                        "kind": ci.kind,
+                        "status": "inconclusive",
+                        "evidence": f"final check error: {e}",
+                        "suggestion": "",
+                    }
+                )
+            _final_event("error", error_verdicts, error=str(e), route="end")
             report = None
 
         if report is not None:
@@ -340,8 +360,10 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
                 append_ledger_record(
                     base_dir,
                     {
-                        "attempt_id": f"final#{attempt_no}",
-                        "checkpoint_id": "final",
+                        "attempt_id": final_attempt_id,
+                        "checkpoint_id": FINAL_CHECKPOINT_ID,
+                        "subgoal_text": FINAL_SUBGOAL_TEXT,
+                        "trace_id": attempt_trace_id(ctx, final_attempt_id),
                         "item_text": v.item_text,
                         "kind": v.kind,
                         "when": when,
@@ -368,6 +390,13 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
                         " budget is exhausted (or a stop/halt is latched);"
                         " ending with a blocked outcome."
                     )
+                    _final_event(
+                        "done",
+                        verdict_payloads(report.verdicts),
+                        unmet_subgoals=list(report.unmet_subgoals),
+                        findings=list(blocked_findings),
+                        route="blocked",
+                    )
                 else:
                     findings: list[str] = []
                     for text in report.unmet_subgoals:
@@ -384,7 +413,22 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
                             )
                     update["operator_feedback"] = findings or None
                     update["exit_settlement_route"] = "continue"
+                    _final_event(
+                        "done",
+                        verdict_payloads(report.verdicts),
+                        unmet_subgoals=list(report.unmet_subgoals),
+                        findings=list(findings),
+                        route="continue",
+                    )
                     return update
+            else:
+                _final_event(
+                    "done",
+                    verdict_payloads(report.verdicts),
+                    unmet_subgoals=[],
+                    findings=[],
+                    route="end",
+                )
 
     # END path: assemble the machine-readable run outcome.
     records = read_ledger(base_dir)
@@ -394,6 +438,15 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
         # BLOCKED/partial wrap-ups carry the last findings in the metadata file.
         extra = {"last_findings": blocked_findings} if blocked_findings else None
         write_run_outcome(base_dir, outcome, extra)
+        publish_checker_event(
+            ctx,
+            {
+                "event": "run_outcome",
+                "phase": "outcome",
+                **outcome.model_dump(),
+                "last_findings": list(blocked_findings),
+            },
+        )
         logger.info(
             f"Run outcome: task_status={outcome.task_status},"
             f" tests(passed={outcome.tests.passed}, failed={outcome.tests.failed},"
@@ -624,13 +677,6 @@ async def _process_plan_write(
                 # A newer write supersedes the in-flight validation.
                 ctx.planner_task.cancel()
 
-            if not milestones_changed(baseline, before):
-                # Last content still consistent with the baseline: preserves
-                # status progress made since the baseline as rollback target.
-                ctx.task_plan_content_before = content_before
-            elif ctx.task_plan_content_before is None:
-                ctx.task_plan_content_before = ctx.last_validated_plan
-
             ctx.pending_validated_plan = content_after
             initial_goal = (
                 state.initial_goal if state and hasattr(state, "initial_goal") else "Unknown Goal"
@@ -650,10 +696,11 @@ async def _process_plan_write(
             if isinstance(result, ToolMessage) and isinstance(result.content, str):
                 result.content = (
                     f"{result.content}\n\nWe have applied your changes"
-                    " to the task plan. A background verification task"
-                    " is currently reviewing these changes. If there"
-                    " are any issues with your modifications, you will"
-                    " be notified shortly."
+                    " to the task plan. A lightweight background review"
+                    " is checking the milestone change against the"
+                    " original goal; if it has a concern you will get an"
+                    " advisory hint with the reason (the change stays"
+                    " applied either way)."
                 )
 
     # Queue (never spawn) a checkpoint for EVERY newly completed top-level
@@ -818,8 +865,10 @@ def convergence_gate(
         logger.warning("Assert-halt latched; routing to exit settlement.")
         return _terminal_route()
 
-    # Check planner-validation result
-    if hasattr(state, "checker_success") and not state.checker_success:
+    # Check planner-validation result. ``None`` means "not yet evaluated"
+    # (the first pass after the Planner node) — only an explicit False is a
+    # failure; otherwise the log would misreport the initial plan as rejected.
+    if getattr(state, "checker_success", None) is False:
         logger.info("Plan validation failed, returning to operator for retry.")
         return "continue"
 
@@ -894,8 +943,7 @@ async def get_graph(ctx: ArtemisContext) -> CompiledStateGraph:
         ask_explorer_wrapper,
         recall_history_wrapper,
     ]
-    if ctx.execution_setup and ctx.execution_setup.enable_committee:
-        operator_specialized_wrappers.append(ask_committee_wrapper)
+    # ask_committee does not follow the Operator's pre-decision / turn-ending contract.
 
     operator_specialized_tools = get_tools_from_wrappers(ctx, operator_specialized_wrappers)
 
@@ -903,18 +951,18 @@ async def get_graph(ctx: ArtemisContext) -> CompiledStateGraph:
     for t in operator_specialized_tools:
         if t.name == "run_adb_command":
             t.description = (
-                "[EXPLORER] Executes a shell command directly on the Android"
-                " mobile device via ADB shell. Use this tool when normal"
-                " operating tools cannot achieve the goal, do not rely on it."
-                " You must not use this tool to bypass goals that could be"
-                " achieved by action tools.\nCan run synchronously or"
-                " transition to a background task if execution takes longer"
+                "[SHELL] Executes a shell command directly on the Android"
+                " mobile device via ADB shell. Use it when the device action"
+                " tools cannot achieve the goal, or to start background"
+                " instrumentation (performance, power, traces); never to bypass"
+                " goals that the action tools can achieve.\nCan run synchronously"
+                " or transition to a background task if execution takes longer"
                 " than WaitMsBeforeAsync.\nSupports persistent environments"
-                " (environment variables) on the phone across invocations."
+                " (environment variables) on the phone across invocations.\n" + HANG_GUIDANCE
             )
         elif t.name == "manage_task":
             t.description = (
-                "[EXPLORER] Manage background ADB shell tasks launched via"
+                "[SHELL] Manage background ADB shell tasks launched via"
                 " run_adb_command to monitor or terminate ongoing background"
                 " commands."
             )

@@ -43,6 +43,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from artemis.core.tool_declaration import ToolDeclaration
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.tools.base import ArtemisTool, ToolRegistry
 from artemis.tools.tool_wrapper import ToolWrapper
@@ -191,7 +192,9 @@ def _screen_text(engine: Any, step: dict) -> str:
     parts = []
     for blob in (record.ui_tree, record.ocr_result):
         if blob:
-            parts.append(blob if isinstance(blob, str) else json.dumps(blob, ensure_ascii=False, default=str))
+            parts.append(
+                blob if isinstance(blob, str) else json.dumps(blob, ensure_ascii=False, default=str)
+            )
     return "\n".join(parts)
 
 
@@ -264,10 +267,7 @@ def search_history(
     if not steps:
         return "recall_history: no recorded steps yet."
     if step_range and not scoped_steps:
-        return (
-            f"recall_history: no recorded steps in range"
-            f" {range_start}–{range_end}."
-        )
+        return f"recall_history: no recorded steps in range {range_start}–{range_end}."
 
     sections: list[str] = []
 
@@ -286,9 +286,7 @@ def search_history(
     # --- Keyword search over steps.
     results: list[tuple[int, int, str]] = []  # (score, step_number, rendered)
     if terms:
-        xml_eligible = {
-            id(s) for s in scoped_steps[-XML_SCAN_CAP:]
-        }
+        xml_eligible = {id(s) for s in scoped_steps[-XML_SCAN_CAP:]}
         for step in scoped_steps:
             haystack = _step_haystack(step)
             screen = _screen_text(engine, step) if id(step) in xml_eligible else ""
@@ -310,13 +308,19 @@ def search_history(
                 if action:
                     lines.append(
                         "  Action: "
-                        + _clamp(json.dumps(action, ensure_ascii=False, default=str), DETAIL_EXCERPT_CHARS)
+                        + _clamp(
+                            json.dumps(action, ensure_ascii=False, default=str),
+                            DETAIL_EXCERPT_CHARS,
+                        )
                     )
                 result = step.get("last_execution_result")
                 if result:
                     lines.append(
                         "  Result: "
-                        + _clamp(json.dumps(result, ensure_ascii=False, default=str), DETAIL_EXCERPT_CHARS)
+                        + _clamp(
+                            json.dumps(result, ensure_ascii=False, default=str),
+                            DETAIL_EXCERPT_CHARS,
+                        )
                     )
                 thinking = step.get("operator_raw_thinking")
                 if thinking:
@@ -369,20 +373,18 @@ def search_history(
             if score <= 0:
                 continue
             writers = _note_writer_steps(steps, key)
-            if range_start is not None and writers and not any(
-                range_start <= n <= range_end for n in writers
+            if (
+                range_start is not None
+                and writers
+                and not any(range_start <= n <= range_end for n in writers)
             ):
                 continue
             anchor = writers[-1] if writers else (steps[-1].get("step_number") or 0)
-            origin = (
-                f"last written at Step {writers[-1]}"
-                if writers
-                else f"as of Step {anchor}"
+            origin = f"last written at Step {writers[-1]}" if writers else f"as of Step {anchor}"
+            body = _excerpt(
+                content, terms, DETAIL_EXCERPT_CHARS if include_details else EXCERPT_CHARS
             )
-            body = _excerpt(content, terms, DETAIL_EXCERPT_CHARS if include_details else EXCERPT_CHARS)
-            results.append(
-                (score, int(anchor), f"[Note '{key}' | {origin}]\n  Match: {body}")
-            )
+            results.append((score, int(anchor), f"[Note '{key}' | {origin}]\n  Match: {body}"))
 
     results.sort(key=lambda r: (-r[0], -r[1]))
     kept = results[:max_results]
@@ -413,9 +415,7 @@ def search_history(
         # The best step-shaped result; fall back to the newest scoped step.
         best_numbers = [r[1] for r in kept]
         for number in best_numbers:
-            target_step = next(
-                (s for s in scoped_steps if s.get("step_number") == number), None
-            )
+            target_step = next((s for s in scoped_steps if s.get("step_number") == number), None)
             if target_step:
                 break
     if target_step is None and scoped_steps:
@@ -441,10 +441,7 @@ def search_history(
         blocks.append(
             {
                 "type": "text",
-                "text": (
-                    f"--- {which} screenshot of Step"
-                    f" {target_step.get('step_number')} ---"
-                ),
+                "text": (f"--- {which} screenshot of Step {target_step.get('step_number')} ---"),
             }
         )
         blocks.append(
@@ -459,8 +456,7 @@ def search_history(
             {
                 "type": "text",
                 "text": (
-                    f"(no stored screenshots exist for Step"
-                    f" {target_step.get('step_number')})"
+                    f"(no stored screenshots exist for Step {target_step.get('step_number')})"
                 ),
             }
         )
@@ -475,8 +471,15 @@ RECALL_HISTORY_DOCSTRING = (
     " a step_range also returns that range's full per-step action ledger"
     " (the entry point for 'ledger via recall_history' guidance/marker lines"
     " and for recall-only '[Era ...]' period paragraphs)."
-    " Results are bounded and every result carries its step number."
-    " Do not call it speculatively on ordinary steps."
+    " Results are bounded and every result carries its step number.\n"
+    "Call it when: the current screen closely resembles a much older state;"
+    " you need an exact old value (text, id, amount, path); two consecutive"
+    " steps made no progress; a history summary conflicts with what you"
+    " observe; or the user asks to return to an earlier state. A"
+    " '(Step-level ledger via recall_history for steps a–b)' line under an"
+    " '[Era ...]' period paragraph is an explicit entry point — query that"
+    " step range for the full per-step ledger. Do not call it speculatively"
+    " on ordinary steps: the visible history is normally sufficient."
 )
 
 
@@ -515,7 +518,7 @@ class RecallHistoryTool(ArtemisTool):
             return (
                 "recall_history needs a query and/or a step_range — e.g."
                 ' recall_history(query="login timeout") or'
-                " recall_history(query=\"\", step_range=[1, 40])."
+                ' recall_history(query="", step_range=[1, 40]).'
             )
         try:
             return search_history(
@@ -545,6 +548,30 @@ def _recall_config(warn: bool = True) -> Any:
 
 recall_history = RecallHistoryTool()
 ToolRegistry.register(recall_history)
+
+_DECLARATION_TYPES = {
+    "query": {"type": "string"},
+    "step_range": {"type": "array", "items": {"type": "integer"}},
+    "include_details": {"type": "boolean"},
+    "include_images": {"type": "boolean"},
+    "max_results": {"type": "integer"},
+}
+
+#: Flash-profile declaration of the same tool (FlashRunner binds JSON-schema
+#: declarations rather than LangChain tools). Descriptions come from
+#: ``RecallHistoryArgs`` so the two contracts never drift.
+RECALL_HISTORY_TOOL = ToolDeclaration(
+    name="recall_history",
+    description=RECALL_HISTORY_DOCSTRING,
+    parameters={
+        "type": "object",
+        "properties": {
+            name: {**_DECLARATION_TYPES[name], "description": info.description or ""}
+            for name, info in RecallHistoryArgs.model_fields.items()
+        },
+        "required": ["query"],
+    },
+)
 
 
 def get_recall_history_tool(ctx: Any):

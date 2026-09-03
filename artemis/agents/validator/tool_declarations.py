@@ -25,7 +25,12 @@ from google.genai import types as genai_types
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, Field
 
-from artemis.config import resolve_explorer_version
+from artemis.agents.explorer.constants import (
+    ASK_EXPLORER_CONTEXT_FEEDBACK_DESCRIPTION,
+    ASK_EXPLORER_DESCRIPTION,
+    ASK_EXPLORER_QUERY_DESCRIPTION,
+    ASK_EXPLORER_TOOL_NAME,
+)
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.core.tool_declaration import ToolDeclaration
@@ -34,7 +39,7 @@ from artemis.mcp.action_specs import tool_declaration
 from artemis.mcp.action_types import ActionCode
 from artemis.mcp.actuators.adb import AdbActuator
 from artemis.mcp.observation import observe
-from artemis.tools.explorer_tool import _run_explorer_logic
+from artemis.tools.explorer_tool import locate, register_candidates, render_text
 from artemis.graph.state import State
 from artemis.utils.coordinates import (
     compute_smart_swipe_coordinates,
@@ -143,8 +148,13 @@ def prune_intermediate_screenshots(messages: list[Any]) -> None:
                                     )
                                 )
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug(
+                                "Could not build placeholder text part for pruned screenshot;"
+                                " dropping it: %s",
+                                exc,
+                                exc_info=True,
+                            )
                     else:
                         new_parts.append(part)
                 content.parts = new_parts
@@ -264,6 +274,14 @@ def serialize_mobile_action_result(result: Any) -> dict[str, Any]:
     }
 
 
+def serialize_explorer_result(result: Any) -> dict[str, Any]:
+    """Stores an ``(text, ok)`` Explorer answer as a flat trace payload."""
+    if isinstance(result, tuple) and len(result) == 2:
+        text, ok = result
+        return {"outcome": text, "status": "success" if ok else "error"}
+    return {"outcome": str(result) if result is not None else ""}
+
+
 class MobileActionExecutor:
     """Adapts LLM tool calls onto an actuator backend and captures observations.
 
@@ -278,10 +296,14 @@ class MobileActionExecutor:
         ctx: ArtemisContext,
         controller: UnifiedMobileController | None = None,
         actuator: "AdbActuator | None" = None,
+        agent_name: str = "validator",
     ):
         self.ctx = ctx
         self.actuator = actuator or AdbActuator(ctx, controller)
         self.controller = self.actuator.controller
+        # Identifies the calling agent to the Explorer tier resolver: the tier
+        # is a user setting keyed by profile / agent, never chosen by the agent.
+        self.agent_name = agent_name
 
     @trace(type="action", name="click", serializer=serialize_mobile_action_result)
     async def exec_click(
@@ -327,7 +349,7 @@ class MobileActionExecutor:
                 except Exception:
                     try:
                         sequence = ast.literal_eval(sequence_str)
-                    except Exception:
+                    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
                         pass
 
             if not isinstance(sequence, (list, tuple)):
@@ -622,37 +644,27 @@ class MobileActionExecutor:
         except Exception as e:
             return format_list_notes_failure(str(e))
 
-    @trace(type="tool", name="ask_explorer")
+    @trace(type="tool", name="ask_explorer", serializer=serialize_explorer_result)
     async def exec_ask_explorer(
         self,
         query: str,
         context_feedback: str | None,
         state: State,
-        version: str | None = None,
-    ) -> str:
+    ) -> tuple[str, bool]:
+        """Runs the Explorer pipeline; returns ``(text, ok)``.
+
+        ``ok`` is False only when the Explorer run itself failed. A clean
+        "not found" is a successful answer the agent must reason about, so it
+        must not be reported as a tool error.
+        """
         try:
-            active_version = resolve_explorer_version(
-                self.ctx,
-                explicit_version=version,
-                agent_or_profile_name="validator",
+            outcome = await locate(
+                self.ctx, state, query, context_feedback or "", agent_name=self.agent_name
             )
-            result = await _run_explorer_logic(
-                self.ctx,
-                state,
-                query,
-                context_feedback or "",
-                version=active_version,
-            )
-            if isinstance(result, list):
-                texts = [
-                    item["text"]
-                    for item in result
-                    if isinstance(item, dict) and item.get("type") == "text"
-                ]
-                return "\n".join(texts) if texts else str(result)
-            return str(result)
+            registered = register_candidates(self.ctx, state, outcome)
+            return render_text(query, outcome, registered), not outcome.error
         except Exception as e:
-            return f"Error executing ask_explorer: {e}"
+            return f"Error executing ask_explorer: {e}", False
 
     async def execute(
         self,
@@ -665,6 +677,9 @@ class MobileActionExecutor:
         raw_name = name.split(":")[-1] if ":" in name else name
         res_text = ""
         img_bytes, shot_path, xml_list = None, None, None
+        # Explicit status for tools that report it (the Explorer); None keeps the
+        # historical text-sniffing fallback for the device actions.
+        explicit_ok: bool | None = None
 
         if raw_name == "click":
             res_text, img_bytes, shot_path, xml_list = await self.exec_click(
@@ -724,7 +739,9 @@ class MobileActionExecutor:
         elif raw_name == "list_notes":
             res_text = await self.exec_list_notes()
         elif raw_name == "ask_explorer":
-            res_text = await self.exec_ask_explorer(
+            res_text, explicit_ok = await self.exec_ask_explorer(
+                # ``task_description`` is the pre-contract argument name kept
+                # for old MCP clients.
                 args.get("query") or args.get("task_description") or "",
                 args.get("context_feedback"),
                 state,
@@ -738,7 +755,9 @@ class MobileActionExecutor:
         status: Literal["success", "error"] = (
             "success" if (img_bytes is not None or raw_name not in ACTION_TOOL_NAMES) else "error"
         )
-        if "Error" in res_text or "Failed" in res_text:
+        if explicit_ok is not None:
+            status = "success" if explicit_ok else "error"
+        elif "Error" in res_text or "Failed" in res_text:
             status = "error"
 
         return ToolExecutionResult(
@@ -799,34 +818,6 @@ MANAGE_APP_TOOL = tool_declaration("manage_app")
 
 WAIT_FOR_DELAY_TOOL = tool_declaration("wait_for_delay")
 
-REPORT_FAILURE_ANALYSIS_TOOL = ToolDeclaration(
-    name="report_failure_analysis",
-    description=(
-        "[REPORT] Use this tool to return your final answer when you are done"
-        " with the analysis and optional repair. This is the ONLY way to return"
-        " your final conclusion."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "status": {
-                "type": "string",
-                "description": (
-                    "Whether the failure was repaired locally ('fixed') or not ('cannot_fix')."
-                ),
-            },
-            "analysis": {
-                "type": "string",
-                "description": (
-                    "Provide the cause analysis and handling method description in a single"
-                    " paragraph, and append the specific operations you ran."
-                ),
-            },
-        },
-        "required": ["status", "analysis"],
-    },
-)
-
 REPORT_TASK_STATUS_TOOL = ToolDeclaration(
     name="report_task_status",
     description=(
@@ -852,27 +843,24 @@ REPORT_TASK_STATUS_TOOL = ToolDeclaration(
     },
 )
 
+# Same contract as the Operator's LangChain tool (artemis/tools/explorer_tool.py):
+# the Explorer tier is a user setting, so no tier argument is exposed here.
 ASK_EXPLORER_TOOL = ToolDeclaration(
-    name="ask_explorer",
-    description=(
-        "[EXPLORER] Call the Explorer sub-agent to locate an element or"
-        " coordinate on the screen when XML hierarchy lacks coordinates or"
-        " visual target is ambiguous."
-    ),
+    name=ASK_EXPLORER_TOOL_NAME,
+    description=ASK_EXPLORER_DESCRIPTION,
     parameters={
         "type": "object",
         "properties": {
-            "task_description": {
+            "query": {
                 "type": "string",
-                "description": "The description of what to find on the screen.",
+                "description": ASK_EXPLORER_QUERY_DESCRIPTION,
             },
-            "roi": {
-                "type": "array",
-                "items": {"type": "integer"},
-                "description": "Optional bounding box [ymin, xmin, ymax, xmax] in 0-1000 scale.",
+            "context_feedback": {
+                "type": "string",
+                "description": ASK_EXPLORER_CONTEXT_FEEDBACK_DESCRIPTION,
             },
         },
-        "required": ["task_description"],
+        "required": ["query"],
     },
 )
 
@@ -886,5 +874,4 @@ VALIDATOR_TOOLS_DECLARATION: list[ToolDeclaration] = [
     LIST_NOTES_TOOL,
     MANAGE_APP_TOOL,
     WAIT_FOR_DELAY_TOOL,
-    REPORT_FAILURE_ANALYSIS_TOOL,
 ]

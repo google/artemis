@@ -391,10 +391,6 @@ async def test_validator_pre_execution_loop_reverted_to_exact_safety_contract(
             "_validate_action_precondition_pixel",
             new_callable=AsyncMock,
         ) as mock_pixel,
-        patch(
-            "artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze",
-            new_callable=AsyncMock,
-        ) as mock_analyze,
     ):
         mock_get_screen.return_value = (
             base64.b64encode(b"dummy_bytes_here").decode("utf-8"),
@@ -413,93 +409,18 @@ async def test_validator_pre_execution_loop_reverted_to_exact_safety_contract(
             "VLM target missing",
         )
 
-        mock_analyze.return_value = {
-            "status": "cannot_fix",
-            "analysis": "Unrepairable drift",
-        }
-
         result = await node(state)
 
         # Verify both XML check and VLM check were called (reverted double-check contract)
         mock_xml.assert_called_once()
         mock_pixel.assert_called_once()
 
-        # Verify FailureAnalyzer received the EXACT XML error (TARGET_OCCUPIED), NOT the VLM error
-        mock_analyze.assert_called_once()
-        args, kwargs = mock_analyze.call_args
-        assert kwargs.get("error_category") == ValidationErrorCategory.TARGET_OCCUPIED
-        assert "Occupied by Sign Up button" in args[2]
-
-
-@pytest.mark.asyncio
-async def test_failure_analyzer_prune_intermediate_screenshots(mock_artemis_ctx):
-    """Verify FailureAnalyzer._prune_intermediate_screenshots keeps initial reference images and the latest live image, while pruning intermediate images."""
-    from google.genai import types
-    from artemis.agents.validator.failure_analyzer import FailureAnalyzer
-
-    analyzer = FailureAnalyzer(mock_artemis_ctx)
-
-    # Build simulated contents history:
-    # 0: User (Initial reference screenshots + prompt)
-    # 1: Model
-    # 2: User (Intermediate tool results)
-    # 3: User (Intermediate observation screenshot - SHOULD BE PRUNED)
-    # 4: Model
-    # 5: User (Intermediate tool results 2)
-    # 6: User (Latest observation screenshot - SHOULD BE PRESERVED)
-    contents = [
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_text(text="Reference screenshot 1"),
-                types.Part.from_bytes(data=b"initial_pre_image_bytes", mime_type="image/jpeg"),
-                types.Part.from_bytes(data=b"initial_post_image_bytes", mime_type="image/jpeg"),
-            ],
-        ),
-        types.Content(role="model", parts=[types.Part.from_text(text="Clicked something")]),
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text="Result text")],
-        ),
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_text(text="Intermediate observation"),
-                types.Part.from_bytes(
-                    data=b"intermediate_image_bytes_to_prune",
-                    mime_type="image/jpeg",
-                ),
-            ],
-        ),
-        types.Content(role="model", parts=[types.Part.from_text(text="Clicking again")]),
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text="Result text 2")],
-        ),
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_text(text="Latest live observation"),
-                types.Part.from_bytes(
-                    data=b"latest_live_image_bytes_to_keep",
-                    mime_type="image/jpeg",
-                ),
-            ],
-        ),
-    ]
-
-    analyzer._prune_intermediate_screenshots(contents)
-
-    # 1. Verify index 0 images are untouched
-    assert contents[0].parts[1].inline_data.data == b"initial_pre_image_bytes"
-    assert contents[0].parts[2].inline_data.data == b"initial_post_image_bytes"
-
-    # 2. Verify index 3 (intermediate image) is replaced by text placeholder
-    assert getattr(contents[3].parts[1], "inline_data", None) is None
-    assert "[Screenshot of intermediate step omitted for performance]" in contents[3].parts[1].text
-
-    # 3. Verify index 6 (latest image) is fully preserved
-    assert contents[6].parts[1].inline_data.data == b"latest_live_image_bytes_to_keep"
+        # The incident carries the EXACT XML error (TARGET_OCCUPIED), NOT the VLM error
+        incident = result["last_execution_result"]["incident"]
+        assert incident["kind"] == "safety_net"
+        assert incident["category"] == ValidationErrorCategory.TARGET_OCCUPIED.value
+        assert "Occupied by Sign Up button" in incident["reason"]
+        assert result["open_incident"] == incident
 
 
 @pytest.mark.asyncio

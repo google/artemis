@@ -202,7 +202,18 @@ def main() -> None:
     if has_uv and (ROOT_DIR / "pyproject.toml").exists():
         # Launch via `python -m artemis` (not the `artemis` console-script shim) so the
         # long-running server never locks .venv/Scripts/artemis.exe against reinstalls.
-        cmd = ["uv", "run", "python", "-m", "artemis", "ui", "--port", str(args.port), "--host", args.host]
+        cmd = [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "artemis",
+            "ui",
+            "--port",
+            str(args.port),
+            "--host",
+            args.host,
+        ]
         if args.no_open:
             cmd.append("--no-open")
         if args.reload:

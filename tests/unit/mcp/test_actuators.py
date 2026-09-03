@@ -64,9 +64,7 @@ async def test_click_sequence_taps_each_point(actuator):
 async def test_long_press_message_and_duration(actuator):
     res = await actuator.long_press(250, 750, duration_ms=1500)
     assert res.ok
-    assert res.message == (
-        "Long pressed at [250, 750] (normalized) for 1500ms successfully."
-    )
+    assert res.message == ("Long pressed at [250, 750] (normalized) for 1500ms successfully.")
     assert res.duration_ms == 1500
 
 

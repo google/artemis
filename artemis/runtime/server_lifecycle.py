@@ -222,7 +222,7 @@ def find_server_pids(port: int = 8000) -> list[int]:
                     token = token.strip()
                     if token.isdigit():
                         discovered.add(int(token))
-        except Exception:
+        except (OSError, ValueError, subprocess.SubprocessError):
             pass
 
     # 2b. fuser (Linux fallback)
@@ -239,7 +239,7 @@ def find_server_pids(port: int = 8000) -> list[int]:
                 token = token.strip()
                 if token.isdigit():
                     discovered.add(int(token))
-        except Exception:
+        except (OSError, ValueError, subprocess.SubprocessError):
             pass
 
     # 2c. netstat (Windows fallback)
@@ -258,7 +258,7 @@ def find_server_pids(port: int = 8000) -> list[int]:
                         parts = line.strip().split()
                         if parts and parts[-1].isdigit():
                             discovered.add(int(parts[-1]))
-        except Exception:
+        except (OSError, ValueError, subprocess.SubprocessError):
             pass
 
     # 2d. psutil net_connections fallback
@@ -270,8 +270,9 @@ def find_server_pids(port: int = 8000) -> list[int]:
                 if conn.laddr and conn.laddr.port == port:
                     if conn.pid:
                         discovered.add(conn.pid)
-        except Exception:
-            pass
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            # psutil is optional and net_connections() fails in platform-specific ways.
+            logger.debug(f"psutil net_connections port scan skipped: {exc}", exc_info=True)
 
     # 3. Process table scan if still nothing found on port but port is in use
     if not discovered and is_port_in_use(port):
@@ -288,8 +289,9 @@ def find_server_pids(port: int = 8000) -> list[int]:
                             discovered.add(proc.info["pid"])
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-        except Exception:
-            pass
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            # psutil is optional and process_iter() fails in platform-specific ways.
+            logger.debug(f"psutil process table scan skipped: {exc}", exc_info=True)
 
     return sorted(discovered)
 
@@ -406,8 +408,9 @@ def stop_server(
             if pid != current_pid:
                 try:
                     ProcessSupervisor.terminate_tree(pid, timeout_seconds=0.5)
-                except Exception:
-                    pass
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    # Force-kill is best effort; the port check below reports the outcome.
+                    logger.debug(f"Force kill of pid {pid} failed: {exc}", exc_info=True)
         time.sleep(0.3)
 
     # Cleanup stale device execution locks left by terminated server

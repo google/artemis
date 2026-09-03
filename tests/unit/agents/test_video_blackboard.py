@@ -209,9 +209,7 @@ async def test_video_coordinator_retries_transient_failures():
 async def test_audio_analysis_reuses_exact_completed_coverage(analyzer_context):
     with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
         analyzer = VideoAnalyzer(analyzer_context)
-    claim = analyzer.blackboard.claim_segment(
-        2.0, 6.0, "hear notification", modality="audio"
-    )
+    claim = analyzer.blackboard.claim_segment(2.0, 6.0, "hear notification", modality="audio")
     analyzer.blackboard.complete_segment(
         2.0,
         6.0,
@@ -222,12 +220,8 @@ async def test_audio_analysis_reuses_exact_completed_coverage(analyzer_context):
         modality="audio",
     )
 
-    with patch(
-        "artemis.agents.video_analyzer.video_analyzer.get_controller"
-    ) as controller:
-        result = await analyzer.exec_analyze_audio_only(
-            2.0, 6.0, "hear notification"
-        )
+    with patch("artemis.agents.video_analyzer.video_analyzer.get_controller") as controller:
+        result = await analyzer.exec_analyze_audio_only(2.0, 6.0, "hear notification")
 
     controller.assert_not_called()
     assert result.startswith("CACHED AUDIO ANALYSIS:")
@@ -272,9 +266,7 @@ def test_session_deletion_removes_video_blackboard_rows(tmp_path):
     engine.record_video_start(video_id, "device", recording)
 
     board = VideoBlackboard(f"video:{video_id}", db_path=engine.storage.db_path)
-    board.add_observation(
-        {"start": 0.0, "end": 1.0, "target": "cleanup", "summary": "evidence"}
-    )
+    board.add_observation({"start": 0.0, "end": 1.0, "target": "cleanup", "summary": "evidence"})
     assert board.list_observations()
 
     engine.storage.delete_session(session_id)

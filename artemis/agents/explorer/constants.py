@@ -12,61 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Constants and prompt templates for the UI Explorer agent."""
+"""The ``ask_explorer`` tool contract as seen by calling agents.
 
-EXPLORE_DESCRIPTIONS = {
-    "flash": {
-        "description": (
-            "[EXPLORER] Call this to ask the UI Explorer agent to "
-            "locate coordinates on the screen layout by object detection."
-        ),
-        "query_description": (
-            "Pipe-separated list of target element descriptions, semantic"
-            " action terms, or color descriptors to search for concurrently"
-            " (e.g., 'red settings button | gear icon')."
-        ),
-        "rule_prompt": (
-            "Use the explorer tool to quickly check for visual icons, buttons, or text by name."
-        ),
-    },
-    "pro": {
-        "description": (
-            "[EXPLORER] Call this to ask the UI Explorer agent to locate"
-            " coordinates on the screen layout by executing UI search,"
-            " coordinate search, and object detection."
-        ),
-        "query_description": (
-            "The target element or information to search for, including descriptions."
-        ),
-        "rule_prompt": (
-            "Call the explorer tool to search or inspect it (maximum {max_iterations} tries)."
-        ),
-        "version_prompt": (
-            "You are running with a maximum of {max_iterations} turns: on your"
-            " final turn, you will receive a warning reminding you to call"
-            " submit_answer."
-        ),
-    },
-    "ultra": {
-        "description": (
-            "[EXPLORER] Full visual reasoning agent. Deeply inspects screen"
-            " regions and utilizes all perception/pixel-level tools with a high"
-            " execution limit (up to {max_iterations} turns) for"
-            " high-difficulty or layout-critical tasks."
-        ),
-        "query_description": (
-            "The target element or information to search for, including descriptions."
-        ),
-        "rule_prompt": (
-            "For highly complex visual searches, details validation, or layout"
-            " verification, invoke the explorer tool to perform multi-turn"
-            " visual reasoning and detailed coordinate checks (maximum"
-            " {max_iterations} tries)."
-        ),
-        "version_prompt": (
-            "You are running with a maximum of {max_iterations} turns: on your"
-            " final turn, you will receive a warning reminding you to call"
-            " submit_answer."
-        ),
-    },
-}
+The contract is deliberately tier-agnostic: the Operator, Validator and Flash
+runner receive the same tool name, description and argument schema whichever
+Explorer tier the user configured.  Tier behavior lives in
+:mod:`artemis.agents.explorer.tiers`.
+"""
+
+ASK_EXPLORER_TOOL_NAME = "ask_explorer"
+
+ASK_EXPLORER_DESCRIPTION = (
+    "[EXPLORER] Ask the UI Explorer to locate elements on the current screen"
+    " that are missing from the indexed element list or whose listed"
+    " coordinates look wrong. Every element it finds is appended to the"
+    " indexed list with a new index and returned with its normalized [x, y]"
+    " coordinate, so you can act on it right away."
+)
+
+ASK_EXPLORER_QUERY_DESCRIPTION = (
+    "What to find, described the way you see it on the screenshot: visible"
+    " text, icon shape, color, position, or nearby landmarks (e.g. 'gear icon"
+    " top-right', 'blue Send button below the message box'). Several targets"
+    " may be listed separated by ' | '."
+)
+
+ASK_EXPLORER_CONTEXT_FEEDBACK_DESCRIPTION = (
+    "Optional. What went wrong with earlier attempts or extra hints, e.g."
+    " which returned candidates were wrong and why."
+)
+
+#: Fed to the Explorer's own system prompt for loop engines.
+EXECUTION_CONSTRAINT_TEMPLATE = (
+    "You are running with a maximum of {max_turns} turns: on your final turn"
+    " you will receive a warning and only `submit_answer` will be available."
+)

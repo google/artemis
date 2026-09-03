@@ -109,8 +109,6 @@ def test_graceful_degradation_to_none():
 
 
 def test_element_without_optional_fields_only_reports_source():
-    elements = [
-        {"text": "", "bounds": [0, 0, 100, 100], "class": None, "resource_id": None}
-    ]
+    elements = [{"text": "", "bounds": [0, 0, 100, 100], "class": None, "resource_id": None}]
     semantics = hit_test_semantics(elements, 50, 50)
     assert semantics == {"target_label_source": "hit_test"}

@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+  UV_NO_PROGRESS: "1"
+
+jobs:
+  python-quality:
+    name: Python 3.12 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked development environment
+        run: uv sync --dev --frozen
+
+      - name: Check Python formatting
+        run: uv run ruff format --check .
+
+      - name: Lint Python
+        run: uv run ruff check .
+
+      - name: Enforce quality ratchets
+        run: uv run python scripts/quality_ratchet.py
+
+      - name: Type-check protected core modules
+        run: uv run pyright --project pyright-core.json
+
+      # Device, cloud, manual, and end-to-end suites require dedicated
+      # infrastructure and intentionally do not run on GitHub-hosted runners.
+      - name: Run deterministic Python tests
+        run: >-
+          uv run pytest
+          tests/unit
+          tests/tools
+          packages/artemis-client/tests
+          -q
+          --cov=artemis
+          --cov=mcp_server
+          --cov=apps/admin_console
+          --cov-fail-under=60
+
+  frontend:
+    name: Frontend tests and production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/showcase_ui
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+          cache: npm
+          cache-dependency-path: apps/showcase_ui/package-lock.json
+
+      - name: Install locked frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm test -- --watch=false --browsers=ChromeHeadless
+
+      - name: Build frontend for production
+        run: npm run build
+
+  package:
+    name: Build and smoke-test Python packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+          cache: npm
+          cache-dependency-path: apps/showcase_ui/package-lock.json
+
+      - name: Build frontend assets for the wheel
+        run: |
+          npm ci --prefix apps/showcase_ui
+          npm run build --prefix apps/showcase_ui
+
+      - name: Build client and Artemis distributions
+        run: |
+          uv build --package artemis-client --wheel --out-dir dist
+          uv build --package artemis --wheel --sdist --out-dir dist
+
+      - name: Install wheels in a clean environment
+        run: |
+          uv venv .smoke-venv --python 3.12
+          uv pip install --python .smoke-venv/bin/python dist/artemis_client-*.whl dist/artemis-*.whl
+
+      - name: Smoke-test installed package and CLI
+        shell: bash
+        run: |
+          smoke_dir="$RUNNER_TEMP/artemis-wheel-smoke"
+          mkdir -p "$smoke_dir"
+          cd "$smoke_dir"
+          source "$GITHUB_WORKSPACE/.smoke-venv/bin/activate"
+          python - <<'PY'
+          from importlib.metadata import files, version
+
+          import artemis
+          from artemis.resources import get_bundled_config_path, get_bundled_showcase_dist
+
+          bundled_config = get_bundled_config_path("artemis.jsonc")
+          bundled_ui = get_bundled_showcase_dist()
+          assert artemis.__version__ == version("artemis")
+          assert bundled_config is not None and bundled_config.is_file()
+          assert bundled_ui is not None and (bundled_ui / "index.html").is_file()
+          assert not any("node_modules" in str(path) for path in (files("artemis") or ()))
+          print(f"Installed Artemis {artemis.__version__} with bundled runtime resources")
+          PY
+          artemis --version
+          artemis --help
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7

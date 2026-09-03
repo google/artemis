@@ -80,6 +80,7 @@ async def test_get_step_details_tool_with_fixture(artemis_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_history_analyzer_blackbox_run(artemis_context):
     """End-to-end blackbox test of HistoryAnalyzer.run(query) using real steps from inputs/data_engine.db and real LLM calls."""
     if not artemis_context.data_engine:

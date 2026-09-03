@@ -187,7 +187,7 @@
               }
             ],
             "default": null,
-            "description": "Optional swipe/drag duration in milliseconds (default 800). For drag-and-drop, list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars), set duration >= 1000 (e.g. 1500). If omitted for directional swipe, duration is computed automatically."
+            "description": "Optional swipe/drag duration in milliseconds (default 800; computed automatically for directional swipes)."
           }
         },
         "type": "object"
@@ -198,7 +198,7 @@
     "type": "function",
     "function": {
       "name": "press_key",
-      "description": "[ACTION] Press a physical or virtual system button (e.g.\n\nENTER, BACK, HOME, APP_SWITCH).",
+      "description": "[ACTION] Press a physical or virtual system button (e.g. ENTER, BACK, HOME, APP_SWITCH).",
       "parameters": {
         "properties": {
           "key": {

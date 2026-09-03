@@ -64,11 +64,10 @@ def _list_sessions_sync():
 
     try:
         from artemis.runtime import DeviceExecutionLock
+
         active_owners = DeviceExecutionLock.get_active_owners()
         active_owner_sids = {
-            str(owner.session_id)
-            for owner in active_owners.values()
-            if owner.session_id
+            str(owner.session_id) for owner in active_owners.values() if owner.session_id
         }
     except Exception:
         active_owner_sids = set()

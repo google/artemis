@@ -98,13 +98,16 @@ class VisualStepSummarizer(StepMemoryService):
         except Exception:
             self._llm = get_google_llm(model_name=target_model, temperature=0.0)
         try:
-            configured = getattr(self._llm, "model", None) or getattr(
-                self._llm, "model_name", None
-            )
+            configured = getattr(self._llm, "model", None) or getattr(self._llm, "model_name", None)
             if isinstance(configured, str) and configured:
                 self._model_name = configured
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Could not read the configured summarizer model name; keeping %s: %s",
+                self._model_name,
+                exc,
+                exc_info=True,
+            )
 
         # Load system prompt templates: the dual-frame transition prompt and
         # the single-frame variant (§5 revision: describe whichever frames

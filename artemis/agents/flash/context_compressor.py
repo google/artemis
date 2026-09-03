@@ -145,9 +145,7 @@ class ScrubEdgeCompressor:
                     continue
                 if block.get("type") in ("image_url", "image"):
                     has_image = True
-                elif block.get("type") == "text" and self._has_strip_marker(
-                    block.get("text", "")
-                ):
+                elif block.get("type") == "text" and self._has_strip_marker(block.get("text", "")):
                     has_xml = True
 
             if has_xml:
@@ -186,9 +184,7 @@ class ScrubEdgeCompressor:
         # With a live tail outside the tracked list (tail_offset > 0) the tail
         # itself occupies the newest slots of the keep window.
         keep_count = max(0, self._xml_scrub_depth - self._tail_offset)
-        keep_indices = (
-            {rec["idx"] for rec in self._tracked[-keep_count:]} if keep_count else set()
-        )
+        keep_indices = {rec["idx"] for rec in self._tracked[-keep_count:]} if keep_count else set()
         still_pending: list[int] = []
         for idx in self._xml_candidates:
             if idx in keep_indices:
@@ -210,9 +206,7 @@ class ScrubEdgeCompressor:
                 and block.get("type") == "text"
                 and self._has_strip_marker(block.get("text", ""))
             ):
-                retained_text = _without_marked_suffix(
-                    block.get("text", ""), self._strip_markers
-                )
+                retained_text = _without_marked_suffix(block.get("text", ""), self._strip_markers)
                 if retained_text:
                     retained_block = dict(block)
                     retained_block["text"] = retained_text
@@ -275,11 +269,7 @@ class ScrubEdgeCompressor:
             return None, False, False, None
 
         summary = summarizer.get_summary(effective_key)
-        if (
-            summary is None
-            and not summarizer.has_job(effective_key)
-            and rec["legacy"] is not None
-        ):
+        if summary is None and not summarizer.has_job(effective_key) and rec["legacy"] is not None:
             effective_key = rec["legacy"]
             summary = summarizer.get_summary(effective_key)
 
@@ -327,9 +317,7 @@ class ScrubEdgeCompressor:
 
         # Defensive fallback: never leave ToolMessage or HumanMessage content empty
         if not new_blocks:
-            new_blocks = [
-                {"type": "text", "text": "Action completed." if rec["is_tool"] else ""}
-            ]
+            new_blocks = [{"type": "text", "text": "Action completed." if rec["is_tool"] else ""}]
 
         msg.content = new_blocks
         self._frozen.add(rec["idx"])

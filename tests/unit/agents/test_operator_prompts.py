@@ -22,9 +22,19 @@ from artemis.agents.operator.prompts import apply_operator_prompt_contract
 def test_operator_prompt_contract_matches_note_runtime_semantics():
     prompt = apply_operator_prompt_contract(load_operator_prompts()["main_template"])
 
-    assert "write-through tools `update_note` and `append_note`" in prompt
-    assert "may accompany at most one Turn-Ending Action" in prompt
-    assert "`read_note`, `list_notes`, `save_note`, and `recall_history`" in prompt
+    assert "**Write-Through Memory Tools** (`save_note`, `update_note`, `append_note`)" in prompt
+    assert "May run alongside the turn's Turn-Ending Action (or Fast-Action Burst)" in prompt
+    # The two execution tiers and the incident workflow are advertised.
+    assert "**Vetted Single Action (default)**" in prompt
+    # The burst ceiling is a context variable filled in by the later template render.
+    assert (
+        "**Fast-Action Burst (time-critical only)**: two to {{ max_burst_actions }}"
+        " Turn-Ending Actions" in prompt
+    )
+    assert "--- Execution Incident (OPEN) ---" in prompt
+    assert "Failure Analyzer" not in prompt
+    assert "(`read_note`, `list_notes`, `recall_history`)" in prompt
+    assert "`save_note`, and `recall_history`" not in prompt
     assert "Do NOT submit a Turn-Ending Action at the same time" not in prompt
     assert "memory note tools (`read_note`, `list_notes`, `save_note`, `update_note`" not in prompt
 

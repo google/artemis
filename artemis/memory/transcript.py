@@ -33,7 +33,15 @@ Implements the four-region discipline of the history-module redesign §3.2:
 
 All timestamps inside the transcript use the session-start offset ``T+mm:ss``
 (byte-stable once frozen); "ago" wording is reserved for the auxiliary agents'
-per-call compiled views.
+per-call compiled views. When the caller supplies the DataEngine
+``session_start`` epoch, the ledger clock is anchored to it so the tail
+offsets, the chunk ledger lines and the video analyzer's action timeline all
+share one origin.
+
+Profiles: the Pro operator (one committed turn per graph step) and the Flash
+runner (one committed turn per reactive turn; a multi-action turn registers
+every recorded step id via ``extra_step_keys`` so the chunk ledger lists each
+step) build their prompts from the same ledger.
 """
 
 import json
@@ -84,9 +92,18 @@ class TranscriptLedger:
         pending_grace_steps: int = 3,
         xml_scrub_depth: int = 1,
         clock: Callable[[], float] | None = None,
+        session_start: float | None = None,
     ):
-        self._clock = clock or time.monotonic
-        self._session_start = self._clock()
+        # ``session_start`` is an epoch-seconds origin (the DataEngine's
+        # ``session_start_time``); with it the ledger reads the wall clock so
+        # every ``T+mm:ss`` label is relative to the recorded session start.
+        # Without it the ledger keeps its own monotonic origin.
+        if session_start is not None:
+            self._clock = clock or time.time
+            self._session_start = float(session_start)
+        else:
+            self._clock = clock or time.monotonic
+            self._session_start = self._clock()
 
         self._static: list[BaseMessage] = []
         self._restored: list[BaseMessage] = []
@@ -163,12 +180,8 @@ class TranscriptLedger:
         if self._restored:
             raise RuntimeError("TranscriptLedger restored history is already set.")
         if self._active or self._staged or self._turn_count:
-            raise RuntimeError(
-                "Restored history can only seed an empty ledger (cold start)."
-            )
-        self._restored = [
-            HumanMessage(content=[{"type": "text", "text": text}])
-        ]
+            raise RuntimeError("Restored history can only seed an empty ledger (cold start).")
+        self._restored = [HumanMessage(content=[{"type": "text", "text": text}])]
 
     # ------------------------------------------------------------------
     # A region (append-only turn commits)
@@ -205,6 +218,7 @@ class TranscriptLedger:
         *,
         step_key: str | None = None,
         validator_result: Any | None = None,
+        extra_step_keys: tuple[str, ...] | list[str] = (),
     ) -> None:
         """Move the staged turn into the active region.
 
@@ -215,6 +229,10 @@ class TranscriptLedger:
             validator_result: The turn's validator report (``None`` when the
                 turn executed no terminal action); appended as a frozen result
                 message carrying the ``T+mm:ss`` session offset.
+            extra_step_keys: Further DataEngine step ids recorded during the
+                same turn (a Flash turn that executed several actions records
+                one step per action). They join ``step_key`` in the turn's
+                ``step_keys`` so chunk compression lists every step.
         """
         if self._staged is None:
             return
@@ -234,9 +252,14 @@ class TranscriptLedger:
             if result_message is not None:
                 self._active.append(result_message)
 
+        step_keys: list[str] = []
+        for key in (step_key, *extra_step_keys):
+            if key is not None and str(key) not in step_keys:
+                step_keys.append(str(key))
         self._turns.append(
             {
                 "step_key": str(step_key) if step_key is not None else None,
+                "step_keys": step_keys,
                 "start": span_start,
                 "end": len(self._active),
             }
@@ -279,9 +302,7 @@ class TranscriptLedger:
             content=[
                 {
                     "type": "text",
-                    "text": (
-                        f"{EXECUTION_RESULT_MARKER} ({self.elapsed_label()}) ---\n{rendered}"
-                    ),
+                    "text": (f"{EXECUTION_RESULT_MARKER} ({self.elapsed_label()}) ---\n{rendered}"),
                 }
             ]
         )

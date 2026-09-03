@@ -30,10 +30,8 @@ from artemis.graph.visibility import strict_state
 from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER, operator_shell_tool
 from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
 from artemis.tools.command_tool import (
-    _BACKGROUND_TASKS,
-    _FINISHED_TASKS_LOGS,
-    _is_output_long,
     analyze_task_output_wrapper,
+    get_adb_task_registry,
 )
 from artemis.tools.index import get_tool_by_name
 from artemis.tools.tool_wrapper import (
@@ -59,7 +57,6 @@ DEFERRING_TOOLS = {
     "video_analyzer",
     "read_note",
     "list_notes",
-    "save_note",
     "recall_history",
     "run_adb_command",
     "manage_task",
@@ -68,6 +65,7 @@ DEFERRING_TOOLS = {
 }
 
 from artemis.agents.operator.prompts import (
+    OPERATOR_MAX_TOOL_ITERATIONS,
     PromptBuilder,
     PromptComponent,
     TemplatePromptComponent,
@@ -76,6 +74,7 @@ from artemis.agents.operator.prompts import (
     ScreenshotSimilarityPromptComponent,
     HistoricalStateHintPromptComponent,
     FeedbackPromptComponent,
+    ExecutionIncidentPromptComponent,
     CheckItemsExplainerPromptComponent,
     BackgroundTasksPromptComponent,
     TaskPlanWarningPromptComponent,
@@ -147,20 +146,6 @@ class OperatorNode:
                 logger.warning(f"Failed to read actuator capabilities: {e}")
         return REQUIRED_ACTIONS | OPTIONAL_ACTIONS
 
-    def _check_infinite_loop(self, state: State):
-        subagent_calls = state.subagent_calls or []
-        if len(subagent_calls) >= 3:
-            last_three = subagent_calls[-3:]
-            if len(set(last_three)) == 1:
-                logger.error(
-                    f"Infinite loop detected: Sub-agent {last_three[0]} called"
-                    " 3 times consecutively."
-                )
-                raise RuntimeError(
-                    f"Infinite loop detected: Sub-agent {last_three[0]} called"
-                    " 3 times consecutively."
-                )
-
     def _get_history_and_plan(self) -> tuple[list[dict], str]:
         steps = []
         if self.ctx.data_engine:
@@ -225,6 +210,7 @@ class OperatorNode:
                     {"template_name": "main_template"},
                 ),
                 (CheckItemsExplainerPromptComponent(), {}),
+                (ExecutionIncidentPromptComponent(), {}),
                 (ObservationPromptComponent(), {}),
                 (ScreenshotSimilarityPromptComponent(), {}),
                 (HistoricalStateHintPromptComponent(), {}),
@@ -269,11 +255,16 @@ class OperatorNode:
         if isinstance(ledger, TranscriptLedger):
             return ledger
         cfg = self._transcript_cfg
+        # Anchor the ``T+mm:ss`` clock to the DataEngine session start so the
+        # tail offsets agree with the chunk ledger lines, the restored-history
+        # block and the video analyzer's action timeline.
+        session_start = getattr(self.ctx.data_engine, "session_start_time", None)
         ledger = TranscriptLedger(
             step_memory=ensure_step_memory(self.ctx),
             image_scrub_depth=getattr(cfg, "image_scrub_depth", 3),
             pending_grace_steps=getattr(cfg, "pending_grace_steps", 3),
             xml_scrub_depth=getattr(cfg, "xml_scrub_depth", 1),
+            session_start=session_start if isinstance(session_start, (int, float)) else None,
         )
         # L2/L3 chunk compression (M3) rides the same flag; without a
         # DataEngine there are no step records to chunk, so the ledger simply
@@ -287,8 +278,12 @@ class OperatorNode:
                     from artemis.config import load_agent_config
 
                     chunking_cfg = load_agent_config().memory.chunking
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "Chunking config unavailable; using chunker defaults: %s",
+                        exc,
+                        exc_info=True,
+                    )
                 ledger.attach_chunker(
                     HistoryChunkManager(
                         engine=self.ctx.data_engine,
@@ -302,7 +297,7 @@ class OperatorNode:
                 logger.error(f"History chunk manager unavailable: {e}")
         try:
             self.ctx.transcript_ledger = ledger
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             pass
         return ledger
 
@@ -377,6 +372,7 @@ class OperatorNode:
         components = [
             (PlanRecitationPromptComponent(), {}),
             (CheckItemsExplainerPromptComponent(), {}),
+            (ExecutionIncidentPromptComponent(), {}),
             (ObservationPromptComponent(), {}),
             (ScreenshotSimilarityPromptComponent(), {}),
             (HistoricalStateHintPromptComponent(), {}),
@@ -433,7 +429,7 @@ class OperatorNode:
         new_subagent_calls: list,
         state: State,
     ) -> tuple[list[dict] | None, str | None, str | None, bool]:
-        max_iterations = 20
+        max_iterations = OPERATOR_MAX_TOOL_ITERATIONS
         action_result = None
         raw_thoughts = []
         native_thoughts = []
@@ -714,7 +710,30 @@ class OperatorNode:
                     " Translating and processing all."
                 )
                 actions_list = []
-                for tc in action_calls:
+                burst_cap = self._max_burst_actions()
+                if len(action_calls) > burst_cap:
+                    # A multi-action turn is a fast-action burst that the Validator
+                    # fires without the safety net; cap its length before it runs.
+                    validation_errors = True
+                    for tc in action_calls:
+                        tool_outputs.append(
+                            ToolMessage(
+                                tool_call_id=tc["id"],
+                                content=(
+                                    f"Error: {len(action_calls)} Turn-Ending Actions in one"
+                                    " turn exceed the fast-action burst limit of"
+                                    f" {burst_cap}. Nothing was executed. Re-issue at most"
+                                    f" {burst_cap} actions (a burst is for sub-second"
+                                    " sequences on transient UI, not for batching normal"
+                                    " steps), or a single vetted action."
+                                ),
+                                status="error",
+                            )
+                        )
+                    action_calls_to_translate = []
+                else:
+                    action_calls_to_translate = action_calls
+                for tc in action_calls_to_translate:
                     translated_actions, error = self._translate_and_validate_tool(tc, state)
                     if error:
                         validation_errors = True
@@ -805,10 +824,7 @@ class OperatorNode:
     @trace(type="agent", name="operator")
     async def __call__(self, state: State):
         state = strict_state(state, "operator")
-        # 1. Check for infinite loops
-        self._check_infinite_loop(state)
-
-        # 2. Get perception data from state (populated by Perception node)
+        # 1. Get perception data from state (populated by Perception node)
         operator_raw_data = getattr(state, "operator_raw_data", {}) or {}
         latest_screenshot_b64 = operator_raw_data.get("screenshot_b64")
         xml_hierarchy = operator_raw_data.get("xml_hierarchy")
@@ -843,7 +859,7 @@ class OperatorNode:
                         width = w
                     if isinstance(h, int):
                         height = h
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
         minimal_list, elements, labels = format_minimal_list_with_elements(fused_xml, width, height)
 
@@ -863,48 +879,18 @@ class OperatorNode:
             operator_shell_tool(name) for name in OPERATOR_SHELL_ORDER if name in available_actions
         ] + self.tools
 
-        # 5. Evaluate dynamic tools and prepare background tasks
-        has_long_output = False
-        for tinfo in _FINISHED_TASKS_LOGS.values():
-            if _is_output_long(tinfo.get("output", "")):
-                has_long_output = True
-                break
-        if not has_long_output:
-            for t in _BACKGROUND_TASKS.values():
-                if _is_output_long("".join(t.stdout_log)):
-                    has_long_output = True
-                    break
-
-        if has_long_output and not any(t.name == "analyze_task_output" for t in all_tools):
-            analyze_tool_fn = analyze_task_output_wrapper.tool_fn_getter(self.ctx)
-            all_tools.append(analyze_tool_fn)
+        # 5. Mount the task-output analyzer and collect background ADB task state.
+        # The analyzer is always available: the "output truncated, use
+        # analyze_task_output" hint arrives mid-turn, and tools are bound once per
+        # turn, so a conditional mount would be one turn late.
+        if not any(t.name == "analyze_task_output" for t in all_tools):
+            all_tools.append(analyze_task_output_wrapper.tool_fn_getter(self.ctx))
 
         traced_tools = [trace_langchain_tool(t, self.ctx) for t in all_tools]
 
-        active_background_tasks = []
-        for tid, t in _BACKGROUND_TASKS.items():
-            active_background_tasks.append(
-                {
-                    "task_id": tid,
-                    "command": t.command,
-                    "cwd": t.cwd,
-                    "terminal_id": t.terminal_id,
-                    "output_line_count": len(t.stdout_log),
-                }
-            )
-
-        newly_finished_tasks = []
-        for tid, tinfo in _FINISHED_TASKS_LOGS.items():
-            if not tinfo.get("notified", False):
-                newly_finished_tasks.append(
-                    {
-                        "task_id": tid,
-                        "command": tinfo.get("command", ""),
-                        "status": tinfo.get("status", "completed"),
-                        "output_text": tinfo.get("output", ""),
-                    }
-                )
-                tinfo["notified"] = True  # Mark as read
+        adb_registry = get_adb_task_registry(self.ctx)
+        active_background_tasks = adb_registry.active_task_summaries()
+        newly_finished_tasks = adb_registry.pop_unnotified_finished()
 
         # 6. Prepare LLM
         llm = get_llm(ctx=self.ctx, name="operator")
@@ -989,6 +975,15 @@ class OperatorNode:
             last_n_detailed=self.last_n_detailed,
         )
 
+    def _max_burst_actions(self) -> int:
+        """Configured ceiling for actions in one fast-action burst (default 4)."""
+        try:
+            from artemis.config import load_agent_config
+
+            return int(load_agent_config().pro.execution.max_burst_actions)
+        except Exception:
+            return 4
+
     def _translate_and_validate_tool(self, tc: dict, state: State) -> tuple[list[dict], str | None]:
         actions, err = self._translate_and_validate_tool_inner(tc, state)
         if err:
@@ -1019,7 +1014,7 @@ class OperatorNode:
                         width = w
                     if isinstance(h, int):
                         height = h
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
 
         def resolve_target_element(

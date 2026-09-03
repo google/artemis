@@ -141,7 +141,6 @@ def _guard_ctx(tmp_path, **setup_kwargs):
     ctx.planner_task = None
     ctx.last_validated_plan = None
     ctx.pending_validated_plan = None
-    ctx.task_plan_content_before = None
     ctx.pending_checkpoints = []
     ctx.checkpoint_tasks = {}
     return ctx

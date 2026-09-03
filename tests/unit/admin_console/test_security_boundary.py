@@ -49,9 +49,7 @@ async def test_credentials_endpoint_never_returns_key_material(monkeypatch):
     from artemis.config import settings
 
     honeytoken = f"sk-honeytoken-{py_secrets.token_hex(16)}"
-    monkeypatch.setattr(
-        type(settings), "get_api_key", lambda self, provider: SecretStr(honeytoken)
-    )
+    monkeypatch.setattr(type(settings), "get_api_key", lambda self, provider: SecretStr(honeytoken))
 
     async with _client() as ac:
         res = await ac.get("/api/system/credentials")
@@ -168,9 +166,7 @@ async def test_cross_origin_browser_request_is_rejected_without_cors_grant():
 @pytest.mark.asyncio
 async def test_same_origin_browser_request_passes():
     async with _client() as ac:
-        res = await ac.get(
-            "/api/system/emulator/status", headers={"Origin": "http://localhost"}
-        )
+        res = await ac.get("/api/system/emulator/status", headers={"Origin": "http://localhost"})
 
     assert res.status_code == 200
 

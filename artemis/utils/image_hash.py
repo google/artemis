@@ -53,11 +53,10 @@ def dhash_hex(image_bytes: bytes | None, hash_size: int = HASH_SIZE) -> str | No
             # grid, so hashes stay comparable across code paths.
             try:
                 img.draft("L", (hash_size * 8, hash_size * 8))
-            except Exception:
-                pass
-            small = img.convert("L").resize(
-                (hash_size + 1, hash_size), Image.Resampling.LANCZOS
-            )
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                # Draft decode is an optimization only; full decode below still works.
+                logger.debug(f"dhash draft decode skipped: {exc}", exc_info=True)
+            small = img.convert("L").resize((hash_size + 1, hash_size), Image.Resampling.LANCZOS)
             pixels = list(small.getdata())
         bits = 0
         for row in range(hash_size):

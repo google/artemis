@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from langchain_core.messages import AIMessage
 import pytest
 
-from artemis.agents.validator.failure_analyzer import ValidationErrorCategory
+from artemis.agents.validator.categories import ValidationErrorCategory
 from artemis.agents.validator.validator import ValidatorNode
 from artemis.context import ArtemisContext
 from artemis.mcp.action_types import ActionCode, ActionResult
@@ -39,10 +39,12 @@ class DummyState:
         structured_decisions,
         current_step_id=None,
         latest_screenshot=None,
+        open_incident=None,
     ):
         self.structured_decisions = structured_decisions
         self.current_step_id = current_step_id
         self.latest_screenshot = latest_screenshot
+        self.open_incident = open_incident
 
 
 class FakeActionSession:
@@ -143,10 +145,9 @@ async def test_validator_success(mock_mcp, mock_context, temp_screenshot):
 
 
 @pytest.mark.asyncio
-async def test_validator_failure_analysis(mock_mcp, mock_context, temp_screenshot):
-    """Test that ValidatorNode triggers failure analysis on error and handles
-    cannot_fix via tool.
-    """
+async def test_validator_exec_error_opens_incident(mock_mcp, mock_context, temp_screenshot):
+    """A vetted single action that the device rejects is retried once, then an
+    execution incident is opened for the Operator (no repair agent)."""
     mock_mcp.action_handler = lambda name, args: (
         (False, "Error: Element not found") if name == "click" else (True, "")
     )
@@ -155,80 +156,168 @@ async def test_validator_failure_analysis(mock_mcp, mock_context, temp_screensho
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
     node = ValidatorNode(mock_context)
-
-    with (
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
-        patch("artemis.utils.image_diff.check_ui_change", return_value=False),
-    ):
-        mock_analyze.return_value = {
-            "status": "cannot_fix",
-            "analysis": "Analysis: Coordinates are likely wrong.",
-        }
-
+    with patch("artemis.utils.image_diff.check_ui_change", return_value=False):
         result = await node(state)
 
-    assert "last_execution_result" in result
     report = result["last_execution_result"]
-    assert "execution" in report
+    assert report["status"] == "failed"
+    assert report["burst"] is False
     assert len(report["execution"]) == 1
-    assert report["execution"][0]["action"] == "tap"
     assert report["execution"][0]["attempts"] == [
         "Error: Element not found",
         "Error: Element not found",
     ]
-    assert report["execution"][0]["repair"] == "Analysis: Coordinates are likely wrong."
+    assert "repair" not in report["execution"][0]
+
+    incident = report["incident"]
+    assert incident["kind"] == "exec_error"
+    assert incident["category"] == "general"
+    assert incident["reason"] == "Error: Element not found"
+    assert incident["consecutive_failures"] == 1
+    assert incident["burst_size"] == 1
+    assert incident["action_description"] == "Tapped element at [105, 205]"
+    # The same record rides in graph state for the Operator prompt.
+    assert result["open_incident"] == incident
 
 
 @pytest.mark.asyncio
-async def test_validator_repair_success(mock_mcp, mock_context, temp_screenshot):
-    """Test that ValidatorNode terminates successfully and clears remaining actions
-    after successful repair.
-    """
-    tap_count = 0
+async def test_validator_burst_skips_safety_net_and_aborts_on_first_failure(
+    mock_mcp, mock_context, temp_screenshot
+):
+    """Two or more actions form a fast-action burst: no precondition gate, a
+    single dispatch per member, and the first failure aborts the rest."""
+    calls = []
 
     def handler(name, args):
-        nonlocal tap_count
-        if name == "click":
-            tap_count += 1
-            if tap_count <= 2:  # First action fails on both validator attempts
-                return False, "Error: Element not found"
+        calls.append(name)
+        if name == "click" and len([c for c in calls if c == "click"]) == 2:
+            return False, "Error: tap rejected"
         return True, ""
 
     mock_mcp.action_handler = handler
 
-    # Two actions planned initially
     decisions = json.dumps(
         [
             {"action": "tap", "coordinates": [105, 205]},
+            {"action": "tap", "coordinates": [205, 305]},
+            {"action": "press_key", "keycode": "BACK"},
+        ]
+    )
+    state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
+
+    node = ValidatorNode(mock_context)
+    with (
+        patch(
+            "artemis.agents.validator.execution_loop._run_precondition_gate",
+            new_callable=AsyncMock,
+        ) as mock_gate,
+        patch("artemis.utils.image_diff.check_ui_change", return_value=False),
+    ):
+        result = await node(state)
+
+    mock_gate.assert_not_called()
+
+    report = result["last_execution_result"]
+    assert report["burst"] is True
+    assert report["status"] == "failed"
+    assert len(report["execution"]) == 3
+    # First member executed cleanly.
+    assert "attempts" not in report["execution"][0]
+    # Second member failed after exactly one dispatch (bursts never retry).
+    assert report["execution"][1]["attempts"] == ["Error: tap rejected"]
+    # Third member never fired.
+    assert report["execution"][2]["attempts"] == ["Skipped (burst aborted)"]
+    assert len(mock_mcp.calls_for("click")) == 2
+    assert mock_mcp.calls_for("press_key") == []
+
+    incident = report["incident"]
+    assert incident["kind"] == "exec_error"
+    assert incident["action_index"] == 1
+    assert incident["burst_size"] == 3
+    assert result["open_incident"] == incident
+
+
+@pytest.mark.asyncio
+async def test_validator_burst_success_executes_every_member(
+    mock_mcp, mock_context, temp_screenshot
+):
+    decisions = json.dumps(
+        [
+            {"action": "tap", "coordinates": [105, 205]},
+            {"action": "wait_for_delay", "time_in_ms": 1},
             {"action": "tap", "coordinates": [205, 305]},
         ]
     )
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
     node = ValidatorNode(mock_context)
-
-    with (
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
-        patch("artemis.utils.image_diff.check_ui_change", return_value=False),
-    ):
-        mock_analyze.return_value = {
-            "status": "fixed",
-            "analysis": "Fixed by updating actions",
-        }
-
+    with patch("artemis.utils.image_diff.check_ui_change", return_value=True):
         result = await node(state)
 
-    assert "last_execution_result" in result
     report = result["last_execution_result"]
-    assert "execution" in report
-    assert len(report["execution"]) == 1  # Only the first failed action is in report
+    assert report["status"] == "success"
+    assert report["burst"] is True
+    assert report["incident"] is None
+    assert result["open_incident"] is None
+    assert result["last_closed_incident"] is None
+    assert len(mock_mcp.calls_for("click")) == 2
 
-    assert report["execution"][0]["coordinates"] == [105, 205]
-    assert report["execution"][0]["attempts"] == [
-        "Error: Element not found",
-        "Error: Element not found",
-    ]
-    assert report["execution"][0]["repair"] == "Fixed by updating actions"
+
+@pytest.mark.asyncio
+async def test_validator_success_closes_open_incident(mock_mcp, mock_context, temp_screenshot):
+    """A successful turn closes whatever incident was still open."""
+    previous = {
+        "kind": "safety_net",
+        "category": "target_disappeared",
+        "reason": "gone",
+        "action": {"action": "tap"},
+        "action_description": "Tapped element",
+        "consecutive_failures": 2,
+    }
+    decisions = json.dumps([{"action": "tap", "coordinates": [105, 205]}])
+    state = DummyState(
+        structured_decisions=decisions,
+        latest_screenshot=temp_screenshot,
+        open_incident=previous,
+    )
+
+    node = ValidatorNode(mock_context)
+    with patch("artemis.utils.image_diff.check_ui_change", return_value=True):
+        result = await node(state)
+
+    assert result["last_execution_result"]["status"] == "success"
+    assert result["open_incident"] is None
+    # The closed record is handed over once so the Operator settles the intent.
+    assert result["last_closed_incident"]["kind"] == "safety_net"
+    assert "closed_at_step" in result["last_closed_incident"]
+
+
+@pytest.mark.asyncio
+async def test_validator_consecutive_failures_escalate_incident(
+    mock_mcp, mock_context, temp_screenshot
+):
+    """Failing again while an incident is open continues its failure count."""
+    previous = {
+        "kind": "exec_error",
+        "category": "general",
+        "reason": "Error: Element not found",
+        "action": {"action": "tap"},
+        "action_description": "Tapped element",
+        "consecutive_failures": 2,
+    }
+    mock_mcp.action_handler = lambda name, args: (False, "Error: Element not found")
+    decisions = json.dumps([{"action": "tap", "coordinates": [105, 205]}])
+    state = DummyState(
+        structured_decisions=decisions,
+        latest_screenshot=temp_screenshot,
+        open_incident=previous,
+    )
+
+    node = ValidatorNode(mock_context)
+    with patch("artemis.utils.image_diff.check_ui_change", return_value=False):
+        result = await node(state)
+
+    assert result["open_incident"]["consecutive_failures"] == 3
 
 
 @pytest.mark.asyncio
@@ -271,7 +360,7 @@ async def test_validator_focus_and_clear_text_no_ui_change(mock_mcp, mock_contex
 @pytest.mark.asyncio
 async def test_validator_silent_failure_treated_as_success(mock_mcp, mock_context, temp_screenshot):
     """Test that silent failure (exec succeeds but no UI change) is treated as
-    success and does not trigger FailureAnalyzer.
+    success and does not open an execution incident.
     """
     decisions = json.dumps([{"action": "tap", "coordinates": [105, 205]}])
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
@@ -281,13 +370,12 @@ async def test_validator_silent_failure_treated_as_success(mock_mcp, mock_contex
     with (
         patch("artemis.agents.validator.validator.VALIDATOR_POLL_TIMEOUT", 0.1),
         patch("artemis.agents.validator.validator.VALIDATOR_POLL_INTERVAL", 0.01),
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
         patch("artemis.utils.image_diff.check_ui_change", return_value=False),  # No UI change
     ):
         result = await node(state)
 
-    # Assert FailureAnalyzer was NOT called
-    mock_analyze.assert_not_called()
+    # No incident is opened for a silent (no-UI-change) success.
+    assert result["open_incident"] is None
 
     # Assert the action is considered executed successfully
     assert "last_execution_result" in result
@@ -299,13 +387,11 @@ async def test_validator_silent_failure_treated_as_success(mock_mcp, mock_contex
 
 
 @pytest.mark.asyncio
-async def test_validator_records_skipped_actions_on_cannot_fix(
+async def test_validator_burst_first_member_failure_marks_rest_skipped(
     mock_mcp, mock_context, temp_screenshot
 ):
-    """Test that ValidatorNode marks unexecuted actions as Skipped when repair fails."""
     mock_mcp.action_handler = lambda name, args: (False, "Error: Connection lost")
 
-    # Two actions planned
     decisions = json.dumps(
         [
             {"action": "tap", "coordinates": [100, 200]},
@@ -315,42 +401,27 @@ async def test_validator_records_skipped_actions_on_cannot_fix(
     state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
 
     node = ValidatorNode(mock_context)
-
-    with (
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
-        patch("artemis.utils.image_diff.check_ui_change", return_value=False),
-    ):
-        mock_analyze.return_value = {
-            "status": "cannot_fix",
-            "analysis": "Cannot fix: System crashed.",
-        }
-
+    with patch("artemis.utils.image_diff.check_ui_change", return_value=False):
         result = await node(state)
 
-    assert "last_execution_result" in result
     report = result["last_execution_result"]
-    assert "execution" in report
     assert len(report["execution"]) == 2
-
-    # First action failed
     assert report["execution"][0]["action"] == "tap"
-    assert report["execution"][0]["attempts"] == [
-        "Error: Connection lost",
-        "Error: Connection lost",
-    ]
-    assert report["execution"][0]["repair"] == "Cannot fix: System crashed."
-
-    # Second action was skipped
+    # A burst member is dispatched exactly once.
+    assert report["execution"][0]["attempts"] == ["Error: Connection lost"]
+    assert "repair" not in report["execution"][0]
     assert report["execution"][1]["action"] == "press_key"
-    assert report["execution"][1]["attempts"] == ["Skipped"]
+    assert report["execution"][1]["attempts"] == ["Skipped (burst aborted)"]
+    assert report["incident"]["action_index"] == 0
+    assert report["incident"]["burst_size"] == 2
 
 
 @pytest.mark.asyncio
-async def test_validator_pre_execution_validation_and_repair(
+async def test_validator_pre_execution_validation_opens_incident(
     mock_mcp, mock_context, temp_screenshot
 ):
-    """Test that pre-execution validation fails when element changes, and is
-    repaired by FailureAnalyzer.
+    """Test that pre-execution validation fails when the element changes, and the
+    interception is handed to the Operator as an execution incident.
     """
     mock_mcp.hierarchy = [
         {
@@ -376,7 +447,6 @@ async def test_validator_pre_execution_validation_and_repair(
     node = ValidatorNode(mock_context)
 
     with (
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
         patch("artemis.utils.image_diff.check_ui_change", return_value=True),
         patch.object(
             ValidatorNode,
@@ -389,29 +459,20 @@ async def test_validator_pre_execution_validation_and_repair(
             ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED,
             "Pixel check failed",
         )
-        mock_analyze.return_value = {
-            "status": "fixed",
-            "analysis": ("Pre-exec failure matched and resolved by switching to Sign Up button."),
-        }
-
         result = await node(state)
 
-    mock_analyze.assert_called_once()
-    args, kwargs = mock_analyze.call_args
-    assert "Pre-execution validation failed" in args[2]
-    assert "Login" in args[2]
-    assert kwargs.get("error_category") == ValidationErrorCategory.TARGET_OCCUPIED
+    incident = result["last_execution_result"]["incident"]
+    assert "Pre-execution validation failed" in incident["reason"]
+    assert "Login" in incident["reason"]
+    assert incident["category"] == ValidationErrorCategory.TARGET_OCCUPIED.value
 
     assert "last_execution_result" in result
     report = result["last_execution_result"]
     assert len(report["execution"]) == 1
     assert report["execution"][0]["action"] == "tap"
     assert "Pre-execution validation failed" in report["execution"][0]["attempts"][0]
-    assert (
-        report["execution"][0]["repair"]
-        == "Pre-exec failure matched and resolved by switching to Sign Up"
-        " button."
-    )
+    assert report["incident"]["kind"] == "safety_net"
+    assert report["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -443,7 +504,7 @@ async def test_validator_pre_execution_validation_self_healing(
     node = ValidatorNode(mock_context)
 
     with patch("artemis.utils.image_diff.check_ui_change", return_value=True):
-        await node(state)
+        result = await node(state)
 
     # Center of [100, 220][300, 320] is pixel [200, 270]; the healed coordinates
     # travel to the canonical click tool normalized to 0-1000 on a 1080x2400 screen:
@@ -487,7 +548,6 @@ async def test_validator_pre_execution_validation_anonymous_occupant(
     node = ValidatorNode(mock_context)
 
     with (
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
         patch("artemis.utils.image_diff.check_ui_change", return_value=True),
         patch.object(
             ValidatorNode,
@@ -500,19 +560,16 @@ async def test_validator_pre_execution_validation_anonymous_occupant(
             ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED,
             "Pixel check failed",
         )
-        mock_analyze.return_value = {
-            "status": "fixed",
-            "analysis": "Pre-exec failure bypassed.",
-        }
-
-        await node(state)
+        result = await node(state)
 
     # Assert that the validator correctly classified this as TARGET_OCCUPIED
     # (due to the clickable anonymous view blocking the click)
-    mock_analyze.assert_called_once()
-    args, kwargs = mock_analyze.call_args
-    assert kwargs.get("error_category") == ValidationErrorCategory.TARGET_OCCUPIED
-    assert "occupied/intercepted by a different element: interactive anonymous element" in args[2]
+    incident = result["last_execution_result"]["incident"]
+    assert incident["category"] == ValidationErrorCategory.TARGET_OCCUPIED.value
+    assert (
+        "occupied/intercepted by a different element: interactive anonymous element"
+        in incident["reason"]
+    )
 
 
 @pytest.mark.asyncio
@@ -558,7 +615,7 @@ async def test_validator_pixel_validation_success(mock_mcp, mock_context, temp_s
 
 @pytest.mark.asyncio
 async def test_validator_pixel_validation_failure(mock_mcp, mock_context, temp_screenshot):
-    """Test that the pixel safety net fails and triggers FailureAnalyzer
+    """Test that the pixel safety net fails and opens an execution incident
     when Gemini reports target is missing.
     """
     decisions = json.dumps([{"action": "tap", "coordinates": [100, 200]}])
@@ -588,20 +645,13 @@ async def test_validator_pixel_validation_failure(mock_mcp, mock_context, temp_s
         ),
         patch("artemis.agents.validator.validator.get_llm", return_value=mock_llm),
         patch("artemis.utils.image_diff.check_ui_change", return_value=False),
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
     ):
-        mock_analyze.return_value = {
-            "status": "cannot_fix",
-            "analysis": "Pixel safety net flagged missing target.",
-        }
-
         node = ValidatorNode(mock_context)
-        await node(state)
+        result = await node(state)
 
-    mock_analyze.assert_called_once()
-    args, kwargs = mock_analyze.call_args
-    assert "Pixel-level validation failed" in args[2]
-    assert kwargs.get("error_category") == ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED
+    incident = result["last_execution_result"]["incident"]
+    assert "Pixel-level validation failed" in incident["reason"]
+    assert incident["category"] == ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED.value
 
 
 @pytest.mark.asyncio
@@ -639,14 +689,8 @@ async def test_validator_launch_app_failure_no_retry(mock_mcp, mock_context, tem
     with (
         patch("artemis.agents.validator.validator.VALIDATOR_POLL_TIMEOUT", 0.05),
         patch("artemis.agents.validator.validator.VALIDATOR_POLL_INTERVAL", 0.01),
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
         patch("artemis.utils.image_diff.check_ui_change", return_value=False),
     ):
-        mock_analyze.return_value = {
-            "status": "cannot_fix",
-            "analysis": "Cannot launch app.",
-        }
-
         node = ValidatorNode(mock_context)
         result = await node(state)
 
@@ -693,7 +737,6 @@ async def test_validator_pre_execution_validation_disappeared_not_shifted(
     node = ValidatorNode(mock_context)
 
     with (
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
         patch("artemis.utils.image_diff.check_ui_change", return_value=True),
         patch.object(
             ValidatorNode,
@@ -706,18 +749,12 @@ async def test_validator_pre_execution_validation_disappeared_not_shifted(
             ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED,
             "Pixel check failed",
         )
-        mock_analyze.return_value = {
-            "status": "cannot_fix",
-            "analysis": "Sign Up button disappeared.",
-        }
-
-        await node(state)
+        result = await node(state)
 
     # Assert that the validator correctly classified this as TARGET_DISAPPEARED
     # (since size mismatch prevents shift matching)
-    mock_analyze.assert_called_once()
-    args, kwargs = mock_analyze.call_args
-    assert kwargs.get("error_category") == ValidationErrorCategory.TARGET_DISAPPEARED
+    incident = result["last_execution_result"]["incident"]
+    assert incident["category"] == ValidationErrorCategory.TARGET_DISAPPEARED.value
 
 
 @pytest.mark.asyncio
@@ -800,7 +837,6 @@ async def test_validator_pre_execution_xml_failure_not_overridden_when_pixel_byp
     node = ValidatorNode(mock_context)
 
     with (
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
         patch("artemis.utils.image_diff.check_ui_change", return_value=True),
         patch.object(
             ValidatorNode,
@@ -814,18 +850,12 @@ async def test_validator_pre_execution_xml_failure_not_overridden_when_pixel_byp
             ValidationErrorCategory.PIXEL_BYPASSED,
             "",
         )
-        mock_analyze.return_value = {
-            "status": "cannot_fix",
-            "analysis": ("XML validation failed and pixel bypass did not override."),
-        }
+        result = await node(state)
 
-        await node(state)
-
-    # FailureAnalyzer SHOULD be called because XML validation failed
+    # An incident SHOULD be opened because XML validation failed
     # and PIXEL_BYPASSED did not override it
-    mock_analyze.assert_called_once()
-    args, kwargs = mock_analyze.call_args
-    assert "Pre-execution validation failed" in args[2]
+    incident = result["last_execution_result"]["incident"]
+    assert "Pre-execution validation failed" in incident["reason"]
 
 
 @pytest.mark.asyncio
@@ -845,14 +875,8 @@ async def test_validator_failure_screenshot_mcp_error_handled_safely(
     node = ValidatorNode(mock_context)
 
     with (
-        patch("artemis.agents.validator.failure_analyzer.FailureAnalyzer.analyze") as mock_analyze,
         patch("artemis.utils.image_diff.check_ui_change", return_value=False),
     ):
-        mock_analyze.return_value = {
-            "status": "cannot_fix",
-            "analysis": "Action failed and cannot fix.",
-        }
-
         result = await node(state)
 
     assert "last_execution_result" in result

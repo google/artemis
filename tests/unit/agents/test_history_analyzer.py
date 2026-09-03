@@ -354,9 +354,7 @@ async def test_history_analyzer_integration_with_task_tree():
             "artemis.agents.history_analyzer.history_analyzer.get_note_file_path",
             return_value=mock_path,
         ),
-        patch(
-            "artemis.agents.history_analyzer.history_analyzer.build_history_for"
-        ) as mock_build,
+        patch("artemis.agents.history_analyzer.history_analyzer.build_history_for") as mock_build,
     ):
         mock_build.return_value = "Mocked operation history"
         analyzer = HistoryAnalyzer(mock_ctx)

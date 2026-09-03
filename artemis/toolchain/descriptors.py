@@ -16,6 +16,9 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _get_embedded_adb() -> str | None:
@@ -25,9 +28,9 @@ def _get_embedded_adb() -> str | None:
 
         if hasattr(adbutils, "adb_path"):
             return adbutils.adb_path()
-    except Exception:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         # Optional dependency probe: not installed or no bundled binary.
-        pass
+        logger.debug("Embedded adb probe via adbutils skipped: %s", exc, exc_info=True)
     return None
 
 
@@ -38,10 +41,10 @@ def _get_embedded_ffmpeg() -> str | None:
 
         if hasattr(imageio_ffmpeg, "get_ffmpeg_exe"):
             return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         # Optional dependency probe: not installed, or imageio_ffmpeg raises
         # RuntimeError when it ships no binary for this platform.
-        pass
+        logger.debug("Embedded ffmpeg probe via imageio_ffmpeg skipped: %s", exc, exc_info=True)
     return None
 
 

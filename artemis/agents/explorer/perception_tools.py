@@ -16,10 +16,12 @@
 
 Split out of ``artemis.agents.explorer.explorer``: the ``exec_*`` tool method
 group plus its search helpers, packaged as a mixin consumed by ``Explorer``.
-Patched collaborators (``settings``, ``draw_dots``, ``search_ui_func``,
-``search_by_coordinates_func``, ``_run_object_detection``, ``StorageManager``,
-``logger``) are resolved through the facade module at call time; see
-``artemis.agents.explorer._facade``.
+Text search, the coordinate audit and the OCR inventory all answer from the
+run's in-memory :class:`~artemis.agents.explorer.screen_index.ScreenIndex`;
+no Data Engine round trip is involved, so an unsynced frame never degrades
+to "no UI data".  Patched collaborators (``settings``, ``draw_dots``,
+``_run_object_detection``, ``logger``) are resolved through the facade module
+at call time; see ``artemis.agents.explorer._facade``.
 """
 
 import asyncio
@@ -27,36 +29,40 @@ import glob
 import json
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING, Any
 
 import cv2
 
 from artemis.agents.explorer._facade import facade
+from artemis.agents.explorer.geometry import norm_to_pixel, pixel_to_norm
+from artemis.agents.explorer.screen_index import ScreenElement, ScreenIndex, normalize_text
 from artemis.agents.image_processor.image_processor import ImageProcessor
 from artemis.data_engine.trace import trace
 
+#: Text-search answer when the screen could not be indexed at all.
+NO_UI_TREE_MESSAGE = "No UI-tree data is available for this screen; rely on visual detection."
 
-def load_detector_templates() -> tuple[list, object]:
+
+def load_detector_templates() -> tuple[list[str], float]:
     """Load object-detector prompt templates and the optional global timeout.
 
     Shared by ``exec_detect_objects`` and the flash-mode ``run`` path; the two
     call sites historically carried an identical inline copy of this block.
     """
     _ex = facade()
-    detector_prompt_path = (
-        Path(__file__).parent.parent / "object_detector" / "object_detector.json"
-    )
-    global_timeout = None
+    detector_prompt_path = Path(__file__).parent.parent / "object_detector" / "object_detector.json"
+    global_timeout = 30.0
     try:
         with open(detector_prompt_path, encoding="utf-8") as f:
             detector_config = json.load(f)
         detector_templates = detector_config.get("templates", [])
         detector_instructions = detector_config.get("instructions", "")
-        global_timeout = detector_config.get("global_timeout", None)
+        raw_timeout = detector_config.get("global_timeout")
+        if isinstance(raw_timeout, (int, float)) and raw_timeout > 0:
+            global_timeout = float(raw_timeout)
     except Exception as e:
         _ex.logger.warning(f"Failed to load detector prompt config: {e}")
-        detector_templates = [
-            "Point to the following objects in the provided image: {labels_str}."
-        ]
+        detector_templates = ["Point to the following objects in the provided image: {labels_str}."]
         detector_instructions = ""
 
     templates = [f"{t}\n\n{detector_instructions}" for t in detector_templates]
@@ -66,158 +72,160 @@ def load_detector_templates() -> tuple[list, object]:
 class PerceptionToolsMixin:
     """Perception/vision tool method group of :class:`Explorer`."""
 
-    async def _search_ui_helper(self, query: str, prefix: str = "S", color: str = "red") -> dict:
+    # Runtime initialization lives in ``Explorer``/``RunSetupMixin``.  Keep a
+    # precise declaration here so this mixin's host requirements are explicit.
+    if TYPE_CHECKING:
+        from artemis.context import ArtemisContext
+
+        ctx: ArtemisContext
+        global_label_idx: int
+        width: int
+        height: int
+        image_name: str | None
+        screenshot_path: str | None
+        image_pool: dict[str, dict[str, Any]]
+        next_img_id: int
+        screen_index: ScreenIndex
+        label_registry: dict[str, ScreenElement]
+
+    # ------------------------------------------------------------------ #
+    # Label registry and annotation helpers
+    # ------------------------------------------------------------------ #
+
+    def _register_label(self, label: str, element: ScreenElement) -> None:
+        """Remembers which element a label shown to the model stands for.
+
+        Only labels backed by a real UI-tree or OCR element are registered;
+        detection points (``D``) carry no bounds and are deliberately absent.
+        """
+        self.label_registry[label] = element
+
+    def _registry_element(self, entry: dict[str, Any]) -> ScreenElement:
+        """Maps a numbered-list entry back to its indexed element.
+
+        The index is preferred over rebuilding the element from the entry
+        because it carries the interaction flags the entry dropped.
+        """
+        raw_bounds = entry["bounds"]
+        bounds = (int(raw_bounds[0]), int(raw_bounds[1]), int(raw_bounds[2]), int(raw_bounds[3]))
+        text = str(entry.get("text") or "")
+        source = "ocr" if entry.get("is_ocr") else "xml"
+        for element in self.screen_index.elements:
+            if (
+                element.bounds == bounds
+                and element.source == source
+                and normalize_text(element.text) == normalize_text(text)
+            ):
+                return element
+        return ScreenElement(
+            text=text,
+            bounds=bounds,
+            source=source,
+            class_name=str(entry["class"]) if entry.get("class") else None,
+            resource_id=str(entry["resource_id"]) if entry.get("resource_id") else None,
+        )
+
+    def _next_output_path(self, subdir: str) -> Path:
+        """Next free ``images/<subdir>/<image>_<n>.jpg`` under the traces directory."""
         _ex = facade()
-        if not self.image_name:
-            return {
-                "text": (
-                    "Error: UI data for the current screen is not found in Data"
-                    " Engine. It might not be synced yet."
-                ),
-                "image_path": None,
-            }
+        out_dir = Path(_ex.settings.TRACES_PATH) / "images" / subdir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = self.image_name or "temp_image"
+        max_seq = 0
+        for existing in glob.glob(str(out_dir / f"{stem}_*.jpg")):
+            match = re.search(r"_(\d+)\.jpg$", existing)
+            if match:
+                max_seq = max(max_seq, int(match.group(1)))
+        return out_dir / f"{stem}_{max_seq + 1}.jpg"
 
-        # 1. Try with high precision threshold
-        raw_res = _ex.search_ui_func(self.image_name, query, 0.7)
-        if "error" in raw_res:
-            return {"text": raw_res["error"], "image_path": None}
+    def _draw_labeled_dots(
+        self, subdir: str, points: list[list[int]], labels: list[str], color: str
+    ) -> str | None:
+        """Draws ``labels`` at ``points`` on the screenshot; returns the annotated path.
 
-        matches = raw_res.get("matches", [])
+        Returns None when the screenshot is missing or drawing fails: the
+        textual result is still delivered, so one bad annotation never sinks
+        the tool call.
+        """
+        _ex = facade()
+        if not self.screenshot_path:
+            return None
+        try:
+            output_path = self._next_output_path(subdir)
+            _ex.draw_dots(self.screenshot_path, points, labels, str(output_path), color=color)
+            return str(output_path)
+        except Exception as e:
+            _ex.logger.warning(f"Failed to draw {subdir} dots: {e}")
+            return None
 
-        # 2. If fewer than 3 matches, try with a lower threshold and merge
+    # ------------------------------------------------------------------ #
+    # Screen-index searches
+    # ------------------------------------------------------------------ #
+
+    async def _search_ui_helper(self, query: str, prefix: str = "S", color: str = "red") -> dict:
+        """Fuzzy text search over the screen index, annotated with labeled dots.
+
+        A strict pass (0.7) keeps the answer short when the label is
+        unambiguous; when it yields fewer than three hits a lenient pass
+        (0.4) is merged in so near-misses (abbreviations, truncated labels)
+        still surface for the model to judge.
+        """
+        if not len(self.screen_index):
+            return {"text": NO_UI_TREE_MESSAGE, "image_path": None}
+
+        matches = list(self.screen_index.search_text(query, 0.7))
         if len(matches) < 3:
-            raw_res_low = _ex.search_ui_func(self.image_name, query, 0.4)
-            if "error" not in raw_res_low:
-                low_matches = raw_res_low.get("matches", [])
-                existing_keys = {
-                    (
-                        m.get("matched_text"),
-                        tuple(m.get("bounds")) if m.get("bounds") else None,
-                    )
-                    for m in matches
-                }
-                for m in low_matches:
-                    key = (
-                        m.get("matched_text"),
-                        tuple(m.get("bounds")) if m.get("bounds") else None,
-                    )
-                    if key not in existing_keys:
-                        matches.append(m)
-                        existing_keys.add(key)
+            seen = {(m.matched_text, m.element.bounds) for m in matches}
+            for m in self.screen_index.search_text(query, 0.4):
+                key = (m.matched_text, m.element.bounds)
+                if key not in seen:
+                    matches.append(m)
+                    seen.add(key)
 
         if not matches:
             return {"text": "No matches found.", "image_path": None}
 
-        points = []
-        labels = []
-        text_output = []
-
+        points: list[list[int]] = []
+        labels: list[str] = []
+        text_output: list[str] = []
         for m in matches:
-            m_type = m.get("type", "xml")
-            m_prefix = "O" if m_type == "ocr" else prefix
+            element = m.element
+            m_prefix = "O" if element.source == "ocr" else prefix
             label_id = f"{m_prefix}{self.global_label_idx}"
             self.global_label_idx += 1
-            bounds = m.get("bounds")
-            matched_text = m.get("matched_text", "")
+            self._register_label(label_id, element)
+            cx, cy = element.center
+            points.append([cx, cy])
+            labels.append(label_id)
+            nx, ny = pixel_to_norm(cx, cy, self.width, self.height)
+            text_output.append(f"[{label_id}] '{m.matched_text}' at [{nx},{ny}]")
 
-            if bounds and len(bounds) == 4:
-                left, top, right, bottom = bounds
-                cx_pixel = (left + right) // 2
-                cy_pixel = (top + bottom) // 2
-
-                points.append([cx_pixel, cy_pixel])
-                labels.append(label_id)
-
-                cx_norm = int(max(0, min(1000, cx_pixel * 1000 / self.width)))
-                cy_norm = int(max(0, min(1000, cy_pixel * 1000 / self.height)))
-
-                text_output.append(f"[{label_id}] '{matched_text}' at [{cx_norm},{cy_norm}]")
-            else:
-                text_output.append(f"[{label_id}] '{matched_text}' at unknown")
-
-        if not points:
-            return {"text": " | ".join(text_output), "image_path": None}
-
-        base_dir = _ex.settings.TRACES_PATH
-        images_dir = base_dir / "images"
-        search_ui_dir = images_dir / "search_ui"
-        search_ui_dir.mkdir(parents=True, exist_ok=True)
-
-        existing_files = glob.glob(str(search_ui_dir / f"{self.image_name}_*.jpg"))
-        max_seq = 0
-        for f in existing_files:
-            match = re.search(r"_(\d+)\.jpg$", f)
-            if match:
-                max_seq = max(max_seq, int(match.group(1)))
-        seq = max_seq + 1
-        output_path = search_ui_dir / f"{self.image_name}_{seq}.jpg"
-
-        try:
-            _ex.draw_dots(
-                self.screenshot_path,
-                points,
-                labels,
-                str(output_path),
-                color=color,
-            )
-            image_path = str(output_path)
-        except Exception as e:
-            _ex.logger.warning(f"Failed to draw dots: {e}")
-            image_path = None
-
+        image_path = self._draw_labeled_dots("search_ui", points, labels, color)
         return {"text": " | ".join(text_output), "image_path": image_path}
 
     async def _search_by_coords_helper(
         self, nx: int, ny: int, prefix: str = "X", color: str = "blue"
     ) -> dict:
-        _ex = facade()
-        if not self.image_name:
-            return {
-                "text": (
-                    "Error: UI data for the current screen is not found in Data"
-                    " Engine. It might not be synced yet."
-                ),
-                "image_path": None,
-            }
+        """Coordinate audit: names what actually sits under a normalized point.
 
-        x = int(max(0, min(self.width, nx * self.width / 1000)))
-        y = int(max(0, min(self.height, ny * self.height / 1000)))
-        raw_res = _ex.search_by_coordinates_func(self.image_name, x, y)
+        UI-tree hits come innermost first (see ``ScreenIndex.elements_at``),
+        so the label is bound to the node a tap would reach.  The blue dot is
+        drawn even without a hit so the model can see where it probed.
+        """
+        x, y = norm_to_pixel(nx, ny, self.width, self.height)
+        found = self.screen_index.elements_at(x, y)
 
         label_id = f"{prefix}{self.global_label_idx}"
         self.global_label_idx += 1
+        image_path = self._draw_labeled_dots("coords_audit", [[x, y]], [label_id], color)
 
-        # Draw a dot at the query coordinates
-        base_dir = _ex.settings.TRACES_PATH
-        images_dir = base_dir / "images"
-        coords_audit_dir = images_dir / "coords_audit"
-        coords_audit_dir.mkdir(parents=True, exist_ok=True)
+        if not found:
+            return {"text": f"No elements found at [{nx},{ny}].", "image_path": image_path}
 
-        existing_files = glob.glob(str(coords_audit_dir / f"{self.image_name}_*.jpg"))
-        max_seq = 0
-        for f in existing_files:
-            match = re.search(r"_(\d+)\.jpg$", f)
-            if match:
-                max_seq = max(max_seq, int(match.group(1)))
-        seq = max_seq + 1
-        output_path = coords_audit_dir / f"{self.image_name}_{seq}.jpg"
-
-        try:
-            _ex.draw_dots(
-                self.screenshot_path,
-                [[x, y]],
-                [label_id],
-                str(output_path),
-                color=color,
-            )
-            image_path = str(output_path)
-        except Exception as e:
-            _ex.logger.warning(f"Failed to draw blue dots: {e}")
-            image_path = None
-
-        raw_res_str = str(raw_res).replace("\n", " | ").replace(" |  | ", " | ")
+        self._register_label(label_id, found[0])
+        described = " | ".join(element.describe() for element in found)
         return {
-            "text": (f"Matched element at [{nx},{ny}]: [{label_id}] | {raw_res_str}"),
+            "text": f"Matched element at [{nx},{ny}]: [{label_id}] | {described}",
             "image_path": image_path,
         }
 
@@ -231,6 +239,11 @@ class PerceptionToolsMixin:
     ) -> dict:
         _ex = facade()
         try:
+            if not self.screenshot_path:
+                return {
+                    "text": "Error: Original screenshot is not available.",
+                    "image_path": None,
+                }
             target_info = self.image_pool.get(target_image_id)
             if not target_info:
                 return {
@@ -289,7 +302,7 @@ class PerceptionToolsMixin:
                 if target_image_id != "img_0":
                     text_output.append(
                         "[NOTE: Coordinates are automatically mapped back to"
-                        " the original 1080x2400 screen space from"
+                        f" the original {self.width}x{self.height} screen space from"
                         f" {target_image_id}]"
                     )
 
@@ -301,6 +314,8 @@ class PerceptionToolsMixin:
                         x_norm, y_norm = pos
 
                         t_img = cv2.imread(target_path)
+                        if t_img is None:
+                            raise ValueError(f"Failed to read target image at {target_path}")
                         t_h, t_w = t_img.shape[:2]
 
                         # Pixels in target image
@@ -390,7 +405,7 @@ class PerceptionToolsMixin:
             text_parts.append(f"Text Search Results are: {xml_text}")
 
         coord_text = results[1].get("text", "No elements found.")
-        if coord_text and coord_text != "No elements found.":
+        if coord_text and not coord_text.startswith("No elements found"):
             text_parts.append(f"Coordinate Search Results are: {coord_text}")
 
         obj_text = results[2].get("text", "No objects detected.")
@@ -502,92 +517,42 @@ class PerceptionToolsMixin:
                 "text": text,
                 "image_paths": image_paths,
             }
-        else:
-            return {
-                "text": f"ImageProcessor error: {err_msg}",
-                "image_paths": [],
-            }
-
-        output_path = result.get("output_path")
-        trans = result.get("transform")
-        new_image_id = f"img_{len(self.image_pool)}"
-        if output_path and trans:
-            self.image_pool[new_image_id] = {
-                "path": output_path,
-                "transform": trans,
-            }
-
-        text_msg = (
-            f"Image processed successfully. New image saved as"
-            f" '{new_image_id}'. You can now use '{new_image_id}' as"
-            " 'target_image_id' in subsequent tool calls."
-        )
         return {
-            "text": text_msg,
-            "image_path": output_path,
-            "image_id": new_image_id,
+            "text": "ImageProcessor error: no output images were produced.",
+            "image_paths": [],
         }
 
     @trace(type="tool", name="get_ocr_list")
     async def exec_get_ocr_list(self, prefix: str = "O", color: str = "green") -> dict:
-        _ex = facade()
-        if not self.image_name:
-            return {
-                "text": ("Error: UI data for the current screen is not found in Data Engine."),
-                "image_path": None,
-            }
-
+        """Lists every OCR-detected text on the screen with a labeled dot."""
         try:
-            db_path = _ex.settings.DATA_ENGINE_DB_PATH
-            base_dir = _ex.settings.TRACES_PATH
-            storage = _ex.StorageManager(db_path=str(db_path), base_dir=base_dir)
-
-            record = storage.get_ui_record(self.image_name)
-            if not record or not record.ocr_result:
+            ocr_elements = self.screen_index.ocr_elements
+            if not ocr_elements:
                 return {
                     "text": "No text elements detected on the screen.",
                     "image_path": None,
                 }
 
-            points = []
-            labels = []
-            text_output = []
-
-            for item in record.ocr_result:
-                text = item.get("text", "").strip()
-                bounds = item.get("bounds", [])
-                if text and len(bounds) == 4:
-                    left, top, right, bottom = bounds
-                    cx = (left + right) // 2
-                    cy = (top + bottom) // 2
-                    if 0 <= cx <= self.width and 0 <= cy <= self.height:
-                        label_id = f"{prefix}{self.global_label_idx}"
-                        self.global_label_idx += 1
-                        points.append([cx, cy])
-                        labels.append(label_id)
-
-                        cx_norm = int(max(0, min(1000, cx * 1000 / self.width)))
-                        cy_norm = int(max(0, min(1000, cy * 1000 / self.height)))
-
-                        text_output.append(f"[{label_id}] '{text}' coords: [{cx_norm},{cy_norm}]")
+            points: list[list[int]] = []
+            labels: list[str] = []
+            text_output: list[str] = []
+            for element in ocr_elements:
+                cx, cy = element.center
+                if not (0 <= cx <= self.width and 0 <= cy <= self.height):
+                    continue
+                label_id = f"{prefix}{self.global_label_idx}"
+                self.global_label_idx += 1
+                self._register_label(label_id, element)
+                points.append([cx, cy])
+                labels.append(label_id)
+                nx, ny = pixel_to_norm(cx, cy, self.width, self.height)
+                text_output.append(f"[{label_id}] '{element.text}' coords: [{nx},{ny}]")
 
             if not points:
-                return {
-                    "text": "No valid OCR results found.",
-                    "image_path": None,
-                }
+                return {"text": "No valid OCR results found.", "image_path": None}
 
-            images_dir = base_dir / "images"
-            ocr_dir = images_dir / "ocr"
-            ocr_dir.mkdir(parents=True, exist_ok=True)
-
-            output_path = ocr_dir / f"{self.image_name}_{self.global_label_idx}.jpg"
-            _ex.draw_dots(self.screenshot_path, points, labels, str(output_path), color=color)
-
-            return {
-                "text": "\n".join(text_output),
-                "image_path": str(output_path),
-            }
+            image_path = self._draw_labeled_dots("ocr", points, labels, color)
+            return {"text": "\n".join(text_output), "image_path": image_path}
 
         except Exception as e:
             return {
@@ -606,6 +571,11 @@ class PerceptionToolsMixin:
     ) -> dict:
         _ex = facade()
         try:
+            if not self.screenshot_path:
+                return {
+                    "text": "Error: Original screenshot is not available.",
+                    "image_path": None,
+                }
             px_start = int(max(0, min(self.width, x_min * self.width / 1000.0)))
             py_start = int(max(0, min(self.height, y_min * self.height / 1000.0)))
             px_end = int(max(0, min(self.width, x_max * self.width / 1000.0)))

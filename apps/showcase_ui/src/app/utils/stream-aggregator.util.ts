@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { StepBlock, PhaseBlock, StepEvent } from '../core/models/stream.model';
+import { StepBlock, PhaseBlock, StepEvent, StreamSegment } from '../core/models/stream.model';
 import { isAndroidAction, isReportStatusAction, getReportStatusExplanation, getReportStatusValue } from './action-formatter.util';
 import { getUniqueGenericTools } from './tool-formatter.util';
 
@@ -33,6 +33,145 @@ export function getItemTimestamp(ts: any, fallback: number = 0): number {
 }
 
 /**
+ * Index of the `checker` block that owns a trace id (the Checker's own agent
+ * trace). The Checker runs concurrently with Operator steps, so its streamed
+ * reasoning and tool traces are routed by `parent_trace_id`, never by the
+ * step that happens to be current.
+ */
+function findCheckerBlockByTrace(blocks: StepBlock[], parentTraceId: any): number {
+  if (!parentTraceId) return -1;
+  const key = String(parentTraceId);
+  return blocks.findIndex(b => b.type === 'checker' && b.data?.trace_id && String(b.data.trace_id) === key);
+}
+
+/** Latest still-running checker block (fallback when only the agent name is known). */
+function findRunningCheckerBlock(blocks: StepBlock[]): number {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i].type === 'checker' && blocks[i].data?.isCompleted === false) return i;
+  }
+  return -1;
+}
+
+/**
+ * Apply one `checker_event` (attempt_started / attempt_finished / run_outcome)
+ * to the block list. Attempts are keyed by attempt id so live events and the
+ * ledger backfill merge instead of duplicating.
+ */
+function applyCheckerLog(blocks: StepBlock[], log: any): void {
+  const d = log.data || {};
+  if (!d.event) return;
+
+  if (d.event === 'run_outcome') {
+    const id = 'checker-outcome';
+    const idx = blocks.findIndex(b => b.id === id);
+    const data = {
+      ...(idx > -1 ? blocks[idx].data : {}),
+      ...d,
+      phase: 'outcome',
+      status: 'done',
+      isCompleted: true,
+      generic_tools: []
+    };
+    const block: StepBlock = { id, type: 'checker', timestamp: log.timestamp, data };
+    if (idx > -1) blocks[idx] = block; else blocks.push(block);
+    return;
+  }
+
+  if (!d.attempt_id) return;
+  const id = `checker-${d.attempt_id}`;
+  const idx = blocks.findIndex(b => b.id === id);
+  const existing = idx > -1 ? blocks[idx] : null;
+  const ts = typeof d.ts === 'number' ? d.ts : (log.timestamp ? new Date(log.timestamp).getTime() / 1000 : undefined);
+
+  if (d.event === 'attempt_started') {
+    const data = {
+      ...(existing?.data || {}),
+      ...d,
+      // A late "started" must not resurrect a finished attempt.
+      status: existing?.data?.isCompleted ? existing.data.status : 'running',
+      isCompleted: existing?.data?.isCompleted ?? false,
+      started_at: existing?.data?.started_at ?? ts,
+      verdicts: existing?.data?.verdicts || [],
+      findings: existing?.data?.findings || [],
+      generic_tools: existing?.data?.generic_tools || []
+    };
+    const block: StepBlock = { id, type: 'checker', timestamp: existing?.timestamp || log.timestamp, data };
+    if (existing) blocks[idx] = block; else blocks.push(block);
+    return;
+  }
+
+  if (d.event === 'attempt_finished') {
+    const startedAt = existing?.data?.started_at ?? ts;
+    const verdicts = Array.isArray(d.verdicts) ? d.verdicts : (existing?.data?.verdicts || []);
+    const items = existing?.data?.items?.length
+      ? existing.data.items
+      : verdicts.map((v: any) => ({ kind: v.kind, text: v.item_text, when: v.when }));
+    const data = {
+      ...(existing?.data || {}),
+      ...d,
+      status: d.status || 'done',
+      verdicts,
+      items,
+      findings: Array.isArray(d.findings) ? d.findings : (existing?.data?.findings || []),
+      generic_tools: existing?.data?.generic_tools || [],
+      started_at: startedAt,
+      finished_at: ts,
+      duration: startedAt !== undefined && ts !== undefined ? Math.max(0, ts - startedAt) : undefined,
+      isCompleted: true
+    };
+    const block: StepBlock = { id, type: 'checker', timestamp: existing?.timestamp || log.timestamp, data };
+    if (existing) blocks[idx] = block; else blocks.push(block);
+  }
+}
+
+/**
+ * Persisted steps list the Checker's tool traces (and its agent trace) under
+ * the Operator step that was current while it ran, because traces are stored
+ * by step id. Once the checker blocks exist (ledger backfill carries the
+ * attempt's trace id), move those traces to the attempt they belong to and
+ * drop the agent trace itself.
+ */
+function relocateCheckerTools(blocks: StepBlock[]): void {
+  const checkerByTrace = new Map<string, number>();
+  blocks.forEach((b, i) => {
+    if (b.type === 'checker' && b.data?.trace_id) {
+      checkerByTrace.set(String(b.data.trace_id), i);
+    }
+  });
+  if (checkerByTrace.size === 0) return;
+
+  blocks.forEach((block, i) => {
+    if (block.type === 'checker') return;
+    const tools: any[] = block.data?.generic_tools || [];
+    if (tools.length === 0) return;
+    const keep: any[] = [];
+    let moved = false;
+    for (const tool of tools) {
+      const ownTrace = tool?.trace_id ? String(tool.trace_id) : '';
+      const parent = tool?.parent_trace_id ? String(tool.parent_trace_id) : '';
+      if (ownTrace && checkerByTrace.has(ownTrace) && tool?.type === 'agent') {
+        moved = true; // the Checker's own agent trace: not a tool of the step
+        continue;
+      }
+      const target = parent ? checkerByTrace.get(parent) : undefined;
+      if (target === undefined) {
+        keep.push(tool);
+        continue;
+      }
+      const checker = blocks[target];
+      const existing: any[] = checker.data.generic_tools || [];
+      if (!existing.some((t) => t.trace_id && t.trace_id === tool.trace_id)) {
+        blocks[target] = { ...checker, data: { ...checker.data, generic_tools: [...existing, tool] } };
+      }
+      moved = true;
+    }
+    if (moved) {
+      blocks[i] = { ...block, data: { ...block.data, generic_tools: keep } };
+    }
+  });
+}
+
+/**
  * Consolidate raw SSE logs into deduplicated and ordered StepBlocks
  */
 export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
@@ -43,12 +182,63 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
   rawLogs.forEach(log => {
     if (!log) return;
 
+    if (log.type === 'checker_event') {
+      applyCheckerLog(blocks, log);
+      return;
+    }
+
     if (log.type === 'llm_stream') {
       const execId = log.data?.execution_id || log.id;
       const stepId = log.data?.step_id;
       const streamType = log.data?.stream_type || 'text';
       const text = log.data?.text || '';
       const isCompleted = log.data?.isCompleted ?? false;
+
+      // The Checker's own reasoning streams under its agent trace: route it to
+      // the attempt block, never to the Operator step that is current.
+      const checkerIndex = findCheckerBlockByTrace(blocks, log.data?.parent_trace_id);
+      if (checkerIndex > -1) {
+        const checkerBlock = blocks[checkerIndex];
+        const checkerData: any = { ...checkerBlock.data };
+        // The Checker is a multi-turn tool loop: every LLM turn streams under
+        // its own execution id. Keep one segment per turn (with its first-seen
+        // time) so the timeline can interleave the text with the tool calls it
+        // triggered, instead of collapsing all turns into one early block.
+        const segments: StreamSegment[] = Array.isArray(checkerData.stream_segments)
+          ? [...checkerData.stream_segments]
+          : [];
+        const segmentIndex = segments.findIndex(
+          (s) => s.execution_id === execId && s.stream_type === streamType
+        );
+        const segment: StreamSegment = {
+          execution_id: execId,
+          stream_type: streamType === 'thinking' ? 'thinking' : 'text',
+          text,
+          timestamp: segmentIndex > -1 ? segments[segmentIndex].timestamp : log.timestamp,
+          isCompleted
+        };
+        if (segmentIndex > -1) segments[segmentIndex] = segment; else segments.push(segment);
+        checkerData.stream_segments = segments;
+        // Flat fields stay as the joined text for consumers that only know steps.
+        const joined = (type: string) => segments
+          .filter((s) => s.stream_type === type && s.text.trim())
+          .map((s) => s.text)
+          .join('\n\n');
+        checkerData.operator_native_thinking = joined('thinking');
+        checkerData.operator_raw_thinking = joined('text');
+        if (streamType === 'thinking') {
+          checkerData.operator_native_thinking_timestamp =
+            checkerData.operator_native_thinking_timestamp || log.timestamp;
+        } else {
+          checkerData.operator_raw_thinking_timestamp =
+            checkerData.operator_raw_thinking_timestamp || log.timestamp;
+        }
+        if (execId && !checkerData.execution_id) {
+          checkerData.execution_id = execId;
+        }
+        blocks[checkerIndex] = { ...checkerBlock, data: checkerData };
+        return;
+      }
 
       // Find existing block: match by stepId if available, or by execId, or active incomplete block
       let existingIndex = -1;
@@ -111,15 +301,12 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
       // Find if there is an existing block for this step or an unattached stream block from this turn
       let existingIndex = blocks.findIndex(b => b.id === `step-${stepId}` || b.data?.step_id === stepId);
 
-      // If not found by step_id, check if there is an open stream block from the same execution turn
-      if (existingIndex === -1) {
-        for (let i = blocks.length - 1; i >= 0; i--) {
-          if (blocks[i].type === 'llm_stream' && (!blocks[i].data?.step_id || blocks[i].data?.step_id === stepId)) {
-            existingIndex = i;
-            break;
-          }
-        }
-      }
+      // No adoption of untagged stream blocks here: the Operator's streams
+      // always carry the step id (Perception / the Flash turn pre-allocate it
+      // before the LLM call), so a stream without one belongs to another agent
+      // (Planner, Checker...). A step whose Operator emitted only tool calls
+      // and no text used to steal the latest such block -- typically the
+      // Planner's -- and render its action inside it at the top of the timeline.
 
       if (existingIndex > -1) {
         const existingBlock = blocks[existingIndex];
@@ -185,8 +372,18 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
       let stepId = log.data.step_id;
       let existingIndex = -1;
 
+      // 0. Tools invoked by the Checker belong to its attempt block (routed by
+      //    the parent trace, falling back to the running attempt by agent name).
+      let checkerIndex = findCheckerBlockByTrace(blocks, log.data.parent_trace_id);
+      if (checkerIndex === -1 && String(log.data.agent_name || '').toLowerCase() === 'checker') {
+        checkerIndex = findRunningCheckerBlock(blocks);
+      }
+      if (checkerIndex > -1) {
+        existingIndex = checkerIndex;
+      }
+
       // 1. If this trace_id already exists in some block, update that block directly
-      if (log.data.trace_id) {
+      if (existingIndex === -1 && log.data.trace_id) {
         existingIndex = blocks.findIndex(b =>
           b.data?.generic_tools?.some((t: any) => t.trace_id === log.data.trace_id)
         );
@@ -202,8 +399,13 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
         existingIndex = blocks.findIndex(b => b.id === 'step-pre-planning' || b.data?.step_id === 'pre-planning');
       }
 
-      // 4. Otherwise find by timestamp among existing step blocks
-      if (existingIndex === -1) {
+      // 4. Untagged traces only: attach to the latest block that precedes
+      //    them. A trace that names a step whose block does not exist yet
+      //    (tool call before any streamed text, or an action recorded before
+      //    the step in Flash) creates that step's block below instead of being
+      //    glued to an earlier step, where the later `step_recorded` (which
+      //    carries the same trace) would leave a duplicate card.
+      if (existingIndex === -1 && !stepId) {
         const logTime = log.timestamp ? new Date(log.timestamp).getTime() : 0;
         let maxStepTime = -1;
         for (let i = 0; i < blocks.length; i++) {
@@ -254,6 +456,8 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
       }
     }
   });
+
+  relocateCheckerTools(blocks);
 
   blocks.sort((a, b) => {
     const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
@@ -470,13 +674,17 @@ export function getSortedStepEvents(
   const rawText = typeof stepData.operator_raw_thinking === 'string'
     ? stepData.operator_raw_thinking.trim()
     : '';
+  const segments: StreamSegment[] | null = Array.isArray(stepData.stream_segments) && stepData.stream_segments.length > 0
+    ? stepData.stream_segments
+    : null;
   const signature = [
     toolsLen,
     actionTs ?? '',
     stepData.operator_native_thinking_timestamp ?? '',
     stepData.operator_raw_thinking_timestamp ?? '',
     nativeText.length,
-    rawText.length
+    rawText.length,
+    segments ? segments.map((s) => `${s.execution_id}:${s.stream_type}:${s.text.length}`).join(',') : ''
   ].join('|');
 
   if (cache) {
@@ -492,22 +700,36 @@ export function getSortedStepEvents(
 
   // Text and tools share one timeline. Live streams carry their first-seen
   // timestamps; persisted steps use the step timestamp as a stable fallback.
-  if (nativeText) {
-    events.push({
-      type: 'thinking',
-      data: { text: stepData.operator_native_thinking },
-      timestamp: getItemTimestamp(stepData.operator_native_thinking_timestamp, fallbackTime),
-      sequence: sequence++
+  if (segments) {
+    // Multi-turn agent (Checker): one event per streamed turn, each at the
+    // time its first chunk arrived, so turns sort between the tool calls.
+    segments.forEach((segment) => {
+      if (!segment.text || !segment.text.trim()) return;
+      events.push({
+        type: segment.stream_type === 'thinking' ? 'thinking' : 'text',
+        data: { text: segment.text, execution_id: segment.execution_id, segment: true },
+        timestamp: getItemTimestamp(segment.timestamp, fallbackTime),
+        sequence: sequence++
+      });
     });
-  }
+  } else {
+    if (nativeText) {
+      events.push({
+        type: 'thinking',
+        data: { text: stepData.operator_native_thinking },
+        timestamp: getItemTimestamp(stepData.operator_native_thinking_timestamp, fallbackTime),
+        sequence: sequence++
+      });
+    }
 
-  if (rawText) {
-    events.push({
-      type: 'text',
-      data: { text: stepData.operator_raw_thinking },
-      timestamp: getItemTimestamp(stepData.operator_raw_thinking_timestamp, fallbackTime),
-      sequence: sequence++
-    });
+    if (rawText) {
+      events.push({
+        type: 'text',
+        data: { text: stepData.operator_raw_thinking },
+        timestamp: getItemTimestamp(stepData.operator_raw_thinking_timestamp, fallbackTime),
+        sequence: sequence++
+      });
+    }
   }
 
   // Add action_taken if present and valid.

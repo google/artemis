@@ -81,15 +81,6 @@ GOLDEN_CALLS = {
         min_summaries=len(STEPS),
         last_n_detailed=1,
     ),
-    "failure_analyzer": lambda: build_plan_and_history(
-        TASK_PLAN,
-        STEPS,
-        HASH_B,
-        last_n_detailed=1,
-        strict_milestone_pruning=True,
-        recent_window_size=3,
-        for_failure_analyzer=True,
-    ),
     "planner": lambda: build_plan_and_history(
         "",
         STEPS,
@@ -129,20 +120,13 @@ GOLDEN_CALLS = {
 }
 
 POLICY_CALLS = {
-    "operator": lambda: build_history_for(
-        "operator", TASK_PLAN, STEPS, HASH_B, last_n_detailed=1
-    ),
+    "operator": lambda: build_history_for("operator", TASK_PLAN, STEPS, HASH_B, last_n_detailed=1),
     "operator_cold_start": lambda: build_history_for(
         "operator_cold_start", TASK_PLAN, STEPS, HASH_B
     ),
-    "failure_analyzer": lambda: build_history_for(
-        "failure_analyzer", TASK_PLAN, STEPS, HASH_B
-    ),
     "planner": lambda: build_history_for("planner", "", STEPS, "default"),
     "outputter": lambda: build_history_for("outputter", TASK_PLAN, STEPS, HASH_B),
-    "history_analyzer": lambda: build_history_for(
-        "history_analyzer", TASK_PLAN, STEPS, HASH_B
-    ),
+    "history_analyzer": lambda: build_history_for("history_analyzer", TASK_PLAN, STEPS, HASH_B),
     "diagnoser": lambda: build_history_for(
         "diagnoser", TASK_PLAN, STEPS, HASH_B, keep_subgoal_hashes={HASH_B}
     ),
@@ -223,18 +207,14 @@ def _chunk_row():
 
 def _transcript_cfg(enabled: bool):
     return SimpleNamespace(
-        memory=SimpleNamespace(
-            transcript=SimpleNamespace(enabled=enabled), policies={}
-        )
+        memory=SimpleNamespace(transcript=SimpleNamespace(enabled=enabled), policies={})
     )
 
 
 def test_flag_off_output_is_byte_identical_even_with_engine():
     engine = _FakeEngine([_chunk_row()])
     with patch("artemis.config.load_agent_config", return_value=_transcript_cfg(False)):
-        with_engine = build_history_for(
-            "outputter", TASK_PLAN, STEPS, HASH_B, engine=engine
-        )
+        with_engine = build_history_for("outputter", TASK_PLAN, STEPS, HASH_B, engine=engine)
         without_engine = build_history_for("outputter", TASK_PLAN, STEPS, HASH_B)
     assert with_engine == without_engine
     assert "[Chunk 1" not in with_engine
@@ -280,9 +260,7 @@ def test_chunk_view_none_never_loads_chunks():
         # The cold-start policy declares chunk_view=None: even with an engine
         # and the flag on, its output carries no chunk blocks (the restored
         # F region must stay a pure step rendering).
-        out = build_history_for(
-            "operator_cold_start", TASK_PLAN, STEPS, HASH_B, engine=engine
-        )
+        out = build_history_for("operator_cold_start", TASK_PLAN, STEPS, HASH_B, engine=engine)
     assert CONTEXT_POLICIES["operator_cold_start"].chunk_view is None
     assert "[Chunk 1" not in out
 

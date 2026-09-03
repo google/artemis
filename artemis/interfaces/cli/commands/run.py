@@ -22,7 +22,7 @@ from typing import Annotated
 
 from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
-from artemis.config import initialize_llm_config, settings
+from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
 from artemis.sdk.types.task import AgentProfile
@@ -58,6 +58,7 @@ async def execute_task(
     explorer_version: str | None = None,
     explorer_flash_mode: str | None = None,
     explorer_pro_mode: str | None = None,
+    verification_level: str | None = None,
 ) -> None:
     """Executes a single mobile automation task end-to-end.
 
@@ -73,21 +74,23 @@ async def execute_task(
         app_path: Optional local APK path to install prior to execution.
         enable_planner_validation: Explicit override to enable/disable async planner validation.
         enable_committee: Explicit override to enable/disable Multi-Agent Committee tool.
-        explorer_version: Override default Explorer version mode ('flash', 'pro', or 'ultra').
-        explorer_flash_mode: Override Explorer version mode for Flash execution profile.
-        explorer_pro_mode: Override Explorer version mode for Pro execution profile.
+        explorer_version: Override the fallback Explorer tier ('flash', 'pro', or 'ultra').
+        explorer_flash_mode: Override the Explorer tier for the Flash execution profile.
+        explorer_pro_mode: Override the Explorer tier for the Pro execution profile.
+        verification_level: Coarse Checker preset ('off', 'final', 'checkpoints',
+            'strict'); applied before the explicit ``enable_checker`` switch.
     """
     effective_sid = (
-        session_id
-        or os.getenv("ARTEMIS_SESSION_ID")
-        or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+        session_id or os.getenv("ARTEMIS_SESSION_ID") or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
     )
     if effective_sid:
         os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
     if not os.environ.get("ARTEMIS_TASK_INGRESS"):
         os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
     publish_startup_progress(
-        "configuration", "Loading the run configuration", session_id=str(effective_sid) if effective_sid else None
+        "configuration",
+        "Loading the run configuration",
+        session_id=str(effective_sid) if effective_sid else None,
     )
 
     llm_config = initialize_llm_config()
@@ -102,6 +105,9 @@ async def execute_task(
 
     if enable_committee is not None:
         config.with_committee(enabled=enable_committee)
+
+    if verification_level is not None:
+        config.with_checker(**checker_overrides_for_level(verification_level))
 
     if enable_checker is not None:
         config.with_checker(enabled=enable_checker)
@@ -129,16 +135,20 @@ async def execute_task(
     if settings.ADB_HOST:
         config.with_adb_server(host=settings.ADB_HOST, port=settings.ADB_PORT)
 
-    target_serial = device_serial or settings.ADB_DEVICE_SERIAL or os.environ.get("ADB_DEVICE_SERIAL")
+    target_serial = (
+        device_serial or settings.ADB_DEVICE_SERIAL or os.environ.get("ADB_DEVICE_SERIAL")
+    )
     if not target_serial:
         try:
             from artemis.runtime import device_pool
+
             target_serial = device_pool.select_device()
         except Exception:
             target_serial = None
 
     if target_serial:
         from artemis.context import DevicePlatform
+
         config.for_device(DevicePlatform.ANDROID, target_serial)
 
     if graph_config_callbacks:
@@ -238,7 +248,7 @@ def run_command(
         bool | None,
         typer.Option(
             "--enable-planner-validation/--disable-planner-validation",
-            help="Enable or disable async Planner validation when task plan milestones change.",
+            help="Enable or disable the advisory Planner review of task plan milestone edits (hint only, never rolled back).",
         ),
     ] = None,
     enable_committee: Annotated[
@@ -252,7 +262,7 @@ def run_command(
         bool | None,
         typer.Option(
             "--enable-checker/--disable-checker",
-            help="Enable or disable visual subgoal verification and rollback by the Checker agent.",
+            help="Enable or disable the Checker (plan checkpoint verification and exit final review).",
         ),
     ] = None,
     enable_step_summarizer: Annotated[
@@ -280,21 +290,36 @@ def run_command(
         str | None,
         typer.Option(
             "--explorer-version",
-            help="Default Explorer version mode ('flash' for 1-shot detection, 'pro' for 3-turn ReAct, 'ultra' for deep pixel reasoning).",
+            help=(
+                "Fallback Explorer tier when no profile knob applies: 'flash' (one-shot"
+                " detection), 'pro' (3-turn reasoning loop) or 'ultra' (8-turn loop with"
+                " zoom, OCR and image processing)."
+            ),
         ),
     ] = None,
     explorer_flash_mode: Annotated[
         str | None,
         typer.Option(
             "--explorer-flash-mode",
-            help="Explorer version mode when running under Flash profile (FlashRunner).",
+            help="Explorer tier behind ask_explorer under the Flash profile ('flash', 'pro', 'ultra').",
         ),
     ] = None,
     explorer_pro_mode: Annotated[
         str | None,
         typer.Option(
             "--explorer-pro-mode",
-            help="Explorer version mode when running under Pro profile (Operator/Validator).",
+            help="Explorer tier behind ask_explorer under the Pro profile ('flash', 'pro', 'ultra').",
+        ),
+    ] = None,
+    verification_level: Annotated[
+        str | None,
+        typer.Option(
+            "--verification-level",
+            help=(
+                "Checker preset for the Pro profile: 'off' (no audit), 'final' (exit review"
+                " only, the default), 'checkpoints' (every plan checkpoint + exit review),"
+                " 'strict' (checkpoints with a larger repair budget; a failed assert halts)."
+            ),
         ),
     ] = None,
     device_serial: Annotated[
@@ -347,7 +372,9 @@ def run_command(
             is_running, base_url = ensure_daemon_running(timeout=8.0, wait_ready=True)
             if is_running and base_url:
                 target_sid = session_id or str(uuid.uuid4())
-                console.print(f"[bold green]✓[/bold green] Artemis Daemon active at [cyan]{base_url}[/cyan]")
+                console.print(
+                    f"[bold green]✓[/bold green] Artemis Daemon active at [cyan]{base_url}[/cyan]"
+                )
                 resp = submit_task_to_daemon(
                     goal=goal,
                     profile=profile or "pro",
@@ -361,13 +388,17 @@ def run_command(
                     base_url=base_url,
                 )
                 if resp and resp.get("tasks"):
-                    console.print(f"[bold green]✓[/bold green] Task scheduled in unified queue (Session: [cyan]{target_sid}[/cyan])")
+                    console.print(
+                        f"[bold green]✓[/bold green] Task scheduled in unified queue (Session: [cyan]{target_sid}[/cyan])"
+                    )
                     console.print(f"[dim]Live dashboard & replay: {base_url}[/dim]\n")
 
                     def on_status(sess_info):
                         st = sess_info.get("status")
                         if st == "queued":
-                            console.print("[yellow]⏳ Task queued in scheduler, waiting for device...[/yellow]")
+                            console.print(
+                                "[yellow]⏳ Task queued in scheduler, waiting for device...[/yellow]"
+                            )
                         elif st == "running":
                             console.print("[green]▶ Task executing on mobile device...[/green]")
 
@@ -380,7 +411,9 @@ def run_command(
                         )
                         final_st = final_res.get("status")
                         if final_st in ("completed", "success"):
-                            console.print("\n[bold green]✅ Task completed successfully![/bold green]")
+                            console.print(
+                                "\n[bold green]✅ Task completed successfully![/bold green]"
+                            )
                             return
                         else:
                             err = final_res.get("error") or final_res.get("explanation") or ""
@@ -392,14 +425,20 @@ def run_command(
                         console.print("[yellow]Task cancelled.[/yellow]")
                         raise SystemExit(130)
                 else:
-                    console.print("[yellow]Warning: Could not enqueue task to Daemon. Falling back to local execution...[/yellow]")
+                    console.print(
+                        "[yellow]Warning: Could not enqueue task to Daemon. Falling back to local execution...[/yellow]"
+                    )
             else:
-                console.print("[yellow]Warning: Artemis Daemon could not be started. Falling back to local execution...[/yellow]")
+                console.print(
+                    "[yellow]Warning: Artemis Daemon could not be started. Falling back to local execution...[/yellow]"
+                )
         except SystemExit:
             raise
         except Exception as exc:
             logger.debug(f"Daemon dispatch error: {exc}")
-            console.print(f"[yellow]Daemon routing notice: {exc}. Falling back to local execution...[/yellow]")
+            console.print(
+                f"[yellow]Daemon routing notice: {exc}. Falling back to local execution...[/yellow]"
+            )
 
     adb_client = None
     try:
@@ -448,9 +487,13 @@ def run_command(
                 explorer_version=explorer_version,
                 explorer_flash_mode=explorer_flash_mode,
                 explorer_pro_mode=explorer_pro_mode,
+                verification_level=verification_level,
             )
         )
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # KeyboardInterrupt: Ctrl+C / SIGTERM. CancelledError: the daemon asked
+        # this worker to stop through a cancel marker and the Agent cancelled
+        # its own task so the recording and trace could be finalized.
         cancelled = True
     except Exception as e:
         err_msg = str(e)

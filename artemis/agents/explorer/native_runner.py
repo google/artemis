@@ -17,32 +17,95 @@
 Split out of ``artemis.agents.explorer.explorer``: the native-SDK reasoning
 loop and its named phases (model invocation, submit_answer interception and
 validation, tool dispatching, failure mapping, resource cleanup), packaged as
-a mixin consumed by ``Explorer``.  Patched collaborators (``settings``,
-``logger``, ``_generate_content_with_reliability``) are resolved through the
-facade module at call time; see ``artemis.agents.explorer._facade``.
+a mixin consumed by ``Explorer``.  Every google-genai call goes through the
+SDK's ``client.aio`` surface so uploads, cache management and generation
+never block the event loop.  Patched collaborators (``logger``,
+``_generate_content_with_reliability``) are resolved through the facade
+module at call time; see ``artemis.agents.explorer._facade``.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import json
 import os
 import time
+from typing import TYPE_CHECKING, Any
 
 from google.genai import types
 
 from artemis.agents.explorer._facade import facade
+from artemis.agents.explorer.geometry import is_valid_norm_point
+from artemis.agents.explorer.tiers import SUBMIT_TOOL
 from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.data_engine.trace import TraceSpan
+
+#: Loads a local image as a ``Part`` (inline bytes or a File API reference).
+ImagePartGetter = Callable[[str], Awaitable[types.Part]]
+
+
+def _bare_tool_name(name: str) -> str:
+    """Strips a namespace prefix (``ns:tool``) some models add to tool names."""
+    return name.split(":")[-1] if ":" in name else name
 
 
 class NativeRunnerMixin:
     """Native Gemini SDK reasoning loop of :class:`Explorer`."""
 
-    def _make_image_part_getter(self, client, use_file_api: bool, uploaded_files: list):
+    # This mixin is composed into ``Explorer``.  Declaring the attributes and
+    # sibling-mixin methods it consumes makes that host contract visible to
+    # static analysis without adding runtime shims or changing MRO behavior.
+    if TYPE_CHECKING:
+        from artemis.context import ArtemisContext
+
+        ctx: ArtemisContext
+        denylisted_tools: set[str]
+        turn_latencies: list[float]
+        turn_cached_tokens: list[int]
+        trace_history: list[dict[str, Any]]
+
+        def get_exposed_tools(
+            self, only_submit: bool = False
+        ) -> list[types.FunctionDeclaration]: ...
+
+        def _prune_historical_images(self, contents: list, keep_last: int = 1) -> None: ...
+
+        def _enrich_candidates(self, candidates: list[Any]) -> list[Any]: ...
+
+        async def exec_ask_perception_tool(
+            self,
+            search_query: str,
+            nx: int,
+            ny: int,
+            detect_queries: list[str],
+        ) -> dict[str, Any]: ...
+
+        async def exec_detect_objects(
+            self, queries: list[str], target_image_id: str = "img_0"
+        ) -> dict[str, Any]: ...
+
+        async def exec_ask_image_processor(
+            self, instruction: str, target_image_id: str = "img_0"
+        ) -> dict[str, Any]: ...
+
+        async def exec_get_ocr_list(self) -> dict[str, Any]: ...
+
+        async def exec_inspect_region(
+            self,
+            x_min: int,
+            y_min: int,
+            x_max: int,
+            y_max: int,
+            zoom_factor: float = 2.0,
+        ) -> dict[str, Any]: ...
+
+    def _make_image_part_getter(
+        self, client, use_file_api: bool, uploaded_files: list
+    ) -> ImagePartGetter:
         """Builds the image-part loader used for screenshots and tool images."""
 
-        def get_image_part(file_path: str) -> types.Part:
+        async def get_image_part(file_path: str) -> types.Part:
             if use_file_api:
-                file_ref = client.files.upload(file=file_path)
+                file_ref = await client.aio.files.upload(file=file_path)
                 uploaded_files.append(file_ref)
                 return types.Part(
                     file_data=types.FileData(
@@ -50,10 +113,9 @@ class NativeRunnerMixin:
                         mime_type=file_ref.mime_type or "image/jpeg",
                     )
                 )
-            else:
-                with open(file_path, "rb") as f:
-                    img_bytes = f.read()
-                return types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
+            with open(file_path, "rb") as f:
+                img_bytes = f.read()
+            return types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
 
         return get_image_part
 
@@ -79,26 +141,14 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
             )
         ]
 
-    def _resolve_caching_flag(self, enable_caching):
-        """Resolves the effective caching flag from env or settings when unset."""
-        _ex = facade()
-        if enable_caching is None:
-            env_cache = os.getenv("ARTEMIS_EXPLORER_CACHING", "").lower()
-            if env_cache in ["true", "false"]:
-                enable_caching = env_cache == "true"
-            else:
-                enable_caching = getattr(_ex.settings, "EXPLORER_CACHING", True)
-        return enable_caching
-
-    def _create_cache_resource(
+    async def _create_cache_resource(
         self, client, model_name: str, prompt_template: str, contents: list
     ):
         """Creates the explicit cache resource; returns None on failure."""
         _ex = facade()
-        cached_content = None
         try:
             _ex.logger.info("Creating cache resource for Explorer...")
-            cached_content = client.caches.create(
+            cached_content = await client.aio.caches.create(
                 model=model_name,
                 config=types.CreateCachedContentConfig(
                     contents=[contents[0]],
@@ -114,10 +164,10 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                 ),
             )
             _ex.logger.info(f"Cache resource created successfully: {cached_content.name}")
+            return cached_content
         except Exception as cache_err:
             _ex.logger.error(f"Failed to create cache resource: {cache_err}")
-            cached_content = None
-        return cached_content
+            return None
 
     async def _run_native(
         self,
@@ -127,36 +177,30 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         context_feedback: str,
         minimal_list: str,
         img_to_read: str,
-        enable_caching,
+        enable_caching: bool,
         prompt_template: str,
         model_name: str,
         temperature,
         thinking_level,
-        max_iterations: int,
+        max_turns: int,
     ) -> str:
         """Runs the native Gemini path: cache setup, reasoning loop, cleanup."""
         use_file_api = os.getenv("ARTEMIS_USE_FILE_API", "false").lower() == "true"
-        uploaded_files = []
+        uploaded_files: list = []
         get_image_part = self._make_image_part_getter(client, use_file_api, uploaded_files)
 
         cached_content = None
         try:
-            # Upload initial screenshot
-            initial_part = get_image_part(img_to_read)
+            initial_part = await get_image_part(img_to_read)
             contents = self._build_initial_contents(
                 query, context_feedback, minimal_list, initial_part
             )
 
-            # Caching initialization
-            enable_caching = self._resolve_caching_flag(enable_caching)
-
-            cached_content = None
             if enable_caching:
-                cached_content = self._create_cache_resource(
+                cached_content = await self._create_cache_resource(
                     client, model_name, prompt_template, contents
                 )
 
-            # 6. Execution Loop (Native SDK Tools Dispatching)
             agent_outcome = await self._native_loop(
                 client=client,
                 contents=contents,
@@ -166,7 +210,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                 model_name=model_name,
                 temperature=temperature,
                 thinking_level=thinking_level,
-                max_iterations=max_iterations,
+                max_turns=max_turns,
             )
 
         except Exception as e:
@@ -181,29 +225,29 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         *,
         client,
         contents: list,
-        get_image_part,
+        get_image_part: ImagePartGetter,
         cached_content,
         prompt_template: str,
         model_name: str,
         temperature,
         thinking_level,
-        max_iterations: int,
+        max_turns: int,
     ) -> str:
         """Main native reasoning loop: one model turn per iteration."""
         _ex = facade()
-        iterations = 0
+        turn = 0
         agent_outcome = ""
         self.turn_latencies = []
         self.turn_cached_tokens = []
         self.trace_history = []
 
-        while iterations < max_iterations:
-            iterations += 1
-            _ex.logger.info(f"Iteration {iterations}: Invoking Native Gemini SDK for Explorer...")
+        while turn < max_turns:
+            turn += 1
+            _ex.logger.info(f"Turn {turn}/{max_turns}: Invoking Native Gemini SDK for Explorer...")
 
             self._prune_historical_images(contents, keep_last=1)
 
-            is_final_turn = iterations == max_iterations
+            is_final_turn = turn == max_turns
             if is_final_turn:
                 warning_msg = (
                     "\n[WARNING] This is your final iteration. You MUST"
@@ -229,7 +273,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
             )
 
             turn_record = {
-                "iteration": iterations,
+                "iteration": turn,
                 "thoughts": ("\n".join(thinking_parts) if thinking_parts else ""),
                 "tool_calls": [],
             }
@@ -237,25 +281,16 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
             function_calls = response.function_calls
             if not function_calls:
                 self._handle_missing_tool_calls(
-                    contents, response, turn_record, text_parts, max_iterations, iterations
+                    contents, response, turn_record, text_parts, max_turns, turn
                 )
                 continue
 
-            # Record model's function call request in history
-            if response.candidates and response.candidates[0].content:
-                contents.append(response.candidates[0].content)
-            else:
-                contents.append(
-                    types.Content(
-                        role="model",
-                        parts=[types.Part(function_call=fc) for fc in function_calls],
-                    )
-                )
+            # Record the model's function call request in history
+            contents.append(self._model_content(response, function_calls))
 
-            # Execute function calls
-            tool_response_parts = []
+            tool_response_parts: list[types.Part] = []
 
-            # 6.1 Intercept and validate submit_answer to manage task lifecycle
+            # Intercept and validate submit_answer to manage the task lifecycle
             submit_outcome = self._process_submit_answer(
                 function_calls, turn_record, tool_response_parts
             )
@@ -268,17 +303,30 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
             )
 
             if tool_response_parts:
-                # Native Gemini SDK allows 'tool' role to return mixed parts
+                # Native Gemini SDK allows the 'user' role to return mixed parts
                 contents.append(types.Content(role="user", parts=tool_response_parts))
 
             self.trace_history.append(turn_record)
 
-        if iterations >= max_iterations and not agent_outcome:
+        if turn >= max_turns and not agent_outcome:
             agent_outcome = (
                 "Error: Explorer reached maximum iterations without a conclusive answer."
             )
 
         return agent_outcome
+
+    @staticmethod
+    def _model_content(response, function_calls: list) -> types.Content:
+        """The model turn to record: the SDK's content when present, else a rebuild."""
+        candidates = getattr(response, "candidates", None)
+        if candidates:
+            content = getattr(candidates[0], "content", None)
+            if content:
+                return content
+        return types.Content(
+            role="model",
+            parts=[types.Part(function_call=fc) for fc in function_calls],
+        )
 
     def _build_generate_config(
         self,
@@ -290,36 +338,31 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         thinking_level,
     ) -> types.GenerateContentConfig:
         """Builds the per-turn generation config (cached vs full tool config)."""
-        thinking_kwargs = (
-            {"thinking_config": types.ThinkingConfig(thinking_level=thinking_level)}
-            if thinking_level
-            else {}
+        thinking_config = (
+            types.ThinkingConfig(thinking_level=thinking_level) if thinking_level else None
         )
         if cached_content and not is_final_turn:
             return types.GenerateContentConfig(
                 cached_content=cached_content.name,
                 temperature=temperature,
                 safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
-                **thinking_kwargs,
+                thinking_config=thinking_config,
             )
-        else:
-            return types.GenerateContentConfig(
-                system_instruction=prompt_template,
-                temperature=temperature,
-                safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
-                tools=[
-                    types.Tool(
-                        function_declarations=self.get_exposed_tools(only_submit=is_final_turn)
-                    )
-                ],
-                tool_config=types.ToolConfig(
-                    function_calling_config=types.FunctionCallingConfig(
-                        mode=types.FunctionCallingConfigMode.ANY
-                    ),
-                    include_server_side_tool_invocations=True,
+        return types.GenerateContentConfig(
+            system_instruction=prompt_template,
+            temperature=temperature,
+            safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
+            tools=[
+                types.Tool(function_declarations=self.get_exposed_tools(only_submit=is_final_turn))
+            ],
+            tool_config=types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(
+                    mode=types.FunctionCallingConfigMode.ANY
                 ),
-                **thinking_kwargs,
-            )
+                include_server_side_tool_invocations=True,
+            ),
+            thinking_config=thinking_config,
+        )
 
     @staticmethod
     def _extract_response_texts(response) -> tuple[list[str], list[str]]:
@@ -424,29 +467,39 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         response,
         turn_record: dict,
         text_parts: list[str],
-        max_iterations: int,
-        iterations: int,
+        max_turns: int,
+        turn: int,
     ) -> None:
-        """Handles a turn where the model produced plain text instead of tool calls."""
+        """Handles a turn where the model produced plain text instead of tool calls.
+
+        Responses without candidates (safety blocks, empty replies) are
+        recorded as a synthetic model text part so the conversation history
+        stays well-formed for the retry.
+        """
         _ex = facade()
-        _ex.logger.warning(
-            f"Explorer iteration {iterations}: Model hallucinated"
-            " plain text. Forcing retry."
-        )
+        _ex.logger.warning(f"Explorer turn {turn}: Model hallucinated plain text. Forcing retry.")
+        model_text = "\n".join(text_parts) if text_parts else ""
         turn_record["tool_calls"].append(
             {
                 "name": "hallucinated_plain_text",
-                "args": {"text": "\n".join(text_parts) if text_parts else ""},
+                "args": {"text": model_text},
                 "response": {
                     "error": (
-                        "Forced retry because model failed to call"
-                        " submit_answer or any other tool"
+                        "Forced retry because model failed to call submit_answer or any other tool"
                     )
                 },
             }
         )
         self.trace_history.append(turn_record)
-        contents.append(response.candidates[0].content)
+
+        candidates = getattr(response, "candidates", None)
+        model_content = getattr(candidates[0], "content", None) if candidates else None
+        if not model_content:
+            model_content = types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=model_text or "(no response)")],
+            )
+        contents.append(model_content)
         contents.append(
             types.Content(
                 role="user",
@@ -457,7 +510,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                             " to submit your final answer yet. If"
                             " you are not certain about the final"
                             " answer, you can continue exploring"
-                            f" {max_iterations - iterations} more"
+                            f" {max_turns - turn} more"
                             " time(s)."
                         )
                     )
@@ -497,19 +550,17 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                     " as an array of exactly 2 integers `[nx,"
                     " ny]`."
                 )
-            else:
+            elif not is_valid_norm_point(coords):
                 try:
                     nx, ny = int(coords[0]), int(coords[1])
-                    if not (0 <= nx <= 1000) or not (0 <= ny <= 1000):
-                        errors.append(
-                            f"Candidate '{label or i}' coordinates"
-                            f" `[{nx}, {ny}]` must strictly be in"
-                            " the `[0-1000]` normalized scale"
-                            " range inclusive."
-                        )
-                except (ValueError, TypeError, IndexError):
+                except (ValueError, TypeError):
+                    errors.append(f"Candidate '{label or i}' coordinates are invalid integers.")
+                else:
                     errors.append(
-                        f"Candidate '{label or i}' coordinates are invalid integers."
+                        f"Candidate '{label or i}' coordinates"
+                        f" `[{nx}, {ny}]` must strictly be in"
+                        " the `[0-1000]` normalized scale"
+                        " range inclusive."
                     )
 
         return errors
@@ -524,12 +575,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         """
         _ex = facade()
         submit_call = next(
-            (
-                fc
-                for fc in function_calls
-                if (fc.name.split(":")[-1] if ":" in fc.name else fc.name)
-                == "submit_answer"
-            ),
+            (fc for fc in function_calls if _bare_tool_name(fc.name) == SUBMIT_TOOL),
             None,
         )
         if not submit_call:
@@ -543,14 +589,14 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
             _ex.logger.warning(f"Explorer submit_answer validation failed: {errors}")
             turn_record["tool_calls"].append(
                 {
-                    "name": "submit_answer",
+                    "name": SUBMIT_TOOL,
                     "args": args,
                     "response": {"error": ("Validation Failed:\n" + "\n".join(errors))},
                 }
             )
             tool_response_parts.append(
                 types.Part.from_function_response(
-                    name="submit_answer",
+                    name=SUBMIT_TOOL,
                     response={
                         "error": (
                             "Validation Failed:\n"
@@ -562,126 +608,106 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                     },
                 )
             )
-            # Allow ReAct loop to continue so LLM can self-correct and re-submit
+            # Allow the ReAct loop to continue so the model can self-correct
             return None
-        else:
-            _ex.logger.info("Explorer submit_answer validation passed successfully!")
-            agent_outcome = json.dumps(args, ensure_ascii=False)
-            turn_record["tool_calls"].append(
-                {
-                    "name": "submit_answer",
-                    "args": args,
-                    "response": {"result": "success"},
-                }
-            )
-            self.trace_history.append(turn_record)
-            return agent_outcome
+
+        _ex.logger.info("Explorer submit_answer validation passed successfully!")
+        # Candidates submitted by a registered label inherit that element's
+        # bounds; the rest of the model's arguments are passed through as is.
+        outcome_args = dict(args)
+        outcome_args["candidates"] = self._enrich_candidates(candidates)
+        agent_outcome = json.dumps(outcome_args, ensure_ascii=False)
+        turn_record["tool_calls"].append(
+            {"name": SUBMIT_TOOL, "args": args, "response": {"result": "success"}}
+        )
+        self.trace_history.append(turn_record)
+        return agent_outcome
 
     @staticmethod
-    def _append_tool_response_with_image(
-        name: str, res: dict, get_image_part, tool_response_parts: list
+    async def _append_tool_response_with_images(
+        name: str,
+        res: dict,
+        get_image_part: ImagePartGetter,
+        tool_response_parts: list,
+        *,
+        result_key: str = "result",
     ) -> None:
-        """Appends a tool result part plus its annotated image when present."""
-        if res.get("image_path"):
-            tool_response_parts.append(
-                types.Part.from_function_response(
-                    name=name,
-                    response={
-                        "result": res.get("text"),
-                    },
-                )
-            )
-            tool_response_parts.append(get_image_part(res["image_path"]))
-        else:
-            tool_response_parts.append(
-                types.Part.from_function_response(
-                    name=name,
-                    response={"result": res.get("text")},
-                )
-            )
+        """Appends a tool result part plus every annotated image it produced.
+
+        Image loading failures are logged and skipped: the textual result is
+        still delivered, so one unreadable annotation cannot sink the turn.
+        """
+        _ex = facade()
+        tool_response_parts.append(
+            types.Part.from_function_response(name=name, response={result_key: res.get("text")})
+        )
+        image_paths = [p for p in [res.get("image_path"), *(res.get("image_paths") or [])] if p]
+        for img_p in image_paths:
+            try:
+                tool_response_parts.append(await get_image_part(img_p))
+            except Exception as e:
+                _ex.logger.warning(f"Failed to load image response part for {img_p}: {e}")
 
     async def _execute_native_tool(
         self,
         name: str,
         args: dict,
-        get_image_part,
+        get_image_part: ImagePartGetter,
         tool_call_trace: dict,
         tool_response_parts: list,
     ) -> None:
         """Executes one non-submit tool call and appends its response parts."""
-        _ex = facade()
         if name == "ask_perception_tool":
+            search_query = args.get("search_query")
+            nx = args.get("nx")
+            ny = args.get("ny")
+            detect_queries = args.get("detect_queries")
             res = await self.exec_ask_perception_tool(
-                search_query=args.get("search_query"),
-                nx=args.get("nx"),
-                ny=args.get("ny"),
-                detect_queries=args.get("detect_queries"),
+                search_query=search_query if isinstance(search_query, str) else "",
+                nx=nx if isinstance(nx, int) else -1,
+                ny=ny if isinstance(ny, int) else -1,
+                detect_queries=detect_queries if isinstance(detect_queries, list) else [],
             )
             tool_call_trace["response"] = res
-            tool_response_parts.append(
-                types.Part.from_function_response(
-                    name=name,
-                    response={
-                        "text": res.get("text"),
-                    },
-                )
+            await self._append_tool_response_with_images(
+                name, res, get_image_part, tool_response_parts, result_key="text"
             )
-            if res.get("image_paths"):
-                for img_p in res["image_paths"]:
-                    try:
-                        tool_response_parts.append(get_image_part(img_p))
-                    except Exception as e:
-                        _ex.logger.warning(
-                            f"Failed to load image response part for {img_p}: {e}"
-                        )
-
         elif name == "detect_objects":
             res = await self.exec_detect_objects(
-                queries=args.get("queries"),
+                queries=args.get("queries") or [],
                 target_image_id=args.get("target_image_id", "img_0"),
             )
             tool_call_trace["response"] = res
-            self._append_tool_response_with_image(name, res, get_image_part, tool_response_parts)
-
+            await self._append_tool_response_with_images(
+                name, res, get_image_part, tool_response_parts
+            )
         elif name == "ask_image_processor":
             res = await self.exec_ask_image_processor(
-                instruction=args.get("instruction"),
+                instruction=args.get("instruction") or "",
                 target_image_id=args.get("target_image_id", "img_0"),
             )
             tool_call_trace["response"] = res
-
-            tool_response_parts.append(
-                types.Part.from_function_response(
-                    name=name,
-                    response={"result": res.get("text")},
-                )
+            await self._append_tool_response_with_images(
+                name, res, get_image_part, tool_response_parts
             )
-            if res.get("image_paths"):
-                for img_p in res["image_paths"]:
-                    try:
-                        tool_response_parts.append(get_image_part(img_p))
-                    except Exception as e:
-                        _ex.logger.warning(
-                            "Failed to upload image path"
-                            f" {img_p} for ask_image_processor"
-                            f" tool response: {e}"
-                        )
-
         elif name == "get_ocr_list":
             res = await self.exec_get_ocr_list()
             tool_call_trace["response"] = res
-            self._append_tool_response_with_image(name, res, get_image_part, tool_response_parts)
-
+            await self._append_tool_response_with_images(
+                name, res, get_image_part, tool_response_parts
+            )
         elif name == "inspect_region":
             res = await self.exec_inspect_region(
-                x_min=args.get("x_min"),
-                y_min=args.get("y_min"),
-                x_max=args.get("x_max"),
-                y_max=args.get("y_max"),
-                zoom_factor=args.get("zoom_factor"),
+                x_min=args["x_min"],
+                y_min=args["y_min"],
+                x_max=args["x_max"],
+                y_max=args["y_max"],
+                zoom_factor=args.get("zoom_factor", 2.0),
             )
             tool_call_trace["response"] = res
-            self._append_tool_response_with_image(name, res, get_image_part, tool_response_parts)
+            await self._append_tool_response_with_images(
+                name, res, get_image_part, tool_response_parts
+            )
         else:
             tool_call_trace["response"] = {"error": f"Tool {name} not found"}
             tool_response_parts.append(
@@ -694,37 +720,32 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
     async def _dispatch_tool_calls(
         self,
         function_calls: list,
-        get_image_part,
+        get_image_part: ImagePartGetter,
         turn_record: dict,
         tool_response_parts: list,
     ) -> None:
-        """Dispatches all non-submit tool calls sequentially with tracing."""
+        """Dispatches all non-submit tool calls sequentially with tracing.
+
+        Denylisted names are refused here as well, even though they are
+        absent from the declarations, because models occasionally call tools
+        they were never offered.
+        """
         _ex = facade()
         for fc in function_calls:
-            name = fc.name.split(":")[-1] if ":" in fc.name else fc.name
-            if name == "submit_answer":
+            name = _bare_tool_name(fc.name)
+            if name == SUBMIT_TOOL:
                 continue
             args = fc.args or {}
-            tool_call_trace = {
-                "name": name,
-                "args": args,
-            }
+            tool_call_trace = {"name": name, "args": args}
             if name in self.denylisted_tools:
                 _ex.logger.warning(
-                    "Explorer attempted to call denylisted tool"
-                    f" '{name}'. Blocking execution."
+                    f"Explorer attempted to call denylisted tool '{name}'. Blocking execution."
                 )
-                tool_call_trace["response"] = {
-                    "error": (f"Tool '{name}' is denylisted and unavailable.")
-                }
+                error = f"Tool '{name}' is denylisted and unavailable."
+                tool_call_trace["response"] = {"error": error}
                 turn_record["tool_calls"].append(tool_call_trace)
                 tool_response_parts.append(
-                    types.Part.from_function_response(
-                        name=fc.name,
-                        response={
-                            "error": (f"Tool '{name}' is denylisted and unavailable.")
-                        },
-                    )
+                    types.Part.from_function_response(name=fc.name, response={"error": error})
                 )
                 continue
 
@@ -771,26 +792,18 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
             ensure_ascii=False,
         )
 
-    async def _cleanup_native_resources(
-        self, client, cached_content, uploaded_files: list
-    ) -> None:
-        """Closes the HTTP client and deletes cache/file resources."""
+    async def _cleanup_native_resources(self, client, cached_content, uploaded_files: list) -> None:
+        """Deletes the cache resource and File API uploads created for this run."""
         _ex = facade()
-        if self.http_client:
-            try:
-                await self.http_client.aclose()
-                _ex.logger.info("Closed Explorer HTTP client.")
-            except Exception as close_err:
-                _ex.logger.warning(f"Failed to close Explorer HTTP client: {close_err}")
         if cached_content:
             try:
                 _ex.logger.info(f"Deleting cache resource: {cached_content.name}")
-                client.caches.delete(name=cached_content.name)
+                await client.aio.caches.delete(name=cached_content.name)
             except Exception as cleanup_cache_err:
                 _ex.logger.warning(f"Failed to delete cache resource: {cleanup_cache_err}")
         for file_ref in uploaded_files:
             try:
-                client.files.delete(name=file_ref.name)
+                await client.aio.files.delete(name=file_ref.name)
             except Exception as cleanup_err:
                 _ex.logger.warning(f"Failed to delete uploaded file {file_ref.name}: {cleanup_err}")
         _ex.logger.info(f"Explorer turn latencies: {self.turn_latencies}")

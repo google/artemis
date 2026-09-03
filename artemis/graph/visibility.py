@@ -92,6 +92,10 @@ NODE_VISIBILITY: dict[str, NodeVisibility] = {
             # Transcript path (M2): committing the previous turn into the
             # ledger appends its validator result message.
             "last_execution_result",
+            # Execution incident hand-off from the Validator (open block /
+            # one-turn CLOSED notice in the observation tail).
+            "open_incident",
+            "last_closed_incident",
         },
         writes={
             "structured_decisions",
@@ -126,6 +130,7 @@ NODE_VISIBILITY: dict[str, NodeVisibility] = {
     ),
     "validator": _vis(
         reads={
+            "open_incident",
             "initial_goal",
             "structured_decisions",
             "latest_screenshot",
@@ -138,6 +143,8 @@ NODE_VISIBILITY: dict[str, NodeVisibility] = {
             "indexed_elements",
         },
         writes={
+            "open_incident",
+            "last_closed_incident",
             "last_execution_result",
             # In-place turn-scoped mutations (formalized as TurnWorkspace in
             # Phase 2): post-action screenshot and re-derived index mappings.

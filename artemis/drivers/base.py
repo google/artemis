@@ -26,7 +26,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SwipeDirection(str, Enum):
@@ -61,8 +61,7 @@ class ScreenData(BaseModel):
     timestamp: float = Field(default_factory=time.time, description="Capture timestamp")
     platform: str = Field(default="android", description="Platform identifier")
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class BaseDeviceDriver(ABC):

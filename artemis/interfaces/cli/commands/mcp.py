@@ -215,7 +215,9 @@ def _merge_json_file(
                 backup_path = file_path.with_suffix(file_path.suffix + ".bak")
                 try:
                     backup_path.write_text(raw_text, encoding="utf-8")
-                    logger.warning(f"Existing JSON in {file_path} could not be parsed; backup created at {backup_path}")
+                    logger.warning(
+                        f"Existing JSON in {file_path} could not be parsed; backup created at {backup_path}"
+                    )
                 except OSError as exc:
                     logger.warning(
                         f"Existing JSON in {file_path} could not be parsed AND the backup to"
@@ -321,7 +323,9 @@ def _merge_codex_toml(file_path: Path, server_config: dict) -> bool:
             try:
                 backup_path = file_path.with_suffix(file_path.suffix + ".bak")
                 backup_path.write_text(file_path.read_text(encoding="utf-8"), encoding="utf-8")
-                logger.warning(f"Could not update {file_path}; backup created at {backup_path}: {e}")
+                logger.warning(
+                    f"Could not update {file_path}; backup created at {backup_path}: {e}"
+                )
             except (OSError, UnicodeDecodeError) as backup_exc:
                 logger.warning(
                     f"Could not update {file_path} ({e}); backup also failed: {backup_exc}"
@@ -457,7 +461,17 @@ def install_rules(client: str, project_root: str) -> list[str]:
         return []
 
     targets = (
-        ["antigravity", "cursor", "claude", "windsurf", "vscode", "cline", "roo", "openclaw", "codex"]
+        [
+            "antigravity",
+            "cursor",
+            "claude",
+            "windsurf",
+            "vscode",
+            "cline",
+            "roo",
+            "openclaw",
+            "codex",
+        ]
         if client == "all"
         else [client]
     )
@@ -546,7 +560,17 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
     """Auto-installs/merges ARTEMIS MCP configuration and testing rules into IDE config files across any OS."""
     installed_paths: list[str] = []
     targets = (
-        ["antigravity", "cursor", "claude", "windsurf", "vscode", "cline", "roo", "openclaw", "codex"]
+        [
+            "antigravity",
+            "cursor",
+            "claude",
+            "windsurf",
+            "vscode",
+            "cline",
+            "roo",
+            "openclaw",
+            "codex",
+        ]
         if client == "all"
         else [client]
     )
@@ -561,9 +585,7 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
                 "mcpServers"
             ]["artemis"]
             jetski_path = Path.home() / ".gemini" / "jetski" / "mcp_config.json"
-            antigravity_legacy_path = (
-                Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
-            )
+            antigravity_legacy_path = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
             config_path = Path.home() / ".gemini" / "config" / "mcp_config.json"
             if _merge_json_file(jetski_path, "artemis", legacy_server_cfg):
                 installed_paths.append(str(jetski_path))
@@ -574,7 +596,13 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
         elif target in ("claude", "claude_code", "claude_desktop"):
             server_cfg = snippet["mcpServers"]["artemis"]
             if sys.platform == "darwin":
-                claude_path = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+                claude_path = (
+                    Path.home()
+                    / "Library"
+                    / "Application Support"
+                    / "Claude"
+                    / "claude_desktop_config.json"
+                )
             elif sys.platform == "win32":
                 appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
                 claude_path = Path(appdata) / "Claude" / "claude_desktop_config.json"
@@ -624,10 +652,7 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
         elif target in ("roo", "roo_code"):
             server_cfg = snippet["mcpServers"]["artemis"]
             roo_settings_dir = (
-                _get_vscode_user_dir()
-                / "globalStorage"
-                / "rooveterinaryinc.roo-cline"
-                / "settings"
+                _get_vscode_user_dir() / "globalStorage" / "rooveterinaryinc.roo-cline" / "settings"
             )
             roo_paths = (
                 roo_settings_dir / "mcp_settings.json",
@@ -740,10 +765,14 @@ def mcp_command(
             )
             raise typer.Exit(1)
         installed_paths = install_mcp_config(client, python_exe, project_root)
-        console.print("[bold green]✔ Successfully installed ARTEMIS MCP server configuration & rules to:[/bold green]")
+        console.print(
+            "[bold green]✔ Successfully installed ARTEMIS MCP server configuration & rules to:[/bold green]"
+        )
         for path in installed_paths:
             console.print(f"  • [cyan]{path}[/cyan]")
-        console.print("\n[dim]Please restart or reload your IDE window to activate the Artemis MCP tools.[/dim]")
+        console.print(
+            "\n[dim]Please restart or reload your IDE window to activate the Artemis MCP tools.[/dim]"
+        )
         raise typer.Exit(0)
 
     if generate_config:
@@ -762,9 +791,7 @@ def mcp_command(
                 "windsurf (~/.codeium/windsurf/mcp_config.json)": _get_config_snippet(
                     "windsurf", python_exe, project_root
                 ),
-                "vscode (mcp.json)": _get_config_snippet(
-                    "vscode", python_exe, project_root
-                ),
+                "vscode (mcp.json)": _get_config_snippet("vscode", python_exe, project_root),
                 "cline (cline_mcp_settings.json)": _get_config_snippet(
                     "cline", python_exe, project_root
                 ),
@@ -781,7 +808,9 @@ def mcp_command(
             json_str = json.dumps(all_configs, indent=2)
             syntax_language = "json"
         elif client == "codex":
-            server_cfg = _get_config_snippet("codex", python_exe, project_root)["mcp_servers"]["artemis"]
+            server_cfg = _get_config_snippet("codex", python_exe, project_root)["mcp_servers"][
+                "artemis"
+            ]
             json_str = _codex_toml_block(server_cfg)
             syntax_language = "toml"
         else:
@@ -794,9 +823,7 @@ def mcp_command(
         console.print(syntax)
         raise typer.Exit(0)
 
-    threading.Thread(
-        target=start_awake_service, daemon=True, name="artemis-awake-init"
-    ).start()
+    threading.Thread(target=start_awake_service, daemon=True, name="artemis-awake-init").start()
     try:
         st = server_type.lower()
         if st in ("agent", "mobile", "artemis", "default"):

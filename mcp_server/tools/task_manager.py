@@ -15,6 +15,7 @@
 """MCP Tool: mobile_manage_task."""
 
 import json
+import logging
 import os
 import signal
 import sqlite3
@@ -33,6 +34,8 @@ from artemis.runtime import (
     trace_store,
 )
 from artemis.runtime.process_probe import pid_is_alive
+
+logger = logging.getLogger(__name__)
 
 _LIVENESS_FAILURE_ERROR = "Task runner process terminated unexpectedly."
 # Grace window covering the spawn race: the launcher pid may already have exited
@@ -201,10 +204,15 @@ def _mark_liveness_failure(trace_id: str, status_data: dict[str, Any]) -> None:
                 event_type="failed",
                 payload={"trace_id": trace_id, "error": _LIVENESS_FAILURE_ERROR},
             )
-        except Exception:
+        except Exception as exc:
             # Notification dispatch is best-effort; the failure verdict is
             # already persisted in status.json.
-            pass
+            logger.debug(
+                "Liveness-failure notification skipped for trace %s: %s",
+                trace_id,
+                exc,
+                exc_info=True,
+            )
 
 
 @mcp.tool()

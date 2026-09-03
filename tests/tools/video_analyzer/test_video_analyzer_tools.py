@@ -20,6 +20,7 @@ from artemis.agents.video_analyzer.video_analyzer import VideoAnalyzer
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_video_analyzer_tools(artemis_context, mock_state, inputs_dir, tmp_path):
     artemis_context.device.mobile_platform = "android"
     artemis_context.adb_client = artemis_context.ui_adb_client

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MCP-backed action executor for FlashRunner and FailureAnalyzer.
+"""MCP-backed action executor for the FlashRunner.
 
 Same public contract as the legacy ``MobileActionExecutor`` --
 ``execute(name, args, tool_call_id, state) -> ToolExecutionResult`` -- but execution
@@ -23,7 +23,7 @@ Kept agent-side (by design, not omission): argument normalization, element-index
 resolution against LangGraph ``State``, smart-swipe resolution, act-then-observe
 capture and ``State`` write-back, tracing (a ``ContextVar`` cannot cross the server's
 task boundary -- see the plan's R2), and the non-device tools (``read_note``,
-``list_notes``, ``ask_explorer``).
+``list_notes``, ``ask_explorer``, ``video_analyzer``, ``recall_history``).
 
 Status is carried by ``ActionResult.ok`` -- the historical substring sniffing on
 ``"Error"``/``"Failed"`` is gone, so typing the literal text "Failed" into a field no
@@ -37,7 +37,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from artemis.config import resolve_explorer_version
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import TraceSpan
@@ -69,6 +68,12 @@ logger = get_logger(__name__)
 __all__ = ["McpActionExecutor"]
 
 
+#: Non-device tools executed agent-side (never behind the action server).
+AGENT_TOOL_NAMES: frozenset[str] = frozenset(
+    {"read_note", "list_notes", "ask_explorer", "video_analyzer", "recall_history"}
+)
+
+
 class _ArgError(ValueError):
     """Argument-translation failure whose message is already fully formatted."""
 
@@ -81,10 +86,15 @@ class McpActionExecutor:
         ctx: ArtemisContext,
         controller: UnifiedMobileController | None = None,
         actuator: AdbActuator | None = None,
+        agent_name: str = "validator",
     ):
         self.ctx = ctx
         self.actuator = actuator or getattr(ctx, "actuator", None) or AdbActuator(ctx, controller)
         self.controller = self.actuator.controller
+        # Identifies the calling agent / profile to the Explorer tier resolver
+        # (``explorer.flash_mode`` vs ``explorer.pro_mode``); the agent itself
+        # never sees or chooses the tier.
+        self.agent_name = agent_name
         self._session: ActionSession | None = None
 
     @property
@@ -109,7 +119,7 @@ class McpActionExecutor:
         """Executes the named tool and wraps the outcome for the calling agent."""
         raw_name = name.split(":")[-1] if ":" in name else name
 
-        if raw_name in ("read_note", "list_notes", "ask_explorer"):
+        if raw_name in AGENT_TOOL_NAMES:
             return await self._execute_agent_tool(raw_name, name, args, tool_call_id, state)
 
         if raw_name in self.action_tool_names:
@@ -405,10 +415,10 @@ class McpActionExecutor:
             sequence_str = sequence.strip()
             try:
                 sequence = json.loads(sequence_str)
-            except Exception:
+            except ValueError:
                 try:
                     sequence = ast.literal_eval(sequence_str)
-                except Exception:
+                except (ValueError, SyntaxError, TypeError, RecursionError):
                     pass
 
         if not isinstance(sequence, (list, tuple)):
@@ -508,6 +518,8 @@ class McpActionExecutor:
     ) -> ToolExecutionResult:
         span = TraceSpan(name=raw_name, trace_type="tool", ctx=self.ctx)
         span.payload = {"args": args}
+        ok: bool | None = None
+        blocks: list[dict[str, Any]] | None = None
         with span:
             if raw_name == "read_note":
                 text = await self._read_note(
@@ -515,21 +527,42 @@ class McpActionExecutor:
                 )
             elif raw_name == "list_notes":
                 text = await self._list_notes()
+            elif raw_name == "video_analyzer":
+                text, ok = await self._video_analyzer(
+                    args.get("time_description") or args.get("TimeDescription") or "",
+                    args.get("purpose") or args.get("Purpose") or "",
+                )
+            elif raw_name == "recall_history":
+                text, blocks = await self._recall_history(args)
+                ok = True
             else:
-                text = await self._ask_explorer(
+                text, ok = await self._ask_explorer(
+                    # ``task_description`` is the pre-contract argument name
+                    # kept for old MCP clients.
                     args.get("query") or args.get("task_description") or "",
                     args.get("context_feedback"),
                     state,
                 )
             span.result = {"outcome": text}
+            if ok is False:
+                span.status = "failed"
+                span.error = text
 
-        # These texts come from our own failure formatters, so the historical
-        # "Error" marker check is reliable here (unlike free-form device output).
+        # Note texts come from our own failure formatters, so the historical
+        # "Error" marker check is reliable there (unlike free-form device
+        # output); the Explorer and the video analyzer report their status
+        # explicitly and a history recall is a lookup whose "no match" answer
+        # is not an error.
+        if ok is None:
+            ok = "Error" not in (text or "")
         return ToolExecutionResult(
             tool_call_id=tool_call_id,
             tool_name=name,
-            status="error" if "Error" in (text or "") else "success",
+            status="success" if ok else "error",
             text_summary=text,
+            # Content blocks (recalled screenshots) ride along for callers that
+            # forward multimodal tool results; the text summary stays complete.
+            raw_result=blocks,
         )
 
     async def _read_note(self, key: str, start_line: int | None, end_line: int | None) -> str:
@@ -550,31 +583,61 @@ class McpActionExecutor:
         except Exception as e:
             return format_list_notes_failure(str(e))
 
-    async def _ask_explorer(self, query: str, context_feedback: str | None, state: Any) -> str:
-        # Imported lazily: the explorer stack is heavy and recursive (it spawns an LLM
-        # sub-agent), which is also why it must never live behind the action server.
-        from artemis.tools.explorer_tool import _run_explorer_logic
+    async def _recall_history(self, args: dict[str, Any]) -> tuple[str, list[dict] | None]:
+        """Deterministic cold-history lookup (same tool the Pro operator binds).
+
+        Returns the text answer and, when screenshots were requested, the
+        multimodal content blocks the tool produced.
+        """
+        from artemis.tools.history_recall import RecallHistoryArgs, recall_history
+
+        accepted = {k: v for k, v in args.items() if k in RecallHistoryArgs.model_fields}
+        try:
+            result = await recall_history.execute(ctx=self.ctx, **accepted)
+        except Exception as e:
+            logger.error(f"Error running recall_history: {e}")
+            return f"recall_history failed: {e}", None
+        if isinstance(result, list):
+            texts = [
+                b.get("text", "") for b in result if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            return "\n".join(t for t in texts if t) or "Recalled history.", result
+        return str(result), None
+
+    async def _video_analyzer(self, time_description: str, purpose: str) -> tuple[str, bool]:
+        """Runs the video-analyzing subagent over the session recording.
+
+        Same subagent the Pro operator's ``video_analyzer`` LangChain tool
+        delegates to; imported lazily because the video stack is heavy.
+        """
+        from artemis.agents.video_analyzer.video_analyzer import VideoAnalyzer
 
         try:
-            active_version = resolve_explorer_version(
-                self.ctx,
-                explicit_version=None,
-                agent_or_profile_name="validator",
-            )
-            result = await _run_explorer_logic(
-                self.ctx,
-                state,
-                query,
-                context_feedback or "",
-                version=active_version,
-            )
-            if isinstance(result, list):
-                texts = [
-                    item["text"]
-                    for item in result
-                    if isinstance(item, dict) and item.get("type") == "text"
-                ]
-                return "\n".join(texts) if texts else str(result)
-            return str(result)
+            outcome, status = await VideoAnalyzer(self.ctx).run(time_description, purpose)
         except Exception as e:
-            return f"Error executing ask_explorer: {e}"
+            logger.error(f"Error running video analyzer: {e}")
+            return f"Error running video analyzer: {e}", False
+        if status in ("failed", "error"):
+            return f"Video analysis failed: {outcome}", False
+        return outcome, True
+
+    async def _ask_explorer(
+        self, query: str, context_feedback: str | None, state: Any
+    ) -> tuple[str, bool]:
+        """Runs the Explorer pipeline for this executor's agent; returns ``(text, ok)``.
+
+        ``ok`` is False only when the Explorer run itself failed: a clean
+        "not found" is a successful answer the agent has to reason about.
+        """
+        # Imported lazily: the explorer stack is heavy and recursive (it spawns an LLM
+        # sub-agent), which is also why it must never live behind the action server.
+        from artemis.tools.explorer_tool import locate, register_candidates, render_text
+
+        try:
+            outcome = await locate(
+                self.ctx, state, query, context_feedback or "", agent_name=self.agent_name
+            )
+            registered = register_candidates(self.ctx, state, outcome)
+            return render_text(query, outcome, registered), not outcome.error
+        except Exception as e:
+            return f"Error executing ask_explorer: {e}", False

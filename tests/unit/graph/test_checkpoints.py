@@ -68,7 +68,6 @@ def _make_ctx(tmp_path, **setup_kwargs):
     ctx.planner_task = None
     ctx.last_validated_plan = None
     ctx.pending_validated_plan = None
-    ctx.task_plan_content_before = None
     return ctx
 
 
@@ -232,7 +231,7 @@ async def test_execution_check_spawns_after_record_step_with_correct_anchor(tmp_
 
     captured = {}
 
-    async def fake_check(ctx_arg, check_items, anchor, goal, subgoal_text):
+    async def fake_check(ctx_arg, check_items, anchor, goal, subgoal_text, attempt_id=None):
         captured["anchor"] = anchor
         captured["goal"] = goal
         return CheckReport(verdicts=[])
@@ -273,24 +272,41 @@ async def test_execution_check_no_spawn_after_user_stop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_record_step_on_planner_rejected_turn(tmp_path):
-    """Every operator turn leaves a step record — the planner-rejected turn is
-    recorded too, tagged planner_rejected."""
-    _write_plan(tmp_path)
+async def test_planner_flag_is_advisory_hint_only(tmp_path):
+    """A flagged plan change is advisory: no rollback, the turn's actions
+    still run, the Operator gets the concern + reason as feedback, the turn
+    is recorded (tagged planner_flagged) and the ratchet baseline advances so
+    the same change is not re-flagged on every later write."""
+    plan_path = _write_plan(tmp_path)
+    plan_on_disk = plan_path.read_text(encoding="utf-8")
     ctx = _make_ctx(tmp_path)
-    ctx.data_engine.record_step.return_value = "rejected-step"
-    rejection = asyncio.get_event_loop().create_future()
-    rejection.set_result({"status": "failed", "feedback": "bad plan"})
-    ctx.planner_task = rejection
+    ctx.data_engine.record_step.return_value = "flagged-step"
+    ctx.last_validated_plan = "- [ ] old baseline\n"
+    ctx.pending_validated_plan = plan_on_disk
+    flagged = asyncio.get_event_loop().create_future()
+    flagged.set_result({"status": "failed", "feedback": "milestone 2 drifts from the goal"})
+    ctx.planner_task = flagged
     state = _make_state(operator_raw_data=_raw_data())
 
     with patch("artemis.graph.graph._get_active_subgoal_hashes", return_value=("h", None)):
         update = await execution_check_node(state, ctx)
 
-    assert update["checker_success"] is False
-    assert update["current_step_id"] == "rejected-step"
+    # Actions are not suppressed and the plan file is untouched.
+    assert update["checker_success"] is True
+    assert "structured_decisions" not in update
+    assert plan_path.read_text(encoding="utf-8") == plan_on_disk
+    assert update["current_step_id"] == "flagged-step"
     extra = ctx.data_engine.record_step.call_args.kwargs["extra_metadata"]
-    assert extra.get("planner_rejected") is True
+    assert extra.get("planner_flagged") is True
+    # Hint + reason reach the Operator through operator_feedback.
+    feedback = update["operator_feedback"]
+    assert feedback and feedback[0].startswith("[planner]")
+    assert "milestone 2 drifts from the goal" in feedback[0]
+    assert "NOT rolled back" in feedback[0]
+    # Baseline advanced to the reviewed content.
+    assert ctx.last_validated_plan == plan_on_disk
+    assert ctx.pending_validated_plan is None
+    assert ctx.planner_task is None
 
 
 @pytest.mark.asyncio
@@ -584,9 +600,7 @@ async def test_finding_line_regrows_on_model_plan_write(tmp_path):
 
     with patch("artemis.graph.graph.invoke_tool_with_injection", side_effect=fake_invoke):
         wrapped = wrap_note_tool(ctx, mock_tool)
-        await wrapped.ainvoke(
-            {"key": "task_plan", "content": clean_rewrite, "tool_call_id": "t1"}
-        )
+        await wrapped.ainvoke({"key": "task_plan", "content": clean_rewrite, "tool_call_id": "t1"})
 
     # ...and the deterministic projection grows it back on the write path.
     assert "- finding: verify failed" in plan_path.read_text(encoding="utf-8")
@@ -625,9 +639,7 @@ async def test_finding_line_removed_on_repair_quota_exhaustion(tmp_path):
 
     # Re-complete, fail again: quota (1) is exhausted -> finding settled.
     plan_path.write_text(
-        plan_path.read_text(encoding="utf-8").replace(
-            f"- [/] {GOAL_TEXT}", f"- [x] {GOAL_TEXT}"
-        ),
+        plan_path.read_text(encoding="utf-8").replace(f"- [/] {GOAL_TEXT}", f"- [x] {GOAL_TEXT}"),
         encoding="utf-8",
     )
     run2 = _done_run(
@@ -652,9 +664,7 @@ async def test_checker_note_prefix_writes_rejected_by_wrappers(tmp_path):
     update_tool.name = "update_note"
     update_tool.description = "update"
 
-    with patch(
-        "artemis.graph.graph.invoke_tool_with_injection", new_callable=AsyncMock
-    ) as inv:
+    with patch("artemis.graph.graph.invoke_tool_with_injection", new_callable=AsyncMock) as inv:
         wrapped_save = wrap_note_tool(ctx, save_tool)
         result = await wrapped_save.ainvoke(
             {"key": checker_note_key(GOAL_KEY), "content": "spoof", "tool_call_id": "t1"}

@@ -551,9 +551,7 @@ async def test_raw_lens_call_meters_llm_usage_without_touching_context_base(mock
     await summarizer.flush()
 
     usage_calls = [
-        c
-        for c in engine.record_trace.call_args_list
-        if c.kwargs.get("name") == "llm_usage"
+        c for c in engine.record_trace.call_args_list if c.kwargs.get("name") == "llm_usage"
     ]
     assert usage_calls, "the raw lens bypass must record an llm_usage trace"
     payload = usage_calls[0].kwargs["payload"]

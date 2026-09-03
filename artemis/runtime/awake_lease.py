@@ -158,8 +158,7 @@ class ScreenAwakeLease:
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout).strip()
                 logger.warning(
-                    f"Could not {description} on {self.device_id}: "
-                    f"{detail or 'ADB command failed'}"
+                    f"Could not {description} on {self.device_id}: {detail or 'ADB command failed'}"
                 )
             return result
         except Exception as exc:
@@ -279,7 +278,5 @@ class ScreenAwakeLease:
                     return False
                 return self._drain_references()
         except Exception as exc:
-            logger.warning(
-                f"Could not clean unowned screen wake locks on {self.device_id}: {exc}"
-            )
+            logger.warning(f"Could not clean unowned screen wake locks on {self.device_id}: {exc}")
             return False

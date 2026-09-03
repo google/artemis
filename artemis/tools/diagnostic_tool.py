@@ -71,12 +71,12 @@ class AskDiagnoserTool(ArtemisTool):
             name="ask_diagnoser",
             description=(
                 "[DIAGNOSTIC] Analyzes system logs (ADB) and video recordings to "
-                "pinpoint the root cause of any step failure, screen freeze, or "
-                "unexpected UI drift, and directly executes adb commands. Call this "
-                "tool proactively whenever an action fails, status stagnates, or you "
-                "are unsure why progress is blocked, to diagnose the issue before "
-                "committing to physical actions. Note: When querying video files, "
-                "specify a narrow timeframe (e.g., '[10s, 20s]') for faster analysis."
+                "pinpoint the root cause of a step failure, screen freeze, or "
+                "unexpected UI drift. Use it when the live screen does not explain "
+                "why an action is not taking effect or why progress is stalled, "
+                "before committing to further physical actions. Note: When querying "
+                "video files, specify a narrow timeframe (e.g., '[10s, 20s]') for "
+                "faster analysis."
             ),
             args_schema=AskDiagnoserArgs,
             category="custom",

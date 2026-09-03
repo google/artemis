@@ -161,9 +161,7 @@ def inspect_adb_keys() -> AdbKeyStatus:
     )
 
 
-def heal_adb_keys(
-    adb_path: str | None = None, force: bool = False
-) -> dict[str, Any]:
+def heal_adb_keys(adb_path: str | None = None, force: bool = False) -> dict[str, Any]:
     """Auto-heal corrupted ADB authentication keys.
 
     If keys are corrupted (or if `force=True`), this function:

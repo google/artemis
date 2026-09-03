@@ -122,13 +122,17 @@ class ValidationResult(BaseModel):
     model_config = {"ignored_types": (CyFunctionDetector,)}
     is_approved: bool = Field(
         description=(
-            "True if the new plan is acceptable and aligns with the initial goal, False otherwise."
+            "True if the new plan still serves the initial goal and is coherent."
+            " False if you have a concrete concern (goal drift, broken loop"
+            " contract, weakened check standard, logical dead end)."
         )
     )
     feedback: str = Field(
         description=(
-            "If rejected, provide constructive feedback explaining why and what"
-            " to do instead. If approved, can be empty."
+            "If not approved: one or two sentences naming the concern and the"
+            " suggested correction. This is advisory feedback shown to the"
+            " Operator, not a rejection — the plan change stays applied."
+            " If approved, leave empty."
         )
     )
 
@@ -185,7 +189,9 @@ async def run_async_planner_validation(
             HumanMessage(content=human_message),
         ]
 
-        llm = get_llm(ctx=ctx, name="planner").with_structured_output(ValidationResult)
+        # Advisory review on the lightweight judge node (shared default with
+        # the pixel safety net), never the heavyweight Planner model.
+        llm = get_llm(ctx=ctx, name="planner_validation").with_structured_output(ValidationResult)
 
         result: ValidationResult = await invoke_llm_with_timeout_message(llm.ainvoke(messages))
 

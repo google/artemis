@@ -205,7 +205,7 @@ class DataEngine:
                     logger.warning(f"IPC send failed; reconnecting: {exc}")
                     try:
                         self.ipc_socket.close()
-                    except Exception:
+                    except OSError:
                         pass
                     self.ipc_socket = None
                     self._ipc_retry_after = 0.0
@@ -257,8 +257,8 @@ class DataEngine:
                             )
                     except RuntimeError:
                         pass
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"Cloud gateway event bridge skipped: {exc}", exc_info=True)
 
         self._send_ipc_event(event_type, data)
 
@@ -586,7 +586,7 @@ class DataEngine:
             app = foreground_app or _derive_foreground_app(ui_tree)
             if app:
                 extra_metadata.setdefault("foreground_app", app)
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             pass
 
         # M4: stamp perceptual hashes for the local screen-similarity hint
@@ -601,7 +601,7 @@ class DataEngine:
             post_dhash = dhash_hex(post_screenshot_bytes) if post_image_name else pre_dhash
             if post_dhash:
                 extra_metadata.setdefault("post_image_dhash", post_dhash)
-        except Exception:
+        except ImportError:
             pass
 
         step = StepRecord(
@@ -626,22 +626,9 @@ class DataEngine:
                 self.get_or_create_image(post_screenshot_bytes)
             self.storage.create_step(step)
 
-        # Run storage in background
-        try:
-            task = asyncio.create_task(asyncio.to_thread(_run_background_storage))
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._on_background_task_done)
-        except RuntimeError:
-            # Fallback if no event loop
-            def run_and_cleanup():
-                _run_background_storage()
-                curr_thread = threading.current_thread()
-                if curr_thread in self._pending_threads:
-                    self._pending_threads.remove(curr_thread)
-
-            thread = threading.Thread(target=run_and_cleanup)
-            self._pending_threads.append(thread)
-            thread.start()
+        # Run storage in the shared background scheduler.  It chooses an
+        # asyncio worker when a loop is active and a tracked thread otherwise.
+        self._run_in_background(_run_background_storage)
 
         logger.info(f"Recorded step {step_number} for session {self.current_session_id}")
 
@@ -736,23 +723,7 @@ class DataEngine:
             payload=payload,
         )
 
-        # Run storage in background
-        try:
-            asyncio.get_running_loop()
-            task = asyncio.create_task(asyncio.to_thread(self.storage.create_trace, trace))
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._on_background_task_done)
-        except RuntimeError:
-            # Fallback if no event loop
-            def run_and_cleanup():
-                self.storage.create_trace(trace)
-                curr_thread = threading.current_thread()
-                if curr_thread in self._pending_threads:
-                    self._pending_threads.remove(curr_thread)
-
-            thread = threading.Thread(target=run_and_cleanup)
-            self._pending_threads.append(thread)
-            thread.start()
+        self._run_in_background(self.storage.create_trace, trace)
 
         # Publish event
         trace_dict = trace.model_dump()
@@ -787,21 +758,7 @@ class DataEngine:
             error_message=error_message,
         )
 
-        try:
-            task = asyncio.create_task(asyncio.to_thread(self.storage.create_failed_output, record))
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._pending_tasks.discard)
-        except RuntimeError:
-
-            def run_and_cleanup():
-                self.storage.create_failed_output(record)
-                curr_thread = threading.current_thread()
-                if curr_thread in self._pending_threads:
-                    self._pending_threads.remove(curr_thread)
-
-            thread = threading.Thread(target=run_and_cleanup)
-            self._pending_threads.append(thread)
-            thread.start()
+        self._run_in_background(self.storage.create_failed_output, record)
 
     def has_pending_operations(self) -> bool:
         """Check if there are any pending background tasks or threads."""
@@ -830,7 +787,7 @@ class DataEngine:
             if self.ipc_socket is not None:
                 try:
                     self.ipc_socket.close()
-                except Exception:
+                except OSError:
                     pass
                 self.ipc_socket = None
 
@@ -918,8 +875,11 @@ class DataEngine:
                     "completion_tokens": step_c,
                     "total_tokens": step_t,
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                f"Step token usage aggregation for SSE skipped for {step_id}: {exc}",
+                exc_info=True,
+            )
         return None
 
     def _on_background_task_done(self, task: asyncio.Task):
@@ -927,27 +887,30 @@ class DataEngine:
         if not task.cancelled() and task.exception():
             exc = task.exception()
             logger.error(f"Background task failed with exception: {exc}", exc_info=exc)
-            raise exc
 
     def _run_in_background(self, fn, *args):
         """Safely offload blocking storage/disk operation to background without stalling event loop."""
         try:
-            task = asyncio.create_task(asyncio.to_thread(fn, *args))
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._on_background_task_done)
+            loop = asyncio.get_running_loop()
         except RuntimeError:
 
             def run_and_cleanup():
                 try:
                     fn(*args)
+                except Exception as exc:
+                    logger.error(f"Background storage operation failed: {exc}", exc_info=exc)
                 finally:
                     curr_thread = threading.current_thread()
                     if curr_thread in self._pending_threads:
                         self._pending_threads.remove(curr_thread)
 
-            thread = threading.Thread(target=run_and_cleanup)
+            thread = threading.Thread(target=run_and_cleanup, name="artemis-storage", daemon=True)
             self._pending_threads.append(thread)
             thread.start()
+        else:
+            task = loop.create_task(asyncio.to_thread(fn, *args))
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._on_background_task_done)
 
     def update_step_action(
         self,
@@ -1008,8 +971,10 @@ class DataEngine:
                 if step_record and getattr(step_record, "step_number", None) is not None:
                     self._step_number_cache[sid] = int(step_record.step_number)
                     return int(step_record.step_number)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    f"Step number lookup from storage skipped for {sid}: {exc}", exc_info=True
+                )
         return None
 
     def get_step_record(self, step_number: int):
@@ -1260,10 +1225,7 @@ class DataEngine:
                                 None,
                             )
                             if parent_trace:
-                                if parent_trace.name in (
-                                    "operator",
-                                    "failure_analyzer",
-                                ):
+                                if parent_trace.name == "operator":
                                     is_relevant_llm = True
                                     t.name = parent_trace.name
                                     break
@@ -1301,14 +1263,9 @@ class DataEngine:
                                                 block.get("type") == "thinking"
                                                 and block.get("thinking", "").strip()
                                             ):
-                                                e_type = (
-                                                    "failure_analyzer_native_thought"
-                                                    if t.name == "failure_analyzer"
-                                                    else "native_thought"
-                                                )
                                                 interleaved_events.append(
                                                     {
-                                                        "type": e_type,
+                                                        "type": "native_thought",
                                                         "content": (block["thinking"].strip()),
                                                     }
                                                 )
@@ -1316,14 +1273,9 @@ class DataEngine:
                                                 block.get("type") == "text"
                                                 and block.get("text", "").strip()
                                             ):
-                                                e_type = (
-                                                    "failure_analyzer_thought"
-                                                    if t.name == "failure_analyzer"
-                                                    else "thought"
-                                                )
                                                 interleaved_events.append(
                                                     {
-                                                        "type": e_type,
+                                                        "type": "thought",
                                                         "content": (block["text"].strip()),
                                                     }
                                                 )
@@ -1339,14 +1291,9 @@ class DataEngine:
                                 thought_text = safe_extract_text(thought_text)
 
                             if thought_text and thought_text.strip():
-                                e_type = (
-                                    "failure_analyzer_thought"
-                                    if t.name == "failure_analyzer"
-                                    else "thought"
-                                )
                                 interleaved_events.append(
                                     {
-                                        "type": e_type,
+                                        "type": "thought",
                                         "content": thought_text.strip(),
                                     }
                                 )
@@ -1453,23 +1400,7 @@ class DataEngine:
                 self._bg_task_to_trace_id = {}
             self._bg_task_to_trace_id[task_id] = str(trace_id)
 
-        try:
-            task = asyncio.create_task(
-                asyncio.to_thread(self.storage.create_background_task, record)
-            )
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._pending_tasks.discard)
-        except RuntimeError:
-
-            def run_and_cleanup():
-                self.storage.create_background_task(record)
-                curr_thread = threading.current_thread()
-                if curr_thread in self._pending_threads:
-                    self._pending_threads.remove(curr_thread)
-
-            thread = threading.Thread(target=run_and_cleanup)
-            self._pending_threads.append(thread)
-            thread.start()
+        self._run_in_background(self.storage.create_background_task, record)
 
         self._publish("background_tasks_updated", self.get_all_background_tasks())
 
@@ -1484,29 +1415,13 @@ class DataEngine:
         if trace_id_str and hasattr(self, "_accumulated_logs"):
             logs = self._accumulated_logs.pop(trace_id_str, "")
 
-        try:
-            task = asyncio.create_task(
-                asyncio.to_thread(
-                    self.storage.update_background_task_status_and_logs,
-                    task_id,
-                    status,
-                    end_time,
-                    logs,
-                )
-            )
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._pending_tasks.discard)
-        except RuntimeError:
-
-            def run_and_cleanup():
-                self.storage.update_background_task_status_and_logs(task_id, status, end_time, logs)
-                curr_thread = threading.current_thread()
-                if curr_thread in self._pending_threads:
-                    self._pending_threads.remove(curr_thread)
-
-            thread = threading.Thread(target=run_and_cleanup)
-            self._pending_threads.append(thread)
-            thread.start()
+        self._run_in_background(
+            self.storage.update_background_task_status_and_logs,
+            task_id,
+            status,
+            end_time,
+            logs,
+        )
 
         self._publish("background_tasks_updated", self.get_all_background_tasks())
 

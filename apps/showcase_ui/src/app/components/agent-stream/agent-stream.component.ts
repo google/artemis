@@ -470,6 +470,8 @@ export class AgentStreamComponent implements AfterViewInit {
     effect(() => {
       const blocks = this.consolidatedBlocks();
       blocks.forEach(block => {
+        // Check blocks render their per-turn segments directly (no typewriter).
+        if (block.type === 'checker') return;
         const blockId = block.id;
         const rawText = this.getRawThinking(block) || '';
         const nativeText = this.getNativeThinking(block) || '';
@@ -1162,8 +1164,187 @@ export class AgentStreamComponent implements AfterViewInit {
     return this.getThinkingTexts(block.data).raw;
   }
 
+  // --- Check blocks (verifier lane) ----------------------------------------------
+  public isCheckerBlock(block: any): boolean {
+    return block?.type === 'checker';
+  }
+
+  public isCheckerPhase(phase: any): boolean {
+    const blocks: any[] = Array.isArray(phase?.blocks) ? phase.blocks : [];
+    return blocks.length > 0 && blocks.every((b) => this.isCheckerBlock(b));
+  }
+
+  public getCheckerPhaseLabel(block: any): string {
+    switch (block?.data?.phase) {
+      case 'final':
+        return 'Final check';
+      case 'outcome':
+        return 'Result';
+      default:
+        return 'Check';
+    }
+  }
+
+  public getCheckerVerdicts(block: any): any[] {
+    return Array.isArray(block?.data?.verdicts) ? block.data.verdicts : [];
+  }
+
+  /** Declared check items; persisted attempts only carry verdicts, so derive them. */
+  public getCheckerItems(block: any): any[] {
+    const d = block?.data || {};
+    if (Array.isArray(d.items) && d.items.length > 0) return d.items;
+    return this.getCheckerVerdicts(block).map((v) => ({ kind: v.kind, text: v.item_text, when: v.when }));
+  }
+
+  /** How the item is judged, in plain words (verify = must pass, assert = recorded test result). */
+  public getCheckMethodLabel(item: any, block: any): string {
+    const parts: string[] = [item?.kind === 'assert' ? 'Test assertion' : 'Must pass'];
+    if (item?.when === 'at_end' && block?.data?.phase !== 'final') parts.push('at the end');
+    return parts.join(' · ');
+  }
+
+  /** Superseded / unchecked attempts collapse to their header line. */
+  public isCheckerMuted(block: any): boolean {
+    const status = block?.data?.status;
+    return status === 'superseded' || status === 'unchecked';
+  }
+
+  /** Number of the check item a verdict belongs to (1-based, matches the list above the stream). */
+  public getVerdictItemNumber(block: any, verdict: any, fallbackIndex: number): number {
+    const idx = this.getCheckerItems(block).findIndex((i) => i.text === verdict?.item_text);
+    return (idx > -1 ? idx : fallbackIndex) + 1;
+  }
+
+  public getVerdictStatusText(status: string): string {
+    switch (status) {
+      case 'passed':
+        return 'Passed';
+      case 'failed':
+        return 'Failed';
+      case 'inconclusive':
+        return 'Could not be confirmed';
+      case 'superseded':
+        return 'Superseded by a newer check';
+      case 'unchecked':
+        return 'Not checked';
+      default:
+        return status || '';
+    }
+  }
+
+  public hasCheckerResult(block: any): boolean {
+    if (!this.isCheckerBlock(block) || this.isBlockRunning(block) || this.isCheckerMuted(block)) return false;
+    if (block.data?.phase === 'outcome') return this.getCheckerNotes(block).length > 0;
+    return this.getCheckerVerdicts(block).length > 0 || this.getCheckerNotes(block).length > 0;
+  }
+
+  /** Follow-ups not already visible in the verdict rows (the findings text repeats them). */
+  public getCheckerNotes(block: any): string[] {
+    const d = block?.data || {};
+    if (d.phase === 'outcome') return Array.isArray(d.last_findings) ? d.last_findings : [];
+    const notes: string[] = [];
+    if (Array.isArray(d.unmet_subgoals)) {
+      for (const text of d.unmet_subgoals) notes.push(`Not finished yet: ${text}`);
+    }
+    if (d.reverted) notes.push('The step was sent back to be redone.');
+    if (d.error) notes.push(String(d.error));
+    return notes;
+  }
+
+  // Streamed turns of a check: the last one is live while the block runs;
+  // finished Thought turns fold unless the reader opens them.
+  public openCheckSegments = signal<Set<string>>(new Set<string>());
+
+  public isCheckerSegmentRunning(block: any, itemIdx: number): boolean {
+    if (!this.isBlockRunning(block)) return false;
+    return itemIdx === this.getSortedStepEvents(block.data).length - 1;
+  }
+
+  public isCheckerSegmentCollapsed(block: any, itemIdx: number): boolean {
+    if (this.isCheckerSegmentRunning(block, itemIdx)) return false;
+    return !this.openCheckSegments().has(`${block.id}-${itemIdx}`);
+  }
+
+  public toggleCheckerSegment(block: any, itemIdx: number): void {
+    const key = `${block.id}-${itemIdx}`;
+    this.openCheckSegments.update((set) => {
+      const next = new Set(set);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  public isCheckerTextVisible(item: any): boolean {
+    const text = item?.data?.text;
+    return typeof text === 'string' && text.trim().length > 0 && this.isHumanThinking(text);
+  }
+
+  public getCheckerTone(block: any): string {
+    const d = block?.data || {};
+    if (d.phase === 'outcome') {
+      return d.task_status === 'completed' ? 'passed' : (d.task_status === 'blocked' ? 'failed' : 'inconclusive');
+    }
+    if (d.isCompleted === false) return 'running';
+    if (d.status === 'superseded' || d.status === 'unchecked') return 'muted';
+    if (d.status === 'error') return 'inconclusive';
+    const verdicts = this.getCheckerVerdicts(block);
+    if (verdicts.some((v) => v.status === 'failed')) return 'failed';
+    if (verdicts.some((v) => v.status === 'inconclusive')) return 'inconclusive';
+    return 'passed';
+  }
+
+  public getCheckerStatusLabel(block: any): string {
+    const d = block?.data || {};
+    if (d.phase === 'outcome') {
+      const t = d.tests || {};
+      const label = d.task_status === 'completed' ? 'Goal completed'
+        : (d.task_status === 'blocked' ? 'Blocked' : 'Partially completed');
+      const counts = [
+        [t.passed, 'passed'],
+        [t.failed, 'failed'],
+        [t.inconclusive, 'inconclusive'],
+        [t.unchecked, 'not checked']
+      ]
+        .filter(([n]) => Number(n) > 0)
+        .map(([n, word]) => `${n} ${word}`);
+      return counts.length > 0 ? `${label} · ${counts.join(' · ')}` : label;
+    }
+    if (d.isCompleted === false) return 'Checking…';
+    switch (d.status) {
+      case 'superseded':
+        return 'Superseded';
+      case 'unchecked':
+        return 'Not checked';
+      case 'error':
+        return 'No verdict';
+    }
+    const verdicts = this.getCheckerVerdicts(block);
+    const failed = verdicts.filter((v) => v.status === 'failed').length;
+    if (failed > 0) return `${failed} failed`;
+    if (verdicts.some((v) => v.status === 'inconclusive')) return 'Inconclusive';
+    return verdicts.length > 0 ? 'Passed' : 'Done';
+  }
+
+  public getVerdictIcon(status: string): string {
+    switch (status) {
+      case 'passed':
+        return 'check_circle';
+      case 'failed':
+        return 'cancel';
+      case 'inconclusive':
+        return 'help';
+      case 'superseded':
+        return 'history';
+      case 'unchecked':
+        return 'radio_button_unchecked';
+      default:
+        return 'pending';
+    }
+  }
+
   public hasVisibleContent(block: any): boolean {
     if (!block) return false;
+    if (block.type === 'checker') return true;
     const hasNative = Boolean(this.getNativeThinking(block));
     const hasRaw = Boolean(this.getRawThinking(block));
     const hasVisibleTools = Boolean(block.data?.generic_tools) && block.data.generic_tools.some((t: any) =>
@@ -1569,6 +1750,7 @@ export class AgentStreamComponent implements AfterViewInit {
   public isBlockRunning(block: any): boolean {
     if (!block || !block.data) return false;
     if (!this.isCurrentSessionActive()) return false;
+    if (block.type === 'checker') return block.data.isCompleted === false;
     if (this.isReportStatusAction(block.data.action_taken) || block.data?.status === 'completed' || block.data?.status === 'failed' || block.data?.status === 'cancelled') return false;
     if (block.data.isCompleted === false) return true;
     const blocks = this.consolidatedBlocks();

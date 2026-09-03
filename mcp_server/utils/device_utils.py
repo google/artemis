@@ -138,19 +138,24 @@ def ensure_emulator(
     if not emu_exe or not os.path.exists(emu_exe):
         return False
 
-    popen_kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    if sys.platform == "win32":
-        popen_kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
-        )
-    else:
-        popen_kwargs["start_new_session"] = True
-
     try:
-        subprocess.Popen(
-            [emu_exe, "-avd", avd_name, "-no-snapshot", "-grpc", "8554"],
-            **popen_kwargs,
-        )
+        command = [emu_exe, "-avd", avd_name, "-no-snapshot", "-grpc", "8554"]
+        if sys.platform == "win32":
+            subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS),
+            )
+        else:
+            subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
     except Exception:
         return False
 

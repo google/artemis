@@ -75,9 +75,7 @@ def test_retry_policy_accepts_extension_category_values():
         RATE_LIMIT = "rate_limit"
         MEDIA_PROCESSING = "media_processing"
 
-    assert retry_policy_for(ExtCategory.RATE_LIMIT) is retry_policy_for(
-        FailureCategory.RATE_LIMIT
-    )
+    assert retry_policy_for(ExtCategory.RATE_LIMIT) is retry_policy_for(FailureCategory.RATE_LIMIT)
     assert retry_policy_for("provider_unavailable") is retry_policy_for(
         FailureCategory.PROVIDER_UNAVAILABLE
     )

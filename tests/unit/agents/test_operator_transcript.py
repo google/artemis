@@ -53,13 +53,17 @@ from artemis.memory.transcript import (
 
 # SHA-256 of the legacy system message rendered by TemplatePromptComponent
 # with the fixed inputs below. Originally recorded BEFORE the M2 template
-# split; re-recorded once in M5 (2026-09-01) after the only intended template
-# change since — removing the Short-Term Memory instruction block from
-# operator.json (the <short_term_memory> relay was removed end to end per
-# pro-context-memory-redesign §3.3). Any other drift here means the flag-off
+# split; re-recorded in M5 (2026-09-01) after the Short-Term Memory block was
+# removed, and again on 2026-09-02 when the Failure Analyzer was retired: the
+# operator.json template gained the Time-Sensitive Tasks principle, the two
+# execution tiers (vetted single action / fast-action burst), the Execution
+# Incident workflow section and the Phase 3 burst-discipline rule; and again
+# on 2026-09-02 after the prompt consolidation (every rule stated once, the
+# transcript/legacy history-marker split, the recited tool budget, the
+# recommended diagnosis triggers). Any other drift here means the flag-off
 # path is no longer byte-identical.
-GOLDEN_EMPTY_PLAN = "c45aec7d67069dad3a195534dd3c97dadb48454ca186a40eb471d5f9136589fa"
-GOLDEN_SENTINEL_PLAN = "670580efd48f237c3257d996a814145fbef4ec0bb467aa4dfa6eb2db4a613826"
+GOLDEN_EMPTY_PLAN = "a20046ff46058fa331fa3b8f2d3ffa4a018be567bf264588b9a29bc64e5b11b8"
+GOLDEN_SENTINEL_PLAN = "8f4456524c8a964d1614d26d2fafab809bd5bd3f30334fd40498999e4b27638b"
 
 SCREENSHOT_B64 = base64.b64encode(b"fake-jpeg-bytes").decode("utf-8")
 
@@ -253,9 +257,7 @@ async def test_transcript_actionless_turn_commits_without_validator_message():
 
     ledger = ctx.transcript_ledger
     assert ledger.turn_count == 1
-    assert not any(
-        EXECUTION_RESULT_MARKER in str(m.content) for m in ledger.active_messages
-    )
+    assert not any(EXECUTION_RESULT_MARKER in str(m.content) for m in ledger.active_messages)
 
 
 @pytest.mark.asyncio

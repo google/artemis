@@ -82,17 +82,13 @@ async def mobile_get_device_state(view_type: str, device_serial: str | None = No
             if is_ocr_configured():
                 try:
                     screen_height = device_data.height
-                    status_bar_height = _detect_status_bar_height(
-                        xml_hierarchy, screen_height
-                    )
+                    status_bar_height = _detect_status_bar_height(xml_hierarchy, screen_height)
                     if status_bar_height > 0:
                         cropped_b64, _, _ = _crop_image_remove_status_bar(
                             latest_screenshot_b64, status_bar_height
                         )
                         raw_ocr_results = await perform_ocr(cropped_b64)
-                        ocr_results = _map_coordinates_back(
-                            raw_ocr_results, status_bar_height
-                        )
+                        ocr_results = _map_coordinates_back(raw_ocr_results, status_bar_height)
                     else:
                         ocr_results = await perform_ocr(latest_screenshot_b64)
                 except Exception:

@@ -45,6 +45,13 @@ def clean_state(tmp_path, monkeypatch):
     queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
     monkeypatch.setattr(state_module, "PAUSE_FILE", isolated_pause_file)
     monkeypatch.setattr(queue_module, "PAUSE_FILE", isolated_pause_file)
+    # The stop assertions below describe the legacy immediate kill; the graceful
+    # cancel path has its own tests in test_graceful_stop_and_recovery.py.
+    monkeypatch.setenv("ARTEMIS_CANCEL_GRACE_SECONDS", "0")
+    monkeypatch.setattr(
+        "artemis.runtime.cancel_requests.get_temp_dir",
+        lambda _subfolder=None: isolated_lock_dir,
+    )
     state.clear_queue()
     state.queue_items.clear()
     state.current_process = None
@@ -283,6 +290,8 @@ async def test_queue_worker_cmd_construction():
             enable_outputter=True,
             locked_app_package="com.google.android.apps.maps",
             app_path="/path/to/app.apk",
+            verification_level=" Checkpoints ",
+            explorer_mode="ULTRA",
         )
 
         for _ in range(30):
@@ -301,6 +310,12 @@ async def test_queue_worker_cmd_construction():
         assert "com.google.android.apps.maps" in cmd
         assert "--app-path" in cmd
         assert "/path/to/app.apk" in cmd
+        # Pro tuning knobs are normalised (trimmed, lower-cased) and forwarded
+        # to the worker as the CLI's existing spelling.
+        assert cmd[cmd.index("--verification-level") + 1] == "checkpoints"
+        assert cmd[cmd.index("--explorer-pro-mode") + 1] == "ultra"
+        assert enqueue_result["tasks"][0]["verification_level"] == "checkpoints"
+        assert enqueue_result["tasks"][0]["explorer_mode"] == "ultra"
         assert (
             executed_kwargs[0]["env"]["ARTEMIS_DEVICE_QUEUE_TICKET"]
             == (enqueue_result["tasks"][0]["queue_ticket"])
@@ -430,9 +445,7 @@ def test_stop_tasks_terminates_external_global_owner_and_preserves_local_waiter(
         patch(
             "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
         ) as update_status,
-        patch(
-            "artemis.runtime.trace_store.update_trace_status"
-        ) as update_trace_status,
+        patch("artemis.runtime.trace_store.update_trace_status") as update_trace_status,
     ):
         assert task_queue_service.stop_tasks(clear_all=False) is True
 
@@ -510,9 +523,7 @@ def test_stop_tasks_session_target_never_adopts_mismatched_fallback_owner():
         patch(
             "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree_verified"
         ) as terminate_verified,
-        patch(
-            "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
-        ),
+        patch("apps.admin_console.services.task_queue_service.session_repo.update_session_status"),
         patch(
             "apps.admin_console.services.task_queue_service.session_repo.get_session_by_id",
             return_value=None,
@@ -733,7 +744,10 @@ async def test_enqueue_tasks_unified_ingress():
     """Verify enqueue_tasks correctly propagates ingress, custom session_id, and conversation_id."""
     with (
         patch.object(TaskQueueService, "ensure_worker_running"),
-        patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve", return_value="mock-ticket-unified"),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
+            return_value="mock-ticket-unified",
+        ),
     ):
         res = await task_queue_service.enqueue_tasks(
             ["Test unified goal"],
@@ -885,7 +899,9 @@ def test_stop_tasks_by_device_id_targets_specific_device():
             "apps.admin_console.services.task_queue_service.DeviceExecutionLock.is_active_owner",
             return_value=True,
         ),
-        patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.cleanup_stale_locks"),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.cleanup_stale_locks"
+        ),
         patch(
             "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree_verified",
             return_value=True,
@@ -899,8 +915,18 @@ def test_stop_tasks_by_device_id_targets_specific_device():
 def test_stop_tasks_queued_item_by_session_id():
     """Stopping a queued task by session_id cancels its reservation and removes it from queue."""
     state.queue_items = [
-        {"session_id": "queue-1", "goal": "Goal 1", "status": "pending", "queue_ticket": "ticket-1"},
-        {"session_id": "queue-2", "goal": "Goal 2", "status": "pending", "queue_ticket": "ticket-2"},
+        {
+            "session_id": "queue-1",
+            "goal": "Goal 1",
+            "status": "pending",
+            "queue_ticket": "ticket-1",
+        },
+        {
+            "session_id": "queue-2",
+            "goal": "Goal 2",
+            "status": "pending",
+            "queue_ticket": "ticket-2",
+        },
     ]
 
     with (
@@ -916,7 +942,9 @@ def test_stop_tasks_queued_item_by_session_id():
             "apps.admin_console.services.task_queue_service.DeviceExecutionLock.cancel_reservation",
             return_value=True,
         ) as cancel_res,
-        patch("apps.admin_console.services.task_queue_service.session_repo.update_session_status") as update_status,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
+        ) as update_status,
     ):
         assert task_queue_service.stop_tasks(clear_all=False, session_id="queue-1") is True
         cancel_res.assert_called_once_with("ticket-1")
@@ -934,7 +962,10 @@ async def test_enqueue_tasks_deduplicates_by_session_id():
 
     with (
         patch("apps.admin_console.services.task_queue_service.session_repo"),
-        patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve", return_value="ticket-123"),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
+            return_value="ticket-123",
+        ),
     ):
         res1 = await task_queue_service.enqueue_tasks(["Task goal"], session_id="sid-dedup-1")
         assert len(state.queue_items) == 1
@@ -1041,8 +1072,7 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
         assert ended_payloads["run-b"]["was_stopped_manually"] is False
 
         persisted = {
-            call.args[0]: call.args[1]
-            for call in mock_repo.update_session_status.call_args_list
+            call.args[0]: call.args[1] for call in mock_repo.update_session_status.call_args_list
         }
         assert persisted.get("run-a") == "cancelled"
         assert persisted.get("run-b") == "completed"
@@ -1059,22 +1089,25 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
 
     with (
         patch("apps.admin_console.services.task_queue_service.session_repo"),
-        patch("apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve", return_value="ticket-456"),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
+            return_value="ticket-456",
+        ),
         patch(
             "artemis.runtime.device_pool.device_pool.try_list_devices_async",
             new=AsyncMock(return_value=[]),
         ),
         patch.object(TaskQueueService, "ensure_worker_running"),
     ):
-        res1 = await task_queue_service.enqueue_tasks(["Rapid duplicate goal"], device_serial="dev-1")
+        res1 = await task_queue_service.enqueue_tasks(
+            ["Rapid duplicate goal"], device_serial="dev-1"
+        )
         assert len(state.queue_items) == 1
         assert res1["enqueued_count"] == 1
 
         # Immediate second submission (within 1s) must debounce
-        res2 = await task_queue_service.enqueue_tasks(["Rapid duplicate goal"], device_serial="dev-1")
+        res2 = await task_queue_service.enqueue_tasks(
+            ["Rapid duplicate goal"], device_serial="dev-1"
+        )
         assert len(state.queue_items) == 1
         assert res2["enqueued_count"] == 0
-
-
-
-

@@ -116,6 +116,21 @@ class LLMWithFallback(LLM):
         return f"{self.provider}/{self.model} (fallback: {self.fallback})"
 
 
+def lightweight_judge_default() -> "LLMWithFallback":
+    """Factory default for the lightweight judge nodes (pixel safety net and
+    planner validation): a flash-lite model at temperature 0."""
+    return LLMWithFallback(
+        provider="google",
+        model="gemini-3.5-flash-lite",
+        temperature=0.0,
+        fallback=LLM(
+            provider="google",
+            model="gemini-3.1-flash-lite",
+            temperature=0.0,
+        ),
+    )
+
+
 class LLMConfigUtils(BaseModel):
     """Configuration container for auxiliary utility agents/nodes."""
 
@@ -138,7 +153,6 @@ class LLMConfig(BaseModel):
     log_reader_sub_agent: LLMWithFallback
     log_analyzer: LLMWithFallback
     diagnoser: LLMWithFallback
-    validator_failure_analyzer: LLMWithFallback
     checker: LLMWithFallback
     planner_avatar: LLMWithFallback
     history_analyzer_expert: LLMWithFallback
@@ -146,6 +160,7 @@ class LLMConfig(BaseModel):
     explorer: LLMWithFallback
     history_analyzer: LLMWithFallback | None = None
     validator_pixel_safety_net: LLMWithFallback | None = None
+    planner_validation: LLMWithFallback | None = None
     output_analyzer: LLMWithFallback | None = None
 
     def validate_providers(self) -> None:
@@ -163,7 +178,6 @@ class LLMConfig(BaseModel):
         self.log_reader_sub_agent.validate_provider("LogReaderSubAgent")
         self.log_analyzer.validate_provider("LogAnalyzer")
         self.diagnoser.validate_provider("Diagnoser")
-        self.validator_failure_analyzer.validate_provider("ValidatorFailureAnalyzer")
         self.checker.validate_provider("Checker")
         self.planner_avatar.validate_provider("PlannerAvatar")
         self.history_analyzer_expert.validate_provider("HistoryAnalyzerExpert")
@@ -173,6 +187,8 @@ class LLMConfig(BaseModel):
             self.history_analyzer.validate_provider("HistoryAnalyzer")
         if self.validator_pixel_safety_net:
             self.validator_pixel_safety_net.validate_provider("ValidatorPixelSafetyNet")
+        if self.planner_validation:
+            self.planner_validation.validate_provider("PlannerValidation")
         if self.output_analyzer:
             self.output_analyzer.validate_provider("OutputAnalyzer")
 
@@ -192,17 +208,11 @@ class LLMConfig(BaseModel):
         if val is None:
             if item == "history_analyzer":
                 return self.operator
-            elif item == "validator_pixel_safety_net":
-                return LLMWithFallback(
-                    provider="google",
-                    model="gemini-3.5-flash-lite",
-                    temperature=0.0,
-                    fallback=LLM(
-                        provider="google",
-                        model="gemini-3.1-flash-lite",
-                        temperature=0.0,
-                    ),
-                )
+            elif item in ("validator_pixel_safety_net", "planner_validation"):
+                # Both are cheap, high-frequency judges: the pixel safety net
+                # runs before actions, the planner validator after every
+                # milestone edit. They share one lightweight default.
+                return lightweight_judge_default()
             elif item == "output_analyzer":
                 return self.log_analyzer
         return val
@@ -227,10 +237,10 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
         "default",
         {
             "provider": "google",
-            "model": "gemini-3.7-flash",
+            "model": "gemini-3.8-flash",
             "fallback": {
                 "provider": "google",
-                "model": "gemini-3.6-flash",
+                "model": "gemini-3.7-flash",
             },
         },
     )
@@ -245,7 +255,6 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
         "log_reader_sub_agent",
         "log_analyzer",
         "diagnoser",
-        "validator_failure_analyzer",
         "checker",
         "planner_avatar",
         "history_analyzer_expert",
@@ -345,7 +354,7 @@ def load_llm_config_override(path: Path | str) -> LLMConfig:
     if not resolved_path.exists():
         try:
             resolved_path = get_config_path(str(path))
-        except Exception:
+        except OSError:
             pass
 
     override_config_dict = {}

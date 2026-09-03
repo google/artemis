@@ -53,6 +53,13 @@ def test_tool_signatures():
     assert "app_path" in sig_run.parameters
     assert "expected_output_desc" in sig_run.parameters
     assert "device_serial" in sig_run.parameters
+    assert "verification_level" in sig_run.parameters
+    assert "explorer_mode" in sig_run.parameters
+    assert sig_run.parameters["verification_level"].default is None
+    assert sig_run.parameters["explorer_mode"].default is None
+    # The tool description is the only schema an MCP caller sees.
+    assert "verification_level" in (mobile_run_task.__doc__ or "")
+    assert "explorer_mode" in (mobile_run_task.__doc__ or "")
 
     # mobile_manage_task signature check
     sig_manage = inspect.signature(mobile_manage_task)
@@ -185,6 +192,83 @@ def test_mobile_run_task_dispatched_to_daemon(temp_trace_env, monkeypatch):
     assert "stderr_log" in result
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"verification_level": "paranoid"}, "Invalid verification_level"),
+        ({"explorer_mode": "turbo"}, "Invalid explorer_mode"),
+    ],
+)
+def test_mobile_run_task_rejects_unknown_pro_tuning_before_creating_a_trace(
+    temp_trace_env, kwargs, match
+):
+    with pytest.raises(ValueError, match=match):
+        mobile_run_task(task_desc="Open Settings", model="Pro", **kwargs)
+    # Rejected before init_trace: nothing was written to the trace store.
+    assert os.listdir(temp_trace_env) == []
+
+
+def test_mobile_run_task_forwards_pro_tuning_to_background_runner(temp_trace_env):
+    process = MagicMock(pid=777)
+    with (
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.reserve", return_value="t"),
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.transfer_reservation"),
+        patch("mcp_server.tools.task_runner.subprocess.Popen", return_value=process) as popen,
+    ):
+        mobile_run_task(
+            task_desc="Audit the checkout flow",
+            model="Pro",
+            verification_level=" Strict ",
+            explorer_mode="ULTRA",
+        )
+
+    cmd = popen.call_args.args[0]
+    # Same flag spelling as `artemis run` / the admin-console worker, normalised values.
+    assert cmd[cmd.index("--verification-level") + 1] == "strict"
+    assert cmd[cmd.index("--explorer-pro-mode") + 1] == "ultra"
+
+
+def test_mobile_run_task_omits_pro_tuning_flags_when_unset(temp_trace_env):
+    process = MagicMock(pid=778)
+    with (
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.reserve", return_value="t"),
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.transfer_reservation"),
+        patch("mcp_server.tools.task_runner.subprocess.Popen", return_value=process) as popen,
+    ):
+        mobile_run_task(task_desc="Open Settings", model="Pro", verification_level="  ")
+
+    cmd = popen.call_args.args[0]
+    assert "--verification-level" not in cmd
+    assert "--explorer-pro-mode" not in cmd
+
+
+def test_mobile_run_task_forwards_pro_tuning_to_daemon(temp_trace_env, monkeypatch):
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    with (
+        patch(
+            "mcp_server.tools.task_runner.ensure_daemon_running",
+            return_value=(True, "http://127.0.0.1:8000"),
+        ),
+        patch(
+            "mcp_server.tools.task_runner.submit_task_to_daemon",
+            return_value={"status": "started", "tasks": [{"session_id": "daemon-sid-2"}]},
+        ) as submit,
+        patch("mcp_server.tools.task_runner.subprocess.Popen") as popen,
+    ):
+        result = mobile_run_task(
+            task_desc="Audit via Daemon",
+            model="Pro",
+            verification_level="Checkpoints",
+            explorer_mode="pro",
+        )
+
+    popen.assert_not_called()
+    assert result["trace_id"] == "daemon-sid-2"
+    # JSON field spelling of /api/run: verification_level / explorer_mode.
+    assert submit.call_args.kwargs["verification_level"] == "checkpoints"
+    assert submit.call_args.kwargs["explorer_mode"] == "pro"
+
+
 def test_mobile_manage_task_unknown_trace(temp_trace_env):
     res = mobile_manage_task(action="status", trace_id="non-existent-trace")
     assert res["status"] == "unknown"
@@ -304,7 +388,9 @@ async def test_mobile_get_device_state_passes_device_serial():
     )
 
     with (
-        patch("mcp_server.tools.device_state._get_controller", return_value=controller) as get_ctrl_mock,
+        patch(
+            "mcp_server.tools.device_state._get_controller", return_value=controller
+        ) as get_ctrl_mock,
         patch("mcp_server.tools.device_state.is_ocr_configured", return_value=False),
     ):
         await mobile_get_device_state(view_type="hierarchy", device_serial="device-serial-abc")
@@ -317,14 +403,22 @@ async def test_mobile_inspect_trace_includes_device_serial(temp_trace_env):
     import sqlite3
 
     trace_id = str(uuid.uuid4())
-    trace_store.init_trace(trace_id, "Inspect test", "Flash", "conv-1", device_serial="pixel-target-999")
+    trace_store.init_trace(
+        trace_id, "Inspect test", "Flash", "conv-1", device_serial="pixel-target-999"
+    )
 
     # Create dummy database and table
     db_path = os.path.join(temp_trace_env, "data_engine.db")
     conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, start_time REAL, device_info TEXT)")
-    conn.execute("CREATE TABLE steps (step_id TEXT PRIMARY KEY, session_id TEXT, step_number INTEGER, timestamp REAL, pre_image_name TEXT, post_image_name TEXT, summary TEXT, action_taken TEXT, operator_raw_thinking TEXT, last_execution_result TEXT, extra_metadata TEXT)")
-    conn.execute("CREATE TABLE traces (trace_id TEXT PRIMARY KEY, step_id TEXT, session_id TEXT, type TEXT, name TEXT, status TEXT, timestamp REAL, duration REAL, payload TEXT)")
+    conn.execute(
+        "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, start_time REAL, device_info TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE steps (step_id TEXT PRIMARY KEY, session_id TEXT, step_number INTEGER, timestamp REAL, pre_image_name TEXT, post_image_name TEXT, summary TEXT, action_taken TEXT, operator_raw_thinking TEXT, last_execution_result TEXT, extra_metadata TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE traces (trace_id TEXT PRIMARY KEY, step_id TEXT, session_id TEXT, type TEXT, name TEXT, status TEXT, timestamp REAL, duration REAL, payload TEXT)"
+    )
     conn.execute("INSERT INTO sessions VALUES (?, ?, ?)", (trace_id, 1000.0, None))
     conn.commit()
     conn.close()
@@ -362,6 +456,7 @@ async def test_mcp_server_auto_registers_tools():
 
 def test_mobile_manage_task_syncs_terminal_status_from_db(temp_trace_env):
     import sqlite3
+
     trace_id = str(uuid.uuid4())
     trace_store.init_trace(trace_id, "Running task to sync", "Flash", "conv-sync")
 
@@ -406,4 +501,3 @@ def test_mobile_manage_task_stop_via_daemon(temp_trace_env, monkeypatch):
         mock_stop.assert_called_once_with(trace_id)
         assert res["status"] == "cancelled"
         assert trace_store.read_status(trace_id)["status"] == "cancelled"
-

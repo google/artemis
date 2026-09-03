@@ -124,6 +124,18 @@ class State(BaseModel):
     last_execution_result: Annotated[
         dict | None, "Last execution result from validator", take_last
     ] = None
+    open_incident: Annotated[
+        dict | None,
+        "Execution incident (blocked/failed terminal action) still awaiting the"
+        " Operator's resolution; None once a later action executes successfully",
+        take_last,
+    ] = None
+    last_closed_incident: Annotated[
+        dict | None,
+        "The incident the most recent successful terminal action closed (with"
+        " closed_at_step); rendered once so the Operator settles the original intent",
+        take_last,
+    ] = None
     subagent_calls: Annotated[
         list[str], "List of sub-agent calls in current session", take_last
     ] = []

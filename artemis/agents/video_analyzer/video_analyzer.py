@@ -121,8 +121,7 @@ async def _invoke_with_retry(operation, label: str, max_attempts: int = 3):
             allowed_attempts = min(max_attempts, policy.max_attempts)
             if attempt >= allowed_attempts:
                 logger.warning(
-                    f"{label} exhausted {attempt} attempt(s) "
-                    f"[{failure.category.value}]: {exc}"
+                    f"{label} exhausted {attempt} attempt(s) [{failure.category.value}]: {exc}"
                 )
                 raise
             delay = policy.delay_for(attempt)
@@ -153,34 +152,22 @@ class VideoAnalyzer:
             "enable_ledger",
             getattr(agent_config, "enable_video_ledger", True),
         )
-        self.chunk_size_seconds = float(
-            getattr(self.video_config, "chunk_size_seconds", 60.0)
-        )
-        self.min_chunk_seconds = float(
-            getattr(self.video_config, "min_chunk_seconds", 4.0)
-        )
+        self.chunk_size_seconds = float(getattr(self.video_config, "chunk_size_seconds", 60.0))
+        self.min_chunk_seconds = float(getattr(self.video_config, "min_chunk_seconds", 4.0))
         self.max_split_depth = int(getattr(self.video_config, "max_split_depth", 4))
-        self.action_window_seconds = float(
-            getattr(self.video_config, "action_window_seconds", 2.0)
-        )
-        self.dense_action_fps = float(
-            getattr(self.video_config, "dense_action_fps", 4.0)
-        )
+        self.action_window_seconds = float(getattr(self.video_config, "action_window_seconds", 2.0))
+        self.dense_action_fps = float(getattr(self.video_config, "dense_action_fps", 4.0))
         self.max_dense_action_frames = int(
             getattr(self.video_config, "max_dense_action_frames", 24)
         )
-        self.native_max_retries = int(
-            getattr(self.video_config, "native_max_retries", 1)
-        )
+        self.native_max_retries = int(getattr(self.video_config, "native_max_retries", 1))
         self.model_call_timeout_seconds = float(
             getattr(self.video_config, "model_call_timeout_seconds", 120.0)
         )
         breaker = getattr(ctx, "_video_circuit_breaker", None)
         if breaker is None:
             breaker = VideoCircuitBreaker(
-                threshold=int(
-                    getattr(self.video_config, "circuit_breaker_threshold", 3)
-                ),
+                threshold=int(getattr(self.video_config, "circuit_breaker_threshold", 3)),
                 cooldown_seconds=float(
                     getattr(
                         self.video_config,
@@ -311,9 +298,7 @@ class VideoAnalyzer:
                 if resolved not in protected and directory.exists():
                     shutil.rmtree(directory, ignore_errors=True)
             except OSError as error:
-                logger.warning(
-                    f"Failed to delete temporary video directory {directory}: {error}"
-                )
+                logger.warning(f"Failed to delete temporary video directory {directory}: {error}")
 
     def _action_timestamps(self, start: float, end: float) -> list[float]:
         """Return test-relative timestamps for recorded actions in an interval."""
@@ -337,9 +322,7 @@ class VideoAnalyzer:
             logger.warning(f"Failed to load action timestamps for video sampling: {error}")
             return []
 
-    def _dense_action_offsets(
-        self, start: float, end: float, actual_start: float
-    ) -> list[float]:
+    def _dense_action_offsets(self, start: float, end: float, actual_start: float) -> list[float]:
         """Build bounded, video-relative sampling offsets around mobile actions."""
 
         if self.max_dense_action_frames <= 0:
@@ -417,10 +400,10 @@ class VideoAnalyzer:
         utils_cfg = getattr(llm_config, "utils", None) if llm_config else None
         llm_cfg = getattr(utils_cfg, "video_analyzer", None) if utils_cfg else None
         model_str = (
-            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.7-flash"
+            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.8-flash"
         ).lower()
         self.model_name = (
-            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.7-flash"
+            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.8-flash"
         )
         if "/" in self.model_name:
             self.model_name = self.model_name.split("/")[-1]
@@ -557,9 +540,7 @@ class VideoAnalyzer:
         """Resolve an open-ended request to a stable numeric interval (or an error)."""
         controller = get_controller(self.ctx)
         async with TRANSCODE_SEMAPHORE:
-            metadata_result = await controller.extract_segment_metadata(
-                requested_start, None
-            )
+            metadata_result = await controller.extract_segment_metadata(requested_start, None)
         if not metadata_result.success:
             return (
                 requested_start,
@@ -567,9 +548,7 @@ class VideoAnalyzer:
                 f"Error fetching segment metadata: {metadata_result.message}",
             )
         duration = getattr(metadata_result, "duration_seconds", None)
-        actual_start = getattr(
-            metadata_result, "actual_start_relative_time", requested_start
-        )
+        actual_start = getattr(metadata_result, "actual_start_relative_time", requested_start)
         if not isinstance(duration, (int, float)) or duration <= 0:
             return (
                 requested_start,
@@ -613,9 +592,7 @@ class VideoAnalyzer:
         cached_results = self.blackboard.format_cached_segments(
             requested_start, requested_end, specific_query
         )
-        missing = self.blackboard.missing_intervals(
-            requested_start, requested_end, specific_query
-        )
+        missing = self.blackboard.missing_intervals(requested_start, requested_end, specific_query)
         if not missing:
             logger.info(
                 "Reusing complete video-blackboard coverage for "
@@ -662,15 +639,11 @@ class VideoAnalyzer:
                         analyze_with_recovery(midpoint, ce, depth + 1),
                     )
                     return left[0] + right[0], left[1] + right[1]
-                failure_text = (
-                    f"{cs:.1f}s-{ce:.1f}s [{failure.category.value}]: {error}"
-                )
+                failure_text = f"{cs:.1f}s-{ce:.1f}s [{failure.category.value}]: {error}"
                 logger.error(f"Video chunk terminal failure: {failure_text}")
                 return [], [failure_text]
 
-        recovered = await asyncio.gather(
-            *(analyze_with_recovery(cs, ce) for cs, ce in chunks)
-        )
+        recovered = await asyncio.gather(*(analyze_with_recovery(cs, ce) for cs, ce in chunks))
         fresh_results = [item for values, _ in recovered for item in values]
         failed_chunks = [item for _, failures in recovered for item in failures]
 
@@ -696,9 +669,7 @@ class VideoAnalyzer:
     ) -> str:
         from artemis.agents.video_analyzer import chunk_native
 
-        return await chunk_native.exec_single_chunk(
-            self, start_time, end_time, specific_query
-        )
+        return await chunk_native.exec_single_chunk(self, start_time, end_time, specific_query)
 
     @trace(type="tool", name="analyze_audio_only")
     async def exec_analyze_audio_only(
@@ -804,7 +775,7 @@ class VideoAnalyzer:
                 if getattr(llm_cfg, "thinking_level", None) is not None:
                     thinking_level = llm_cfg.thinking_level
             else:
-                self.model_name = "gemini-3.7-flash"
+                self.model_name = "gemini-3.8-flash"
 
             # Track files for cleanup
             self.local_files_to_cleanup = set()

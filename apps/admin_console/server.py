@@ -67,6 +67,7 @@ from artemis.config import (
     WORKSPACE_ROOT,
     init_ls_address,
 )
+from artemis.resources import get_bundled_showcase_dist
 
 try:
     from admin_console.core.security import SameOriginBoundaryMiddleware
@@ -141,6 +142,9 @@ async def on_startup():
     cleaned = session_repo.cleanup_orphans_on_startup()
     if cleaned > 0:
         print(f"[ServerStartup] Marked {cleaned} orphaned running session(s) as failed.")
+    # Workers killed together with a previous daemon never remuxed their
+    # recordings; publish whatever raw files they left behind.
+    asyncio.create_task(asyncio.to_thread(task_queue_service.recover_orphaned_recordings_on_launch))
 
     await ipc_service.start_server()
     state.worker_task = asyncio.create_task(task_queue_service.queue_worker())
@@ -174,9 +178,7 @@ async def on_shutdown():
         run_task.cancel()
     if run_tasks:
         try:
-            await asyncio.wait_for(
-                asyncio.gather(*run_tasks, return_exceptions=True), timeout=5.0
-            )
+            await asyncio.wait_for(asyncio.gather(*run_tasks, return_exceptions=True), timeout=5.0)
         except (TimeoutError, asyncio.CancelledError):
             pass
     for run in list(state.active_runs.values()):
@@ -231,7 +233,7 @@ except ImportError:
 # Showcase UI (Angular 19) Unified Single-Port SPA Static Hosting
 # ------------------------------------------------------------------------------
 def _get_showcase_dist() -> Path:
-    """Return the Showcase UI Angular build directory."""
+    """Return the source build, or the immutable build bundled in a wheel."""
     base_dist = _workspace_root / "apps" / "showcase_ui" / "dist"
     candidates = [
         base_dist / "frontend" / "browser",
@@ -242,6 +244,9 @@ def _get_showcase_dist() -> Path:
     for candidate in candidates:
         if candidate.is_dir() and (candidate / "index.html").exists():
             return candidate
+    bundled_dist = get_bundled_showcase_dist()
+    if bundled_dist is not None:
+        return bundled_dist
     return base_dist / "frontend" / "browser"
 
 

@@ -101,9 +101,7 @@ class SummarizerNode:
             exec_outcome=exec_outcome,
             data_engine_step_id=step_id,
         )
-        logger.info(
-            f"Dispatched visual transition summary for step {step_number} ({step_id})"
-        )
+        logger.info(f"Dispatched visual transition summary for step {step_number} ({step_id})")
 
     def _read_step_image(self, step_number: int | None, which: str) -> bytes | None:
         if not isinstance(step_number, int):

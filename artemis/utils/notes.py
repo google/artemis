@@ -48,8 +48,7 @@ SAVE_NOTE_DOCSTRING = (
     "[NOTE] Saves a text note to persistent memory with the given key. Use this"
     " as persistent cross-turn memory to save key data, plan cross-turn"
     " subgoals, and coordinate step progress. If the key already exists, it"
-    " will be overwritten.\n\nUse the key 'task_plan' to overwrite the original"
-    " task plan (checklist)."
+    " will be overwritten."
 )
 SAVE_NOTE_ARG_KEY_DESC = "The unique key under which to save or overwrite the note."
 SAVE_NOTE_ARG_CONTENT_DESC = "The text content to write to the note."
@@ -58,8 +57,7 @@ APPEND_NOTE_DOCSTRING = (
     "[NOTE] Appends text content to an existing note in persistent memory with"
     " the given key. Use this as persistent cross-turn memory to record"
     " chronological logs, save key data, or coordinate step progress. If the"
-    " note does not exist, it will be created.\n\nUse the key 'task_plan' to"
-    " append to the task plan (checklist)."
+    " note does not exist, it will be created."
 )
 APPEND_NOTE_ARG_KEY_DESC = "The key of the note to append to."
 APPEND_NOTE_ARG_CONTENT_DESC = "The text content to append to the note."
@@ -462,8 +460,7 @@ def record_subgoal_hash_chain(
             )
         except OSError as exc:
             logger.warning(
-                "Failed to persist subgoal hash chain to %s (rename %s -> %s"
-                " not recorded): %s",
+                "Failed to persist subgoal hash chain to %s (rename %s -> %s not recorded): %s",
                 chain_path,
                 old_active,
                 new_active,

@@ -214,25 +214,21 @@ async def test_explorer_all_tools_sequential_mocked():
     ]
     mock_storage.get_image.return_value = mock_record
 
-    # Mock low-level layout searching (search_ui_func)
-    mock_search_ui = MagicMock(
-        return_value={
-            "matches": [
-                {
-                    "matched_text": "Settings Button",
-                    "bounds": [400, 400, 600, 600],
-                }
-            ]
+    # The UI tree of the record feeds the in-memory ScreenIndex that backs the
+    # text search and the coordinate audit (no Data Engine query per tool).
+    mock_record.ui_tree = [
+        {
+            "text": "Settings Button",
+            "bounds": "[400,400][600,600]",
+            "class": "android.widget.Button",
+            "clickable": "true",
         }
-    )
+    ]
 
     # Mock downstream object detection pipeline (_run_object_detection)
     mock_detect = AsyncMock(
         return_value={"detected": [{"label": "gear icon", "point": [200, 300]}]}
     )
-
-    # Mock spatial coordinate lookup (search_by_coordinates_func)
-    mock_lookup = MagicMock(return_value="Matching Elements: Container/DashboardFrame")
 
     logger.info("Starting Explorer.run execution loop with sequential tool mocks...")
 
@@ -245,12 +241,9 @@ async def test_explorer_all_tools_sequential_mocked():
             "artemis.agents.explorer.explorer.StorageManager",
             return_value=mock_storage,
         ),
-        patch("artemis.agents.explorer.explorer.search_ui_func", mock_search_ui),
+        # get_ocr_list is only exposed when an OCR backend is configured.
+        patch("artemis.agents.explorer.explorer.is_ocr_configured", return_value=True),
         patch("artemis.agents.explorer.explorer._run_object_detection", mock_detect),
-        patch(
-            "artemis.agents.explorer.explorer.search_by_coordinates_func",
-            mock_lookup,
-        ),
     ):
         explorer = Explorer(mock_ctx)
         result = await explorer.run(
@@ -259,6 +252,7 @@ async def test_explorer_all_tools_sequential_mocked():
             screenshot_path=str(input_screenshot),
             state=mock_state,
             version="ultra",
+            enable_caching=False,
         )
 
         # Verify ReAct loop went through all 5 turns
@@ -288,14 +282,14 @@ async def test_explorer_all_tools_sequential_mocked():
         # 1. Verify get_ocr_list
         ocr_trace = explorer.trace_history[0]["tool_calls"][0]
         assert ocr_trace["name"] == "get_ocr_list"
-        assert "[T1]" in ocr_trace["response"]["text"]
+        assert "[O" in ocr_trace["response"]["text"]
         assert "[462,208]" in ocr_trace["response"]["text"]
         assert ocr_trace["response"]["image_path"] is not None
 
         # 2. Verify ask_perception_tool
         search_trace = explorer.trace_history[1]["tool_calls"][0]
         assert search_trace["name"] == "ask_perception_tool"
-        assert "XML/OCR Text Search Results" in search_trace["response"]["text"]
+        assert "Text Search Results are" in search_trace["response"]["text"]
         assert len(search_trace["response"]["image_paths"]) > 0
 
         # 3. Verify detect_objects
@@ -308,17 +302,11 @@ async def test_explorer_all_tools_sequential_mocked():
         coords_trace = explorer.trace_history[3]["tool_calls"][0]
         assert coords_trace["name"] == "inspect_region"
         assert coords_trace["response"]["image_path"] is not None
-        # Compute expected screenshot hash
-        import hashlib
-
-        sha256_hash = hashlib.sha256()
-        with open(input_screenshot, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
-        expected_hash = sha256_hash.hexdigest()
-
-        # Should map normalized [500, 500] to pixel [540, 1200]
-        mock_lookup.assert_called_once_with(expected_hash, 540, 1200)
+        # The coordinate audit at normalized [500, 500] (pixel [540, 1200]) is
+        # answered from the in-memory index: the UI-tree button covers that point.
+        perception_trace = explorer.trace_history[1]["tool_calls"][0]
+        assert perception_trace["name"] == "ask_perception_tool"
+        assert "Settings Button" in perception_trace["response"]["text"]
 
         logger.info(
             "All assertions passed! The entire suite of explorer tools is fully functional."

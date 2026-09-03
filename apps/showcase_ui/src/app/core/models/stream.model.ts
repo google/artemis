@@ -79,7 +79,7 @@ export interface StepItemData {
 
 export interface StepBlock {
   id: string;
-  type: 'llm_stream' | 'step';
+  type: 'llm_stream' | 'step' | 'checker';
   timestamp: string;
   data: any;
 }
@@ -93,6 +93,75 @@ export interface PhaseBlock {
   blocks: StepBlock[];
 }
 
+/** One check item's verdict as booked by the Checker (ledger record shape). */
+export interface CheckerVerdict {
+  item_text: string;
+  kind: 'verify' | 'assert' | string;
+  status: 'passed' | 'failed' | 'inconclusive' | 'superseded' | 'unchecked' | string;
+  evidence: string;
+  suggestion?: string;
+}
+
+export interface CheckerCheckItem {
+  kind: string;
+  text: string;
+  when?: string;
+}
+
+/**
+ * One streamed LLM turn of a multi-turn agent (the Checker's tool loop):
+ * the text of one execution id with the time its first chunk arrived, so the
+ * timeline can interleave it with the tool calls that followed.
+ */
+export interface StreamSegment {
+  execution_id: string;
+  stream_type: 'thinking' | 'text';
+  text: string;
+  timestamp: string;
+  isCompleted?: boolean;
+}
+
+/**
+ * Data of a `checker` timeline block: one Checker attempt (a midway checkpoint
+ * of a completed subgoal or the exit final review), or the run outcome
+ * (`phase: 'outcome'`). Streamed reasoning and tool traces land in the same
+ * `operator_*_thinking` / `generic_tools` fields as an Operator step so the
+ * timeline renders them with one code path.
+ */
+export interface CheckerBlockData {
+  event?: string;
+  attempt_id?: string;
+  checkpoint_id?: string;
+  phase: 'checkpoint' | 'final' | 'outcome' | string;
+  subgoal_text?: string;
+  status?: 'running' | 'done' | 'superseded' | 'unchecked' | 'error' | string;
+  trace_id?: string | null;
+  anchor_step_id?: string | null;
+  items?: CheckerCheckItem[];
+  verdicts?: CheckerVerdict[];
+  findings?: string[];
+  unmet_subgoals?: string[];
+  reverted?: boolean;
+  applicable?: boolean;
+  repairs_used?: number;
+  route?: string;
+  error?: string;
+  task_status?: 'completed' | 'partial' | 'blocked' | string;
+  tests?: { passed: number; failed: number; inconclusive: number; unchecked: number };
+  last_findings?: string[];
+  started_at?: number;
+  finished_at?: number;
+  duration?: number;
+  isCompleted?: boolean;
+  generic_tools?: any[];
+  /** Per-turn stream segments (live sessions only); the flat fields below hold the joined text. */
+  stream_segments?: StreamSegment[];
+  operator_native_thinking?: string;
+  operator_raw_thinking?: string;
+  [key: string]: any;
+}
+
+/** @deprecated legacy JSON-in-stream checker verdict (pre-ledger); kept for the parser. */
 export interface CheckerResult {
   success: boolean;
   reason: string;

@@ -29,20 +29,21 @@ if _REPO_ROOT not in sys.path:
 from adbutils import AdbClient
 from mcp.server.fastmcp import Context, FastMCP
 
+logger = logging.getLogger(__name__)
+
 try:
     from mcp.server.fastmcp.server import Settings as FastMCPSettings
 
     FastMCPSettings.model_rebuild()
-except Exception:
-    pass
+except Exception as exc:  # pylint: disable=broad-exception-caught
+    # Best-effort compatibility shim for FastMCP/pydantic version drift.
+    logger.debug("FastMCP Settings model_rebuild skipped: %s", exc, exc_info=True)
 
 from artemis.clients.ui_automator_client import UIAutomatorClient
 from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.platform import platform
 from artemis.utils.app_launch_utils import launch_app_with_retries
-
-logger = logging.getLogger(__name__)
 
 
 def configure_stdio_mode() -> None:
@@ -93,7 +94,9 @@ _CONTROLLERS: dict[str, Any] = {}
 def _get_controller(device_serial: str | None = None):
     """Lazy-load device controller on-demand, caching per device serial."""
     global _GLOBAL_CONTROLLER, _CONTROLLERS
-    target_serial = device_serial or os.environ.get("ARTEMIS_DEVICE_ID") or os.environ.get("ADB_DEVICE_SERIAL")
+    target_serial = (
+        device_serial or os.environ.get("ARTEMIS_DEVICE_ID") or os.environ.get("ADB_DEVICE_SERIAL")
+    )
     if target_serial and target_serial in _CONTROLLERS:
         return _CONTROLLERS[target_serial]
     if not target_serial and _GLOBAL_CONTROLLER is not None:

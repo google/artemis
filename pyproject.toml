@@ -98,10 +98,6 @@ artemis-admin = "apps.admin_console.server:main"
 requires = ["setuptools>=61.0", "Cython"]
 build-backend = "setuptools.build_meta"
 
-[tool.uv.build-backend]
-module-root = ""
-module-name = "artemis"
-
 [tool.uv.workspace]
 members = ["packages/artemis-client"]
 
@@ -197,7 +193,9 @@ pythonpath = [
 
 # Specify test discovery patterns
 testpaths = [
-    "tests"
+    "tests/unit",
+    "tests/tools",
+    "packages/artemis-client/tests",
 ]
 python_files = [
     "*.test.py",
@@ -212,14 +210,19 @@ python_classes = [
 ]
 # Add useful options
 addopts = [
-    "-v",                    # verbose output
     "--tb=short",           # shorter traceback format
+    "--strict-config",      # reject misspelled or stale pytest configuration
     "--strict-markers",     # strict marker checking
-    "--disable-warnings",   # disable warnings for cleaner output
+    "-m",                   # keep the default suite hermetic
+    "not integration and not e2e and not cloud and not manual and not android",
 ]
 
 markers = [
     "android: tests requiring Android device or emulator",
+    "integration: tests spanning multiple Artemis components",
+    "e2e: end-to-end tests requiring a running Artemis environment",
+    "cloud: tests requiring the optional cloud_service package",
+    "manual: tests that must only be launched explicitly by an operator",
 ]
 
 [tool.pylint.master]
@@ -234,6 +237,15 @@ disable = [
 
 [tool.pyright]
 exclude = [".venv/**"]
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+skip_covered = true
 
 [dependency-groups]
 dev = [

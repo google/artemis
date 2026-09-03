@@ -18,6 +18,14 @@ Unit tests for RemoteAdbDevice, RemoteAdbClient, and platform specific commands 
 
 from unittest.mock import MagicMock
 
+import pytest
+
+pytestmark = [pytest.mark.integration, pytest.mark.cloud]
+pytest.importorskip(
+    "cloud_service",
+    reason="optional cloud_service package is not installed",
+)
+
 from cloud_service.virtualization.remote_adb import (
     RemoteAdbDevice,
     RemoteAdbClient,

@@ -51,8 +51,8 @@ from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER
 # artemis/agents/prompt_assembly.py for the assembly rationale.
 
 _PRE_DECISION_HELPER_TOOLS = ("ask_explorer", "ask_diagnoser", "video_analyzer")
-_PRE_DECISION_ADB_TOOLS = ("run_adb_command", "manage_task", "analyze_task_output")
-_PRE_DECISION_MEMORY_TOOLS = ("read_note", "list_notes", "save_note", "recall_history")
+_PRE_DECISION_ADB_TOOLS = ("run_adb_command", "manage_task")
+_PRE_DECISION_MEMORY_TOOLS = ("read_note", "list_notes", "recall_history")
 _PRE_DECISION_ALL_TOOLS = (
     _PRE_DECISION_HELPER_TOOLS + _PRE_DECISION_ADB_TOOLS + _PRE_DECISION_MEMORY_TOOLS
 )
@@ -70,6 +70,10 @@ _TURN_ENDING_ORDER = (
     "manage_app",
     "wait_for_delay",
 )
+
+#: Tool-loop ceiling per Operator turn (recited in the template, enforced in
+#: ``OperatorNode._invoke_llm_loop``).
+OPERATOR_MAX_TOOL_ITERATIONS = 20
 
 #: Every tool name the operator prompt slots can reference. ``available_tools=None``
 #: resolves to this set, preserving the historical output.
@@ -243,9 +247,7 @@ def render_transcript_static_system(
     """
     prompt_template = prompts.get(template_name)
     if not prompt_template:
-        raise KeyError(
-            "Failed to format prompt, template not found in operator prompts config."
-        )
+        raise KeyError("Failed to format prompt, template not found in operator prompts config.")
     if prompt_template.count(PLAN_HISTORY_TEMPLATE_SECTION) != 1:
         # Hard dependency of the M2 split (redesign §9): without a clean
         # section boundary the S region cannot be byte-stable.
@@ -258,9 +260,7 @@ def render_transcript_static_system(
     )
 
     available = resolve_operator_prompt_tools(ctx)
-    static_template = apply_operator_prompt_contract(
-        static_template, available_tools=available
-    )
+    static_template = apply_operator_prompt_contract(static_template, available_tools=available)
     include_checks, verification_active = _operator_grammar_flags(ctx)
     return Template(static_template).render(
         initial_goal=state.initial_goal,
@@ -269,7 +269,24 @@ def render_transcript_static_system(
         unified_history="",
         plan_grammar=render_plan_grammar_spec(include_checks),
         verification_active=verification_active,
+        checks_active=include_checks,
+        transcript_history=True,
+        max_burst_actions=_max_burst_actions_for_prompt(),
+        max_tool_calls=OPERATOR_MAX_TOOL_ITERATIONS,
     )
+
+
+def _legacy_elapsed_suffix(ctx: ArtemisContext | None) -> str:
+    """`` [T+mm:ss]`` for the legacy observation header (empty without a session clock)."""
+    import time
+
+    from artemis.memory.transcript import format_session_offset
+
+    engine = getattr(ctx, "data_engine", None)
+    start = getattr(engine, "session_start_time", None)
+    if not isinstance(start, (int, float)):
+        return ""
+    return f" [{format_session_offset(time.time() - start)}]"
 
 
 class TemplatePromptComponent(PromptComponent):
@@ -284,9 +301,7 @@ class TemplatePromptComponent(PromptComponent):
 
         available = resolve_operator_prompt_tools(ctx)
 
-        prompt_template = apply_operator_prompt_contract(
-            prompt_template, available_tools=available
-        )
+        prompt_template = apply_operator_prompt_contract(prompt_template, available_tools=available)
 
         plan_and_history = kwargs.get("plan_and_history", "No plan or history yet.")
 
@@ -299,10 +314,14 @@ class TemplatePromptComponent(PromptComponent):
             unified_history="",
             plan_grammar=render_plan_grammar_spec(include_checks),
             verification_active=verification_active,
+            checks_active=include_checks,
+            transcript_history=False,
+            max_burst_actions=_max_burst_actions_for_prompt(),
+            max_tool_calls=OPERATOR_MAX_TOOL_ITERATIONS,
         )
 
         parts = full_prompt.split("# CURRENT OBSERVATION")
-        builder.add_system_text(parts[0] + "# CURRENT OBSERVATION\n")
+        builder.add_system_text(parts[0] + f"# CURRENT OBSERVATION{_legacy_elapsed_suffix(ctx)}\n")
 
         if len(parts) > 1:
             builder.set_human_footer(parts[1])
@@ -356,11 +375,192 @@ class FeedbackPromptComponent(PromptComponent):
             "--- Verification Findings ---\n"
             f"{lines}\n"
             "Each finding is tagged with its source. Checker verdicts"
-            " ([verify failed], [final check]) are independent judgments —"
+            " ([verify failed], [final check], [unmet subgoal]) are independent judgments —"
             " address any reverted subgoal accordingly; do not re-litigate"
-            " them. [planner] findings explain why a plan change was rejected"
-            " and rolled back — factor the reason into your next strategy."
+            " them. [planner] findings are advisory: a lightweight reviewer"
+            " had a concern about a plan change that stayed applied — weigh"
+            " the reason against your own observations."
         )
+
+
+#: Header of the execution-incident block in the observation tail.
+EXECUTION_INCIDENT_MARKER = "--- Execution Incident (OPEN) ---"
+
+
+def _max_burst_actions_for_prompt() -> int:
+    """The configured fast-action burst ceiling, recited in the operator template."""
+    try:
+        from artemis.config import load_agent_config
+
+        return int(load_agent_config().pro.execution.max_burst_actions)
+    except Exception:
+        return 4
+
+
+def _last_successful_action_before(steps: list, step_number: int | None) -> tuple[str, int] | None:
+    """The most recent step before ``step_number`` whose terminal action executed.
+
+    Returns ``(clean action description, step number)`` or None. This is the
+    Operator's best candidate for the *trigger* of a transient state: the
+    action that summoned the UI the failed target belonged to.
+    """
+    from artemis.utils.task_tree import format_actions_clean
+
+    candidates = []
+    for step in steps or []:
+        number = step.get("step_number")
+        if not isinstance(number, int):
+            continue
+        if step_number is not None and number >= step_number:
+            continue
+        action = step.get("action_taken")
+        if not action:
+            continue
+        result = step.get("last_execution_result")
+        if isinstance(result, dict) and result.get("status") not in (None, "success"):
+            continue
+        candidates.append((number, format_actions_clean(action)))
+    if not candidates:
+        return None
+    number, description = max(candidates, key=lambda c: c[0])
+    return description, number
+
+
+def _incident_target_label(incident: dict) -> str:
+    action = incident.get("action") or {}
+    normalized = action.get("normalized_coordinates")
+    pixels = action.get("coordinates")
+    text = action.get("target_text")
+    parts = []
+    if normalized:
+        parts.append(f"normalized {list(normalized)}")
+    elif pixels:
+        parts.append(f"pixel {list(pixels)}")
+    if text:
+        parts.append(f'"{text}"')
+    return " ".join(parts) if parts else "the recorded target"
+
+
+def render_execution_incident(incident: dict, steps: list) -> str:
+    """The Operator-facing explanation of an open execution incident.
+
+    Structure (deliberately the same every turn so it reads as one continuing
+    incident, not a new alarm): facts -> category-specific evidence. The
+    response protocol is stated once, in the static system prompt.
+    """
+    kind = incident.get("kind") or "exec_error"
+    category = str(incident.get("category") or "general")
+    consecutive = int(incident.get("consecutive_failures") or 1)
+    description = incident.get("action_description") or "the planned action"
+    reason = str(incident.get("reason") or "").strip()
+    burst_size = int(incident.get("burst_size") or 1)
+    index = int(incident.get("action_index") or 0)
+    evidence = incident.get("evidence") or {}
+    step_number = incident.get("step_number")
+    target_label = _incident_target_label(incident)
+    prior = _last_successful_action_before(steps, step_number)
+
+    lines = [EXECUTION_INCIDENT_MARKER]
+    opened = f"Opened at Step {step_number}" if step_number else "Opened last turn"
+    lines.append(f"{opened}; consecutive failed turns: {consecutive}.")
+
+    # --- What happened -------------------------------------------------------------
+    if burst_size > 1:
+        remaining = burst_size - index - 1
+        skipped = (
+            f" The {remaining} action(s) after it were NOT executed, so the device may"
+            " be mid-sequence."
+            if remaining > 0
+            else ""
+        )
+        lines.append(
+            f"What happened: action {index + 1} of your {burst_size}-action fast burst,"
+            f" `{description}`, failed: {reason}.{skipped}"
+        )
+    elif kind == "safety_net":
+        lines.append(
+            f"What happened: your planned action `{description}` was NOT executed. The"
+            f" pre-execution safety net refused it: {reason}"
+        )
+    else:
+        lines.append(
+            f"What happened: your planned action `{description}` was dispatched, but the"
+            f" device/executor reported: {reason}"
+        )
+
+    # --- Category-specific evidence -------------------------------------------------
+    if category == "target_shifted":
+        location = evidence.get("new_location")
+        bounds = evidence.get("new_bounds")
+        where = f" at normalized {location}" if location else ""
+        bounds_str = f" (bounds {bounds})" if bounds else ""
+        lines.append(
+            f"Evidence: the same element still exists but has moved{where}{bounds_str};"
+            " the shift exceeded the safety net's auto-correction tolerance."
+        )
+    elif category == "target_occupied":
+        occupant = evidence.get("occupant") or "a different element"
+        lines.append(
+            f"Evidence: the target position is now covered by {occupant}. Something"
+            " appeared on top of your target (dialog, sheet, banner, keyboard, or a"
+            " re-laid-out screen)."
+        )
+    elif category in ("target_disappeared", "pixel_target_disappeared"):
+        prior_str = (
+            f" Your last successfully executed action was `{prior[0]}` (Step {prior[1]});"
+            " if the vanished target belonged to a state that action summoned, that action"
+            " is the trigger."
+            if prior
+            else ""
+        )
+        lines.append(
+            "Evidence: the element you saw in the previous screenshot is no longer on"
+            f" screen. Its recorded target was {target_label}.{prior_str}"
+        )
+
+    # The response protocol lives in the static system prompt (Execution Incident).
+    return "\n".join(lines)
+
+
+def render_closed_incident(closed: dict) -> str:
+    """One-turn notice after an incident closes: settle the original intent."""
+    opened = closed.get("step_number")
+    closed_at = closed.get("closed_at_step")
+    description = closed.get("action_description") or "the blocked action"
+    header = (
+        f"--- Execution Incident (CLOSED at Step {closed_at}) ---"
+        if closed_at
+        else "--- Execution Incident (CLOSED) ---"
+    )
+    opened_str = f" opened at Step {opened}" if opened else ""
+    return (
+        f"{header}\n"
+        f"The incident{opened_str} on `{description}` closed because your last Turn-Ending"
+        " Action executed. Settle its original intent against the plan and the live screen:"
+        " already served, still pending, or no longer needed."
+    )
+
+
+class ExecutionIncidentPromptComponent(PromptComponent):
+    """Renders the open execution incident until a terminal action succeeds,
+    then a one-turn CLOSED notice asking the Operator to settle the intent.
+
+    Reads ``state.open_incident`` / ``state.last_closed_incident`` (both written
+    by the Validator). The block is its own text part of the observation tail,
+    so the transcript ledger keeps it verbatim: the whole resolution effort
+    stays legible across turns.
+    """
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        incident = getattr(state, "open_incident", None)
+        if isinstance(incident, dict) and incident.get("reason"):
+            builder.add_human_content(
+                render_execution_incident(incident, kwargs.get("steps") or [])
+            )
+            return
+        closed = getattr(state, "last_closed_incident", None)
+        if isinstance(closed, dict) and closed.get("kind"):
+            builder.add_human_content(render_closed_incident(closed))
 
 
 class CheckItemsExplainerPromptComponent(PromptComponent):
@@ -381,20 +581,25 @@ class CheckItemsExplainerPromptComponent(PromptComponent):
             return
         if not snapshot.all_check_items:
             return
+        setup = getattr(ctx, "execution_setup", None)
+        max_repairs = getattr(setup, "checkpoint_max_repairs", None)
+        if not isinstance(max_repairs, int):
+            max_repairs = 2
         builder.add_human_content(
             "--- About the plan's check lines ---\n"
-            "The task plan declares `- verify:` / `- assert:` check lines."
-            " `verify:` lines are the acceptance criteria for their subgoal — use"
-            " them to confirm your work is complete, but the judgment is made by"
-            " an independent Checker: never declare a check passed yourself or"
-            " record conclusions on its behalf. `assert:` lines are test"
-            " assertions — take NO extra actions for them and never construct or"
-            " fake state to satisfy one; a failing assertion is a legitimate test"
-            " result. Check lines must not be deleted or reworded (deletions are"
-            " automatically restored by the system); keep them verbatim when"
-            " rewriting the plan — adding new ones is allowed. Simply mark"
-            " completions per the plan grammar as usual; checking runs"
-            " asynchronously in the background and does not block you."
+            "The task plan declares `- verify:` / `- assert:` check lines (see Task"
+            " Plan Grammar). Use `verify:` lines to confirm your work is complete,"
+            " but never declare a check passed yourself or record conclusions on"
+            " its behalf. Take NO extra actions for `assert:` lines and never"
+            " construct or fake state to satisfy one. Check lines must not be"
+            " deleted or reworded (deletions are automatically restored by the"
+            " system); keep them verbatim when rewriting the plan — adding new ones"
+            " is allowed. Simply mark completions per the plan grammar as usual;"
+            " checking runs asynchronously in the background and does not block you."
+            f" A failed `verify:` reopens its milestone at most {max_repairs} time(s);"
+            " once that repair budget is exhausted, its standing `finding:` line"
+            " disappears and the failure stands as the recorded result — do not"
+            " keep repairing it."
         )
 
 
@@ -438,47 +643,50 @@ class BackgroundTasksPromptComponent(PromptComponent):
 
 
 class TaskPlanWarningPromptComponent(PromptComponent):
+    """Suggests a task_plan update after an action turn that did not touch it.
+
+    Only the most recent step is inspected: if it executed a Turn-Ending
+    Action and no note tool wrote to ``task_plan``, a soft suggestion is
+    injected into the next turn. Pure diagnosis / waiting / observation turns
+    legitimately leave the plan alone and get no reminder.
+    """
+
+    NOTE_TOOLS = ("update_note", "save_note", "append_note")
+
+    @classmethod
+    def _step_updated_task_plan(cls, step: dict) -> bool:
+        for tc in step.get("tool_calls", []):
+            if tc.get("name") not in cls.NOTE_TOOLS:
+                continue
+            args = tc.get("args", {})
+            note_key = args.get("key") or args.get("name")
+            if note_key == "task_plan":
+                return True
+        return False
+
     async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
         steps = kwargs.get("steps", [])
-        if len(steps) >= 2:
-            last_two_steps = steps[-2:]
-            modified_in_last_two = False
-            for step in last_two_steps:
-                tool_calls = step.get("tool_calls", [])
-                for tc in tool_calls:
-                    if tc.get("name") in [
-                        "update_note",
-                        "save_note",
-                        "append_note",
-                    ]:
-                        args = tc.get("args", {})
-                        note_key = args.get("key") or args.get("name")
-                        if note_key == "task_plan":
-                            modified_in_last_two = True
-                            break
-                if modified_in_last_two:
-                    break
-
-            if not modified_in_last_two:
-                builder.add_human_content(
-                    "\nReminder: You have not updated the task_plan for two"
-                    " consecutive turns. Please check the latest progress,"
-                    " reflect on whether the task planning is detailed enough,"
-                    " and whether every pending item is listed as a subtask."
-                    " Please update the completed tasks and pending tasks in"
-                    " detail."
-                )
+        if not steps:
+            return
+        last = steps[-1]
+        if not last.get("action_taken") or self._step_updated_task_plan(last):
+            return
+        builder.add_human_content(
+            "\nReminder: your last turn executed a Turn-Ending Action without"
+            " updating task_plan. If progress was made, record it now with"
+            " surgical `update_note` edits: mark what completed and add the"
+            " subtasks you are now pursuing."
+        )
 
 
 class ToolLimitWarningPromptComponent(PromptComponent):
     async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
         if getattr(state, "operator_tool_limit_exceeded", False):
             builder.add_human_content(
-                "\n Warning: You did not execute any screen interaction actions"
-                " in your last turn. Please re-examine the task goal and revise"
-                " your plan; your current approach may not be the correct path."
-                " Actively calling ask_diagnoser can help you diagnose the"
-                " issue."
+                "\nWarning: your last turn used up its tool-call budget without a"
+                " Turn-Ending Action. Re-examine the task goal and your plan;"
+                " the current approach may not be the right path. If the cause"
+                " is unclear, ask_diagnoser can help."
             )
 
 
@@ -566,11 +774,7 @@ class ScreenshotSimilarityPromptComponent(PromptComponent):
         # 4. Inject note if any identical screenshots are found
         if matched_step_nums:
             steps_str = ", ".join(matched_step_nums)
-            note_text = (
-                f"Note: Screenshot in step {steps_str} seem to be identical to"
-                " current screen. This could be intended since not all actions"
-                " alter screens."
-            )
+            note_text = f"Note: the screen is unchanged since step {steps_str} (pixel-identical)."
             builder.add_human_content(note_text)
 
     def _count_differing_pixels(
@@ -648,8 +852,13 @@ class HistoricalStateHintPromptComponent(PromptComponent):
             if not getattr(transcript_cfg, "similarity_hint", True):
                 return
             max_distance = int(getattr(transcript_cfg, "similarity_max_distance", 8))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Transcript similarity config unavailable; using max_distance=%s: %s",
+                max_distance,
+                exc,
+                exc_info=True,
+            )
 
         try:
             from artemis.utils.image_hash import dhash_hex, hamming_distance_hex

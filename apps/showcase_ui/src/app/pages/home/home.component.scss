@@ -4272,6 +4272,381 @@ $text-light: #94a3b8;
         }
       }
 
+
+      /* Pro tuning sliders and hover cards */
+      .pro-tuning-card {
+        --tip-w: 320px;
+        --thumb-w: 22px;
+        --thumb-h: 14px;
+        --col-gap: 28px;
+        --accent: #6366f1;
+        position: relative;
+        background: rgba(255, 255, 255, 0.88);
+        backdrop-filter: blur(20px) saturate(180%);
+        -webkit-backdrop-filter: blur(20px) saturate(180%);
+        border: 1px solid rgba(226, 232, 240, 0.95);
+        border-radius: 16px;
+        padding: 12px 18px 14px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02), 0 8px 24px -6px rgba(15, 23, 42, 0.04);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        animation: slideUpFade 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+        &.tip-open {
+          z-index: 30;
+        }
+
+        .tuning-card-header {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 10px;
+          min-height: 16px;
+
+          .tuning-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: #0f172a;
+            letter-spacing: -0.01em;
+          }
+
+          .btn-tuning-reset {
+            border: none;
+            background: transparent;
+            padding: 0;
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 500;
+            color: #94a3b8;
+            cursor: pointer;
+            transition: color 0.15s ease;
+
+            &:hover {
+              color: #475569;
+            }
+
+            &:focus-visible {
+              outline: 2px solid var(--accent);
+              outline-offset: 3px;
+              border-radius: 3px;
+            }
+          }
+        }
+
+        .tuning-sliders {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 4px var(--col-gap);
+        }
+
+        .tuning-slider {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          min-width: 0;
+          /* Hover card clamp range, relative to this slider's track. The left
+             column may spill right across the gap; the right column may spill
+             left. Overridden below when the columns stack. */
+          --tip-min: 0px;
+          --tip-max: calc(100% - var(--tip-w));
+
+          &.verify {
+            --tip-max: calc(200% + var(--col-gap) - var(--tip-w));
+          }
+
+          &.explore {
+            --accent: #0ea5e9;
+            --tip-min: calc(-100% - var(--col-gap));
+          }
+
+          .slider-head {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            font-size: 13px;
+            line-height: 18px;
+            color: #0f172a;
+
+            .slider-name {
+              font-weight: 400;
+              color: #334155;
+            }
+
+            .slider-value {
+              font-weight: 600;
+            }
+          }
+
+          .slider-ends {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11.5px;
+            line-height: 14px;
+            color: #94a3b8;
+          }
+
+          .slider-track-wrap {
+            position: relative;
+            height: 26px;
+            display: flex;
+            align-items: center;
+          }
+
+          .slider-rail {
+            position: relative;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #e2e8f0;
+          }
+
+          .slider-fill {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            width: calc(var(--pct) * (100% - var(--thumb-w)) + var(--thumb-w) / 2);
+            border-radius: 3px;
+            background: color-mix(in srgb, var(--accent) 24%, #e2e8f0);
+            transition: width 0.15s ease;
+          }
+
+          .slider-notch {
+            position: absolute;
+            top: 50%;
+            left: calc(var(--n) * (100% - var(--thumb-w)) + var(--thumb-w) / 2);
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+            background: #94a3b8;
+            transform: translate(-50%, -50%);
+            transition: background 0.15s ease;
+            z-index: 1;
+
+            &.reached {
+              background: rgba(255, 255, 255, 0.95);
+            }
+          }
+
+          .slider-thumb {
+            position: absolute;
+            top: 50%;
+            left: calc(var(--pct) * (100% - var(--thumb-w)) + var(--thumb-w) / 2);
+            width: var(--thumb-w);
+            height: var(--thumb-h);
+            border-radius: 5px;
+            background: #ffffff;
+            border: 1px solid rgba(15, 23, 42, 0.1);
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.08);
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            transition: left 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+          }
+
+          /* End of track: a pixel front sweeps from the thumb to the left end,
+             a solid fill follows it until the whole rail has changed colour,
+             and the thumb emits one ripple. */
+          .slider-solid {
+            position: absolute;
+            inset: 0;
+            border-radius: 3px;
+            background: var(--accent);
+            transform-origin: right center;
+            transform: scaleX(1);
+            animation: solidSweep 1s cubic-bezier(0.4, 0, 0.2, 1) 0.2s both;
+            pointer-events: none;
+          }
+
+          .slider-dither {
+            position: absolute;
+            inset: 0;
+            display: block;
+            overflow: hidden;
+            border-radius: 3px;
+            pointer-events: none;
+
+            rect {
+              fill: var(--accent);
+              animation: ditherIn 0.3s ease-out both;
+            }
+          }
+
+          .thumb-ripple {
+            position: absolute;
+            top: 50%;
+            left: calc(var(--pct) * (100% - var(--thumb-w)) + var(--thumb-w) / 2);
+            width: var(--thumb-w);
+            height: var(--thumb-w);
+            border-radius: 50%;
+            border: 1.5px solid var(--accent);
+            transform: translate(-50%, -50%) scale(0.6);
+            opacity: 0;
+            pointer-events: none;
+            animation: thumbRipple 0.6s ease-out forwards;
+          }
+
+          &.dragging .slider-thumb {
+            border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+            box-shadow:
+              0 1px 2px rgba(15, 23, 42, 0.12),
+              0 2px 8px rgba(15, 23, 42, 0.1),
+              0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+          }
+
+          /* Native range input does drag, keyboard, and a11y; it is invisible
+             but its thumb geometry matches the drawn thumb so hits line up. */
+          .slider-input {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            opacity: 0;
+            cursor: pointer;
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+
+            &::-webkit-slider-thumb {
+              -webkit-appearance: none;
+              appearance: none;
+              width: var(--thumb-w);
+              height: 26px;
+            }
+
+            &::-moz-range-thumb {
+              width: var(--thumb-w);
+              height: 26px;
+              border: 0;
+            }
+          }
+
+          .slider-input:focus-visible ~ .slider-thumb,
+          &:has(.slider-input:focus-visible) .slider-thumb {
+            box-shadow:
+              0 1px 2px rgba(15, 23, 42, 0.12),
+              0 0 0 2px #ffffff,
+              0 0 0 4px var(--accent);
+          }
+
+          .tuning-tip-arrow {
+            position: absolute;
+            bottom: calc(100% + 2px);
+            left: calc(var(--pct) * (100% - var(--thumb-w)) + var(--thumb-w) / 2);
+            width: 10px;
+            height: 10px;
+            background: #ffffff;
+            border-right: 1px solid rgba(226, 232, 240, 1);
+            border-bottom: 1px solid rgba(226, 232, 240, 1);
+            transform: translate(-50%, 50%) rotate(45deg);
+            z-index: 41;
+            pointer-events: none;
+          }
+
+          .tuning-tip {
+            position: absolute;
+            bottom: calc(100% + 7px);
+            left: clamp(
+              var(--tip-min),
+              calc(var(--pct) * (100% - var(--thumb-w)) + var(--thumb-w) / 2 - var(--tip-w) / 2),
+              var(--tip-max)
+            );
+            width: var(--tip-w);
+            max-width: calc(100vw - 32px);
+            padding: 12px 14px;
+            background: #ffffff;
+            border: 1px solid rgba(226, 232, 240, 1);
+            border-radius: 12px;
+            box-shadow: 0 12px 32px -8px rgba(15, 23, 42, 0.18), 0 2px 6px rgba(15, 23, 42, 0.06);
+            z-index: 40;
+            pointer-events: none;
+            animation: tipPop 0.16s ease-out;
+            font-size: 12px;
+            line-height: 1.5;
+            color: #334155;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+
+            .tip-heading {
+              display: flex;
+              flex-direction: column;
+              gap: 1px;
+
+              .tip-title {
+                font-size: 13.5px;
+                font-weight: 600;
+                color: #0f172a;
+                letter-spacing: -0.01em;
+              }
+
+              .tip-latency {
+                font-size: 11.5px;
+                color: #94a3b8;
+              }
+            }
+
+            .tip-tagline {
+              margin: 0;
+              color: #0f172a;
+            }
+
+            .tip-section {
+              display: flex;
+              flex-direction: column;
+              gap: 2px;
+
+              ul {
+                margin: 0;
+                padding-left: 16px;
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+              }
+
+              li::marker {
+                color: #cbd5e1;
+              }
+
+              &.skips li {
+                color: #64748b;
+              }
+            }
+
+            .tip-section-title {
+              font-size: 10.5px;
+              font-weight: 600;
+              text-transform: uppercase;
+              letter-spacing: 0.06em;
+              color: #94a3b8;
+            }
+
+            .tip-best {
+              display: flex;
+              flex-direction: column;
+              gap: 2px;
+              color: #475569;
+            }
+          }
+        }
+
+        @media (max-width: 760px) {
+          .tuning-sliders {
+            grid-template-columns: minmax(0, 1fr);
+            gap: 10px;
+          }
+
+          .tuning-slider {
+            &.verify,
+            &.explore {
+              --tip-min: 0px;
+              --tip-max: calc(100% - var(--tip-w));
+            }
+          }
+        }
+      }
+
       /* Smart Suggestions Hub (Device-Aware, Flash vs Pro Tailored) */
       .smart-suggestions-container {
         display: flex;
@@ -4733,7 +5108,47 @@ $text-light: #94a3b8;
 @media (prefers-reduced-motion: reduce) {
   .home-container .aurora-background .glow,
   .sparkle-icon,
-  .status-dot {
+  .status-dot,
+  .slider-dither rect,
+  .slider-solid,
+  .thumb-ripple {
     animation: none !important;
+  }
+}
+
+@keyframes ditherIn {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes solidSweep {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes thumbRipple {
+  0% {
+    opacity: 0.7;
+    transform: translate(-50%, -50%) scale(0.6);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.6);
+  }
+}
+
+@keyframes tipPop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }

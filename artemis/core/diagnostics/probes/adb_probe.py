@@ -177,16 +177,12 @@ class AdbDeviceProbe(BaseProbe):
                 trust_output,
                 flags=re.IGNORECASE,
             )
-        trust_locked = (
-            trust_match.group(1).lower() in {"true", "1"} if trust_match else None
-        )
+        trust_locked = trust_match.group(1).lower() in {"true", "1"} if trust_match else None
 
         # Prefer the modern, current-user signals. Legacy fields can coexist in
         # dumpsys output as stale or display-specific diagnostics and must not
         # override an explicit modern unlocked result.
-        modern_states = [
-            state for state in [policy_showing, trust_locked] if state is not None
-        ]
+        modern_states = [state for state in [policy_showing, trust_locked] if state is not None]
         if any(modern_states):
             return True
         if modern_states:
@@ -217,9 +213,7 @@ class AdbDeviceProbe(BaseProbe):
                 stderr=subprocess.PIPE,
             )
             try:
-                stdout, _ = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout_seconds
-                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
             except TimeoutError:
                 proc.kill()
                 await proc.communicate()
@@ -245,9 +239,7 @@ class AdbDeviceProbe(BaseProbe):
         timeout_seconds: float = 2.0,
     ) -> bool | None:
         """Confirm a positive lock result so one transient sample cannot flap the UI."""
-        first = await self._get_device_lock_state(
-            adb_path, serial, timeout_seconds=timeout_seconds
-        )
+        first = await self._get_device_lock_state(adb_path, serial, timeout_seconds=timeout_seconds)
         if first is not True:
             return first
 
@@ -306,9 +298,7 @@ class AdbDeviceProbe(BaseProbe):
             stderr=subprocess.PIPE,
         )
         try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_seconds
-            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         except TimeoutError:
             proc.kill()
             await proc.communicate()
@@ -336,9 +326,7 @@ class AdbDeviceProbe(BaseProbe):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_seconds
-            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
             if proc.returncode != 0:
                 return None
 
@@ -363,9 +351,7 @@ class AdbDeviceProbe(BaseProbe):
             logger.debug(f"Failed submission-time ADB device check: {exc}")
             return None
 
-    async def probe_submission_readiness(
-        self, target_serial: str | None = None
-    ) -> ProbeResult:
+    async def probe_submission_readiness(self, target_serial: str | None = None) -> ProbeResult:
         """Run the minimal fail-safe device check required before enqueueing.
 
         The full diagnostics probe enriches device metadata, scans packages,
@@ -417,8 +403,7 @@ class AdbDeviceProbe(BaseProbe):
                     "installed": True,
                     "submission_probe": True,
                     "devices": [
-                        {"serial": serial, "state": state}
-                        for serial, state in device_states
+                        {"serial": serial, "state": state} for serial, state in device_states
                     ],
                 },
             )
@@ -563,9 +548,7 @@ class AdbDeviceProbe(BaseProbe):
                             "getprop",
                             "ro.build.version.release",
                         )
-                        size_task = self._run_adb_shell(
-                            adb_path, dev.serial, "wm", "size"
-                        )
+                        size_task = self._run_adb_shell(adb_path, dev.serial, "wm", "size")
                         packages_task = self._run_adb_shell(
                             adb_path,
                             dev.serial,
@@ -831,7 +814,9 @@ class AdbDeviceProbe(BaseProbe):
         # 4. Ready device available
         preferred_dev = None
         if self._target_serial:
-            preferred_dev = next((d for d in ready_devices if d.serial == self._target_serial), None)
+            preferred_dev = next(
+                (d for d in ready_devices if d.serial == self._target_serial), None
+            )
 
         if preferred_dev and preferred_dev.is_locked is False:
             active_dev = preferred_dev
@@ -850,9 +835,7 @@ class AdbDeviceProbe(BaseProbe):
             display_name = f"{display_name} ({active_dev.screen_resolution})"
 
         metadata["active_device"] = active_dev.model_dump()
-        metadata["lock_state_source"] = self._lock_state_sources.get(
-            active_dev.serial, "unknown"
-        )
+        metadata["lock_state_source"] = self._lock_state_sources.get(active_dev.serial, "unknown")
 
         if active_dev.is_locked is not False:
             is_locked = active_dev.is_locked is True

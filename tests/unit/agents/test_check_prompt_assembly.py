@@ -67,7 +67,9 @@ def test_planner_blocks_with_checks_mount_generation_and_audit():
     assert "Never silently promise" in generation
 
     audit = data["blocks"]["check_audit"]
-    assert "REJECT" in audit
+    # Advisory review: the audit flags weakened check standards, never blocks.
+    assert "FLAG" in audit
+    assert "REJECT" not in audit
 
 
 def _mock_ctx(tmp_path=None, plan: str | None = None, **setup_kwargs):
@@ -108,7 +110,7 @@ async def test_explainer_renders_iff_plan_has_check_lines(tmp_path):
     await component(builder2, _state(), ctx2)
     joined = "\n".join(p for p in builder2.human_parts if isinstance(p, str))
     assert "check lines" in joined
-    assert "independent Checker" in joined
+    assert "never declare a check passed yourself" in joined
     assert "automatically restored" in joined
 
 
@@ -148,13 +150,13 @@ async def test_main_template_diagnosis_trigger_gated_on_verification():
     with_checks = await _render_main_template(
         disable_checker=False, disable_planner_validation=True
     )
-    assert "Ambiguous Validation Rejection or Verification Finding" in with_checks
+    assert "Ambiguous Verification Finding" in with_checks
 
-    # Planner validation alone can also produce rejections.
+    # Planner validation alone can also produce (advisory) findings.
     with_validation = await _render_main_template(
         disable_checker=True, disable_planner_validation=False
     )
-    assert "Ambiguous Validation Rejection or Verification Finding" in with_validation
+    assert "Ambiguous Verification Finding" in with_validation
 
 
 @pytest.mark.asyncio

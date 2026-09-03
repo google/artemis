@@ -131,6 +131,58 @@ def test_submit_task_to_daemon():
         assert data["conversation_id"] == "conv-123"
 
 
+def _daemon_ok_response(body: bytes) -> MagicMock:
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = body
+    mock_resp.__enter__.return_value = mock_resp
+    return mock_resp
+
+
+def test_submit_task_to_daemon_forwards_pro_tuning_knobs():
+    mock_resp = _daemon_ok_response(b'{"status": "queued", "tasks": [{"session_id": "s1"}]}')
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        submit_task_to_daemon(
+            "audit goal",
+            profile="pro",
+            verification_level="strict",
+            explorer_mode="ultra",
+        )
+        data = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    # JSON field names match RunRequest on /api/run.
+    assert data["verification_level"] == "strict"
+    assert data["explorer_mode"] == "ultra"
+
+
+def test_submit_task_to_daemon_pro_tuning_defaults_to_null():
+    mock_resp = _daemon_ok_response(b'{"status": "queued", "tasks": [{"session_id": "s1"}]}')
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        submit_task_to_daemon("plain goal", profile="flash")
+        data = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    assert data["verification_level"] is None
+    assert data["explorer_mode"] is None
+
+
+def test_submit_batch_to_daemon_forwards_pro_tuning_knobs():
+    from artemis.runtime.daemon_client import submit_batch_to_daemon
+
+    mock_resp = _daemon_ok_response(
+        b'{"status": "queued", "tasks": [{"session_id": "a"}, {"session_id": "b"}]}'
+    )
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        res = submit_batch_to_daemon(
+            ["goal a", "goal b"],
+            profile="pro",
+            verification_level="checkpoints",
+            explorer_mode="pro",
+        )
+        data = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    assert res is not None and len(res["tasks"]) == 2
+    assert data["goals"] == ["goal a", "goal b"]
+    assert data["verification_level"] == "checkpoints"
+    assert data["explorer_mode"] == "pro"
+
+
 def test_stop_task_on_daemon():
     from artemis.runtime.daemon_client import stop_task_on_daemon
 
@@ -148,4 +200,3 @@ def test_stop_task_on_daemon():
     mock_resp.read.return_value = b'{"status": "no_running_task"}'
     with patch("urllib.request.urlopen", return_value=mock_resp):
         assert stop_task_on_daemon("non-existent-sess") is False
-
