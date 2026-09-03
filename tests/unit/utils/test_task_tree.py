@@ -146,7 +146,7 @@ def test_get_active_subgoal_hashes_fallback():
 
     parent, sub = get_active_subgoal_hashes(plan_indented)
     assert parent == h_system
-    assert sub is None
+    assert sub == hashlib.md5(b"Scroll down to find System settings").hexdigest()
 
     # Scenario 3: Safe Fallback (All pending "[ ]", no active subgoal)
     plan_fallback = """- [ ] Open Settings app

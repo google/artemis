@@ -652,41 +652,69 @@ class BackgroundTasksPromptComponent(PromptComponent):
             builder.add_human_content("\n".join(lines) + "\n")
 
 
-class TaskPlanWarningPromptComponent(PromptComponent):
-    """Suggests a task_plan update after an action turn that did not touch it.
+_PLAN_NOTE_TOOLS = ("update_note", "save_note", "append_note")
 
-    Only the most recent step is inspected: if it executed a Turn-Ending
-    Action and no note tool wrote to ``task_plan``, a soft suggestion is
-    injected into the next turn. Pure diagnosis / waiting / observation turns
-    legitimately leave the plan alone and get no reminder.
-    """
 
-    NOTE_TOOLS = ("update_note", "save_note", "append_note")
+def step_updated_task_plan(step: dict) -> bool:
+    """Whether a recorded step's tool calls wrote the ``task_plan`` note."""
+    for tc in step.get("tool_calls", []):
+        if tc.get("name") not in _PLAN_NOTE_TOOLS:
+            continue
+        args = tc.get("args", {})
+        note_key = args.get("key") or args.get("name")
+        if note_key == "task_plan":
+            return True
+    return False
 
-    @classmethod
-    def _step_updated_task_plan(cls, step: dict) -> bool:
-        for tc in step.get("tool_calls", []):
-            if tc.get("name") not in cls.NOTE_TOOLS:
-                continue
-            args = tc.get("args", {})
-            note_key = args.get("key") or args.get("name")
-            if note_key == "task_plan":
-                return True
-        return False
 
-    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
-        steps = kwargs.get("steps", [])
-        if not steps:
-            return
-        last = steps[-1]
-        if not last.get("action_taken") or self._step_updated_task_plan(last):
-            return
-        builder.add_human_content(
-            "\nReminder: your last turn executed a Turn-Ending Action without"
-            " updating task_plan. If progress was made, record it now with"
-            " surgical `update_note` edits: mark what completed and add the"
-            " subtasks you are now pursuing."
+def unwritten_action_streak(steps: list[dict]) -> int:
+    """Count trailing action steps since the last ``task_plan`` write."""
+    streak = 0
+    for step in reversed(steps or []):
+        if step_updated_task_plan(step):
+            break
+        if step.get("action_taken"):
+            streak += 1
+    return streak
+
+
+def _clip(text: str, limit: int = 80) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
+
+_LEDGER_BOUNCE_TAIL = (
+    " with `update_note` (key `task_plan`), then re-issue the action in the same"
+    " tool-call list (Live Sub-goal Ledger)."
+)
+
+
+def render_plan_ledger_bounce(task_plan: str, streak: int, stale_turns: int) -> str | None:
+    """Return a plan-ledger validation error, if any."""
+    snapshot = parse_plan(task_plan or "")
+    if not snapshot.has_top_level or snapshot.all_top_level_done:
+        return None
+    milestone = snapshot.active_milestone()
+    if milestone is None:
+        return (
+            "Not executed: no milestone is marked in progress. Mark the one you are"
+            " executing `[/]` and open its `[/]` sub-goal" + _LEDGER_BOUNCE_TAIL
         )
+    leaf = snapshot.active_leaf(milestone)
+    if leaf is None:
+        return (
+            f'Not executed: the active milestone "{_clip(milestone.text)}" has no'
+            " in-progress `[/]` sub-goal beneath it. Open one for what you are doing now"
+            + _LEDGER_BOUNCE_TAIL
+        )
+    turns = streak + 1
+    if stale_turns > 0 and turns >= stale_turns:
+        return (
+            f'Not executed: the sub-goal "{_clip(leaf.text)}" has stayed in progress for'
+            f" {turns} action turns without any plan change. Settle it (`[x]` / `[!]`) or"
+            " record its progress and open the next leaf" + _LEDGER_BOUNCE_TAIL
+        )
+    return None
 
 
 class ToolLimitWarningPromptComponent(PromptComponent):

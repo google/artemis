@@ -663,6 +663,21 @@ class ExecutionConfig(BaseModel):
             " rejected before execution and fed back to the Operator."
         ),
     )
+    plan_ledger_gate: bool = Field(
+        default=True,
+        description=(
+            "Require active plan sub-goals and periodically prompt the Operator to"
+            " update stale plan progress."
+        ),
+    )
+    plan_ledger_stale_turns: int = Field(
+        default=4,
+        ge=0,
+        description=(
+            "Action turns allowed without a task_plan change before the ledger gate"
+            " prompts for an update. Set to 0 to disable staleness checks."
+        ),
+    )
 
 
 class ProProfileConfig(BaseModel):

@@ -37,14 +37,13 @@ $stream-row-height: 25px;
   background: #f8f9fa;
   box-sizing: border-box;
   position: relative;
+  container-type: inline-size;
+  container-name: stream-panel;
 
-
-
-  /* Light VS Code / IDE Style Top Action Bar */
-  /* Light VS Code / IDE Style Top Action Bar */
   .vscode-nav-header {
     position: relative;
     height: 60px;
+    flex-shrink: 0;
     background: #ffffff;
     border-bottom: 1px solid rgba(0, 0, 0, 0.08);
     display: flex;
@@ -98,17 +97,6 @@ $stream-row-height: 25px;
       transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
       outline: none;
       white-space: nowrap;
-
-      @media (max-width: 1150px) {
-        padding: 0 9px;
-        gap: 0;
-      }
-
-      .tab-label {
-        @media (max-width: 1150px) {
-          display: none !important;
-        }
-      }
 
       .tab-icon {
         font-size: 16px;
@@ -1032,7 +1020,6 @@ $stream-row-height: 25px;
     }
   }
 
-  /* Floating Top-Right Action Toolbar (Model Info + Screen Recording Button) */
   .stream-floating-toolbar {
     position: absolute;
     top: 12px;
@@ -3714,6 +3701,42 @@ $stream-row-height: 25px;
       color: #71717a;
       padding-left: 22px;
       word-break: break-word;
+    }
+  }
+}
+
+@media (min-width: 1151px) {
+  @container stream-panel (max-width: 660px) {
+    .agent-stream-container .stream-floating-toolbar {
+      .model-info-chip {
+        padding: 0 9px;
+
+        .model-label {
+          display: none;
+        }
+      }
+
+      .btn-screen-recording {
+        padding: 0 9px;
+        gap: 0;
+
+        .btn-text {
+          display: none;
+        }
+      }
+    }
+  }
+}
+
+@media (max-width: 1150px) {
+  @container stream-panel (max-width: 900px) {
+    .agent-stream-container .vscode-nav-header .vscode-tab-btn {
+      padding: 0 9px;
+      gap: 0;
+
+      .tab-label {
+        display: none;
+      }
     }
   }
 }

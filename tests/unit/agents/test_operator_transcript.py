@@ -60,10 +60,11 @@ from artemis.memory.transcript import (
 # Incident workflow section and the Phase 3 burst-discipline rule; and again
 # on 2026-09-02 after the prompt consolidation (every rule stated once, the
 # transcript/legacy history-marker split, the recited tool budget, the
-# recommended diagnosis triggers). Any other drift here means the flag-off
-# path is no longer byte-identical.
-GOLDEN_EMPTY_PLAN = "a20046ff46058fa331fa3b8f2d3ffa4a018be567bf264588b9a29bc64e5b11b8"
-GOLDEN_SENTINEL_PLAN = "8f4456524c8a964d1614d26d2fafab809bd5bd3f30334fd40498999e4b27638b"
+# recommended diagnosis triggers); and again on 2026-09-03 for the nested
+# plan-ledger contract and its validation gate. Any other drift means the
+# flag-off path is no longer byte-identical.
+GOLDEN_EMPTY_PLAN = "2ed35be503e3872f008ae5a12616af6f90cde65f23b63adbb6da782079ae4e7c"
+GOLDEN_SENTINEL_PLAN = "8bd6aa60cf3fad8d21cf5c284a01f586c57d209fcd1d2b4a517a791736f9b1de"
 
 SCREENSHOT_B64 = base64.b64encode(b"fake-jpeg-bytes").decode("utf-8")
 

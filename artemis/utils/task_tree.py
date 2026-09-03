@@ -825,11 +825,13 @@ def build_plan_and_history(
 
 
 def get_active_subgoal_hashes(task_plan: str) -> tuple[str, str | None]:
-    """Parses task_plan content to find the active top-level subgoal hash.
+    """Parses task_plan content to find the active (top-level, nested) subgoal hashes.
 
-    Consolidates all active subtasks under their parent Level 1 subgoal,
-    returning (parent_hash, None). Falls back to the first pending subgoal if no
-    active subgoal is found and all are pending.
+    Returns ``(parent_hash, sub_hash)``: the parent is the active top-level
+    milestone (all active nested items consolidate under it); the sub hash is
+    the bottom-most active nested item — the live sub-goal ledger leaf — or
+    ``None`` when the milestone has no in-progress sub-goal. Falls back to the
+    first pending subgoal if no active subgoal is found and all are pending.
     """
     if not task_plan:
         return "default", None
@@ -843,7 +845,7 @@ def get_active_subgoal_hashes(task_plan: str) -> tuple[str, str | None]:
             if not active_item.is_top_level:
                 parent = snapshot.parent_of(active_item)
                 if parent is not None:
-                    return parent.key, None
+                    return parent.key, active_item.key
             return active_item.key, None
 
         # No active subgoal found. Check if all are completed.

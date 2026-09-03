@@ -39,6 +39,7 @@ from artemis.utils.video import (
     DEFAULT_MAX_DURATION_SECONDS,
     RecordingSession,
     VideoRecordingResult,
+    await_scrcpy_first_frame,
     build_scrcpy_record_command,
     cleanup_video_segments,
     concatenate_videos,
@@ -346,7 +347,8 @@ class UnifiedMobileController:
 
             # Strict timeline alignment:
             # DataEngine session start time is the reference T0 (0.0s).
-            # Video recording start time is session.start_time.
+            # session.start_time is the wall-clock time of the first frame in
+            # the recording (the file's t=0), estimated at recording start.
             offset = 0.0
             if session.data_engine_start_time is not None:
                 offset = max(0.0, session.start_time - session.data_engine_start_time)
@@ -517,14 +519,19 @@ class UnifiedMobileController:
         process = await self._spawn_scrcpy(
             build_scrcpy_record_command("scrcpy", session.device_id, new_video_path)
         )
-        await asyncio.sleep(0.8)
+        spawned_at = time.time()
+        first_frame_at = await await_scrcpy_first_frame(process, spawned_at)
         if process.returncode is not None:
             stderr = await process.stderr.read()
             logger.error(f"Failed to start scrcpy segment: {stderr.decode(errors='replace')}")
             return False
         session.process = process
         session.local_video_path = new_video_path
-        session.android_segment_started_at = time.time()
+        session.android_segment_started_at = first_frame_at
+        logger.info(
+            f"scrcpy segment {session.android_segment_index} first frame estimated "
+            f"{first_frame_at - spawned_at:.2f}s after spawn"
+        )
         if display_state:
             session.android_rotation, session.capture_width, session.capture_height = display_state
         return True
@@ -621,7 +628,52 @@ class UnifiedMobileController:
             if display_state:
                 session.capture_width, session.capture_height = display_state[1:]
 
-            # Persist to local database if Data Engine is active
+            # Start scrcpy in background
+            cmd = build_scrcpy_record_command("scrcpy", device_id, local_video_path)
+
+            process = await self._spawn_scrcpy(cmd)
+            spawned_at = time.time()
+
+            session.process = process
+            set_active_session(device_id, session)
+
+            logger.info(f"Started scrcpy recording on {device_id}, saving to {local_video_path}")
+
+            # The file's t=0 is the first captured frame, about a second after
+            # spawn. Anchor the recording timeline there: segment offsets and
+            # analyzer clip trimming all treat session.start_time as that t=0.
+            first_frame_at = await await_scrcpy_first_frame(process, spawned_at)
+            if process.returncode is not None:
+                stderr = await process.stderr.read()
+                err_msg = stderr.decode()
+                logger.error(f"scrcpy failed to start on {device_id}: {err_msg}")
+                if self.ctx and self.ctx.data_engine:
+                    self.ctx.data_engine.record_video_start(
+                        video_id=video_id,
+                        device_id=device_id,
+                        local_video_path=local_video_path,
+                        start_time=session.start_time,
+                    )
+                self._record_recording_failure(session, f"scrcpy failed to start: {err_msg}")
+                remove_active_session(device_id)
+                return VideoRecordingResult(
+                    success=False,
+                    message=f"scrcpy failed to start: {err_msg}",
+                )
+
+            session.start_time = first_frame_at
+            session.android_segment_started_at = first_frame_at
+            timeline_note = ""
+            if session.data_engine_start_time is not None:
+                timeline_note = (
+                    "; recording timeline offset from session start: "
+                    f"{first_frame_at - session.data_engine_start_time:.2f}s"
+                )
+            logger.info(
+                f"scrcpy first frame estimated {first_frame_at - spawned_at:.2f}s after spawn"
+                f"{timeline_note}"
+            )
+
             if self.ctx and self.ctx.data_engine:
                 self.ctx.data_engine.record_video_start(
                     video_id=video_id,
@@ -630,30 +682,6 @@ class UnifiedMobileController:
                     start_time=session.start_time,
                 )
 
-            # Start scrcpy in background
-            cmd = build_scrcpy_record_command("scrcpy", device_id, local_video_path)
-
-            process = await self._spawn_scrcpy(cmd)
-
-            session.process = process
-            set_active_session(device_id, session)
-
-            logger.info(f"Started scrcpy recording on {device_id}, saving to {local_video_path}")
-
-            # Check if process failed immediately
-            await asyncio.sleep(0.8)
-            if process.returncode is not None:
-                stderr = await process.stderr.read()
-                err_msg = stderr.decode()
-                logger.error(f"scrcpy failed to start on {device_id}: {err_msg}")
-                self._record_recording_failure(session, f"scrcpy failed to start: {err_msg}")
-                remove_active_session(device_id)
-                return VideoRecordingResult(
-                    success=False,
-                    message=f"scrcpy failed to start: {err_msg}",
-                )
-
-            # Start background watchdog to auto-recover if scrcpy terminates
             session.watchdog_task = asyncio.create_task(self._recording_watchdog(device_id))
 
             return VideoRecordingResult(

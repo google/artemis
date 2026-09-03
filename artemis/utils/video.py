@@ -24,6 +24,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import time
 import subprocess
 from typing import Any
 from uuid import UUID
@@ -37,6 +38,11 @@ logger = get_logger(__name__)
 
 DEFAULT_MAX_DURATION_SECONDS = 900  # 15 minutes
 ANDROID_RECORDING_SEGMENT_SECONDS = 1800
+# The recording marker closely tracks the first frame; startup measurements
+# put the fallback near three quarters of a second after process creation.
+SCRCPY_RECORDING_STARTED_MARKER = "Recording started"
+SCRCPY_STARTUP_FALLBACK_SECONDS = 0.75
+SCRCPY_STARTUP_TIMEOUT_SECONDS = 6.0
 VIDEO_READY_DELAY_SECONDS = 1
 ANDROID_DEVICE_VIDEO_PATH = "/sdcard/screen_recording.mp4"
 ANDROID_MAX_RECORDING_DURATION_SECONDS = 180  # Android screenrecord limit
@@ -76,6 +82,43 @@ def build_scrcpy_record_command(
     if lock_capture_orientation:
         command.append("--capture-orientation=@")
     return command
+
+
+async def await_scrcpy_first_frame(
+    process: Any,
+    spawned_at: float,
+    *,
+    timeout: float = SCRCPY_STARTUP_TIMEOUT_SECONDS,
+) -> float:
+    """Estimate when the first frame of a scrcpy recording reached the host."""
+    fallback = spawned_at + SCRCPY_STARTUP_FALLBACK_SECONDS
+    reader = getattr(process, "stdout", None)
+    if not isinstance(reader, asyncio.StreamReader):
+        await asyncio.sleep(0.8)
+        return fallback
+
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                f"scrcpy did not report '{SCRCPY_RECORDING_STARTED_MARKER}' within "
+                f"{timeout:.1f}s; assuming the first frame at spawn + "
+                f"{SCRCPY_STARTUP_FALLBACK_SECONDS:.2f}s"
+            )
+            return fallback
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=remaining)
+        except TimeoutError:
+            continue
+        if not line:
+            try:
+                await asyncio.wait_for(process.wait(), timeout=1.0)
+            except (AttributeError, ProcessLookupError, TimeoutError):
+                pass
+            return fallback
+        if SCRCPY_RECORDING_STARTED_MARKER in line.decode(errors="replace"):
+            return max(spawned_at, time.time())
 
 
 class _CyFunctionDetectorMeta(type):

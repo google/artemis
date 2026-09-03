@@ -14,6 +14,7 @@
 
 """Unit tests for UnifiedMobileController video recording and playback features."""
 
+import asyncio
 import subprocess
 import time
 from pathlib import Path
@@ -494,3 +495,129 @@ async def test_unified_controller_timeline_alignment(mock_ctx, tmp_path):
         assert abs(res.actual_start_relative_time - 5.0) < 0.1
 
     remove_active_session("emulator-5554")
+
+
+class _FakeScrcpyProcess:
+    """Minimal stand-in for an asyncio subprocess with a real stdout reader."""
+
+    def __init__(self, lines: list[bytes], *, close: bool = False):
+        self.stdout = asyncio.StreamReader()
+        for line in lines:
+            self.stdout.feed_data(line)
+        if close:
+            self.stdout.feed_eof()
+        self.stderr = MagicMock()
+        self.stderr.read = AsyncMock(return_value=b"")
+        self.returncode = None
+        self.waited = False
+
+    async def wait(self):
+        self.waited = True
+        self.returncode = 1
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_await_scrcpy_first_frame_uses_recording_started_marker():
+    from artemis.utils.video import await_scrcpy_first_frame
+
+    proc = _FakeScrcpyProcess(
+        [
+            b"scrcpy 4.1 <https://github.com/Genymobile/scrcpy>\n",
+            b"INFO: ADB device found:\n",
+            b"INFO: Recording started to matroska file: C:\\rec\\recording.mkv\n",
+        ]
+    )
+    spawned_at = time.time() - 2.0
+    before = time.time()
+    estimate = await await_scrcpy_first_frame(proc, spawned_at)
+    after = time.time()
+
+    assert before <= estimate <= after
+    assert after - before < 0.5
+
+
+@pytest.mark.asyncio
+async def test_await_scrcpy_first_frame_never_precedes_spawn():
+    from artemis.utils.video import await_scrcpy_first_frame
+
+    proc = _FakeScrcpyProcess([b"INFO: Recording started to matroska file: x.mkv\n"])
+    spawned_at = time.time()
+    estimate = await await_scrcpy_first_frame(proc, spawned_at)
+    assert estimate >= spawned_at
+
+
+@pytest.mark.asyncio
+async def test_await_scrcpy_first_frame_falls_back_when_stdout_closes():
+    from artemis.utils.video import SCRCPY_STARTUP_FALLBACK_SECONDS, await_scrcpy_first_frame
+
+    proc = _FakeScrcpyProcess([b"scrcpy 4.1\n"], close=True)
+    spawned_at = time.time()
+    estimate = await await_scrcpy_first_frame(proc, spawned_at)
+
+    assert estimate == pytest.approx(spawned_at + SCRCPY_STARTUP_FALLBACK_SECONDS)
+    assert proc.waited is True
+    assert proc.returncode == 1
+
+
+@pytest.mark.asyncio
+async def test_await_scrcpy_first_frame_falls_back_on_timeout():
+    from artemis.utils.video import SCRCPY_STARTUP_FALLBACK_SECONDS, await_scrcpy_first_frame
+
+    proc = _FakeScrcpyProcess([b"scrcpy 4.1\n"])  # marker never arrives, stdout stays open
+    spawned_at = time.time()
+    estimate = await await_scrcpy_first_frame(proc, spawned_at, timeout=0.1)
+    assert estimate == pytest.approx(spawned_at + SCRCPY_STARTUP_FALLBACK_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_start_recording_anchors_timeline_to_first_frame(mock_ctx, tmp_path):
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+
+    proc = _FakeScrcpyProcess([b"INFO: Recording started to matroska file: x.mkv\n"])
+    before = time.time()
+    with (
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+        patch(
+            "artemis.controllers.unified_controller.get_android_display_state",
+            AsyncMock(return_value=(0, 1080, 2424)),
+        ),
+    ):
+        res = await controller.start_video_recording(output_dir=tmp_path)
+
+    try:
+        assert res.success is True
+        session = get_active_session("emulator-5554")
+        assert session is not None
+        assert session.start_time >= before
+        assert session.android_segment_started_at == session.start_time
+        kwargs = mock_ctx.data_engine.record_video_start.call_args.kwargs
+        assert kwargs["start_time"] == session.start_time
+    finally:
+        session = get_active_session("emulator-5554")
+        if session and session.watchdog_task:
+            session.watchdog_task.cancel()
+        remove_active_session("emulator-5554")
+
+
+@pytest.mark.asyncio
+async def test_next_segment_anchors_at_first_frame(mock_ctx, tmp_path):
+    controller = UnifiedMobileController(mock_ctx)
+    session = RecordingSession(
+        video_id=uuid4(),
+        device_id="emulator-5554",
+        start_time=time.time() - 30.0,
+        data_engine_start_time=time.time() - 30.0,
+        local_video_path=tmp_path / "recording.mkv",
+    )
+    proc = _FakeScrcpyProcess([b"INFO: Recording started to matroska file: y.mkv\n"])
+    before = time.time()
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        ok = await controller._start_next_recording_segment(session, (1, 2424, 1080))
+
+    assert ok is True
+    assert session.android_segment_started_at is not None
+    assert session.android_segment_started_at >= before
+    assert session.android_rotation == 1
+    assert session.local_video_path == tmp_path / "recording_001.mkv"

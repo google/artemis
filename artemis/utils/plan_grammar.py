@@ -185,6 +185,45 @@ class PlanSnapshot:
                 parent = candidate
         return parent
 
+    def children_of(self, item: PlanItem) -> tuple[PlanItem, ...]:
+        """Nested items under a top-level item (up to the next top-level line)."""
+        if not item.is_top_level:
+            return ()
+        children: list[PlanItem] = []
+        for candidate in self.items:
+            if candidate.line_no <= item.line_no:
+                continue
+            if candidate.is_top_level:
+                break
+            children.append(candidate)
+        return tuple(children)
+
+    def active_milestone(self) -> PlanItem | None:
+        """The milestone currently being executed.
+
+        An explicitly active top-level item wins; otherwise the parent of the
+        bottom-most active nested item; otherwise, when every item is still
+        untouched, the first pending milestone (the same fallback the step
+        stamping uses). ``None`` when nothing is in progress.
+        """
+        for item in self.top_level:
+            if item.is_active:
+                return item
+        nested_active = self.last_active()
+        if nested_active is not None:
+            return self.parent_of(nested_active)
+        if self.top_level and all(item.is_pending for item in self.top_level):
+            return self.top_level[0]
+        return None
+
+    def active_leaf(self, milestone: PlanItem) -> PlanItem | None:
+        """Bottom-most ``[/]`` nested item under ``milestone`` (the current sub-goal)."""
+        leaf = None
+        for child in self.children_of(milestone):
+            if child.is_active:
+                leaf = child
+        return leaf
+
     def check_items_of(self, item: PlanItem) -> tuple[CheckItem, ...]:
         """Check lines anchored to the given top-level subgoal."""
         return tuple(ci for ci in self.check_items if ci.parent_key == item.key)
@@ -394,7 +433,7 @@ def unintended_milestone_edits(before: PlanSnapshot, after: PlanSnapshot) -> lis
 _PLAN_GRAMMAR_BASE = f"""### Task Plan Grammar (machine-enforced contract)
 Every checklist line MUST match `<indent>- [<status>] <text>`:
 - Status characters: `[{STATUS_PENDING}]` pending, `[{STATUS_ACTIVE}]` in progress, `[{STATUS_DONE}]` completed, `[{STATUS_BLOCKED}]` blocked.
-- Top-level lines (no indentation) are strategic milestones; their sub-tasks are indented by 2 spaces. All other text in the note is free-form context.
+- Top-level lines (no indentation) are strategic milestones. Nested lines are their sub-goals: 2 spaces for a sub-goal, 4 spaces for a sub-sub-goal beneath it (deeper nesting is allowed). Only zero-indent lines count as milestones for termination and validation; nested lines are the executor's live ledger. All other text in the note is free-form context.
 - `{LOOP_TAG}` tags a BOUNDED iterative milestone: declare its exit boundary (e.g., `(Exit: <condition>; Interval: <cadence>)`) and mark it `[{STATUS_DONE}]` only once that exit condition is verifiably met.
 - `{CONTINUOUS_LOOP_TAG}` tags an UNBOUNDED continuous-monitoring milestone: it must stay `[{STATUS_ACTIVE}]` and can never be marked `[{STATUS_DONE}]`, deleted, or untagged by you — the system mechanically rejects such edits. Only an explicit external stop signal injected by the user unlocks its completion; that signal is an external interruption delivered by the system, never something inferred from the screen or the plan.
 - The task terminates only when every top-level milestone is `[{STATUS_DONE}]`."""

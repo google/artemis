@@ -46,6 +46,7 @@ from artemis.utils.decorators import wrap_with_callbacks
 from artemis.utils.element_hit_test import find_element_at_point
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
+from artemis.utils.plan_grammar import parse_plan
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from artemis.utils.visualization import format_minimal_list_with_elements
@@ -77,7 +78,8 @@ from artemis.agents.operator.prompts import (
     ExecutionIncidentPromptComponent,
     CheckItemsExplainerPromptComponent,
     BackgroundTasksPromptComponent,
-    TaskPlanWarningPromptComponent,
+    render_plan_ledger_bounce,
+    unwritten_action_streak,
     ToolLimitWarningPromptComponent,
     InjectedInstructionPromptComponent,
     render_transcript_static_system,
@@ -120,6 +122,8 @@ class OperatorNode:
         # Index into the rendered message list where this turn's tail begins;
         # set by the transcript build and consumed after the tool loop.
         self._transcript_turn_base: int | None = None
+        self._turn_plan_baseline: str | None = None
+        self._turn_ledger_streak: int = 0
 
     def _available_device_actions(self) -> frozenset[str]:
         """Device actions the installed actuator backend provides.
@@ -216,7 +220,6 @@ class OperatorNode:
                 (InjectedInstructionPromptComponent(), {}),
                 (BackgroundTasksPromptComponent(), {}),
                 (FeedbackPromptComponent(), {}),
-                (TaskPlanWarningPromptComponent(), {}),
                 (ToolLimitWarningPromptComponent(), {}),
             ]
         else:
@@ -230,6 +233,7 @@ class OperatorNode:
             kwargs_to_pass = {
                 "prompts": self.prompts,
                 "plan_and_history": plan_and_history,
+                "task_plan": task_plan,
                 "latest_screenshot_b64": latest_screenshot_b64,
                 "minimal_list": minimal_list,
                 "current_step_num": current_step_num,
@@ -378,7 +382,6 @@ class OperatorNode:
             (InjectedInstructionPromptComponent(), {}),
             (BackgroundTasksPromptComponent(), {}),
             (FeedbackPromptComponent(), {}),
-            (TaskPlanWarningPromptComponent(), {}),
             (ToolLimitWarningPromptComponent(), {}),
         ]
         for component, extra_kwargs in components:
@@ -433,6 +436,7 @@ class OperatorNode:
         raw_thoughts = []
         native_thoughts = []
         tool_limit_exceeded = False
+        plan_gate_bounced = False
 
         for iteration in range(max_iterations):
             if iteration == max_iterations - 1:
@@ -709,7 +713,25 @@ class OperatorNode:
                 )
                 actions_list = []
                 burst_cap = self._max_burst_actions()
-                if len(action_calls) > burst_cap:
+                bounce = None
+                if (
+                    not plan_gate_bounced
+                    and iteration < max_iterations - 1
+                    and len(action_calls) == 1
+                    and not getattr(state, "open_incident", None)
+                    and self._plan_changed_this_turn() is False
+                ):
+                    bounce = self._plan_ledger_bounce_reason()
+                if bounce:
+                    plan_gate_bounced = True
+                    validation_errors = True
+                    logger.info(f"Plan ledger gate: bouncing action. {bounce}")
+                    for tc in action_calls:
+                        tool_outputs.append(
+                            ToolMessage(tool_call_id=tc["id"], content=bounce, status="error")
+                        )
+                    action_calls_to_translate = []
+                elif len(action_calls) > burst_cap:
                     # A multi-action turn is a fast-action burst that the Validator
                     # fires without the safety net; cap its length before it runs.
                     validation_errors = True
@@ -730,6 +752,11 @@ class OperatorNode:
                         )
                     action_calls_to_translate = []
                 else:
+                    if plan_gate_bounced and self._plan_changed_this_turn() is False:
+                        logger.warning(
+                            "Plan ledger gate: executing actions after one bounce without"
+                            " a task_plan change (ledger gap this turn)."
+                        )
                     action_calls_to_translate = action_calls
                 for tc in action_calls_to_translate:
                     translated_actions, error = self._translate_and_validate_tool(tc, state)
@@ -838,6 +865,8 @@ class OperatorNode:
 
         # 3. Get history and plan
         steps, task_plan = self._get_history_and_plan()
+        self._turn_plan_baseline = self._plan_ledger_baseline(task_plan)
+        self._turn_ledger_streak = unwritten_action_streak(steps)
 
         # 4. Format minimal list
 
@@ -939,6 +968,63 @@ class OperatorNode:
             "subagent_calls": ((state.subagent_calls or []) + new_subagent_calls),
             "operator_tool_limit_exceeded": tool_limit_exceeded,
         }
+
+    def _plan_ledger_gate_enabled(self) -> bool:
+        try:
+            from artemis.config import load_agent_config
+
+            return bool(load_agent_config().pro.execution.plan_ledger_gate)
+        except (AttributeError, OSError, TypeError, ValueError):
+            return True
+
+    def _read_task_plan_text(self) -> str | None:
+        """Current ``task_plan`` note text, or ``None`` when it cannot be read."""
+        engine = getattr(self.ctx, "data_engine", None)
+        if not engine:
+            return None
+        try:
+            path = get_note_file_path(engine.base_dir, "task_plan")
+            if not path.exists():
+                return None
+            return path.read_text(encoding="utf-8")
+        except (AttributeError, OSError, TypeError) as e:
+            logger.warning(f"Plan ledger gate: failed to read task_plan: {e}")
+            return None
+
+    def _plan_ledger_baseline(self, task_plan: str) -> str | None:
+        """Return the plan text used as the current turn's baseline."""
+        if not self._plan_ledger_gate_enabled() or not getattr(self.ctx, "data_engine", None):
+            return None
+        if not parse_plan(task_plan).has_top_level:
+            return None
+        return task_plan
+
+    def _plan_ledger_stale_turns(self) -> int:
+        try:
+            from artemis.config import load_agent_config
+
+            return int(load_agent_config().pro.execution.plan_ledger_stale_turns)
+        except (AttributeError, OSError, TypeError, ValueError):
+            return 4
+
+    def _plan_ledger_bounce_reason(self) -> str | None:
+        """Bounce message when the (unchanged) ledger is broken or stale, else ``None``."""
+        current = self._read_task_plan_text()
+        if current is None:
+            return None
+        return render_plan_ledger_bounce(
+            current, self._turn_ledger_streak, self._plan_ledger_stale_turns()
+        )
+
+    def _plan_changed_this_turn(self) -> bool | None:
+        """Whether ``task_plan`` differs from the turn's baseline (``None``: gate inactive)."""
+        baseline = self._turn_plan_baseline
+        if baseline is None:
+            return None
+        current = self._read_task_plan_text()
+        if current is None:
+            return None
+        return current != baseline
 
     def _get_active_subgoal_hash(self) -> str:
         """Parses task_plan.md to find the active top-level subgoal hash."""
