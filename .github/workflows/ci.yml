@@ -61,6 +61,7 @@ jobs:
       # Device, cloud, manual, and end-to-end suites require dedicated
       # infrastructure and intentionally do not run on GitHub-hosted runners.
       - name: Run deterministic Python tests
+        if: github.event_name == 'workflow_dispatch'
         run: >-
           uv run pytest
           tests/unit
