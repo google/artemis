@@ -12,26 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Explorer agent facade.
+"""Explorer agent entry point.
 
-This module is the stable entry point (and ``mock.patch`` target namespace)
-for the Explorer agent.  The implementation is split across sibling modules:
+The :class:`Explorer` class combines the following modules:
 
-- ``tiers``: the flash / pro / ultra tier table (single source of truth).
+- ``tiers``: engine, tools and budgets for flash / pro / ultra.
 - ``tool_declarations``: static tool schemas (universal + native).
 - ``perception_tools``: the ``exec_*`` perception/vision tool method group.
 - ``universal_runner``: the LangChain-based ``_run_universal`` loop.
 - ``run_setup``: flash mode and the pre-loop setup phases of ``run``.
 - ``native_runner``: the native Gemini reasoning loop of ``run``.
-
-All historical module-level names (``settings``, ``StorageManager``,
-``genai``, ``_run_object_detection``, ``draw_dots``, ``perform_ocr``,
-``is_ocr_configured``, ``get_llm``, ``UNIVERSAL_EXPLORER_TOOLS``, ...) remain
-importable and patchable here; split-out code resolves them through this
-module at call time (see ``artemis.agents.explorer._facade``).
 """
 
-import asyncio
 import json
 import os
 from typing import Any, Literal
@@ -39,6 +31,7 @@ from typing import Any, Literal
 from google import genai
 from google.genai import types
 
+from artemis.agents.explorer.constants import DEFAULT_EXPLORER_MODEL
 from artemis.agents.explorer.geometry import (
     FALLBACK_SCREEN_SIZE,
     is_valid_norm_point,
@@ -50,51 +43,18 @@ from artemis.agents.explorer.perception_tools import PerceptionToolsMixin
 from artemis.agents.explorer.run_setup import RunSetupMixin
 from artemis.agents.explorer.screen_index import normalize_text, ScreenElement, ScreenIndex
 from artemis.agents.explorer.tiers import ExplorerTier, get_tier
-from artemis.agents.explorer.tool_declarations import (
-    NATIVE_EXPLORER_TOOL_DECLARATIONS,
-    UNIVERSAL_EXPLORER_TOOLS,
-)
+from artemis.agents.explorer.tool_declarations import NATIVE_EXPLORER_TOOL_DECLARATIONS
 from artemis.agents.explorer.universal_runner import UniversalRunnerMixin
-from artemis.agents.object_detector.object_detector import _run_object_detection
 from artemis.config import settings
 from artemis.context import ArtemisContext
-from artemis.data_engine.storage import StorageManager
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
-from artemis.llm.reliability import (
-    LLMExhaustedError,
-    LLMPermanentError,
-    classify_failure,
-    retry_policy_for,
-)
-from artemis.services.llm import _record_llm_event, _record_llm_retry, get_llm
 from artemis.utils.logger import get_logger
-from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
-from artemis.utils.visualization import draw_dots
+from artemis.utils.ocr_api import is_ocr_configured
 
 logger = get_logger(__name__)
 
-#: Public surface plus the late-bound collaborators the split-out modules
-#: resolve through this facade (``mock.patch`` targets for the test suite).
-__all__ = [
-    "DEFAULT_EXPLORER_MODEL",
-    "Explorer",
-    "NATIVE_EXPLORER_TOOL_DECLARATIONS",
-    "StorageManager",
-    "UNIVERSAL_EXPLORER_TOOLS",
-    "_generate_content_with_reliability",
-    "_run_object_detection",
-    "draw_dots",
-    "genai",
-    "get_llm",
-    "is_ocr_configured",
-    "logger",
-    "perform_ocr",
-    "settings",
-]
-
-#: Model used when the LLM configuration carries no Explorer entry.
-DEFAULT_EXPLORER_MODEL = "gemini-3.8-flash"
+__all__ = ["Explorer"]
 
 #: Environment override for Gemini explicit context caching ("true" / "false").
 CACHING_ENV_VAR = "ARTEMIS_EXPLORER_CACHING"
@@ -102,80 +62,6 @@ CACHING_ENV_VAR = "ARTEMIS_EXPLORER_CACHING"
 #: How far outside its labeled element (as a fraction of the screen, per side)
 #: a candidate's point may fall and still inherit that element's bounds.
 LABEL_TOLERANCE_RATIO = 0.02
-
-
-async def _generate_content_with_reliability(operation, *, label: str = "Explorer model call"):
-    """Run one native google-genai model call under the shared reliability layer.
-
-    Retry decisions are owned by ``classify_failure``/``retry_policy_for``
-    (artemis.llm.reliability) instead of a blanket exponential-backoff loop:
-    non-retryable categories (auth, bad request) are raised immediately as
-    ``LLMPermanentError`` and exhausted retryable categories surface as
-    ``LLMExhaustedError``.  Only the retry/error-classification policy is
-    centralized here; the google-genai transport itself stays untouched.
-    ``operation`` must be a zero-argument callable returning a fresh awaitable
-    per attempt.
-    """
-    attempt = 0
-    while True:
-        try:
-            return await operation()
-        except Exception as call_err:
-            attempt += 1
-            failure = classify_failure(call_err)
-            if not failure.retryable:
-                logger.error(f"{label} permanently failed [{failure.category.value}]: {call_err}")
-                _record_llm_event(
-                    "llm_gave_up",
-                    {
-                        "source": "explorer",
-                        "error": str(call_err)[:1000],
-                        "category": failure.category.value,
-                        "retryable": False,
-                    },
-                    status="failed",
-                )
-                raise LLMPermanentError(
-                    f"{label} failed [{failure.category.value}]: {call_err}",
-                    failure=failure,
-                    cause=call_err,
-                ) from call_err
-            policy = retry_policy_for(failure.category)
-            if attempt >= policy.max_attempts:
-                logger.error(
-                    f"{label} exhausted {attempt} attempt(s) [{failure.category.value}]: {call_err}"
-                )
-                _record_llm_event(
-                    "llm_gave_up",
-                    {
-                        "source": "explorer",
-                        "error": str(call_err)[:1000],
-                        "category": failure.category.value,
-                        "retryable": True,
-                        "attempts": attempt,
-                    },
-                    status="failed",
-                )
-                raise LLMExhaustedError(
-                    f"{label} exhausted {attempt} attempt(s)"
-                    f" [{failure.category.value}]: {call_err}",
-                    failure=failure,
-                    cause=call_err,
-                ) from call_err
-            delay = policy.delay_for(attempt)
-            logger.warning(
-                f"{label} failed [{failure.category.value}] on attempt"
-                f" {attempt}/{policy.max_attempts}: {call_err}."
-                f" Retrying in {delay:.2f}s..."
-            )
-            _record_llm_retry(
-                str(call_err),
-                delay,
-                attempt=attempt,
-                max_retries=policy.max_attempts,
-                source="explorer",
-            )
-            await asyncio.sleep(delay)
 
 
 class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, NativeRunnerMixin):

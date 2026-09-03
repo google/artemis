@@ -15,7 +15,7 @@
 from unittest.mock import MagicMock, patch
 
 from artemis.context import ArtemisContext
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.mobile.search_logs import (
     SearchLogs,
     SearchLogsArgs,
@@ -147,8 +147,8 @@ def mock_ctx():
     return MagicMock(spec=ArtemisContext)
 
 
-def test_search_logs_tool_subclass_and_registry():
-    """Verify SearchLogsTool is a subclass of ArtemisTool and properly registered."""
+def test_search_logs_tool_subclass():
+    """Verify SearchLogsTool is a subclass of ArtemisTool."""
     assert issubclass(SearchLogsTool, ArtemisTool)
     assert issubclass(SearchLogs, ArtemisTool)
     assert issubclass(SearchLogsToolAlias, ArtemisTool)
@@ -158,11 +158,6 @@ def test_search_logs_tool_subclass_and_registry():
     assert search_logs.name == "search_logs"
     assert search_logs.category == "diagnostic"
     assert search_logs.args_schema == SearchLogsArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("search_logs")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, SearchLogsTool)
 
     # GenAI FunctionDeclaration export
     declaration = search_logs.to_genai_declaration()

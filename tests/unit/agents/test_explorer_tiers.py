@@ -28,7 +28,9 @@ from artemis.config import settings
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 
-FACADE = "artemis.agents.explorer.explorer"
+EXPLORER = "artemis.agents.explorer.explorer"
+RUN_SETUP = "artemis.agents.explorer.run_setup"
+UNIVERSAL_RUNNER = "artemis.agents.explorer.universal_runner"
 
 
 def _context(model: str = "gemini-3.8-flash", denylist: list[str] | None = None) -> MagicMock:
@@ -108,7 +110,7 @@ def _isolated_env(monkeypatch):
 
 
 def test_construction_creates_no_genai_client():
-    with patch(f"{FACADE}.genai.Client") as client_cls:
+    with patch(f"{EXPLORER}.genai.Client") as client_cls:
         explorer = Explorer(_context())
     client_cls.assert_not_called()
     assert explorer.client is None
@@ -124,7 +126,7 @@ def test_construction_creates_no_genai_client():
 )
 def test_tier_sets_turn_budget_and_exposed_tools(version, max_turns, expected_tools):
     explorer = Explorer(_context())
-    with patch(f"{FACADE}.is_ocr_configured", return_value=True):
+    with patch(f"{EXPLORER}.is_ocr_configured", return_value=True):
         explorer._apply_tier(get_tier(version))
         native_names = {t.name for t in explorer.get_exposed_tools()}
         universal_names = {t["function"]["name"] for t in explorer._universal_exposed_tools()}
@@ -137,7 +139,7 @@ def test_tier_sets_turn_budget_and_exposed_tools(version, max_turns, expected_to
 
 def test_unconfigured_ocr_and_user_denylist_hide_tools_on_ultra():
     explorer = Explorer(_context(denylist=["inspect_region"]))
-    with patch(f"{FACADE}.is_ocr_configured", return_value=False):
+    with patch(f"{EXPLORER}.is_ocr_configured", return_value=False):
         explorer._apply_tier(get_tier("ultra"))
     names = {t.name for t in explorer.get_exposed_tools()}
     assert "get_ocr_list" not in names
@@ -190,9 +192,9 @@ async def test_universal_run_without_google_key_never_touches_genai(screenshot):
 
     with (
         patch.object(settings, "GOOGLE_API_KEY", None),
-        patch(f"{FACADE}.genai.Client") as client_cls,
-        patch(f"{FACADE}.get_llm", return_value=llm),
-        patch(f"{FACADE}.StorageManager", return_value=storage),
+        patch(f"{EXPLORER}.genai.Client") as client_cls,
+        patch(f"{UNIVERSAL_RUNNER}.get_llm", return_value=llm),
+        patch(f"{RUN_SETUP}.StorageManager", return_value=storage),
     ):
         explorer = Explorer(ctx)
         raw = await explorer.run("find it", "", screenshot, _state(screenshot), version="pro")
@@ -342,7 +344,7 @@ def test_pro_prompt_only_describes_exposed_tools():
 
 def test_ultra_prompt_describes_all_tools():
     explorer = Explorer(_context())
-    with patch(f"{FACADE}.is_ocr_configured", return_value=True):
+    with patch(f"{EXPLORER}.is_ocr_configured", return_value=True):
         explorer._apply_tier(get_tier("ultra"))
         prompt, error = explorer._build_prompt_template(get_tier("ultra"))
     assert error is None
@@ -355,7 +357,7 @@ def test_ultra_prompt_describes_all_tools():
 
 def test_prompt_denylist_section_only_for_user_denied_tier_tools():
     explorer = Explorer(_context(denylist=["inspect_region", "search_xml_ocr"]))
-    with patch(f"{FACADE}.is_ocr_configured", return_value=True):
+    with patch(f"{EXPLORER}.is_ocr_configured", return_value=True):
         explorer._apply_tier(get_tier("ultra"))
         ultra_prompt, _ = explorer._build_prompt_template(get_tier("ultra"))
         explorer._apply_tier(get_tier("pro"))
@@ -399,8 +401,8 @@ async def test_flash_run_returns_detected_candidates(screenshot):
         }
     )
     with (
-        patch(f"{FACADE}._run_object_detection", detection),
-        patch(f"{FACADE}.genai.Client") as client_cls,
+        patch(f"{RUN_SETUP}._run_object_detection", detection),
+        patch(f"{EXPLORER}.genai.Client") as client_cls,
     ):
         explorer = Explorer(_context())
         raw = await explorer.run(
@@ -421,7 +423,7 @@ async def test_flash_run_returns_detected_candidates(screenshot):
 
 @pytest.mark.asyncio
 async def test_flash_run_reports_missing_detection(screenshot):
-    with patch(f"{FACADE}._run_object_detection", AsyncMock(return_value={"detected": []})):
+    with patch(f"{RUN_SETUP}._run_object_detection", AsyncMock(return_value={"detected": []})):
         raw = await Explorer(_context()).run(
             "ghost", "", screenshot, _state(screenshot), version="flash"
         )
@@ -442,8 +444,8 @@ async def test_native_ultra_run_uses_async_cache_api(screenshot):
     storage.get_image.return_value = None
 
     with (
-        patch(f"{FACADE}.genai.Client") as client_cls,
-        patch(f"{FACADE}.StorageManager", return_value=storage),
+        patch(f"{EXPLORER}.genai.Client") as client_cls,
+        patch(f"{RUN_SETUP}.StorageManager", return_value=storage),
         patch.object(settings, "EXPLORER_CACHING", None),
     ):
         explorer = Explorer(ctx)
@@ -466,7 +468,7 @@ async def test_native_pro_run_skips_cache_by_default(screenshot):
     storage.get_image.return_value = None
 
     with (
-        patch(f"{FACADE}.StorageManager", return_value=storage),
+        patch(f"{RUN_SETUP}.StorageManager", return_value=storage),
         patch.object(settings, "EXPLORER_CACHING", None),
     ):
         await Explorer(ctx).run("target", "", screenshot, _state(screenshot), version="pro")
@@ -489,7 +491,7 @@ async def test_native_file_api_uploads_and_deletes_asynchronously(screenshot, mo
     storage = MagicMock()
     storage.get_image.return_value = None
 
-    with patch(f"{FACADE}.StorageManager", return_value=storage):
+    with patch(f"{RUN_SETUP}.StorageManager", return_value=storage):
         await Explorer(ctx).run("target", "", screenshot, _state(screenshot), version="pro")
 
     client.aio.files.upload.assert_awaited_once_with(file=screenshot)
@@ -507,7 +509,7 @@ async def test_run_closes_http_client_on_both_engines(screenshot):
     ctx._genai_client = client
     native = Explorer(ctx)
     native.http_client = SimpleNamespace(aclose=AsyncMock())
-    with patch(f"{FACADE}.StorageManager", return_value=storage):
+    with patch(f"{RUN_SETUP}.StorageManager", return_value=storage):
         await native.run("t", "", screenshot, _state(screenshot), version="pro")
     native_close = native.http_client  # already reset
     assert native_close is None
@@ -519,8 +521,8 @@ async def test_run_closes_http_client_on_both_engines(screenshot):
     http_client = SimpleNamespace(aclose=AsyncMock())
     universal.http_client = http_client
     with (
-        patch(f"{FACADE}.StorageManager", return_value=storage),
-        patch(f"{FACADE}.get_llm", return_value=llm),
+        patch(f"{RUN_SETUP}.StorageManager", return_value=storage),
+        patch(f"{UNIVERSAL_RUNNER}.get_llm", return_value=llm),
         pytest.raises(RuntimeError),
     ):
         await universal.run("t", "", screenshot, _state(screenshot), version="pro")

@@ -14,7 +14,7 @@
 
 """Tests for object_detector universal tools."""
 
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.object_detection_tool import (
     ObjectDetection,
     ObjectDetectionArgs,
@@ -29,8 +29,8 @@ from artemis.tools.object_detection_tool import (
 )
 
 
-def test_object_detector_tool_subclass_and_registry():
-    """Verify ObjectDetectionTool is an ArtemisTool subclass and registered in ToolRegistry."""
+def test_object_detector_tool_subclass():
+    """Verify ObjectDetectionTool is an ArtemisTool subclass."""
     assert issubclass(ObjectDetectionTool, ArtemisTool)
     assert issubclass(ObjectDetection, ArtemisTool)
     assert issubclass(ObjectDetectorTool, ArtemisTool)
@@ -51,8 +51,3 @@ def test_object_detector_tool_subclass_and_registry():
     assert operator_object_detection.name == "object_detection"
     assert operator_object_detection.category == "perception"
     assert operator_object_detection.args_schema == OperatorObjectDetectionArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("object_detection")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, ObjectDetectionTool)

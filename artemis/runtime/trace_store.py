@@ -326,6 +326,23 @@ def update_trace_status(
         return data
 
 
+def update_trace_pid(trace_id: str, pid: int) -> dict[str, Any] | None:
+    """Updates the pid field of the status.json for a given trace_id."""
+    path = get_status_path(trace_id)
+    with _status_lock(path):
+        data = read_status(trace_id)
+        if not data:
+            if os.path.exists(path) or os.path.exists(f"{path}.corrupt"):
+                logger.warning(
+                    f"Dropping pid update for trace {trace_id}: existing status.json is unreadable"
+                )
+            return None
+
+        data["pid"] = pid
+        write_status(trace_id, data)
+        return data
+
+
 def update_trace_device_serial(trace_id: str, device_serial: str) -> dict[str, Any] | None:
     """Updates the device_serial field of the status.json for a given trace_id."""
     path = get_status_path(trace_id)

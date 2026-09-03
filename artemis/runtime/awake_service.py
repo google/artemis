@@ -25,6 +25,7 @@ from typing import Iterable
 from adbutils import AdbClient
 
 from artemis.config import settings
+from artemis.runtime.adb_endpoint import adb_command
 from artemis.runtime.awake_lease import ScreenAwakeLease
 from artemis.utils.logger import get_logger
 
@@ -47,7 +48,7 @@ def _run_awake_adb_command(
     """Run one non-fatal ADB command used by the USB awake policy."""
     try:
         result = subprocess.run(
-            ["adb", "-s", device_id, *args],
+            adb_command(["-s", device_id, *args]),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,

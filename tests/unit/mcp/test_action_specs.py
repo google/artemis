@@ -208,20 +208,14 @@ def test_operator_verbs_lower_onto_manifest_actions():
     )
 
 
-def test_registry_wait_for_delay_seconds_drift_stays_dead():
-    """Guards against re-growing a shadow device-action registration.
+def test_manifest_wait_for_delay_uses_milliseconds():
+    """The manifest's ``wait_for_delay`` takes ``time_in_ms``, never *seconds*.
 
     ``artemis/tools/actions/device_actions.py`` used to shadow-register a second
-    ``wait_for_delay`` taking *seconds* while every prompt teaches milliseconds
-    (the last such surface, ``artemis/tools/mobile/exec_tools.py``, is deleted).
-    The ToolRegistry must never again carry a ``wait_for_delay`` whose unit
-    disagrees with the manifest's ``time_in_ms``.
+    ``wait_for_delay`` taking *seconds* while every prompt teaches milliseconds.
+    The shadow ToolRegistry channel is deleted; the manifest is the only surface
+    left, and its unit must stay milliseconds.
     """
-    from artemis.tools.base import ToolRegistry
-
-    tool = ToolRegistry.get("wait_for_delay")
-    if tool is None:
-        return  # Not registered at all: nothing to drift.
-    fields = set(tool.args_schema.model_json_schema().get("properties", {}))
+    fields = set(tool_declaration("wait_for_delay").parameters["properties"])
     assert "seconds" not in fields
     assert "time_in_ms" in fields

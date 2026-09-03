@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -80,7 +80,6 @@ class SubmitAnswerTool(ArtemisTool):
 submit_answer = SubmitAnswerTool()
 SubmitAnswer = SubmitAnswerTool
 DiagnoserSubmitAnswerTool = SubmitAnswerTool
-ToolRegistry.register(submit_answer)
 
 
 def get_submit_answer_tool(ctx: ArtemisContext) -> BaseTool:

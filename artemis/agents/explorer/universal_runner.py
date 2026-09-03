@@ -15,10 +15,7 @@
 """Universal (LangChain ChatModel) execution loop for the Explorer agent.
 
 Split out of ``artemis.agents.explorer.explorer``: the ``_run_universal``
-reasoning loop, packaged as a mixin consumed by ``Explorer``.  Patched
-collaborators (``get_llm``, ``logger``, ``UNIVERSAL_EXPLORER_TOOLS``) are
-resolved through the facade module at call time; see
-``artemis.agents.explorer._facade``.
+reasoning loop, packaged as a mixin consumed by ``Explorer``.
 """
 
 import asyncio
@@ -33,10 +30,14 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from artemis.agents.explorer._facade import facade
 from artemis.agents.explorer.geometry import is_valid_norm_point
 from artemis.agents.explorer.tiers import SUBMIT_TOOL
+from artemis.agents.explorer.tool_declarations import UNIVERSAL_EXPLORER_TOOLS
 from artemis.graph.state import State
+from artemis.services.llm import get_llm
+from artemis.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class UniversalRunnerMixin:
@@ -72,9 +73,8 @@ class UniversalRunnerMixin:
 
     def _universal_exposed_tools(self) -> list[dict[str, Any]]:
         """OpenAI-style tool schemas the model may see (tier-hidden ones excluded)."""
-        _ex = facade()
         hidden = self._hidden_tool_names()
-        return [t for t in _ex.UNIVERSAL_EXPLORER_TOOLS if t["function"]["name"] not in hidden]
+        return [t for t in UNIVERSAL_EXPLORER_TOOLS if t["function"]["name"] not in hidden]
 
     async def _run_universal(
         self,
@@ -88,8 +88,7 @@ class UniversalRunnerMixin:
         max_turns: int,
     ) -> str:
         """Executes the Explorer reasoning loop via a universal LangChain ChatModel."""
-        _ex = facade()
-        llm = _ex.get_llm(self.ctx, name="explorer")
+        llm = get_llm(self.ctx, name="explorer")
 
         exposed_tools = self._universal_exposed_tools()
         bound_llm = llm.bind_tools(exposed_tools)
@@ -124,7 +123,7 @@ class UniversalRunnerMixin:
 
             tool_calls = getattr(response, "tool_calls", None) or []
             if not tool_calls:
-                _ex.logger.warning(f"Universal Explorer turn {turn}: No tool calls generated.")
+                logger.warning(f"Universal Explorer turn {turn}: No tool calls generated.")
                 if is_final_turn:
                     return json.dumps(
                         {
@@ -256,7 +255,6 @@ class UniversalRunnerMixin:
         the images ride on a follow-up human turn instead; unreadable files
         are skipped so a missing annotation never aborts the loop.
         """
-        _ex = facade()
         blocks: list[dict[str, Any]] = []
         tool_names: list[str] = []
         for tool_name, path in images:
@@ -264,7 +262,7 @@ class UniversalRunnerMixin:
                 with open(path, "rb") as f:
                     img_b64 = base64.b64encode(f.read()).decode("utf-8")
             except OSError as read_err:
-                _ex.logger.warning(f"Skipping unreadable tool image {path}: {read_err}")
+                logger.warning(f"Skipping unreadable tool image {path}: {read_err}")
                 continue
             if tool_name not in tool_names:
                 tool_names.append(tool_name)
@@ -283,7 +281,6 @@ class UniversalRunnerMixin:
         self, tool_calls: list, messages: list[BaseMessage], turn: int
     ) -> None:
         """Executes non-submit tool calls, appending ToolMessages and their images."""
-        _ex = facade()
         images: list[tuple[str, str]] = []
         for tc in tool_calls:
             name = tc.get("name")
@@ -306,7 +303,7 @@ class UniversalRunnerMixin:
                 messages.append(ToolMessage(tool_call_id=call_id, name=name, content=res_text))
                 images.extend((name, path) for path in self._tool_image_paths(res))
             except Exception as tool_err:
-                _ex.logger.error(f"Error executing tool '{name}': {tool_err}")
+                logger.error(f"Error executing tool '{name}': {tool_err}")
                 messages.append(
                     ToolMessage(
                         tool_call_id=call_id,

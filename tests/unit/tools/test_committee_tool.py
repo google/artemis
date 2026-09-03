@@ -168,9 +168,9 @@ class TestCommitteeTool(unittest.IsolatedAsyncioTestCase):
             # Clean up temp directory
             shutil.rmtree(temp_dir)
 
-    def test_ask_committee_tool_subclass_and_registry(self):
-        """Verify AskCommitteeTool is a subclass of ArtemisTool and properly registered."""
-        from artemis.tools.base import ArtemisTool, ToolRegistry
+    def test_ask_committee_tool_subclass(self):
+        """Verify AskCommitteeTool is a subclass of ArtemisTool."""
+        from artemis.tools.base import ArtemisTool
         from artemis.tools.committee_tool import (
             AskCommittee,
             AskCommitteeArgs,
@@ -190,11 +190,6 @@ class TestCommitteeTool(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ask_committee.name, "ask_committee")
         self.assertEqual(ask_committee.category, "custom")
         self.assertEqual(ask_committee.args_schema, AskCommitteeArgs)
-
-        # Registry lookup
-        reg_tool = ToolRegistry.get("ask_committee")
-        self.assertIsNotNone(reg_tool)
-        self.assertIsInstance(reg_tool, AskCommitteeTool)
 
         # GenAI FunctionDeclaration export
         declaration = ask_committee.to_genai_declaration()

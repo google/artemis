@@ -17,8 +17,7 @@
 Split out of ``artemis.agents.explorer.explorer`` as pure data:
 ``UNIVERSAL_EXPLORER_TOOLS`` (OpenAI-style dict schemas for the universal
 LangChain path) and ``NATIVE_EXPLORER_TOOL_DECLARATIONS`` (google-genai
-``FunctionDeclaration`` objects for the native Gemini path).  Both are
-re-exported by the ``explorer`` facade module.
+``FunctionDeclaration`` objects for the native Gemini path).
 """
 
 from google.genai import types

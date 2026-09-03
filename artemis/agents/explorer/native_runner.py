@@ -19,9 +19,9 @@ loop and its named phases (model invocation, submit_answer interception and
 validation, tool dispatching, failure mapping, resource cleanup), packaged as
 a mixin consumed by ``Explorer``.  Every google-genai call goes through the
 SDK's ``client.aio`` surface so uploads, cache management and generation
-never block the event loop.  Patched collaborators (``logger``,
-``_generate_content_with_reliability``) are resolved through the facade
-module at call time; see ``artemis.agents.explorer._facade``.
+never block the event loop.  This module also owns
+:func:`_generate_content_with_reliability`, the shared reliability wrapper
+for native google-genai model calls.
 """
 
 import asyncio
@@ -33,14 +33,92 @@ from typing import TYPE_CHECKING, Any
 
 from google.genai import types
 
-from artemis.agents.explorer._facade import facade
 from artemis.agents.explorer.geometry import is_valid_norm_point
 from artemis.agents.explorer.tiers import SUBMIT_TOOL
 from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.data_engine.trace import TraceSpan
+from artemis.llm.reliability import (
+    LLMExhaustedError,
+    LLMPermanentError,
+    classify_failure,
+    retry_policy_for,
+)
+from artemis.services.llm import _record_llm_event, _record_llm_retry
+from artemis.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 #: Loads a local image as a ``Part`` (inline bytes or a File API reference).
 ImagePartGetter = Callable[[str], Awaitable[types.Part]]
+
+
+async def _generate_content_with_reliability(operation, *, label: str = "Explorer model call"):
+    """Run one native google-genai model call under the shared reliability layer.
+
+    ``operation`` must return a fresh awaitable on each call. Non-retryable
+    failures raise ``LLMPermanentError``; exhausted retries raise
+    ``LLMExhaustedError`` according to the shared category policy.
+    """
+    attempt = 0
+    while True:
+        try:
+            return await operation()
+        except Exception as call_err:
+            attempt += 1
+            failure = classify_failure(call_err)
+            if not failure.retryable:
+                logger.error(f"{label} permanently failed [{failure.category.value}]: {call_err}")
+                _record_llm_event(
+                    "llm_gave_up",
+                    {
+                        "source": "explorer",
+                        "error": str(call_err)[:1000],
+                        "category": failure.category.value,
+                        "retryable": False,
+                    },
+                    status="failed",
+                )
+                raise LLMPermanentError(
+                    f"{label} failed [{failure.category.value}]: {call_err}",
+                    failure=failure,
+                    cause=call_err,
+                ) from call_err
+            policy = retry_policy_for(failure.category)
+            if attempt >= policy.max_attempts:
+                logger.error(
+                    f"{label} exhausted {attempt} attempt(s) [{failure.category.value}]: {call_err}"
+                )
+                _record_llm_event(
+                    "llm_gave_up",
+                    {
+                        "source": "explorer",
+                        "error": str(call_err)[:1000],
+                        "category": failure.category.value,
+                        "retryable": True,
+                        "attempts": attempt,
+                    },
+                    status="failed",
+                )
+                raise LLMExhaustedError(
+                    f"{label} exhausted {attempt} attempt(s)"
+                    f" [{failure.category.value}]: {call_err}",
+                    failure=failure,
+                    cause=call_err,
+                ) from call_err
+            delay = policy.delay_for(attempt)
+            logger.warning(
+                f"{label} failed [{failure.category.value}] on attempt"
+                f" {attempt}/{policy.max_attempts}: {call_err}."
+                f" Retrying in {delay:.2f}s..."
+            )
+            _record_llm_retry(
+                str(call_err),
+                delay,
+                attempt=attempt,
+                max_retries=policy.max_attempts,
+                source="explorer",
+            )
+            await asyncio.sleep(delay)
 
 
 def _bare_tool_name(name: str) -> str:
@@ -145,9 +223,8 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         self, client, model_name: str, prompt_template: str, contents: list
     ):
         """Creates the explicit cache resource; returns None on failure."""
-        _ex = facade()
         try:
-            _ex.logger.info("Creating cache resource for Explorer...")
+            logger.info("Creating cache resource for Explorer...")
             cached_content = await client.aio.caches.create(
                 model=model_name,
                 config=types.CreateCachedContentConfig(
@@ -163,10 +240,10 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                     ttl="300s",
                 ),
             )
-            _ex.logger.info(f"Cache resource created successfully: {cached_content.name}")
+            logger.info(f"Cache resource created successfully: {cached_content.name}")
             return cached_content
         except Exception as cache_err:
-            _ex.logger.error(f"Failed to create cache resource: {cache_err}")
+            logger.error(f"Failed to create cache resource: {cache_err}")
             return None
 
     async def _run_native(
@@ -234,7 +311,6 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         max_turns: int,
     ) -> str:
         """Main native reasoning loop: one model turn per iteration."""
-        _ex = facade()
         turn = 0
         agent_outcome = ""
         self.turn_latencies = []
@@ -243,7 +319,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
 
         while turn < max_turns:
             turn += 1
-            _ex.logger.info(f"Turn {turn}/{max_turns}: Invoking Native Gemini SDK for Explorer...")
+            logger.info(f"Turn {turn}/{max_turns}: Invoking Native Gemini SDK for Explorer...")
 
             self._prune_historical_images(contents, keep_last=1)
 
@@ -413,7 +489,6 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         thinking_level,
     ):
         """Invokes the model for one turn under a trace span; returns response and texts."""
-        _ex = facade()
         ctx = self.ctx
         start_turn = time.perf_counter()
         with TraceSpan(name="gemini_explorer_call", ctx=ctx) as span:
@@ -425,7 +500,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                 thinking_level=thinking_level,
             )
 
-            response = await _ex._generate_content_with_reliability(
+            response = await _generate_content_with_reliability(
                 lambda: asyncio.wait_for(
                     client.aio.models.generate_content(
                         model=model_name,
@@ -476,8 +551,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         recorded as a synthetic model text part so the conversation history
         stays well-formed for the retry.
         """
-        _ex = facade()
-        _ex.logger.warning(f"Explorer turn {turn}: Model hallucinated plain text. Forcing retry.")
+        logger.warning(f"Explorer turn {turn}: Model hallucinated plain text. Forcing retry.")
         model_text = "\n".join(text_parts) if text_parts else ""
         turn_record["tool_calls"].append(
             {
@@ -573,7 +647,6 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         On validation failure the error is fed back as a tool response and
         None is returned so the ReAct loop can continue and self-correct.
         """
-        _ex = facade()
         submit_call = next(
             (fc for fc in function_calls if _bare_tool_name(fc.name) == SUBMIT_TOOL),
             None,
@@ -586,7 +659,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         errors = self._validate_submit_args(function_calls, args, candidates)
 
         if errors:
-            _ex.logger.warning(f"Explorer submit_answer validation failed: {errors}")
+            logger.warning(f"Explorer submit_answer validation failed: {errors}")
             turn_record["tool_calls"].append(
                 {
                     "name": SUBMIT_TOOL,
@@ -611,7 +684,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
             # Allow the ReAct loop to continue so the model can self-correct
             return None
 
-        _ex.logger.info("Explorer submit_answer validation passed successfully!")
+        logger.info("Explorer submit_answer validation passed successfully!")
         # Candidates submitted by a registered label inherit that element's
         # bounds; the rest of the model's arguments are passed through as is.
         outcome_args = dict(args)
@@ -637,7 +710,6 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         Image loading failures are logged and skipped: the textual result is
         still delivered, so one unreadable annotation cannot sink the turn.
         """
-        _ex = facade()
         tool_response_parts.append(
             types.Part.from_function_response(name=name, response={result_key: res.get("text")})
         )
@@ -646,7 +718,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
             try:
                 tool_response_parts.append(await get_image_part(img_p))
             except Exception as e:
-                _ex.logger.warning(f"Failed to load image response part for {img_p}: {e}")
+                logger.warning(f"Failed to load image response part for {img_p}: {e}")
 
     async def _execute_native_tool(
         self,
@@ -730,7 +802,6 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
         absent from the declarations, because models occasionally call tools
         they were never offered.
         """
-        _ex = facade()
         for fc in function_calls:
             name = _bare_tool_name(fc.name)
             if name == SUBMIT_TOOL:
@@ -738,7 +809,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
             args = fc.args or {}
             tool_call_trace = {"name": name, "args": args}
             if name in self.denylisted_tools:
-                _ex.logger.warning(
+                logger.warning(
                     f"Explorer attempted to call denylisted tool '{name}'. Blocking execution."
                 )
                 error = f"Tool '{name}' is denylisted and unavailable."
@@ -749,14 +820,14 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
                 )
                 continue
 
-            _ex.logger.info(f"Explorer executing tool '{name}' sequentially...")
+            logger.info(f"Explorer executing tool '{name}' sequentially...")
 
             try:
                 await self._execute_native_tool(
                     name, args, get_image_part, tool_call_trace, tool_response_parts
                 )
             except Exception as e:
-                _ex.logger.error(f"Explorer tool {name} execution failed: {e}")
+                logger.error(f"Explorer tool {name} execution failed: {e}")
                 tool_call_trace["response"] = {"error": str(e)}
                 tool_response_parts.append(
                     types.Part.from_function_response(name=name, response={"error": str(e)})
@@ -766,8 +837,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
 
     def _format_native_failure(self, e: Exception, model_name: str) -> str:
         """Maps a loop failure to the user-facing fallback outcome JSON."""
-        _ex = facade()
-        _ex.logger.error(f"Explorer execution loop failed: {e}")
+        logger.error(f"Explorer execution loop failed: {e}")
 
         err_msg = str(e)
         if "preempted" in err_msg.lower():
@@ -794,16 +864,15 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
 
     async def _cleanup_native_resources(self, client, cached_content, uploaded_files: list) -> None:
         """Deletes the cache resource and File API uploads created for this run."""
-        _ex = facade()
         if cached_content:
             try:
-                _ex.logger.info(f"Deleting cache resource: {cached_content.name}")
+                logger.info(f"Deleting cache resource: {cached_content.name}")
                 await client.aio.caches.delete(name=cached_content.name)
             except Exception as cleanup_cache_err:
-                _ex.logger.warning(f"Failed to delete cache resource: {cleanup_cache_err}")
+                logger.warning(f"Failed to delete cache resource: {cleanup_cache_err}")
         for file_ref in uploaded_files:
             try:
                 await client.aio.files.delete(name=file_ref.name)
             except Exception as cleanup_err:
-                _ex.logger.warning(f"Failed to delete uploaded file {file_ref.name}: {cleanup_err}")
-        _ex.logger.info(f"Explorer turn latencies: {self.turn_latencies}")
+                logger.warning(f"Failed to delete uploaded file {file_ref.name}: {cleanup_err}")
+        logger.info(f"Explorer turn latencies: {self.turn_latencies}")

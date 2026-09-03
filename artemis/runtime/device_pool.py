@@ -436,7 +436,15 @@ class DevicePool:
             selects the first ready device so the task will queue on it.
             Returns None if no devices are attached.
         """
-        all_devs = self.list_devices()
+        return self._pick_device(self.list_devices(), preferred_serial)
+
+    async def select_device_async(self, preferred_serial: str | None = None) -> str | None:
+        """Select a device without blocking the caller on ADB enumeration."""
+        return self._pick_device(await self.list_devices_async(), preferred_serial)
+
+    def _pick_device(
+        self, all_devs: list[DeviceStatus], preferred_serial: str | None
+    ) -> str | None:
         ready_devs = [d for d in all_devs if d.state == "device"]
 
         if preferred_serial:

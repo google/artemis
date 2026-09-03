@@ -19,11 +19,7 @@ detection path, the per-run screen loading shared by every tier (image record
 resolution, screen dimensions, fused hierarchy, in-memory screen index) and
 the named preparation phases executed before a reasoning loop (image pool,
 model parameters, tier-aware prompt construction, initial screenshot
-annotation), packaged as a mixin consumed by ``Explorer``.  Patched
-collaborators (``settings``, ``StorageManager``, ``is_ocr_configured``,
-``perform_ocr``, ``draw_dots``, ``_run_object_detection``, ``logger``) are
-resolved through the facade module at call time; see
-``artemis.agents.explorer._facade``.
+annotation), packaged as a mixin consumed by ``Explorer``.
 """
 
 import base64
@@ -37,15 +33,24 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from artemis.agents.explorer._facade import facade
-from artemis.agents.explorer.constants import EXECUTION_CONSTRAINT_TEMPLATE
+from artemis.agents.explorer.constants import (
+    DEFAULT_EXPLORER_MODEL,
+    EXECUTION_CONSTRAINT_TEMPLATE,
+)
 from artemis.agents.explorer.geometry import resolve_screen_size
 from artemis.agents.explorer.perception_tools import load_detector_templates
 from artemis.agents.explorer.screen_index import ScreenElement, ScreenIndex
 from artemis.agents.explorer.tiers import SUBMIT_TOOL, ExplorerTier
+from artemis.agents.object_detector.object_detector import _run_object_detection
+from artemis.config import settings
+from artemis.data_engine.storage import StorageManager
 from artemis.graph.state import State
+from artemis.utils.logger import get_logger
+from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
-from artemis.utils.visualization import format_minimal_list_with_elements
+from artemis.utils.visualization import draw_dots, format_minimal_list_with_elements
+
+logger = get_logger(__name__)
 
 #: Prompt bullets may be plain strings or ``{"text": ..., "requires": [...]}``
 #: objects; the latter are emitted only when every listed tool is exposed.
@@ -109,13 +114,12 @@ class RunSetupMixin:
         Several targets may be listed in ``query`` separated by ``|``; each
         detection becomes a ``D<n>`` candidate described by its detected label.
         """
-        _ex = facade()
         templates, global_timeout = load_detector_templates()
 
         queries = [q.strip() for q in query.split("|") if q.strip()]
 
         try:
-            result = await _ex._run_object_detection(
+            result = await _run_object_detection(
                 self.ctx,
                 screenshot_path,
                 queries,
@@ -140,12 +144,11 @@ class RunSetupMixin:
                 ensure_ascii=False,
             )
         except Exception as e:
-            _ex.logger.error(f"Flash mode object detection failed: {e}")
+            logger.error(f"Flash mode object detection failed: {e}")
             return self._failure_outcome(f"Flash mode detection error: {e}")
 
     def _resolve_image_record(self, screenshot_path: str) -> tuple:
         """Computes the screenshot hash and looks it up in the Data Engine DB."""
-        _ex = facade()
         image_name = None
         record = None
         try:
@@ -154,24 +157,24 @@ class RunSetupMixin:
                 for byte_block in iter(lambda: f.read(4096), b""):
                     sha256_hash.update(byte_block)
             computed_hash = sha256_hash.hexdigest()
-            _ex.logger.info(f"Computed screenshot hash: {computed_hash}")
+            logger.info(f"Computed screenshot hash: {computed_hash}")
 
             # Check if it exists in DB
-            db_path = _ex.settings.DATA_ENGINE_DB_PATH
-            base_dir = _ex.settings.TRACES_PATH
-            storage = _ex.StorageManager(db_path, base_dir)
+            db_path = settings.DATA_ENGINE_DB_PATH
+            base_dir = settings.TRACES_PATH
+            storage = StorageManager(db_path, base_dir)
             record = storage.get_image(computed_hash)
 
             if record:
                 image_name = computed_hash
             else:
-                _ex.logger.warning(
+                logger.warning(
                     f"Image hash {computed_hash} not found in Data Engine DB."
                     " Data Engine might not be synced yet."
                 )
 
         except Exception as e:
-            _ex.logger.warning(f"Failed to compute hash or check DB: {e}")
+            logger.warning(f"Failed to compute hash or check DB: {e}")
 
         return image_name, record
 
@@ -216,7 +219,6 @@ class RunSetupMixin:
 
     def _resolve_model_params(self) -> tuple:
         """Resolves model name, temperature, thinking level, and fallback model."""
-        _ex = facade()
         llm_config = getattr(self.ctx, "llm_config", None)
         llm_cfg = getattr(llm_config, "explorer", None) if llm_config else None
         temperature = 0.1
@@ -235,7 +237,7 @@ class RunSetupMixin:
                 if "/" in fallback_model:
                     fallback_model = fallback_model.split("/")[-1]
         else:
-            model_name = _ex.DEFAULT_EXPLORER_MODEL
+            model_name = DEFAULT_EXPLORER_MODEL
 
         return model_name, temperature, thinking_level, fallback_model
 
@@ -303,32 +305,27 @@ class RunSetupMixin:
         HTTP client backing on-the-fly OCR is created here on first need and
         released by ``Explorer.run`` regardless of the engine used.
         """
-        _ex = facade()
         fused_xml: Any = []
         if record and getattr(record, "ui_tree", None):
             ui_tree = record.ui_tree
             ocr_results = getattr(record, "ocr_result", None)
             if ocr_results is None:
-                if allow_ocr and _ex.is_ocr_configured():
+                if allow_ocr and is_ocr_configured():
                     try:
-                        _ex.logger.info(
-                            "Previous screenshot OCR is missing. Running OCR on-the-fly..."
-                        )
+                        logger.info("Previous screenshot OCR is missing. Running OCR on-the-fly...")
                         with open(screenshot_path, "rb") as img_file:
                             img_b64 = base64.b64encode(img_file.read()).decode("utf-8")
                         if self.http_client is None:
                             self.http_client = httpx.AsyncClient()
-                        ocr_results = await _ex.perform_ocr(img_b64, client=self.http_client)
+                        ocr_results = await perform_ocr(img_b64, client=self.http_client)
                     except Exception as ocr_err:
-                        _ex.logger.error(
-                            f"On-the-fly OCR failed for previous screenshot: {ocr_err}"
-                        )
+                        logger.error(f"On-the-fly OCR failed for previous screenshot: {ocr_err}")
                         ocr_results = []
                 else:
                     ocr_results = []
 
             fused_xml = fuse_ocr_with_xml(ui_tree, ocr_results or [])
-            _ex.logger.info("Successfully loaded and fused UI hierarchy for previous screenshot.")
+            logger.info("Successfully loaded and fused UI hierarchy for previous screenshot.")
         elif screenshot_path == getattr(state, "latest_screenshot", None):
             fused_xml = getattr(state, "latest_ui_hierarchy", None)
         return list(fused_xml) if isinstance(fused_xml, (list, tuple)) else []
@@ -341,13 +338,10 @@ class RunSetupMixin:
         Every numbered label is registered against its element so a
         candidate the model later submits by number inherits real bounds.
         """
-        _ex = facade()
         ctx = self.ctx
         marked_path = None
         try:
-            _ex.logger.info(
-                "Explorer self-annotating initial screenshot using latest_ui_hierarchy..."
-            )
+            logger.info("Explorer self-annotating initial screenshot using latest_ui_hierarchy...")
             formatted_list, elements, labels = format_minimal_list_with_elements(
                 fused_xml, self.width, self.height
             )
@@ -363,7 +357,7 @@ class RunSetupMixin:
                 else None
             )
             if not base_dir:
-                base_dir = _ex.settings.TRACES_PATH
+                base_dir = settings.TRACES_PATH
             images_dir = base_dir / "images"
             initial_marked_dir = images_dir / "initial_marked"
             initial_marked_dir.mkdir(parents=True, exist_ok=True)
@@ -380,12 +374,12 @@ class RunSetupMixin:
             marked_path = initial_marked_dir / f"{image_name or 'temp_image'}_{seq}.jpg"
 
             # Draw dots on the raw screenshot
-            _ex.draw_dots(screenshot_path, points, labels, str(marked_path))
-            _ex.logger.info(
+            draw_dots(screenshot_path, points, labels, str(marked_path))
+            logger.info(
                 f"Successfully drew {len(points)} dots and saved marked image to {marked_path}"
             )
         except Exception as e:
-            _ex.logger.error(f"Failed to self-annotate initial screenshot: {e}")
+            logger.error(f"Failed to self-annotate initial screenshot: {e}")
         return minimal_list, marked_path
 
     def _prepare_initial_annotation(

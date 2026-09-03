@@ -26,7 +26,7 @@ from artemis.controllers.platform_specific_commands_controller import (
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
+from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.tools.types import CyFunctionDetector
 from artemis.utils.app_launch_utils import launch_app_with_retries
@@ -189,7 +189,6 @@ class LaunchAppTool(ArtemisTool):
 # Universal tool instance & aliases
 launch_app = LaunchAppTool()
 LaunchApp = LaunchAppTool
-ToolRegistry.register(launch_app)
 
 
 def get_launch_app_tool(ctx: ArtemisContext) -> BaseTool:

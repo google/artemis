@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from artemis.agents.operator.prompt_builder import (
-    OperatorPromptBuilder,
+from artemis.agents.operator.prompts import (
+    apply_operator_prompt_contract,
     load_operator_prompts,
 )
-from artemis.agents.operator.prompts import apply_operator_prompt_contract
 
 
 def test_operator_prompt_contract_matches_note_runtime_semantics():
@@ -68,9 +67,8 @@ def test_operator_prompt_keeps_large_list_traversal_single_pass_until_boundary()
         assert "Terminate exploration when a definitive boundary is reached" not in prompt
 
 
-def test_compatibility_builder_uses_canonical_operator_template():
+def test_contract_strips_legacy_tool_literals():
     expected = apply_operator_prompt_contract(load_operator_prompts()["main_template"])
 
-    assert OperatorPromptBuilder.build_system_message() == expected
     assert "wait_for_delay(seconds=" not in expected
     assert 'press_key(key="home"' not in expected

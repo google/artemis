@@ -56,7 +56,7 @@ from artemis.config import ExplorerVersion, resolve_explorer_version, settings
 from artemis.context import ArtemisContext
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
+from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.tools.types import CyFunctionDetector
 from artemis.utils.element_hit_test import find_element_at_point
@@ -527,7 +527,6 @@ class AskExplorerTool(ArtemisTool):
 
 
 ask_explorer = AskExplorerTool()
-ToolRegistry.register(ask_explorer)
 
 
 def get_ask_explorer_tool(

@@ -22,7 +22,7 @@ from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
@@ -166,7 +166,6 @@ class SaveNoteTool(ArtemisTool):
 # Universal tool instance & aliases
 save_note = SaveNoteTool()
 SaveNote = SaveNoteTool
-ToolRegistry.register(save_note)
 
 
 def get_save_note_tool(ctx: ArtemisContext) -> BaseTool:
@@ -246,7 +245,6 @@ class AppendNoteTool(ArtemisTool):
 # Universal tool instance & aliases
 append_note = AppendNoteTool()
 AppendNote = AppendNoteTool
-ToolRegistry.register(append_note)
 
 
 def get_append_note_tool(ctx: ArtemisContext) -> BaseTool:
@@ -331,7 +329,6 @@ class UpdateNoteTool(ArtemisTool):
 # Universal tool instance & aliases
 update_note = UpdateNoteTool()
 UpdateNote = UpdateNoteTool
-ToolRegistry.register(update_note)
 
 
 def get_update_note_tool(ctx: ArtemisContext) -> BaseTool:
@@ -416,7 +413,6 @@ class ReadNoteTool(ArtemisTool):
 # Universal tool instance & aliases
 read_note = ReadNoteTool()
 ReadNote = ReadNoteTool
-ToolRegistry.register(read_note)
 
 
 def get_read_note_tool(ctx: ArtemisContext) -> BaseTool:
@@ -478,7 +474,6 @@ class ListNotesTool(ArtemisTool):
 # Universal tool instance & aliases
 list_notes = ListNotesTool()
 ListNotes = ListNotesTool
-ToolRegistry.register(list_notes)
 
 
 def get_list_notes_tool(ctx: ArtemisContext) -> BaseTool:
@@ -545,7 +540,6 @@ class ReadNotePureTool(ArtemisTool):
 # Universal pure tool instance & aliases
 read_note_pure = ReadNotePureTool()
 ReadNotePure = ReadNotePureTool
-ToolRegistry.register(read_note_pure)
 
 
 def get_read_note_tool_pure(ctx: ArtemisContext) -> BaseTool:
@@ -591,7 +585,6 @@ class ListNotesPureTool(ArtemisTool):
 # Universal pure tool instance & aliases
 list_notes_pure = ListNotesPureTool()
 ListNotesPure = ListNotesPureTool
-ToolRegistry.register(list_notes_pure)
 
 
 def get_list_notes_tool_pure(ctx: ArtemisContext) -> BaseTool:
@@ -656,7 +649,6 @@ class SaveNotePureTool(ArtemisTool):
 # Universal pure tool instance & aliases
 save_note_pure = SaveNotePureTool()
 SaveNotePure = SaveNotePureTool
-ToolRegistry.register(save_note_pure)
 
 
 def get_save_note_tool_pure(ctx: ArtemisContext) -> BaseTool:
@@ -725,7 +717,6 @@ class UpdateNotePureTool(ArtemisTool):
 # Universal pure tool instance & aliases
 update_note_pure = UpdateNotePureTool()
 UpdateNotePure = UpdateNotePureTool
-ToolRegistry.register(update_note_pure)
 
 
 def get_update_note_tool_pure(ctx: ArtemisContext) -> BaseTool:
@@ -790,7 +781,6 @@ class AppendNotePureTool(ArtemisTool):
 # Universal pure tool instance & aliases
 append_note_pure = AppendNotePureTool()
 AppendNotePure = AppendNotePureTool
-ToolRegistry.register(append_note_pure)
 
 
 def get_append_note_tool_pure(ctx: ArtemisContext) -> BaseTool:

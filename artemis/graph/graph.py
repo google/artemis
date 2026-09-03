@@ -718,6 +718,50 @@ async def _process_plan_write(
     return result
 
 
+async def _intercept_plan_write(
+    ctx: ArtemisContext,
+    original_tool,
+    args: dict,
+    tool_call_id,
+    state,
+    *,
+    declared_intent: bool,
+    content_after_fallback: str = "",
+):
+    """Run a note write and process any resulting task-plan changes."""
+    rejection = _reject_checker_note_write(args["key"], tool_call_id)
+    if rejection is not None:
+        return rejection
+    if args["key"] != "task_plan" or not ctx.data_engine:
+        return await invoke_tool_with_injection(
+            original_tool, args, tool_call_id, state, record_trace=False
+        )
+
+    task_plan_path = get_note_file_path(ctx.data_engine.base_dir, "task_plan")
+
+    content_before = ""
+    if task_plan_path.exists():
+        content_before = task_plan_path.read_text(encoding="utf-8")
+
+    result = await invoke_tool_with_injection(
+        original_tool, args, tool_call_id, state, record_trace=False
+    )
+
+    content_after = content_after_fallback
+    if task_plan_path.exists():
+        content_after = task_plan_path.read_text(encoding="utf-8")
+
+    return await _process_plan_write(
+        ctx,
+        state,
+        task_plan_path,
+        content_before,
+        content_after,
+        result,
+        declared_intent=declared_intent,
+    )
+
+
 def wrap_note_tool(ctx: ArtemisContext, original_tool):
 
     async def wrapped_note_tool(
@@ -727,37 +771,14 @@ def wrap_note_tool(ctx: ArtemisContext, original_tool):
         state: Annotated[State, InjectedState] = None,
     ):
         """Wrapped tool to intercept task plan updates."""
-        rejection = _reject_checker_note_write(key, tool_call_id)
-        if rejection is not None:
-            return rejection
-        args = {"key": key, "content": content}
-        if key != "task_plan" or not ctx.data_engine:
-            return await invoke_tool_with_injection(
-                original_tool, args, tool_call_id, state, record_trace=False
-            )
-
-        task_plan_path = get_note_file_path(ctx.data_engine.base_dir, "task_plan")
-
-        content_before = ""
-        if task_plan_path.exists():
-            content_before = task_plan_path.read_text(encoding="utf-8")
-
-        result = await invoke_tool_with_injection(
-            original_tool, args, tool_call_id, state, record_trace=False
-        )
-
-        content_after = content
-        if task_plan_path.exists():
-            content_after = task_plan_path.read_text(encoding="utf-8")
-
-        return await _process_plan_write(
+        return await _intercept_plan_write(
             ctx,
+            original_tool,
+            {"key": key, "content": content},
+            tool_call_id,
             state,
-            task_plan_path,
-            content_before,
-            content_after,
-            result,
             declared_intent=False,
+            content_after_fallback=content,
         )
 
     return StructuredTool.from_function(
@@ -786,36 +807,12 @@ def wrap_update_note_tool(ctx: ArtemisContext, original_tool):
         state: Annotated[State, InjectedState] = None,
     ):
         """Wrapped tool to intercept task plan updates via update_note."""
-        rejection = _reject_checker_note_write(key, tool_call_id)
-        if rejection is not None:
-            return rejection
-        args = {"key": key, "target": target, "replacement": replacement}
-        if key != "task_plan" or not ctx.data_engine:
-            return await invoke_tool_with_injection(
-                original_tool, args, tool_call_id, state, record_trace=False
-            )
-
-        task_plan_path = get_note_file_path(ctx.data_engine.base_dir, "task_plan")
-
-        content_before = ""
-        if task_plan_path.exists():
-            content_before = task_plan_path.read_text(encoding="utf-8")
-
-        result = await invoke_tool_with_injection(
-            original_tool, args, tool_call_id, state, record_trace=False
-        )
-
-        content_after = ""
-        if task_plan_path.exists():
-            content_after = task_plan_path.read_text(encoding="utf-8")
-
-        return await _process_plan_write(
+        return await _intercept_plan_write(
             ctx,
+            original_tool,
+            {"key": key, "target": target, "replacement": replacement},
+            tool_call_id,
             state,
-            task_plan_path,
-            content_before,
-            content_after,
-            result,
             declared_intent=True,
         )
 

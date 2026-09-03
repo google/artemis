@@ -106,7 +106,7 @@ async def test_explorer_run():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
         patch("pathlib.Path.exists", return_value=True),
@@ -193,7 +193,7 @@ async def test_explorer_submit_answer():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
         patch("pathlib.Path.exists", return_value=True),
@@ -339,7 +339,7 @@ async def test_explorer_submit_answer_self_correction():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
         patch("pathlib.Path.exists", return_value=True),
@@ -427,10 +427,10 @@ async def test_explorer_initial_visual_marking():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
-        patch("artemis.agents.explorer.explorer.draw_dots") as mock_draw_dots,
+        patch("artemis.agents.explorer.run_setup.draw_dots") as mock_draw_dots,
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.read_text", return_value=mock_prompt),
         patch("builtins.open", custom_open),
@@ -518,10 +518,10 @@ async def test_explorer_initial_visual_marking_previous_screenshot():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
-        patch("artemis.agents.explorer.explorer.draw_dots") as mock_draw_dots,
+        patch("artemis.agents.explorer.run_setup.draw_dots") as mock_draw_dots,
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.read_text", return_value=mock_prompt),
         patch("builtins.open", custom_open),
@@ -606,10 +606,10 @@ async def test_explorer_initial_visual_marking_previous_screenshot_no_ui_tree():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
-        patch("artemis.agents.explorer.explorer.draw_dots") as mock_draw_dots,
+        patch("artemis.agents.explorer.run_setup.draw_dots") as mock_draw_dots,
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.read_text", return_value=mock_prompt),
         patch("builtins.open", custom_open),
@@ -704,10 +704,10 @@ async def test_explorer_initial_visual_marking_previous_screenshot_ocr_fusion():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
-        patch("artemis.agents.explorer.explorer.draw_dots") as mock_draw_dots,
+        patch("artemis.agents.explorer.run_setup.draw_dots") as mock_draw_dots,
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.read_text", return_value=mock_prompt),
         patch("builtins.open", custom_open),
@@ -808,19 +808,19 @@ async def test_explorer_initial_visual_marking_previous_screenshot_on_the_fly_oc
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
         patch(
-            "artemis.agents.explorer.explorer.perform_ocr",
+            "artemis.agents.explorer.run_setup.perform_ocr",
             new_callable=AsyncMock,
             return_value=mock_ocr_result,
         ) as mock_perform_ocr,
         patch(
-            "artemis.agents.explorer.explorer.is_ocr_configured",
+            "artemis.agents.explorer.run_setup.is_ocr_configured",
             return_value=True,
         ),
-        patch("artemis.agents.explorer.explorer.draw_dots") as mock_draw_dots,
+        patch("artemis.agents.explorer.run_setup.draw_dots") as mock_draw_dots,
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.read_text", return_value=mock_prompt),
         patch("builtins.open", custom_open),
@@ -933,7 +933,7 @@ async def test_explorer_denylisted_tool():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
         patch("pathlib.Path.exists", return_value=True),
@@ -1014,7 +1014,7 @@ async def test_explorer_inspect_region():
         patch("cv2.imwrite", return_value=True) as mock_imwrite,
         patch("pathlib.Path.mkdir") as mock_mkdir,
         patch("glob.glob", return_value=[]),
-        patch("artemis.agents.explorer.explorer.settings") as mock_settings,
+        patch("artemis.agents.explorer.perception_tools.settings") as mock_settings,
     ):
         mock_settings.TRACES_PATH = pathlib.Path("/tmp/traces")
         res = await explorer.exec_inspect_region(
@@ -1181,12 +1181,12 @@ async def test_explorer_ask_perception_tool():
     mock_draw_dots = MagicMock()
 
     with (
-        patch("artemis.agents.explorer.explorer.StorageManager") as storage_cls,
+        patch("artemis.agents.explorer.run_setup.StorageManager") as storage_cls,
         patch(
-            "artemis.agents.explorer.explorer._run_object_detection",
+            "artemis.agents.explorer.perception_tools._run_object_detection",
             return_value=mock_detector_res,
         ),
-        patch("artemis.agents.explorer.explorer.draw_dots", mock_draw_dots),
+        patch("artemis.agents.explorer.perception_tools.draw_dots", mock_draw_dots),
         patch("artemis.utils.visualization.draw_dots", mock_draw_dots),
         patch("pathlib.Path.mkdir"),
         patch("glob.glob", return_value=[]),
@@ -1277,7 +1277,7 @@ class _FakeGenaiError(Exception):
 
 @pytest.mark.asyncio
 async def test_generate_content_reliability_permanent_error_is_not_retried():
-    from artemis.agents.explorer.explorer import _generate_content_with_reliability
+    from artemis.agents.explorer.native_runner import _generate_content_with_reliability
     from artemis.llm.reliability import LLMPermanentError
 
     calls = 0
@@ -1296,7 +1296,7 @@ async def test_generate_content_reliability_permanent_error_is_not_retried():
 
 @pytest.mark.asyncio
 async def test_generate_content_reliability_bad_request_is_not_retried():
-    from artemis.agents.explorer.explorer import _generate_content_with_reliability
+    from artemis.agents.explorer.native_runner import _generate_content_with_reliability
     from artemis.llm.reliability import LLMPermanentError
 
     calls = 0
@@ -1314,7 +1314,7 @@ async def test_generate_content_reliability_bad_request_is_not_retried():
 
 @pytest.mark.asyncio
 async def test_generate_content_reliability_retries_transient_then_succeeds():
-    from artemis.agents.explorer import explorer as explorer_module
+    from artemis.agents.explorer import native_runner as native_runner_module
 
     calls = 0
     sentinel = object()
@@ -1326,8 +1326,8 @@ async def test_generate_content_reliability_retries_transient_then_succeeds():
             raise _FakeGenaiError("429 rate limit exceeded", code=429)
         return sentinel
 
-    with patch.object(explorer_module.asyncio, "sleep", new=AsyncMock()) as sleep_mock:
-        result = await explorer_module._generate_content_with_reliability(op)
+    with patch.object(native_runner_module.asyncio, "sleep", new=AsyncMock()) as sleep_mock:
+        result = await native_runner_module._generate_content_with_reliability(op)
     assert result is sentinel
     assert calls == 2
     assert sleep_mock.await_count == 1
@@ -1335,7 +1335,7 @@ async def test_generate_content_reliability_retries_transient_then_succeeds():
 
 @pytest.mark.asyncio
 async def test_generate_content_reliability_exhausts_to_typed_error():
-    from artemis.agents.explorer import explorer as explorer_module
+    from artemis.agents.explorer import native_runner as native_runner_module
     from artemis.llm.reliability import (
         FailureCategory,
         LLMExhaustedError,
@@ -1349,9 +1349,9 @@ async def test_generate_content_reliability_exhausts_to_typed_error():
         calls += 1
         raise _FakeGenaiError("503 service unavailable", code=503)
 
-    with patch.object(explorer_module.asyncio, "sleep", new=AsyncMock()):
+    with patch.object(native_runner_module.asyncio, "sleep", new=AsyncMock()):
         with pytest.raises(LLMExhaustedError) as exc_info:
-            await explorer_module._generate_content_with_reliability(op)
+            await native_runner_module._generate_content_with_reliability(op)
     assert calls == retry_policy_for(FailureCategory.PROVIDER_UNAVAILABLE).max_attempts
     assert exc_info.value.failure.category.value == "provider_unavailable"
     assert isinstance(exc_info.value.__cause__, _FakeGenaiError)

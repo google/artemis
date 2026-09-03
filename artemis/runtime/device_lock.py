@@ -262,6 +262,20 @@ class DeviceExecutionLock:
         return payload
 
     @classmethod
+    def _atomic_write_json(cls, path: Path, payload: dict) -> bool:
+        """Replace a ticket atomically so queue scans cannot read partial JSON."""
+        temp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            if not cls._safe_replace(temp_path, path):
+                return False
+        except OSError:
+            return False
+        finally:
+            cls._safe_unlink(temp_path)
+        return True
+
+    @classmethod
     def _ticket_targets_device(
         cls,
         ticket_owner: DeviceLockOwner,
@@ -454,11 +468,7 @@ class DeviceExecutionLock:
         effective_scope = lock_scope or os.getenv(cls.LOCK_SCOPE_ENV) or None
         if effective_scope:
             payload["lock_scope"] = str(effective_scope)
-        try:
-            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            return False
-        return True
+        return cls._atomic_write_json(path, payload)
 
     def _find_reserved_ticket(self) -> Path | None:
         if not self.queue_ticket:
@@ -482,7 +492,10 @@ class DeviceExecutionLock:
                 ingress=self.ingress,
                 lock_scope=self.lock_scope,
             )
-            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            if not self._atomic_write_json(path, payload):
+                raise DeviceBusyError(
+                    "The Artemis queue reservation could not be claimed (ticket rewrite failed)."
+                )
             return path
 
         self.queue_ticket = self.reserve(
@@ -567,6 +580,15 @@ class DeviceExecutionLock:
                 return 0
         if self.max_concurrency is not None:
             return self.max_concurrency
+        return self.resolve_env_concurrency()
+
+    @classmethod
+    def resolve_env_concurrency(cls) -> int:
+        """Resolve the concurrency limit from the environment.
+
+        Shared with the admin scheduler. Returns 0 for per-device concurrency,
+        or a positive global limit.
+        """
         env_mode = os.environ.get("ARTEMIS_CONCURRENCY_MODE", "").strip().lower()
         if env_mode in ("global", "serial", "1"):
             return 1
@@ -690,9 +712,14 @@ class DeviceExecutionLock:
             return
         try:
             owner = self._read_owner(self.path)
-            if owner is not None and (
-                owner.token == self.token
-                or (self.session_id and owner.session_id == self.session_id)
+            # A matching session id cannot release another process's lease.
+            if (
+                owner is not None
+                and owner.pid == os.getpid()
+                and (
+                    owner.token == self.token
+                    or (self.session_id and owner.session_id == self.session_id)
+                )
             ):
                 self._safe_unlink(self.path)
         finally:
@@ -933,16 +960,7 @@ class DeviceExecutionLock:
             "session_id": str(session_id),
             "ingress": ingress or owner.ingress or "sdk",
         }
-        temp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            if not cls._safe_replace(temp_path, path):
-                return False
-        except OSError:
-            return False
-        finally:
-            cls._safe_unlink(temp_path)
-        return True
+        return cls._atomic_write_json(path, payload)
 
     @classmethod
     def cleanup_stale_locks(cls, device_id: str | None = None) -> int:

@@ -84,7 +84,7 @@ async def test_explorer_ask_image_processor_tool():
     logger.addHandler(handler)
 
     # Attach the main agent logger to capture internal step logs
-    agent_logger = logging.getLogger("artemis.agents.explorer.explorer")
+    agent_logger = logging.getLogger("artemis.agents.explorer")
     agent_logger.setLevel(logging.INFO)
     agent_logger.addHandler(handler)
 

@@ -25,7 +25,7 @@ from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
+from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.utils.logger import get_logger
 from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
@@ -187,7 +187,6 @@ ocr_recognition = OcrRecognitionTool()
 OcrRecognition = OcrRecognitionTool
 OCRRecognition = OcrRecognitionTool
 OcrTool = OcrRecognitionTool
-ToolRegistry.register(ocr_recognition)
 
 
 def get_ocr_tool(ctx: ArtemisContext) -> BaseTool:

@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.log_tool import (
     AnalyzeLogs,
     AnalyzeLogsArgs,
@@ -88,8 +88,8 @@ async def test_analyze_logs_tool_no_context():
     assert result == "Error: ArtemisContext is required for LogAnalyzer."
 
 
-def test_analyze_logs_tool_subclass_and_registry():
-    """Verify AnalyzeLogsTool is an ArtemisTool subclass and registered in ToolRegistry."""
+def test_analyze_logs_tool_subclass():
+    """Verify AnalyzeLogsTool is an ArtemisTool subclass."""
     assert issubclass(AnalyzeLogsTool, ArtemisTool)
     assert issubclass(AnalyzeLogs, ArtemisTool)
     assert issubclass(LogTool, ArtemisTool)
@@ -99,11 +99,6 @@ def test_analyze_logs_tool_subclass_and_registry():
     assert analyze_logs.name == "analyze_logs"
     assert analyze_logs.category == "custom"
     assert analyze_logs.args_schema == AnalyzeLogsArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("analyze_logs")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, AnalyzeLogsTool)
 
     # GenAI FunctionDeclaration export
     declaration = analyze_logs.to_genai_declaration()

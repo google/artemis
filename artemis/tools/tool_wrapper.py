@@ -13,10 +13,10 @@
 # limitations under the License.
 
 from collections.abc import Callable
+import functools
 import inspect
 import time
 from typing import Annotated, Any, get_args, get_origin
-from unittest.mock import MagicMock, Mock
 import uuid
 
 from langchain_core.messages import ToolMessage
@@ -64,27 +64,19 @@ async def invoke_tool_with_injection(
     """
     final_args = dict(args)
 
-    if isinstance(tool, (Mock, MagicMock)):
-        has_real_coro = hasattr(tool, "coroutine") and not isinstance(
-            tool.coroutine, (Mock, MagicMock)
-        )
-        has_real_func = hasattr(tool, "func") and not isinstance(tool.func, (Mock, MagicMock))
-        if not has_real_coro and not has_real_func:
-            if (
-                state is not None
-                and hasattr(tool, "args")
-                and isinstance(tool.args, dict)
-                and "state" in tool.args
-            ):
-                final_args["state"] = state
-            return await tool.ainvoke(final_args)
+    def _real_callable(candidate: Any) -> Callable | None:
+        """Return a routine or partial whose signature supports direct injection."""
+        target = candidate.func if isinstance(candidate, functools.partial) else candidate
+        if inspect.isroutine(target):
+            return candidate
+        return None
 
     # For StructuredTool, the original function might be in tool.func or tool.coroutine
     func = None
-    if hasattr(tool, "coroutine") and tool.coroutine:
-        func = tool.coroutine
-    elif hasattr(tool, "func") and tool.func:
-        func = tool.func
+    if getattr(tool, "coroutine", None):
+        func = _real_callable(tool.coroutine)
+    if func is None and getattr(tool, "func", None):
+        func = _real_callable(tool.func)
 
     if func:
         try:
@@ -163,7 +155,11 @@ async def invoke_tool_with_injection(
                 )
             CURRENT_TRACE_ID.reset(token)
     else:
-        # Fallback to ainvoke if no direct func available
+        # Fallback to ainvoke if no direct func available; tools that declare
+        # a "state" argument still receive the graph state.
+        tool_args = getattr(tool, "args", None)
+        if state is not None and isinstance(tool_args, dict) and "state" in tool_args:
+            final_args["state"] = state
         return await tool.ainvoke(final_args)
 
 

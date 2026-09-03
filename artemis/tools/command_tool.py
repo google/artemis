@@ -54,7 +54,7 @@ from artemis.controllers.platform_specific_commands_controller import (
 )
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.utils.logger import get_logger
 
@@ -832,7 +832,6 @@ class RunAdbCommandTool(ArtemisTool):
 # Universal tool instance & aliases
 run_adb_command = RunAdbCommandTool()
 RunAdbCommand = RunAdbCommandTool
-ToolRegistry.register(run_adb_command)
 
 
 def get_run_adb_command_tool(ctx: ArtemisContext) -> BaseTool:
@@ -978,7 +977,6 @@ class ManageTaskTool(ArtemisTool):
 # Universal tool instance & aliases
 manage_task = ManageTaskTool()
 ManageTask = ManageTaskTool
-ToolRegistry.register(manage_task)
 
 
 def get_manage_task_tool(ctx: ArtemisContext) -> BaseTool:
@@ -1111,7 +1109,6 @@ class RunShortAdbCommandTool(ArtemisTool):
 # Universal tool instance & aliases
 run_short_adb_command = RunShortAdbCommandTool()
 RunShortAdbCommand = RunShortAdbCommandTool
-ToolRegistry.register(run_short_adb_command)
 
 
 def get_run_short_adb_command_tool(ctx: ArtemisContext) -> BaseTool:
@@ -1198,7 +1195,6 @@ class AnalyzeTaskOutputTool(ArtemisTool):
 # Universal tool instance & aliases
 analyze_task_output = AnalyzeTaskOutputTool()
 AnalyzeTaskOutput = AnalyzeTaskOutputTool
-ToolRegistry.register(analyze_task_output)
 
 
 def get_analyze_task_output_tool(ctx: ArtemisContext) -> BaseTool:

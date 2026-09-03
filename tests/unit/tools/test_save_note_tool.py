@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.scratchpad import (
     SaveNote,
     SaveNoteArgs,
@@ -39,8 +39,8 @@ def mock_ctx(tmp_path):
     return ctx
 
 
-def test_save_note_tool_subclass_and_registry():
-    """Verify SaveNoteTool is a subclass of ArtemisTool and properly registered in ToolRegistry."""
+def test_save_note_tool_subclass():
+    """Verify SaveNoteTool is a subclass of ArtemisTool."""
     assert issubclass(SaveNoteTool, ArtemisTool)
     assert issubclass(SaveNote, ArtemisTool)
     assert isinstance(save_note, ArtemisTool)
@@ -49,11 +49,6 @@ def test_save_note_tool_subclass_and_registry():
     assert save_note.name == "save_note"
     assert save_note.category == "memory"
     assert save_note.args_schema == SaveNoteArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("save_note")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, SaveNoteTool)
 
     # GenAI FunctionDeclaration export
     declaration = save_note.to_genai_declaration()

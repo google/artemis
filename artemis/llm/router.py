@@ -20,6 +20,7 @@ Anthropic, OpenRouter, and local Ollama/vLLM endpoints.
 """
 
 from enum import StrEnum
+import hashlib
 import os
 from typing import Any
 
@@ -46,10 +47,19 @@ class ModelProvider(StrEnum):
 
     @classmethod
     def from_string(cls, val: Any) -> "ModelProvider":
-        """Converts any string, enum, or mock representation into a canonical ModelProvider."""
+        """Converts a string or enum into a canonical ModelProvider.
+
+        ``None``/empty means "use the default" (Google); an unrecognized
+        non-empty value raises instead of silently routing to Gemini with
+        the wrong credentials.
+        """
         if isinstance(val, cls):
             return val
+        if val is None:
+            return cls.GOOGLE
         s = str(val).lower().replace("_", "").replace("-", "").strip()
+        if not s:
+            return cls.GOOGLE
         mapping = {
             "google": cls.GOOGLE,
             "gemini": cls.GOOGLE,
@@ -65,7 +75,12 @@ class ModelProvider(StrEnum):
             "vllm": cls.VLLM,
             "custom": cls.CUSTOM,
         }
-        return mapping.get(s, cls.GOOGLE)
+        provider = mapping.get(s)
+        if provider is None:
+            raise ValueError(
+                f"Unknown LLM provider {val!r}. Valid providers: {sorted(set(mapping))}"
+            )
+        return provider
 
 
 class ModelEndpoint(BaseModel):
@@ -97,11 +112,15 @@ class ModelEndpoint(BaseModel):
     )
 
     def cache_key(self) -> tuple:
-        """Returns a deterministic hashable cache key for connection pooling."""
+        """Key the client cache by endpoint settings, hashing the API key."""
+        api_key_digest = (
+            hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()[:16] if self.api_key else None
+        )
         return (
             self.provider.value,
             self.model_name,
             self.temperature,
+            self.max_tokens,
             self.timeout_seconds,
             self.thinking_budget,
             self.thinking_level,
@@ -109,6 +128,7 @@ class ModelEndpoint(BaseModel):
             self.reasoning_effort,
             self.enable_grounding,
             self.api_base,
+            api_key_digest,
         )
 
 

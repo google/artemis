@@ -17,7 +17,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 from artemis.context import ArtemisContext
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.wait_tool import (
     Wait,
     WaitArgs,
@@ -35,8 +35,8 @@ def mock_ctx():
     return ctx
 
 
-def test_wait_tool_subclass_and_registry():
-    """Verify WaitTool is a subclass of ArtemisTool and properly registered."""
+def test_wait_tool_subclass():
+    """Verify WaitTool is a subclass of ArtemisTool."""
     assert issubclass(WaitTool, ArtemisTool)
     assert issubclass(Wait, ArtemisTool)
     assert isinstance(wait, ArtemisTool)
@@ -45,11 +45,6 @@ def test_wait_tool_subclass_and_registry():
     assert wait.name == "wait"
     assert wait.category == "system"
     assert wait.args_schema == WaitArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("wait")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, WaitTool)
 
     # GenAI FunctionDeclaration export
     declaration = wait.to_genai_declaration()

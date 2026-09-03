@@ -33,7 +33,7 @@ import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from artemis.agents.operator.operator import OperatorNode
-from artemis.agents.operator.prompt_builder import load_operator_prompts
+from artemis.agents.operator.prompts import load_operator_prompts
 from artemis.agents.operator.prompts import (
     PLAN_HISTORY_STATIC_POINTER,
     PLAN_HISTORY_TEMPLATE_SECTION,

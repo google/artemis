@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.scratchpad import (
     ReadNote,
     ReadNoteArgs,
@@ -39,8 +39,8 @@ def mock_ctx(tmp_path):
     return ctx
 
 
-def test_read_note_tool_subclass_and_registry():
-    """Verify ReadNoteTool is a subclass of ArtemisTool and properly registered."""
+def test_read_note_tool_subclass():
+    """Verify ReadNoteTool is a subclass of ArtemisTool."""
     assert issubclass(ReadNoteTool, ArtemisTool)
     assert issubclass(ReadNote, ArtemisTool)
     assert isinstance(read_note, ArtemisTool)
@@ -49,11 +49,6 @@ def test_read_note_tool_subclass_and_registry():
     assert read_note.name == "read_note"
     assert read_note.category == "memory"
     assert read_note.args_schema == ReadNoteArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("read_note")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, ReadNoteTool)
 
     # GenAI FunctionDeclaration export
     declaration = read_note.to_genai_declaration()

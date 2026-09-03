@@ -343,40 +343,23 @@ class TaskQueueService:
             pass
 
     @classmethod
-    def _concurrency_mode(cls) -> str:
-        """Resolve the scheduler concurrency mode.
-
-        Mirrors DeviceExecutionLock's contract (ARTEMIS_CONCURRENCY_MODE /
-        ARTEMIS_MAX_CONCURRENT_TASKS):
-        - "global": strict serial -- one task at a time across all devices.
-        - "per_device": one task per device -- distinct devices run concurrently.
-        Defaults to per-device concurrency, matching the lock layer's default.
-        """
-        mode = os.environ.get("ARTEMIS_CONCURRENCY_MODE", "").strip().lower()
-        if mode in ("global", "serial", "1"):
-            return "global"
-        if mode in ("per_device", "device", "parallel", "0"):
-            return "per_device"
-        try:
-            if int(os.environ.get("ARTEMIS_MAX_CONCURRENT_TASKS", 0) or 0) == 1:
-                return "global"
-        except (TypeError, ValueError):
-            pass
-        return "per_device"
+    def _concurrency_limit(cls) -> int:
+        """Return 0 for per-device concurrency, or the global task limit."""
+        return DeviceExecutionLock.resolve_env_concurrency()
 
     @classmethod
     async def queue_worker(cls):
         """Persistent dispatcher scheduling pending tasks onto devices.
 
         Scans the queue and launches each eligible task as an independent
-        coroutine. Admission is governed by _concurrency_mode(): "global" admits
-        one task at a time overall, "per_device" admits one task per device so
-        distinct devices execute concurrently. Per-device FIFO ordering and
+        coroutine. Admission is governed by _concurrency_limit(): 0 admits one
+        task per device so distinct devices execute concurrently, N>=1 admits
+        at most N tasks across all devices. Per-device FIFO ordering and
         cross-process mutual exclusion remain enforced by DeviceExecutionLock
         inside each worker process.
         """
         print(
-            f"[QueueWorker] Dispatcher initialized (concurrency mode: {cls._concurrency_mode()})."
+            f"[QueueWorker] Dispatcher initialized (concurrency limit: {cls._concurrency_limit()})."
         )
         try:
             DeviceExecutionLock.cleanup_stale_locks()
@@ -404,10 +387,10 @@ class TaskQueueService:
 
     @classmethod
     def _dispatch_pending_tasks(cls) -> None:
-        """Launch every pending task admissible under the current concurrency mode."""
-        mode = cls._concurrency_mode()
+        """Launch every pending task admissible under the current concurrency limit."""
+        limit = cls._concurrency_limit()
         state.prune_finished_runs()
-        if mode == "global" and state.is_running:
+        if limit == 1 and state.is_running:
             return
 
         # Dispatched-but-not-yet-spawned runs are only visible as queue items in
@@ -416,6 +399,20 @@ class TaskQueueService:
         in_flight = [
             i for i in state.queue_items if isinstance(i, dict) and i.get("status") == "running"
         ]
+        capacity = None
+        if limit >= 1:
+            # Registered workers still have running queue rows until finalization.
+            active_pids = {
+                getattr(run.get("process"), "pid", None) for run in state.active_runs.values()
+            } - {None}
+            starting = sum(
+                str(item.get("session_id")) not in state.active_runs
+                and item.get("pid") not in active_pids
+                for item in in_flight
+            )
+            capacity = limit - len(state.active_runs) - starting
+            if capacity <= 0:
+                return
         busy_devices = state.busy_device_ids | {
             cls._task_target(i).lock_key for i in in_flight if i.get("device_serial")
         }
@@ -431,7 +428,7 @@ class TaskQueueService:
 
             device = item.get("device_serial")
             target = cls._task_target(item)
-            if mode == "per_device":
+            if limit == 0:
                 # A task without a resolved device may bind to any serial, so it
                 # only launches on an otherwise idle scheduler; the device lock
                 # then allocates freely without contending against active runs.
@@ -439,6 +436,9 @@ class TaskQueueService:
                     continue
                 if device is not None and target.lock_key in busy_devices:
                     continue
+            elif limit > 1 and device is not None and target.lock_key in busy_devices:
+                # A second worker for this device would wait on its lock.
+                continue
 
             item["status"] = "running"
             dispatched_any = True
@@ -449,8 +449,10 @@ class TaskQueueService:
             # tasks, and a collected run would strand its queue item forever.
             cls._run_tasks.add(run_task)
             run_task.add_done_callback(cls._run_tasks.discard)
-            if mode == "global":
-                break
+            if capacity is not None:
+                capacity -= 1
+                if capacity <= 0:
+                    break
 
     @classmethod
     def _begin_task_run(
@@ -584,10 +586,8 @@ class TaskQueueService:
         }
         if sess_id:
             try:
-                st = trace_store.read_status(str(sess_id))
-                if st:
-                    st["pid"] = proc.pid
-                    trace_store.write_status(str(sess_id), st)
+                # Preserve status updates written concurrently by the worker.
+                trace_store.update_trace_pid(str(sess_id), proc.pid)
             except OSError as exc:
                 # Status probes fall back to DB PID bookkeeping, but note it.
                 print(
@@ -595,15 +595,22 @@ class TaskQueueService:
                 )
         cls._broadcast_startup_progress(sess_id, "process_ready", "Execution process started")
         ingress_type = str(task_item.get("ingress", "frontend"))
-        DeviceExecutionLock.transfer_reservation(
-            str(task_item.get("queue_ticket")),
-            proc.pid,
-            description=f"{ingress_type} task: {goal[:120]}",
-            device_id=device_serial or "pending",
-            session_id=str(sess_id) if sess_id else None,
-            ingress=ingress_type,
-            lock_scope=target.lock_scope,
-        )
+        queue_ticket = task_item.get("queue_ticket")
+        if queue_ticket:
+            transferred = DeviceExecutionLock.transfer_reservation(
+                str(queue_ticket),
+                proc.pid,
+                description=f"{ingress_type} task: {goal[:120]}",
+                device_id=device_serial or "pending",
+                session_id=str(sess_id) if sess_id else None,
+                ingress=ingress_type,
+                lock_scope=target.lock_scope,
+            )
+            if not transferred:
+                print(
+                    f"[QueueWorker] Could not transfer queue ticket {queue_ticket} to worker"
+                    f" pid {proc.pid}; the worker will queue a fresh ticket itself."
+                )
 
     @classmethod
     def _start_output_forwarder(
@@ -876,8 +883,19 @@ class TaskQueueService:
             if proc is not None and proc.returncode is None:
                 await cls._terminate_worker_process(proc)
             raise
-        except Exception as e:
-            print(f"[QueueWorker] Unexpected error executing task [{sess_id}]: {e}")
+        except Exception:
+            logger.exception(f"[QueueWorker] Unexpected error executing task [{sess_id}]")
+            # A spawn failure must also leave a terminal session status.
+            if sess_id:
+                try:
+                    new_status = await cls._persist_terminal_session_status(
+                        sess_id, returncode=1, manual_stop=False
+                    )
+                    cls._announce_session_end(task_item, sess_id, goal or "", new_status, False)
+                except (OSError, RuntimeError, ValueError):
+                    logger.exception(
+                        f"[QueueWorker] Could not persist failure status for [{sess_id}]"
+                    )
         finally:
             await cls._finish_output_forwarder(output_task)
             # 5. Clean up the finished task and release this run's scheduling slot
@@ -989,14 +1007,8 @@ class TaskQueueService:
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
+        # enqueue_tasks resolves the device before creating queue items.
         assigned_serial = device_serial
-        if not assigned_serial:
-            try:
-                from artemis.runtime import device_pool
-
-                assigned_serial = device_pool.select_device()
-            except Exception:
-                assigned_serial = None
 
         queue_ticket = DeviceExecutionLock.reserve(
             description=f"{ingress} task: {goal[:120]}",
@@ -1068,6 +1080,14 @@ class TaskQueueService:
             return rejection_response
 
         single_session_id = session_id if (session_id and len(goals) == 1) else None
+        if not device_serial:
+            # Device enumeration may block on ADB.
+            from artemis.runtime import device_pool
+
+            try:
+                device_serial = await device_pool.select_device_async()
+            except Exception:
+                device_serial = None
         for i, goal in enumerate(goals):
             task_item = cls._create_queue_item(
                 goal,
@@ -1426,10 +1446,8 @@ class TaskQueueService:
             global_queued = DeviceExecutionLock.get_queued_tasks()
             for q_item in global_queued:
                 if str(q_item.get("session_id")) == target_sid:
-                    ticket = q_item.get("queue_ticket")
-                    if ticket:
-                        DeviceExecutionLock.cancel_reservation(ticket)
-                    stopped = True
+                    # get_queued_tasks exposes the reservation as "token".
+                    stopped = DeviceExecutionLock.cancel_reservation(q_item.get("token"))
                     break
             # Fallback 2: check session repository for a running session with a live worker PID
             if not stopped:

@@ -22,7 +22,7 @@ from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
+from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
@@ -91,7 +91,6 @@ class GetUiHierarchyTool(ArtemisTool):
 get_ui_hierarchy = GetUiHierarchyTool()
 GetUiHierarchy = GetUiHierarchyTool
 GetUIHierarchy = GetUiHierarchyTool
-ToolRegistry.register(get_ui_hierarchy)
 
 
 def get_ui_hierarchy_tool(ctx: ArtemisContext) -> BaseTool:

@@ -31,9 +31,9 @@ def test_diagnoser_submit_answer_tool(artemis_context):
     assert "error" not in result.lower()
 
 
-def test_submit_answer_tool_subclass_and_registry():
-    """Verify SubmitAnswerTool is an ArtemisTool subclass and registered in ToolRegistry."""
-    from artemis.tools.base import ArtemisTool, ToolRegistry
+def test_submit_answer_tool_subclass():
+    """Verify SubmitAnswerTool is an ArtemisTool subclass."""
+    from artemis.tools.base import ArtemisTool
     from artemis.tools.diagnoser_submit_answer_tool import (
         DiagnoserSubmitAnswerTool,
         SubmitAnswer,
@@ -52,11 +52,6 @@ def test_submit_answer_tool_subclass_and_registry():
     assert submit_answer.category == "custom"
     assert submit_answer.args_schema == SubmitAnswerArgs
 
-    # Registry lookup
-    reg_tool = ToolRegistry.get("submit_answer")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, SubmitAnswerTool)
-
     # GenAI FunctionDeclaration export
     declaration = submit_answer.to_genai_declaration()
     assert declaration.name == "submit_answer"
@@ -64,9 +59,9 @@ def test_submit_answer_tool_subclass_and_registry():
     assert "actionable_steps" in declaration.parameters.properties
 
 
-def test_ask_diagnoser_tool_subclass_and_registry():
-    """Verify AskDiagnoserTool is an ArtemisTool subclass and registered in ToolRegistry."""
-    from artemis.tools.base import ArtemisTool, ToolRegistry
+def test_ask_diagnoser_tool_subclass():
+    """Verify AskDiagnoserTool is an ArtemisTool subclass."""
+    from artemis.tools.base import ArtemisTool
     from artemis.tools.diagnostic_tool import (
         AskDiagnoser,
         AskDiagnoserArgs,
@@ -85,20 +80,15 @@ def test_ask_diagnoser_tool_subclass_and_registry():
     assert ask_diagnoser.category == "custom"
     assert ask_diagnoser.args_schema == AskDiagnoserArgs
 
-    # Registry lookup
-    reg_tool = ToolRegistry.get("ask_diagnoser")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, AskDiagnoserTool)
-
     # GenAI FunctionDeclaration export
     declaration = ask_diagnoser.to_genai_declaration()
     assert declaration.name == "ask_diagnoser"
     assert "query" in declaration.parameters.properties
 
 
-def test_analyze_logs_tool_subclass_and_registry():
-    """Verify AnalyzeLogsTool is an ArtemisTool subclass and registered in ToolRegistry."""
-    from artemis.tools.base import ArtemisTool, ToolRegistry
+def test_analyze_logs_tool_subclass():
+    """Verify AnalyzeLogsTool is an ArtemisTool subclass."""
+    from artemis.tools.base import ArtemisTool
     from artemis.tools.log_tool import (
         AnalyzeLogs,
         AnalyzeLogsArgs,
@@ -116,11 +106,6 @@ def test_analyze_logs_tool_subclass_and_registry():
     assert analyze_logs.name == "analyze_logs"
     assert analyze_logs.category == "custom"
     assert analyze_logs.args_schema == AnalyzeLogsArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("analyze_logs")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, AnalyzeLogsTool)
 
     # GenAI FunctionDeclaration export
     declaration = analyze_logs.to_genai_declaration()

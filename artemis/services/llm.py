@@ -21,7 +21,6 @@ thought stream recording, and role-based dynamic dispatching.
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
 from contextvars import ContextVar, Token
-from dataclasses import replace
 import functools
 import logging
 from pathlib import Path
@@ -109,6 +108,9 @@ _ENDPOINT_BREAKER = CircuitBreaker(threshold=3, cooldown_seconds=30.0)
 # Endpoints observed to not support streaming.  Detected once, loudly, then
 # remembered so subsequent calls go straight to non-streaming invocation.
 _NON_STREAMING_ENDPOINTS: set[str] = set()
+
+# Total retry limit when failures switch categories within one recovery cycle.
+_MAX_TOTAL_RETRY_ATTEMPTS = 8
 
 
 def _get_current_data_engine():
@@ -442,6 +444,13 @@ async def _run_with_recovery[T](
                     policy = retry_policy_for(failure.category)
                     if attempt >= policy.max_attempts:
                         break
+                    total_attempts = sum(attempts.values())
+                    if total_attempts >= _MAX_TOTAL_RETRY_ATTEMPTS:
+                        llm_logger.warning(
+                            "LLM retry total across failure categories reached"
+                            f" {total_attempts}; treating as exhausted."
+                        )
+                        break
                     delay = policy.delay_for(attempt)
                     _record_llm_retry(
                         str(e),
@@ -753,10 +762,17 @@ class RobustChatModelWrapper:
 
 
 def _is_stream_unsupported_error(error: BaseException) -> bool:
-    """Detect 'this endpoint/model cannot stream' as opposed to a transient failure."""
-    if isinstance(error, (NotImplementedError, AttributeError, TypeError)):
+    """Detect 'this endpoint/model cannot stream' as opposed to a transient failure.
+
+    A positive here permanently disables streaming for the endpoint in this
+    process, so a bare AttributeError/TypeError from unrelated code must not
+    qualify — the message has to actually implicate streaming.
+    """
+    if isinstance(error, NotImplementedError):
         return True
     message = str(error).lower()
+    if isinstance(error, (AttributeError, TypeError)):
+        return "stream" in message
     return "stream" in message and any(
         marker in message
         for marker in ("not support", "unsupported", "not implemented", "not available")
@@ -1106,7 +1122,7 @@ def get_llm(
     """Resolves and instantiates the appropriate LLM wrapper for the given agent role."""
     endpoint = _resolve_endpoint(ctx, str(name), is_utils=is_utils, use_fallback=use_fallback)
     if temperature is not None:
-        endpoint = replace(endpoint, temperature=temperature)
+        endpoint = endpoint.model_copy(update={"temperature": temperature})
     raw_model = ModelFactory.get_model(endpoint)
 
     handler = DataEngineCallbackHandler(ctx)

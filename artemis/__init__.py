@@ -22,7 +22,6 @@ from artemis_client import Capabilities, Device, TaskHandle, TaskResult
 from artemis.sdk.agent import Agent
 from artemis.sdk.builders import Builders
 from artemis.drivers.base import BaseDeviceDriver
-from artemis.tools.base import artemis_tool, ToolRegistry
 
 __all__ = [
     "__version__",
@@ -38,6 +37,4 @@ __all__ = [
     "TaskHandle",
     "TaskResult",
     "BaseDeviceDriver",
-    "artemis_tool",
-    "ToolRegistry",
 ]

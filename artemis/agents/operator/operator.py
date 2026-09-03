@@ -82,7 +82,7 @@ from artemis.agents.operator.prompts import (
     InjectedInstructionPromptComponent,
     render_transcript_static_system,
 )
-from artemis.agents.operator.prompt_builder import load_operator_prompts
+from artemis.agents.operator.prompts import load_operator_prompts
 
 
 class OperatorNode:
@@ -101,8 +101,7 @@ class OperatorNode:
         try:
             self.prompts = load_operator_prompts()
         except (OSError, ValueError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to load operator prompts: {e}")
-            self.prompts = {}
+            raise RuntimeError(f"Failed to load operator prompts: {e}") from e
 
         # M2 transcript flag (agent.memory.transcript.enabled). Off keeps the
         # legacy 2-message prompt path byte-for-byte; an explicit
@@ -488,8 +487,7 @@ class OperatorNode:
             additional_kwargs = getattr(response, "additional_kwargs", None)
             if (
                 not response.tool_calls
-                and isinstance(additional_kwargs, dict)
-                and not hasattr(additional_kwargs, "assert_called_with")  # Filter out mocks
+                and type(additional_kwargs) is dict
                 and additional_kwargs.get("function_call")
             ):
                 fc = additional_kwargs["function_call"]

@@ -29,7 +29,10 @@ def test_usb_policy_is_primary_when_android_reports_it_active(mock_run, lease_ty
     lease_type.assert_called_once_with("device-123")
     lease_type.return_value.cleanup_unowned_references.assert_called_once_with()
     commands = [call.args[0] for call in mock_run.call_args_list]
-    assert ["shell", "svc", "power", "stayon", "usb"] in [command[3:] for command in commands]
+    # Commands are endpoint-qualified (adb -H host -P port -s serial ...);
+    # assert on the payload after the serial rather than a fixed prefix width.
+    payloads = [command[command.index("-s") + 2 :] for command in commands if "-s" in command]
+    assert ["shell", "svc", "power", "stayon", "usb"] in payloads
     assert not any("SCREEN_BRIGHT_WAKE_LOCK" in command for command in commands)
     assert not any("KEYCODE_UNKNOWN" in command for command in commands)
 

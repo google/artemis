@@ -15,7 +15,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from artemis.context import ArtemisContext
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.video_tool import (
     VideoAnalyzerArgs,
     VideoAnalyzerPure,
@@ -32,8 +32,8 @@ def mock_ctx():
     return ctx
 
 
-def test_video_analyzer_pure_tool_subclass_and_registry():
-    """Verify VideoAnalyzerPureTool is a subclass of ArtemisTool and properly registered."""
+def test_video_analyzer_pure_tool_subclass():
+    """Verify VideoAnalyzerPureTool is a subclass of ArtemisTool."""
     assert issubclass(VideoAnalyzerPureTool, ArtemisTool)
     assert issubclass(VideoAnalyzerPure, ArtemisTool)
     assert isinstance(video_analyzer_pure, ArtemisTool)
@@ -42,11 +42,6 @@ def test_video_analyzer_pure_tool_subclass_and_registry():
     assert video_analyzer_pure.name == "video_analyzer_pure"
     assert video_analyzer_pure.category == "perception"
     assert video_analyzer_pure.args_schema == VideoAnalyzerArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("video_analyzer_pure")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, VideoAnalyzerPureTool)
 
     # GenAI FunctionDeclaration export
     declaration = video_analyzer_pure.to_genai_declaration()

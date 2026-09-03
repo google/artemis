@@ -25,7 +25,8 @@ from artemis.agents.explorer.screen_index import ScreenElement, ScreenIndex
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 
-FACADE = "artemis.agents.explorer.explorer"
+RUN_SETUP = "artemis.agents.explorer.run_setup"
+PERCEPTION_TOOLS = "artemis.agents.explorer.perception_tools"
 W, H = 1080, 2400
 
 #: One "Settings" button, two "Send" buttons and two OCR-only texts.
@@ -108,8 +109,10 @@ def screenshot(tmp_path):
 @pytest.fixture
 def no_drawing():
     """Keeps the annotation helpers away from the file system."""
+    draw_dots = MagicMock()
     with (
-        patch(f"{FACADE}.draw_dots") as draw_dots,
+        patch(f"{RUN_SETUP}.draw_dots", draw_dots),
+        patch(f"{PERCEPTION_TOOLS}.draw_dots", draw_dots),
         patch("pathlib.Path.mkdir"),
         patch("glob.glob", return_value=[]),
     ):
@@ -127,8 +130,8 @@ async def test_index_is_built_from_state_hierarchy_when_record_is_missing(screen
     explorer._run_flash = AsyncMock(return_value=_outcome(fallback="nothing"))
 
     with (
-        patch(f"{FACADE}.StorageManager", return_value=_storage(None)),
-        patch(f"{FACADE}.perform_ocr", new_callable=AsyncMock) as perform_ocr,
+        patch(f"{RUN_SETUP}.StorageManager", return_value=_storage(None)),
+        patch(f"{RUN_SETUP}.perform_ocr", new_callable=AsyncMock) as perform_ocr,
     ):
         await explorer.run("gear icon", "", screenshot, _state(screenshot), version="flash")
         text = (await explorer._search_ui_helper("Settings", prefix="X"))["text"]
@@ -145,7 +148,7 @@ async def test_index_ignores_state_hierarchy_for_another_screenshot(screenshot):
     explorer._run_flash = AsyncMock(return_value=_outcome())
     state = _state("/tmp/other.jpg")
 
-    with patch(f"{FACADE}.StorageManager", return_value=_storage(None)):
+    with patch(f"{RUN_SETUP}.StorageManager", return_value=_storage(None)):
         await explorer.run("Settings", "", screenshot, state, version="flash")
 
     assert len(explorer.screen_index) == 0
@@ -224,7 +227,7 @@ async def test_search_by_coords_helper_reports_innermost_first(no_drawing):
 async def test_get_ocr_list_reads_the_index(no_drawing):
     explorer = _indexed_explorer()
 
-    with patch(f"{FACADE}.StorageManager") as storage_cls:
+    with patch(f"{RUN_SETUP}.StorageManager") as storage_cls:
         result = await explorer.exec_get_ocr_list()
 
     storage_cls.assert_not_called()
@@ -369,7 +372,7 @@ async def test_prepass_answers_unique_exact_match_without_the_engine(screenshot,
     explorer._run_flash = AsyncMock()
     explorer._run_loop = AsyncMock()
 
-    with patch(f"{FACADE}.StorageManager", return_value=_storage(None)):
+    with patch(f"{RUN_SETUP}.StorageManager", return_value=_storage(None)):
         raw = await explorer.run("  settings ", "", screenshot, _state(screenshot), version=version)
 
     explorer._run_flash.assert_not_called()
@@ -395,7 +398,7 @@ async def test_prepass_leaves_ambiguous_matches_to_the_engine(screenshot):
     engine = _outcome([{"label": "D1", "coords": [185, 854], "description": "Send"}])
     explorer._run_flash = AsyncMock(return_value=engine)
 
-    with patch(f"{FACADE}.StorageManager", return_value=_storage(None)):
+    with patch(f"{RUN_SETUP}.StorageManager", return_value=_storage(None)):
         raw = await explorer.run("Send", "", screenshot, _state(screenshot), version="flash")
 
     explorer._run_flash.assert_awaited_once_with("Send", screenshot)
@@ -408,7 +411,7 @@ async def test_prepass_without_pipe_or_match_passes_the_query_through(screenshot
     engine = _outcome(fallback="Failed to detect: gear icon")
     explorer._run_flash = AsyncMock(return_value=engine)
 
-    with patch(f"{FACADE}.StorageManager", return_value=_storage(None)):
+    with patch(f"{RUN_SETUP}.StorageManager", return_value=_storage(None)):
         raw = await explorer.run("gear icon", "", screenshot, _state(screenshot), version="flash")
 
     explorer._run_flash.assert_awaited_once_with("gear icon", screenshot)
@@ -421,7 +424,7 @@ async def test_prepass_merges_partial_results_with_the_engine_outcome(screenshot
     detected = {"label": "D1", "coords": [185, 854], "description": "Send"}
     explorer._run_loop = AsyncMock(return_value=_outcome([detected], fallback="two Send buttons"))
 
-    with patch(f"{FACADE}.StorageManager", return_value=_storage(None)):
+    with patch(f"{RUN_SETUP}.StorageManager", return_value=_storage(None)):
         raw = await explorer.run(
             "Settings | Send | Welcome", "", screenshot, _state(screenshot), version="pro"
         )
@@ -451,9 +454,9 @@ async def test_prepass_never_runs_on_the_fly_ocr_for_flash(screenshot):
     explorer._run_loop = AsyncMock(return_value=_outcome())
 
     with (
-        patch(f"{FACADE}.StorageManager", return_value=_storage(record)),
-        patch(f"{FACADE}.is_ocr_configured", return_value=True),
-        patch(f"{FACADE}.perform_ocr", new_callable=AsyncMock, return_value=[]) as perform_ocr,
+        patch(f"{RUN_SETUP}.StorageManager", return_value=_storage(record)),
+        patch(f"{RUN_SETUP}.is_ocr_configured", return_value=True),
+        patch(f"{RUN_SETUP}.perform_ocr", new_callable=AsyncMock, return_value=[]) as perform_ocr,
     ):
         await explorer.run("gear icon", "", screenshot, _state(screenshot, []), version="flash")
         perform_ocr.assert_not_awaited()

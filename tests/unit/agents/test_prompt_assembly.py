@@ -20,7 +20,7 @@ import re
 from jinja2 import Template
 import pytest
 
-from artemis.agents.operator.prompt_builder import load_operator_prompts
+from artemis.agents.operator.prompts import load_operator_prompts
 from artemis.agents.operator.prompts import (
     OPERATOR_PROMPT_TOOLSET,
     apply_operator_prompt_contract,

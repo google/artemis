@@ -19,6 +19,7 @@ Modular entrypoint for full trace inspection, step replay, and task execution ma
 
 import argparse
 import asyncio
+from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 import secrets
@@ -95,8 +96,19 @@ except ImportError:
 # Initialize language server synchronization address
 init_ls_address()
 
+
+@asynccontextmanager
+async def _lifespan(_app: "FastAPI"):
+    """Start server resources and release them on shutdown."""
+    await on_startup()
+    try:
+        yield
+    finally:
+        await on_shutdown()
+
+
 # Initialize FastAPI application
-app = FastAPI(title="Artemis Admin & Trace Console")
+app = FastAPI(title="Artemis Admin & Trace Console", lifespan=_lifespan)
 LIFECYCLE_TOKEN = os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
 app.state.lifecycle_token = LIFECYCLE_TOKEN
 
@@ -106,7 +118,6 @@ app.state.lifecycle_token = LIFECYCLE_TOKEN
 app.add_middleware(SameOriginBoundaryMiddleware)
 
 
-@app.on_event("startup")
 async def on_startup():
     """Startup lifecycle hooks."""
     state.is_shutting_down = False
@@ -150,7 +161,6 @@ async def on_startup():
     state.worker_task = asyncio.create_task(task_queue_service.queue_worker())
 
 
-@app.on_event("shutdown")
 async def on_shutdown():
     """Stop task and IPC children before the UI server exits."""
     state.is_shutting_down = True

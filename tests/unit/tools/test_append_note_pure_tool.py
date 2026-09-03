@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from artemis.context import ArtemisContext
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.scratchpad import (
     AppendNoteArgs,
     AppendNotePure,
@@ -35,8 +35,8 @@ def mock_ctx(tmp_path):
     return ctx
 
 
-def test_append_note_pure_tool_subclass_and_registry():
-    """Verify AppendNotePureTool is a subclass of ArtemisTool and properly registered."""
+def test_append_note_pure_tool_subclass():
+    """Verify AppendNotePureTool is a subclass of ArtemisTool."""
     assert issubclass(AppendNotePureTool, ArtemisTool)
     assert issubclass(AppendNotePure, ArtemisTool)
     assert isinstance(append_note_pure, ArtemisTool)
@@ -45,11 +45,6 @@ def test_append_note_pure_tool_subclass_and_registry():
     assert append_note_pure.name == "append_note_pure"
     assert append_note_pure.category == "memory"
     assert append_note_pure.args_schema == AppendNoteArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("append_note_pure")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, AppendNotePureTool)
 
     # GenAI FunctionDeclaration export
     declaration = append_note_pure.to_genai_declaration()

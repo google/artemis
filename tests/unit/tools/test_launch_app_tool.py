@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from artemis.context import ArtemisContext
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.mobile.launch_app import (
     LaunchApp,
     LaunchAppArgs,
@@ -49,8 +49,8 @@ def mock_state():
     return MagicMock(spec=State)
 
 
-def test_launch_app_tool_subclass_and_registry():
-    """Verify LaunchAppTool is a subclass of ArtemisTool and properly registered."""
+def test_launch_app_tool_subclass():
+    """Verify LaunchAppTool is a subclass of ArtemisTool."""
     assert issubclass(LaunchAppTool, ArtemisTool)
     assert issubclass(LaunchApp, ArtemisTool)
     assert isinstance(launch_app, ArtemisTool)
@@ -59,11 +59,6 @@ def test_launch_app_tool_subclass_and_registry():
     assert launch_app.name == "launch_app"
     assert launch_app.category == "action"
     assert launch_app.args_schema == LaunchAppArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("launch_app")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, LaunchAppTool)
 
     # GenAI FunctionDeclaration export
     declaration = launch_app.to_genai_declaration()

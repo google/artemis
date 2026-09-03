@@ -45,7 +45,7 @@ from pydantic import BaseModel, Field
 
 from artemis.core.tool_declaration import ToolDeclaration
 from artemis.data_engine.trace import trace_langchain_tool
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.utils.logger import get_logger
 
@@ -547,7 +547,6 @@ def _recall_config(warn: bool = True) -> Any:
 
 
 recall_history = RecallHistoryTool()
-ToolRegistry.register(recall_history)
 
 _DECLARATION_TYPES = {
     "query": {"type": "string"},

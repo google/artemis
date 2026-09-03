@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.scratchpad import (
     UpdateNote,
     UpdateNoteArgs,
@@ -40,8 +40,8 @@ def mock_ctx(tmp_path):
     return ctx
 
 
-def test_update_note_tool_subclass_and_registry():
-    """Verify UpdateNoteTool is a subclass of ArtemisTool and properly registered."""
+def test_update_note_tool_subclass():
+    """Verify UpdateNoteTool is a subclass of ArtemisTool."""
     assert issubclass(UpdateNoteTool, ArtemisTool)
     assert issubclass(UpdateNote, ArtemisTool)
     assert isinstance(update_note, ArtemisTool)
@@ -50,11 +50,6 @@ def test_update_note_tool_subclass_and_registry():
     assert update_note.name == "update_note"
     assert update_note.category == "memory"
     assert update_note.args_schema == UpdateNoteArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("update_note")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, UpdateNoteTool)
 
     # GenAI FunctionDeclaration export
     declaration = update_note.to_genai_declaration()

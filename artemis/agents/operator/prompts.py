@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import base64
+from functools import lru_cache
 import io
+import json
 from pathlib import Path
 
 from jinja2 import Environment, StrictUndefined, Template
@@ -35,6 +37,14 @@ logger = get_logger(__name__)
 
 from artemis.agents.prompt_assembly import render_tool_enum, resolve_available
 from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER
+
+
+@lru_cache(maxsize=1)
+def load_operator_prompts() -> dict[str, str]:
+    """Load and cache the Operator templates from operator.json."""
+    prompts_path = Path(__file__).with_name("operator.json")
+    return json.loads(prompts_path.read_text(encoding="utf-8"))
+
 
 # --- Assembled tool references -------------------------------------------------------
 # The operator.json templates carry availability slots rendered by

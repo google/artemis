@@ -64,9 +64,9 @@ async def test_ask_vision_coder_success():
         assert result == vision_coder_outcome
 
 
-def test_ask_image_processor_tool_subclass_and_registry():
-    """Verify AskImageProcessorTool is an ArtemisTool subclass and registered in ToolRegistry."""
-    from artemis.tools.base import ArtemisTool, ToolRegistry
+def test_ask_image_processor_tool_subclass():
+    """Verify AskImageProcessorTool is an ArtemisTool subclass."""
+    from artemis.tools.base import ArtemisTool
     from artemis.tools.image_processor_tool import (
         AskImageProcessor,
         AskImageProcessorTool,
@@ -86,11 +86,6 @@ def test_ask_image_processor_tool_subclass_and_registry():
     assert ask_image_processor.name == "ask_image_processor"
     assert ask_image_processor.category == "custom"
     assert ask_image_processor.args_schema == AskVisionCoderArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("ask_image_processor")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, AskImageProcessorTool)
 
     # GenAI FunctionDeclaration export
     declaration = ask_image_processor.to_genai_declaration()

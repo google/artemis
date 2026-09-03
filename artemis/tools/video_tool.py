@@ -31,7 +31,7 @@ from artemis.core.tool_declaration import ToolDeclaration
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
+from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
@@ -180,7 +180,6 @@ class VideoAnalyzerTool(ArtemisTool):
 
 # Universal tool instance & aliases
 video_analyzer = VideoAnalyzerTool()
-ToolRegistry.register(video_analyzer)
 
 
 class VideoAnalyzerPureTool(ArtemisTool):
@@ -231,7 +230,6 @@ class VideoAnalyzerPureTool(ArtemisTool):
 # Universal pure tool instance & aliases
 video_analyzer_pure = VideoAnalyzerPureTool()
 VideoAnalyzerPure = VideoAnalyzerPureTool
-ToolRegistry.register(video_analyzer_pure)
 
 
 def get_video_analyzer_tool(

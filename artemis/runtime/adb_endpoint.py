@@ -166,3 +166,8 @@ def current_adb_endpoint() -> AdbEndpoint:
     host = settings.ADB_HOST or os.environ.get("ADB_HOST") or DEFAULT_ADB_HOST
     port = settings.ADB_PORT or os.environ.get("ADB_PORT") or DEFAULT_ADB_PORT
     return AdbEndpoint.create(str(host), int(port))
+
+
+def adb_command(arguments: Sequence[str]) -> list[str]:
+    """Resolve the ADB binary and add the configured server's host and port."""
+    return AdbSession(current_adb_endpoint()).command(arguments)

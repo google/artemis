@@ -27,7 +27,7 @@ from artemis.agents.explorer.constants import (
 )
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.explorer_tool import (
     AskExplorerArgs,
     AskExplorerTool,
@@ -122,9 +122,7 @@ def test_description_does_not_depend_on_the_tier(version):
     assert tool.version == version
 
 
-def test_registry_and_wrapper_export():
-    reg_tool = ToolRegistry.get("ask_explorer")
-    assert isinstance(reg_tool, AskExplorerTool)
+def test_wrapper_export():
     assert ask_explorer_wrapper.tool_fn_getter is get_ask_explorer_tool
     assert ask_explorer_wrapper.on_success_fn("x") == "x"
     assert "boom" in ask_explorer_wrapper.on_failure_fn("boom")

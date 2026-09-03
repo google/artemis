@@ -21,7 +21,6 @@ from artemis.agents.explorer.explorer import Explorer
 from artemis.config.settings import Settings
 from artemis.graph.perception import perception_node
 from artemis.graph.state import State
-from artemis.tools.base import ToolRegistry
 from artemis.tools.index import get_tools_from_wrappers
 from artemis.tools.mobile.ocr import (
     ocr_recognition,
@@ -126,20 +125,8 @@ def test_ocr_tool_not_exposed_when_unconfigured():
     with patch("artemis.tools.mobile.ocr.is_ocr_configured", return_value=False):
         assert not ocr_recognition.is_available()
 
-        # ToolRegistry.list_tools filters out unavailable tools
-        available_tools = ToolRegistry.list_tools(available_only=True)
-        assert "ocr_recognition" not in [t.name for t in available_tools]
-
-        # ToolRegistry.get_langchain_tools filters out unavailable tools
-        mock_ctx = MagicMock()
-        lc_tools = ToolRegistry.get_langchain_tools(mock_ctx, available_only=True)
-        assert "ocr_recognition" not in [t.name for t in lc_tools]
-
-        # ToolRegistry.get_genai_declarations filters out unavailable tools
-        genai_tools = ToolRegistry.get_genai_declarations(available_only=True)
-        assert "ocr_recognition" not in [t.name for t in genai_tools]
-
         # get_tools_from_wrappers excludes ocr_recognition_wrapper
+        mock_ctx = MagicMock()
         wrapped_tools = get_tools_from_wrappers(mock_ctx, [ocr_recognition_wrapper])
         assert len(wrapped_tools) == 0
 

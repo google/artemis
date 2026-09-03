@@ -373,9 +373,9 @@ async def test_analyze_task_output_tool(mock_get_llm, mock_ctx):
         del _FINISHED_TASKS_LOGS[task_id]
 
 
-def test_run_adb_command_tool_subclass_and_registry():
-    """Verify RunAdbCommandTool is a subclass of ArtemisTool and properly registered."""
-    from artemis.tools.base import ArtemisTool, ToolRegistry
+def test_run_adb_command_tool_subclass():
+    """Verify RunAdbCommandTool is a subclass of ArtemisTool."""
+    from artemis.tools.base import ArtemisTool
     from artemis.tools.command_tool import (
         RunAdbCommand,
         RunAdbCommandArgs,
@@ -391,11 +391,6 @@ def test_run_adb_command_tool_subclass_and_registry():
     assert run_adb_command.name == "run_adb_command"
     assert run_adb_command.category == "system"
     assert run_adb_command.args_schema == RunAdbCommandArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("run_adb_command")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, RunAdbCommandTool)
 
     # GenAI FunctionDeclaration export
     declaration = run_adb_command.to_genai_declaration()
@@ -421,9 +416,9 @@ async def test_run_adb_command_tool_mock_driver_execute():
     assert "pm list packages" in driver.action_history[-1]["command"]
 
 
-def test_manage_task_tool_subclass_and_registry():
-    """Verify ManageTaskTool is a subclass of ArtemisTool and properly registered."""
-    from artemis.tools.base import ArtemisTool, ToolRegistry
+def test_manage_task_tool_subclass():
+    """Verify ManageTaskTool is a subclass of ArtemisTool."""
+    from artemis.tools.base import ArtemisTool
     from artemis.tools.command_tool import (
         ManageTask,
         ManageTaskArgs,
@@ -439,11 +434,6 @@ def test_manage_task_tool_subclass_and_registry():
     assert manage_task.name == "manage_task"
     assert manage_task.category == "system"
     assert manage_task.args_schema == ManageTaskArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("manage_task")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, ManageTaskTool)
 
     # GenAI FunctionDeclaration export
     declaration = manage_task.to_genai_declaration()
@@ -488,9 +478,9 @@ async def test_manage_task_tool_direct_execute(mock_ctx):
     registry.background.clear()
 
 
-def test_analyze_task_output_tool_subclass_and_registry():
-    """Verify AnalyzeTaskOutputTool is a subclass of ArtemisTool and properly registered."""
-    from artemis.tools.base import ArtemisTool, ToolRegistry
+def test_analyze_task_output_tool_subclass():
+    """Verify AnalyzeTaskOutputTool is a subclass of ArtemisTool."""
+    from artemis.tools.base import ArtemisTool
     from artemis.tools.command_tool import (
         AnalyzeTaskOutput,
         AnalyzeTaskOutputArgs,
@@ -506,11 +496,6 @@ def test_analyze_task_output_tool_subclass_and_registry():
     assert analyze_task_output.name == "analyze_task_output"
     assert analyze_task_output.category == "system"
     assert analyze_task_output.args_schema == AnalyzeTaskOutputArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("analyze_task_output")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, AnalyzeTaskOutputTool)
 
     # GenAI FunctionDeclaration export
     declaration = analyze_task_output.to_genai_declaration()
@@ -558,9 +543,9 @@ async def test_analyze_task_output_tool_direct_execute(mock_get_llm, mock_ctx):
         del _FINISHED_TASKS_LOGS[task_id]
 
 
-def test_run_short_adb_command_tool_subclass_and_registry():
-    """Verify RunShortAdbCommandTool is a subclass of ArtemisTool and properly registered."""
-    from artemis.tools.base import ArtemisTool, ToolRegistry
+def test_run_short_adb_command_tool_subclass():
+    """Verify RunShortAdbCommandTool is a subclass of ArtemisTool."""
+    from artemis.tools.base import ArtemisTool
     from artemis.tools.command_tool import (
         RunShortAdbCommand,
         RunShortAdbCommandArgs,
@@ -576,11 +561,6 @@ def test_run_short_adb_command_tool_subclass_and_registry():
     assert run_short_adb_command.name == "run_short_adb_command"
     assert run_short_adb_command.category == "system"
     assert run_short_adb_command.args_schema == RunShortAdbCommandArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("run_short_adb_command")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, RunShortAdbCommandTool)
 
     # GenAI FunctionDeclaration export
     declaration = run_short_adb_command.to_genai_declaration()

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Universal Tool Protocol and Registry for ARTEMIS.
+"""Universal Tool Protocol for ARTEMIS.
 
 Enables tools to be authored once using standard Pydantic schemas and async handlers,
 then automatically exported to LangChain Tools (Pro Graph), Google GenAI FunctionDeclarations
@@ -197,91 +197,3 @@ class ArtemisTool:
                 required=required,
             ),
         )
-
-
-class ToolRegistry:
-    """Global registry managing universal tools."""
-
-    _tools: dict[str, ArtemisTool] = {}
-
-    @classmethod
-    def register(cls, tool: ArtemisTool) -> ArtemisTool:
-        """Registers a tool in the global registry."""
-        cls._tools[tool.name] = tool
-        return tool
-
-    @classmethod
-    def get(cls, name: str) -> ArtemisTool | None:
-        """Retrieves a tool by name from the registry."""
-        normalized = name.split(":")[-1] if ":" in name else name
-        return cls._tools.get(normalized)
-
-    @classmethod
-    def list_tools(
-        cls, category: ToolCategory | None = None, available_only: bool = True
-    ) -> list[ArtemisTool]:
-        """Lists all registered tools, optionally filtered by category and availability."""
-        tools = [t for t in cls._tools.values() if not available_only or t.is_available()]
-        if category:
-            return [t for t in tools if t.category == category]
-        return list(tools)
-
-    @classmethod
-    def get_langchain_tools(
-        cls, ctx: Any, names: list[str] | None = None, available_only: bool = True
-    ) -> list[BaseTool]:
-        """Returns LangChain tool wrappers for the requested or all registered tools."""
-        tools = (
-            [cls._tools[n] for n in names if n in cls._tools]
-            if names
-            else list(cls._tools.values())
-        )
-        if available_only:
-            tools = [t for t in tools if t.is_available(ctx)]
-        return [t.to_langchain_tool(ctx) for t in tools]
-
-    @classmethod
-    def get_genai_declarations(
-        cls, names: list[str] | None = None, available_only: bool = True
-    ) -> list[genai_types.FunctionDeclaration]:
-        """Returns Google GenAI function declarations for registered tools."""
-        tools = (
-            [cls._tools[n] for n in names if n in cls._tools]
-            if names
-            else list(cls._tools.values())
-        )
-        if available_only:
-            tools = [t for t in tools if t.is_available()]
-        return [t.to_genai_declaration() for t in tools]
-
-    @classmethod
-    async def execute(
-        cls, name: str, args: dict[str, Any], driver: BaseDeviceDriver, ctx: Any
-    ) -> Any:
-        """Executes a registered tool by name with provided arguments, driver, and context."""
-        tool = cls.get(name)
-        if not tool:
-            raise ValueError(f"Tool '{name}' not found in ToolRegistry.")
-        return await tool.execute(driver=driver, ctx=ctx, **args)
-
-
-def artemis_tool(
-    name: str,
-    description: str,
-    args_schema: type[BaseModel],
-    category: ToolCategory = "action",
-):
-    """Decorator to define and register a universal ARTEMIS tool."""
-
-    def decorator(fn: Callable[..., Any]) -> ArtemisTool:
-        tool_obj = ArtemisTool(
-            name=name,
-            description=description,
-            args_schema=args_schema,
-            handler=fn,
-            category=category,
-        )
-        ToolRegistry.register(tool_obj)
-        return tool_obj
-
-    return decorator

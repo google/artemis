@@ -37,7 +37,7 @@ def _perception_host() -> PerceptionToolsMixin:
 async def test_get_ocr_list_reads_the_screen_index_without_storage() -> None:
     host = _perception_host()
 
-    with patch("artemis.agents.explorer.explorer.StorageManager") as storage_cls:
+    with patch("artemis.agents.explorer.run_setup.StorageManager") as storage_cls:
         result = await host.exec_get_ocr_list()
 
     assert result == {

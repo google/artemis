@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from artemis.context import ArtemisContext
 from artemis.drivers.base import BaseDeviceDriver
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.mobile.read_hierarchy import (
     GetUIHierarchy,
     GetUiHierarchy,
@@ -46,8 +46,8 @@ def mock_driver():
     return driver
 
 
-def test_get_ui_hierarchy_tool_subclass_and_registry():
-    """Verify GetUiHierarchyTool is a subclass of ArtemisTool and properly registered."""
+def test_get_ui_hierarchy_tool_subclass():
+    """Verify GetUiHierarchyTool is a subclass of ArtemisTool."""
     assert issubclass(GetUiHierarchyTool, ArtemisTool)
     assert issubclass(GetUiHierarchy, ArtemisTool)
     assert issubclass(GetUIHierarchy, ArtemisTool)
@@ -57,11 +57,6 @@ def test_get_ui_hierarchy_tool_subclass_and_registry():
     assert get_ui_hierarchy.name == "get_ui_hierarchy"
     assert get_ui_hierarchy.category == "diagnostic"
     assert get_ui_hierarchy.args_schema == GetUiHierarchyArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("get_ui_hierarchy")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, GetUiHierarchyTool)
 
     # GenAI FunctionDeclaration export
     declaration = get_ui_hierarchy.to_genai_declaration()

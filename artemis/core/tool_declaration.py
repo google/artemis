@@ -18,7 +18,7 @@ from typing import Any
 
 
 class ToolDeclaration(dict):
-    """Standardized tool declaration adhering to JSON Schema format with property accessors."""
+    """OpenAI function schema with name, description and parameters properties."""
 
     def __init__(self, name: str, description: str, parameters: dict[str, Any]):
         super().__init__(
@@ -28,19 +28,16 @@ class ToolDeclaration(dict):
                 "description": description,
                 "parameters": parameters,
             },
-            name=name,
-            description=description,
-            parameters=parameters,
         )
 
     @property
     def name(self) -> str:
-        return self.get("name") or self.get("function", {}).get("name", "")
+        return self.get("function", {}).get("name", "")
 
     @property
     def description(self) -> str:
-        return self.get("description") or self.get("function", {}).get("description", "")
+        return self.get("function", {}).get("description", "")
 
     @property
     def parameters(self) -> dict[str, Any]:
-        return self.get("parameters") or self.get("function", {}).get("parameters", {})
+        return self.get("function", {}).get("parameters", {})

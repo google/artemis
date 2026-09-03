@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
-from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
+from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
@@ -82,7 +82,6 @@ class WaitTool(ArtemisTool):
 # Universal tool instance & aliases
 wait = WaitTool()
 Wait = WaitTool
-ToolRegistry.register(wait)
 
 
 def get_wait_tool(ctx: ArtemisContext) -> BaseTool:

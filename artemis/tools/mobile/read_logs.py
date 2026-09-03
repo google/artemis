@@ -21,7 +21,7 @@ from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
+from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.mobile.log_utils import fetch_and_filter_logs
 from artemis.utils.logger import get_logger
 
@@ -108,7 +108,6 @@ class ReadLogsTool(ArtemisTool):
 read_logs = ReadLogsTool()
 ReadLogs = ReadLogsTool
 ReadLogsToolAlias = ReadLogsTool
-ToolRegistry.register(read_logs)
 
 
 def get_read_logs_tool(ctx: ArtemisContext) -> BaseTool:

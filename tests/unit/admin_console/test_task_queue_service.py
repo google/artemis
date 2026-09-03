@@ -112,7 +112,7 @@ async def test_enqueued_task_keeps_its_adb_endpoint_snapshot():
             return_value=original,
         ),
         patch(
-            "artemis.runtime.device_pool.device_pool.select_device",
+            "artemis.runtime.device_pool.device_pool.select_device_async",
             return_value="emulator-5554",
         ),
     ):
@@ -230,7 +230,7 @@ async def test_queue_worker_execution_lifecycle():
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
-            "artemis.runtime.device_pool.device_pool.select_device",
+            "artemis.runtime.device_pool.device_pool.select_device_async",
             return_value="emulator-5554",
         ),
     ):
@@ -276,7 +276,7 @@ async def test_queue_worker_cmd_construction():
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
-            "artemis.runtime.device_pool.device_pool.select_device",
+            "artemis.runtime.device_pool.device_pool.select_device_async",
             return_value="emulator-5554",
         ),
     ):
@@ -594,7 +594,7 @@ async def test_cancel_task_triggers_next_pending_task():
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
-            "artemis.runtime.device_pool.device_pool.select_device",
+            "artemis.runtime.device_pool.device_pool.select_device_async",
             return_value="emulator-5554",
         ),
     ):
@@ -645,7 +645,7 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
         patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
-            "artemis.runtime.device_pool.device_pool.select_device",
+            "artemis.runtime.device_pool.device_pool.select_device_async",
             return_value="emulator-5554",
         ),
     ):

@@ -228,6 +228,7 @@ async def stop_task(
         # Empty or non-JSON body: fall back to the query parameters.
         pass
 
+    # stop_tasks updates scheduler state and asyncio events owned by this loop.
     stopped = task_queue_service.stop_tasks(
         clear_all=target_all,
         session_id=target_sid,

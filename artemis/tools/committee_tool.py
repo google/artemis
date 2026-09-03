@@ -36,7 +36,7 @@ from artemis.data_engine.trace import (
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.services.llm import get_llm, invoke_llm_with_timeout_message
-from artemis.tools.base import ArtemisTool, ToolCategory, ToolRegistry
+from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.log_tool import get_analyze_logs_tool
 from artemis.tools.scratchpad import get_list_notes_tool, get_read_note_tool
 from artemis.tools.tool_wrapper import (
@@ -108,7 +108,6 @@ class AskCommitteeTool(ArtemisTool):
 ask_committee = AskCommitteeTool()
 AskCommittee = AskCommitteeTool
 AskCommitteeToolAlias = AskCommitteeTool
-ToolRegistry.register(ask_committee)
 
 
 def get_ask_committee_tool(ctx: ArtemisContext) -> BaseTool:

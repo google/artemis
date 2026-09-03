@@ -87,7 +87,7 @@ async def test_explorer_all_tools_sequential_mocked():
     logger.addHandler(handler)
 
     # Attach the main agent logger to capture internal step logs
-    agent_logger = logging.getLogger("artemis.agents.explorer.explorer")
+    agent_logger = logging.getLogger("artemis.agents.explorer")
     agent_logger.setLevel(logging.INFO)
     agent_logger.addHandler(handler)
 
@@ -238,12 +238,13 @@ async def test_explorer_all_tools_sequential_mocked():
             return_value=mock_client,
         ),
         patch(
-            "artemis.agents.explorer.explorer.StorageManager",
+            "artemis.agents.explorer.run_setup.StorageManager",
             return_value=mock_storage,
         ),
         # get_ocr_list is only exposed when an OCR backend is configured.
         patch("artemis.agents.explorer.explorer.is_ocr_configured", return_value=True),
-        patch("artemis.agents.explorer.explorer._run_object_detection", mock_detect),
+        patch("artemis.agents.explorer.run_setup.is_ocr_configured", return_value=True),
+        patch("artemis.agents.explorer.perception_tools._run_object_detection", mock_detect),
     ):
         explorer = Explorer(mock_ctx)
         result = await explorer.run(

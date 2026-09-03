@@ -20,10 +20,8 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from langchain_core.messages import AIMessage
 
-from artemis.agents.explorer.explorer import (
-    UNIVERSAL_EXPLORER_TOOLS,
-    Explorer,
-)
+from artemis.agents.explorer.explorer import Explorer
+from artemis.agents.explorer.tool_declarations import UNIVERSAL_EXPLORER_TOOLS
 from artemis.config import settings
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
@@ -106,7 +104,7 @@ async def test_run_universal_explorer_success(mock_context, tmp_path):
     mock_llm.bind_tools.return_value = mock_bound
 
     with patch(
-        "artemis.agents.explorer.explorer.get_llm",
+        "artemis.agents.explorer.universal_runner.get_llm",
         return_value=mock_llm,
     ):
         mock_state = Mock(spec=State)

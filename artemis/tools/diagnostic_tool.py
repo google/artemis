@@ -24,7 +24,7 @@ from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
@@ -100,7 +100,6 @@ class AskDiagnoserTool(ArtemisTool):
 ask_diagnoser = AskDiagnoserTool()
 AskDiagnoser = AskDiagnoserTool
 DiagnosticTool = AskDiagnoserTool
-ToolRegistry.register(ask_diagnoser)
 
 
 def get_ask_diagnostic_agent_tool(ctx: ArtemisContext) -> BaseTool:

@@ -31,6 +31,7 @@ from PIL import Image
 from pydantic import BaseModel
 import uiautomator2 as u2
 
+from artemis.runtime.adb_endpoint import adb_command
 from artemis.runtime.awake_service import ensure_device_awake
 from artemis.utils.logger import get_logger
 
@@ -173,7 +174,7 @@ def _is_package_installed(device_id: str, pkg: str) -> bool:
     """Check if a package is installed on the device."""
     try:
         result = subprocess.run(
-            ["adb", "-s", device_id, "shell", "pm", "list", "packages"],
+            adb_command(["-s", device_id, "shell", "pm", "list", "packages"]),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -198,17 +199,18 @@ def _uninstall_package(device_id: str, pkg: str) -> bool:
     """Uninstall a package from the device for the current user."""
     try:
         result = subprocess.run(
-            [
-                "adb",
-                "-s",
-                device_id,
-                "shell",
-                "pm",
-                "uninstall",
-                "--user",
-                "0",
-                pkg,
-            ],
+            adb_command(
+                [
+                    "-s",
+                    device_id,
+                    "shell",
+                    "pm",
+                    "uninstall",
+                    "--user",
+                    "0",
+                    pkg,
+                ]
+            ),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -285,13 +287,24 @@ class UIAutomatorClient:
         if self._awake_strategy is None:
             self._awake_strategy = ensure_device_awake(self._device_id)
 
-        # Connect to device
+        # Retry connections while ADB recovers from a reboot or USB disconnect.
         logger.info(f"Connecting UIAutomator2 to device: {self._device_id}")
-        try:
-            self._device = u2.connect(self._device_id)
-        except Exception:
+        last_error: Exception | None = None
+        for attempt in range(3):
+            if attempt:
+                time.sleep(1.0 * attempt)
+            try:
+                self._device = u2.connect(self._device_id)
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    f"UIAutomator2 connect attempt {attempt + 1}/3 to"
+                    f" {self._device_id} failed: {exc}"
+                )
+        else:
             self._awake_strategy = None
-            raise
+            raise last_error
         logger.info("UIAutomator2 connected successfully")
         return self._device
 
@@ -380,7 +393,7 @@ class UIAutomatorClient:
         """
         try:
             result = subprocess.run(
-                ["adb", "-s", self._device_id, "exec-out", "screencap", "-p"],
+                adb_command(["-s", self._device_id, "exec-out", "screencap", "-p"]),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=10,

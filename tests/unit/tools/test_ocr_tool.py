@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from artemis.context import ArtemisContext
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
-from artemis.tools.base import ArtemisTool, ToolRegistry
+from artemis.tools.base import ArtemisTool
 from artemis.tools.mobile.ocr import (
     OCRRecognition,
     OcrArgs,
@@ -63,8 +63,8 @@ def mock_state(tmp_path):
     return state
 
 
-def test_ocr_tool_subclass_and_registry():
-    """Verify OcrRecognitionTool is a subclass of ArtemisTool and properly registered."""
+def test_ocr_tool_subclass():
+    """Verify OcrRecognitionTool is a subclass of ArtemisTool."""
     assert issubclass(OcrRecognitionTool, ArtemisTool)
     assert issubclass(OcrRecognition, ArtemisTool)
     assert issubclass(OCRRecognition, ArtemisTool)
@@ -75,11 +75,6 @@ def test_ocr_tool_subclass_and_registry():
     assert ocr_recognition.name == "ocr_recognition"
     assert ocr_recognition.category == "explorer"
     assert ocr_recognition.args_schema == OcrArgs
-
-    # Registry lookup
-    reg_tool = ToolRegistry.get("ocr_recognition")
-    assert reg_tool is not None
-    assert isinstance(reg_tool, OcrRecognitionTool)
 
     # GenAI FunctionDeclaration export
     declaration = ocr_recognition.to_genai_declaration()

@@ -19,9 +19,7 @@ group plus its search helpers, packaged as a mixin consumed by ``Explorer``.
 Text search, the coordinate audit and the OCR inventory all answer from the
 run's in-memory :class:`~artemis.agents.explorer.screen_index.ScreenIndex`;
 no Data Engine round trip is involved, so an unsynced frame never degrades
-to "no UI data".  Patched collaborators (``settings``, ``draw_dots``,
-``_run_object_detection``, ``logger``) are resolved through the facade module
-at call time; see ``artemis.agents.explorer._facade``.
+to "no UI data".
 """
 
 import asyncio
@@ -33,11 +31,16 @@ from typing import TYPE_CHECKING, Any
 
 import cv2
 
-from artemis.agents.explorer._facade import facade
 from artemis.agents.explorer.geometry import norm_to_pixel, pixel_to_norm
 from artemis.agents.explorer.screen_index import ScreenElement, ScreenIndex, normalize_text
 from artemis.agents.image_processor.image_processor import ImageProcessor
+from artemis.agents.object_detector.object_detector import _run_object_detection
+from artemis.config import settings
 from artemis.data_engine.trace import trace
+from artemis.utils.logger import get_logger
+from artemis.utils.visualization import draw_dots
+
+logger = get_logger(__name__)
 
 #: Text-search answer when the screen could not be indexed at all.
 NO_UI_TREE_MESSAGE = "No UI-tree data is available for this screen; rely on visual detection."
@@ -49,7 +52,6 @@ def load_detector_templates() -> tuple[list[str], float]:
     Shared by ``exec_detect_objects`` and the flash-mode ``run`` path; the two
     call sites historically carried an identical inline copy of this block.
     """
-    _ex = facade()
     detector_prompt_path = Path(__file__).parent.parent / "object_detector" / "object_detector.json"
     global_timeout = 30.0
     try:
@@ -61,7 +63,7 @@ def load_detector_templates() -> tuple[list[str], float]:
         if isinstance(raw_timeout, (int, float)) and raw_timeout > 0:
             global_timeout = float(raw_timeout)
     except Exception as e:
-        _ex.logger.warning(f"Failed to load detector prompt config: {e}")
+        logger.warning(f"Failed to load detector prompt config: {e}")
         detector_templates = ["Point to the following objects in the provided image: {labels_str}."]
         detector_instructions = ""
 
@@ -127,8 +129,7 @@ class PerceptionToolsMixin:
 
     def _next_output_path(self, subdir: str) -> Path:
         """Next free ``images/<subdir>/<image>_<n>.jpg`` under the traces directory."""
-        _ex = facade()
-        out_dir = Path(_ex.settings.TRACES_PATH) / "images" / subdir
+        out_dir = Path(settings.TRACES_PATH) / "images" / subdir
         out_dir.mkdir(parents=True, exist_ok=True)
         stem = self.image_name or "temp_image"
         max_seq = 0
@@ -147,15 +148,14 @@ class PerceptionToolsMixin:
         textual result is still delivered, so one bad annotation never sinks
         the tool call.
         """
-        _ex = facade()
         if not self.screenshot_path:
             return None
         try:
             output_path = self._next_output_path(subdir)
-            _ex.draw_dots(self.screenshot_path, points, labels, str(output_path), color=color)
+            draw_dots(self.screenshot_path, points, labels, str(output_path), color=color)
             return str(output_path)
         except Exception as e:
-            _ex.logger.warning(f"Failed to draw {subdir} dots: {e}")
+            logger.warning(f"Failed to draw {subdir} dots: {e}")
             return None
 
     # ------------------------------------------------------------------ #
@@ -237,7 +237,6 @@ class PerceptionToolsMixin:
         prefix: str = "D",
         color: str = "red",
     ) -> dict:
-        _ex = facade()
         try:
             if not self.screenshot_path:
                 return {
@@ -257,7 +256,7 @@ class PerceptionToolsMixin:
             # Load object detector templates
             templates, global_timeout = load_detector_templates()
 
-            result = await _ex._run_object_detection(
+            result = await _run_object_detection(
                 self.ctx,
                 target_path,
                 queries,
@@ -280,7 +279,7 @@ class PerceptionToolsMixin:
                         "image_path": str(target_path),
                     }
 
-                base_dir = _ex.settings.TRACES_PATH
+                base_dir = settings.TRACES_PATH
                 images_dir = base_dir / "images"
                 object_detect_dir = images_dir / "object_detect"
                 object_detect_dir.mkdir(parents=True, exist_ok=True)
@@ -341,7 +340,7 @@ class PerceptionToolsMixin:
                             f'[{label_id}] "{item.get("label")}" at [{x_orig_norm},{y_orig_norm}]'
                         )
 
-                _ex.draw_dots(
+                draw_dots(
                     self.screenshot_path,
                     points,
                     d_labels,
@@ -361,7 +360,7 @@ class PerceptionToolsMixin:
                 }
 
             except Exception as e:
-                _ex.logger.warning(f"Failed to process detection output for annotation: {e}")
+                logger.warning(f"Failed to process detection output for annotation: {e}")
                 return {"text": str(result), "image_path": None}
         except Exception as e:
             return {
@@ -569,7 +568,6 @@ class PerceptionToolsMixin:
         y_max: int,
         zoom_factor: float = 2.0,
     ) -> dict:
-        _ex = facade()
         try:
             if not self.screenshot_path:
                 return {
@@ -613,7 +611,7 @@ class PerceptionToolsMixin:
                 if new_w > 0 and new_h > 0:
                     cropped = cv2.resize(cropped, (new_w, new_h))
 
-            base_dir = _ex.settings.TRACES_PATH
+            base_dir = settings.TRACES_PATH
             images_dir = base_dir / "images"
             inspect_region_dir = images_dir / "inspect_region"
             inspect_region_dir.mkdir(parents=True, exist_ok=True)
