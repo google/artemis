@@ -741,8 +741,8 @@ class OperatorNode:
                         )
                     action_calls_to_translate = []
                 elif len(action_calls) > burst_cap:
-                    # A multi-action turn is a fast-action burst: the Validator vets its first
-                    # member, fires the rest unvetted; cap its length before it runs.
+                    # A multi-action turn is a fast-action burst that the Validator
+                    # fires without the safety net; cap its length before it runs.
                     validation_errors = True
                     for tc in action_calls:
                         tool_outputs.append(

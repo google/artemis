@@ -35,6 +35,7 @@ from artemis.utils.video import (
     get_ffmpeg_path,
     get_active_session,
     normalize_recording_to_mp4,
+    plan_timeline_pieces,
     render_timeline_clip,
     remove_active_session,
     set_active_session,
@@ -145,6 +146,40 @@ async def test_normalize_recording_handles_resolution_change(tmp_path):
     assert dimensions == {(108, 242)}
 
 
+def _make_solid_clip(ffmpeg: str, color: str, size: str, duration: float, path) -> None:
+    """Encode a single-colour test clip (``size`` is ``WxH``) at 15 fps."""
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color={color}:size={size}:rate=15:duration={duration}",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _read_frames(path) -> list:
+    """Decode every frame of ``path`` with OpenCV, in order."""
+    capture = cv2.VideoCapture(str(path))
+    frames = []
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        frames.append(frame)
+    capture.release()
+    return frames
+
+
 @pytest.mark.asyncio
 async def test_analyzer_clip_stays_continuous_across_orientation_segments(tmp_path):
     """The analyzer must still receive one decodable MP4 across a rotation."""
@@ -152,27 +187,8 @@ async def test_analyzer_clip_stays_continuous_across_orientation_segments(tmp_pa
     portrait = tmp_path / "recording.mkv"
     landscape = tmp_path / "recording_001.mkv"
     output = tmp_path / "agent_clip.mp4"
-    for color, size, path in (
-        ("red", "108x242", portrait),
-        ("blue", "242x108", landscape),
-    ):
-        subprocess.run(
-            [
-                ffmpeg,
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                f"color={color}:size={size}:rate=15:duration=1",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                str(path),
-            ],
-            check=True,
-            capture_output=True,
-        )
+    _make_solid_clip(ffmpeg, "red", "108x242", 1.0, portrait)
+    _make_solid_clip(ffmpeg, "blue", "242x108", 1.0, landscape)
 
     assert await render_timeline_clip(
         [
@@ -186,18 +202,91 @@ async def test_analyzer_clip_stays_continuous_across_orientation_segments(tmp_pa
         canvas_height=320,
     )
 
-    capture = cv2.VideoCapture(str(output))
-    dimensions = set()
-    frames = 0
-    while True:
-        ok, frame = capture.read()
-        if not ok:
-            break
-        dimensions.add((frame.shape[1], frame.shape[0]))
-        frames += 1
-    capture.release()
-    assert dimensions == {(180, 320)}
-    assert frames >= 20
+    frames = _read_frames(output)
+    assert {(frame.shape[1], frame.shape[0]) for frame in frames} == {(180, 320)}
+    assert len(frames) >= 20
+
+
+def test_timeline_pieces_fill_restart_gaps(tmp_path):
+    """Holes between segments (and a window starting in one) become black gaps."""
+    first = tmp_path / "recording.mkv"
+    second = tmp_path / "recording_001.mkv"
+    first.write_bytes(b"x")
+    second.write_bytes(b"x")
+    segments = [
+        {"path": first, "start": 0.0, "end": 10.0},
+        {"path": second, "start": 11.5, "end": 20.0},  # scrcpy restart took 1.5s
+    ]
+
+    pieces = plan_timeline_pieces(segments, 8.0, 14.0)
+    assert pieces == [
+        ("file", first, 8.0, 10.0),
+        ("gap", pytest.approx(1.5)),
+        ("file", second, 0.0, pytest.approx(2.5)),
+    ]
+
+    # Window opening inside the hole: the clip's t=0 is still the requested start.
+    pieces = plan_timeline_pieces(segments, 10.5, 13.0)
+    assert pieces == [("gap", pytest.approx(1.0)), ("file", second, 0.0, pytest.approx(1.5))]
+
+    # Sub-epsilon seams are rounding noise, not gaps.
+    seam = [
+        {"path": first, "start": 0.0, "end": 10.0},
+        {"path": second, "start": 10.02, "end": 20.0},
+    ]
+    assert [p[0] for p in plan_timeline_pieces(seam, 9.0, 11.0)] == ["file", "file"]
+
+    assert plan_timeline_pieces(segments, 10.1, 11.4) == []
+
+
+@pytest.mark.asyncio
+async def test_analyzer_clip_keeps_timeline_time_across_restart_gap(tmp_path):
+    """After a rotation the clip must not run ahead of the recording timeline.
+
+    Two 1s segments with a 1.5s restart hole between them; the requested 3s
+    window must render as 3s of video with black frames where the hole was,
+    so ``start_time + frame_offset`` still names the true recording time.
+    """
+    ffmpeg = get_ffmpeg_path()
+    portrait = tmp_path / "recording.mkv"
+    landscape = tmp_path / "recording_001.mkv"
+    _make_solid_clip(ffmpeg, "red", "108x242", 1.0, portrait)
+    _make_solid_clip(ffmpeg, "blue", "242x108", 1.0, landscape)
+    segments = [
+        {"path": portrait, "start": 0.0, "end": 1.0},
+        {"path": landscape, "start": 2.5, "end": 3.5},
+    ]
+
+    output = tmp_path / "agent_clip.mp4"
+    assert await render_timeline_clip(
+        segments, 0.25, 3.25, output, canvas_width=180, canvas_height=320
+    )
+    frames = _read_frames(output)
+    # 3.0s at 15 fps; allow one frame of encoder slack on either side.
+    assert 43 <= len(frames) <= 47
+
+    def is_black(frame) -> bool:
+        return frame.max() < 40
+
+    def is_blue(frame) -> bool:
+        b, g, r = frame[160, 90]
+        return b > 150 and r < 80 and g < 80
+
+    # t=0.5s -> red segment, t=1.5s -> restart hole, t=3.0s -> blue segment.
+    assert not is_black(frames[7]) and not is_blue(frames[7])
+    assert is_black(frames[22])
+    assert is_blue(frames[-1])
+
+    # A window opening inside the hole leads with black, then blue at the
+    # expected timeline offset (2.5s - 1.5s = 1.0s into the clip).
+    output2 = tmp_path / "agent_clip2.mp4"
+    assert await render_timeline_clip(
+        segments, 1.5, 3.25, output2, canvas_width=180, canvas_height=320
+    )
+    frames2 = _read_frames(output2)
+    assert 24 <= len(frames2) <= 28
+    assert is_black(frames2[3])
+    assert is_blue(frames2[20])
 
 
 @pytest.fixture

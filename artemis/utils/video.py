@@ -46,6 +46,8 @@ SCRCPY_STARTUP_TIMEOUT_SECONDS = 6.0
 VIDEO_READY_DELAY_SECONDS = 1
 ANDROID_DEVICE_VIDEO_PATH = "/sdcard/screen_recording.mp4"
 ANDROID_MAX_RECORDING_DURATION_SECONDS = 180  # Android screenrecord limit
+# Ignore small timing differences at segment boundaries.
+TIMELINE_GAP_EPSILON_SECONDS = 0.05
 
 # Expanded for Gemini File API (Supports up to 2GB).
 # Target 100MB to allow 3-5min crisp video and prevent blurring for long durations.
@@ -529,6 +531,37 @@ async def write_recording_manifest(
     return manifest_path
 
 
+def plan_timeline_pieces(
+    segments: list[dict[str, Any]], start_time: float, end_time: float
+) -> list[tuple[Any, ...]]:
+    """Split a recording window into file ranges and gaps between segments.
+
+    File pieces are ``("file", path, local_start, local_end)``; gaps are
+    ``("gap", seconds)``. Include leading and trailing gaps to preserve timeline
+    offsets, ignoring gaps below the timing tolerance. Return an empty list if
+    no existing segment overlaps the window.
+    """
+    pieces: list[tuple[Any, ...]] = []
+    cursor = start_time
+    for segment in sorted(segments, key=lambda item: float(item["start"])):
+        path = Path(segment["path"])
+        seg_start = float(segment["start"])
+        seg_end = float(segment["end"])
+        overlap_start = max(start_time, seg_start)
+        overlap_end = min(end_time, seg_end)
+        if not path.exists() or overlap_end <= overlap_start:
+            continue
+        if overlap_start - cursor > TIMELINE_GAP_EPSILON_SECONDS:
+            pieces.append(("gap", overlap_start - cursor))
+        pieces.append(("file", path, overlap_start - seg_start, overlap_end - seg_start))
+        cursor = max(cursor, overlap_end)
+    if not any(piece[0] == "file" for piece in pieces):
+        return []
+    if end_time - cursor > TIMELINE_GAP_EPSILON_SECONDS:
+        pieces.append(("gap", end_time - cursor))
+    return pieces
+
+
 async def render_timeline_clip(
     segments: list[dict[str, Any]],
     start_time: float,
@@ -536,40 +569,47 @@ async def render_timeline_clip(
     output_path: Path,
     canvas_width: int = 720,
     canvas_height: int = 1280,
+    fps: int = 15,
 ) -> bool:
     """Render one continuous analyzer clip from orientation-aware segments.
 
-    Only the requested time window is decoded. This keeps the video analyzer's
-    single-MP4 contract without ever re-encoding the full recording.
+    Decode only the requested window and fill recording gaps with black frames
+    to keep clip timestamps aligned with the recording timeline.
     """
-    overlaps = []
-    for segment in segments:
-        path = Path(segment["path"])
-        seg_start = float(segment["start"])
-        seg_end = float(segment["end"])
-        overlap_start = max(start_time, seg_start)
-        overlap_end = min(end_time, seg_end)
-        if path.exists() and overlap_end > overlap_start:
-            overlaps.append((path, overlap_start - seg_start, overlap_end - seg_start))
-    if not overlaps:
+    pieces = plan_timeline_pieces(segments, start_time, end_time)
+    if not pieces:
         return False
 
     command = [get_ffmpeg_path(), "-y", "-fflags", "+genpts"]
-    for path, _start, _end in overlaps:
-        command.extend(["-i", str(path)])
-
     filter_parts = []
     labels = []
-    for index, (_path, local_start, local_end) in enumerate(overlaps):
+    for index, piece in enumerate(pieces):
         label = f"v{index}"
-        filter_parts.append(
-            f"[{index}:v:0]trim=start={local_start:.6f}:end={local_end:.6f},"
-            "setpts=PTS-STARTPTS,"
-            f"scale={canvas_width}:{canvas_height}:force_original_aspect_ratio=decrease:"
-            "force_divisible_by=2,"
-            f"pad={canvas_width}:{canvas_height}:(ow-iw)/2:(oh-ih)/2:color=black,"
-            f"setsar=1,fps=15,format=yuv420p[{label}]"
-        )
+        if piece[0] == "gap":
+            duration = float(piece[1])
+            command.extend(
+                [
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"color=c=black:s={canvas_width}x{canvas_height}:r={fps}:d={duration:.3f}",
+                ]
+            )
+            filter_parts.append(
+                f"[{index}:v:0]trim=duration={duration:.6f},setpts=PTS-STARTPTS,"
+                f"setsar=1,format=yuv420p[{label}]"
+            )
+        else:
+            _kind, path, local_start, local_end = piece
+            command.extend(["-i", str(path)])
+            filter_parts.append(
+                f"[{index}:v:0]trim=start={local_start:.6f}:end={local_end:.6f},"
+                "setpts=PTS-STARTPTS,"
+                f"scale={canvas_width}:{canvas_height}:force_original_aspect_ratio=decrease:"
+                "force_divisible_by=2,"
+                f"pad={canvas_width}:{canvas_height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"setsar=1,fps={fps},format=yuv420p[{label}]"
+            )
         labels.append(f"[{label}]")
     if len(labels) == 1:
         filter_parts.append(f"{labels[0]}null[outv]")

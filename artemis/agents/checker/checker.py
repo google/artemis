@@ -566,7 +566,16 @@ def _persist_stream(
     influences booking or release (the ledger stays the source of truth).
     """
     segments = capture.segments
-    if not attempt_id or not segments:
+    if not attempt_id:
+        return
+    thoughts = sum(1 for s in segments if s["role"] == "thought")
+    chars = sum(len(s["text"]) for s in segments)
+    # Log empty turns too, so missing transcripts can be checked in the session log.
+    logger.info(
+        f"Checker transcript for {attempt_id}: {len(segments)} segment(s)"
+        f" ({thoughts} thought, {len(segments) - thoughts} answer), {chars} chars"
+    )
+    if not segments:
         return
     try:
         from artemis.graph.checkpoints import append_attempt_stream_record

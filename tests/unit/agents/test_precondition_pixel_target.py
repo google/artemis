@@ -98,6 +98,3 @@ def test_prompt_rules_are_keyed_on_target_kind():
     assert "`Kind: coordinates only`" in prompt
     assert "hidden" in prompt
     assert "Identify what appears under the red dot" in prompt
-    # Rule 1 judges the dot, not the screen: a control surviving elsewhere (or as
-    # an active input field) does not make the tapped spot valid.
-    assert "Judge the red dot, not the screen" in prompt

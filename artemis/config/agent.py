@@ -705,8 +705,7 @@ class ExecutionConfig(BaseModel):
         le=10,
         description=(
             "Maximum turn-ending actions the Operator may chain into one fast-action"
-            " burst (first member vetted by the safety net, the rest fire back to back"
-            " unvetted). A longer turn is"
+            " burst (executed back to back without the safety net). A longer turn is"
             " rejected before execution and fed back to the Operator."
         ),
     )
