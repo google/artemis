@@ -66,18 +66,47 @@ def _init_llm_and_prompt(ctx: ArtemisContext, get_llm_fn):
     return llm, prompt
 
 
+def _describe_target(action_item: dict) -> str:
+    """Describe the structured action target for the pixel judge."""
+    label = action_item.get("target_text")
+    resource_id = action_item.get("target_resource_id")
+    class_name = action_item.get("target_class")
+    bounds = action_item.get("target_bounds")
+    lines = ["[Target]", f"Action: {action_item.get('action')}"]
+    if label or resource_id or class_name or bounds:
+        lines.append("Kind: specific UI control")
+        if label:
+            lines.append(f"Label: {label}")
+        if resource_id:
+            lines.append(f"Resource ID: {resource_id}")
+        if class_name:
+            lines.append(f"Class: {class_name}")
+        if not label and not resource_id:
+            lines.append("Label: (unlabelled; identify it by its shape in Image 1)")
+        if bounds:
+            lines.append(f"Bounds at decision time: {bounds}")
+    else:
+        lines.append(
+            "Kind: coordinates only (no UI hierarchy element was found under the point;"
+            " inspect Image 1 for a control at the red dot)"
+        )
+    return "\n".join(lines)
+
+
 def _build_messages(
     prompt: str,
     orig_crop_bytes: bytes,
     live_crop_bytes: bytes,
-    action_name,
+    action_item: dict,
     state: State | None,
 ) -> list:
     """Formulates the multi-modal verification message pair."""
     orig_b64 = base64.b64encode(orig_crop_bytes).decode("utf-8")
     live_b64 = base64.b64encode(live_crop_bytes).decode("utf-8")
+    action_name = action_item.get("action")
 
     user_content = [
+        {"type": "text", "text": _describe_target(action_item)},
         {"type": "text", "text": "[Image 1 (Reference)]"},
         {
             "type": "image_url",
@@ -119,7 +148,7 @@ async def _run_attempt(
     prompt: str,
     orig_crop_bytes: bytes,
     current_coords,
-    action_name,
+    action_item: dict,
     state: State | None,
     attempt: int,
 ) -> tuple[bool, ValidationErrorCategory, str] | None:
@@ -147,7 +176,7 @@ async def _run_attempt(
     )
 
     # C. Formulate multi-modal verification message
-    messages = _build_messages(prompt, orig_crop_bytes, live_crop_bytes, action_name, state)
+    messages = _build_messages(prompt, orig_crop_bytes, live_crop_bytes, action_item, state)
 
     # D. Invoke Universal VLM. Parsing (fences, repair) and one
     # corrective re-ask on unparseable JSON are handled by the
@@ -257,7 +286,7 @@ async def validate_action_precondition_pixel(
                 prompt,
                 orig_crop_bytes,
                 current_coords,
-                action_name,
+                action_item,
                 state,
                 attempt,
             )
