@@ -12,19 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Universal Context Compressor for Artemis Flash profile.
+"""Context compression shared by Flash and Pro.
 
-:class:`ScrubEdgeCompressor` implements the scrub-edge (擦洗沿) discipline
-from the history-module redesign §3.2: each message is mutated a bounded
-number of times near the tail (XML stripped at depth 1, screenshot resolved
-at depth K), then frozen forever. A late summary never backfills a frozen
+:class:`ScrubEdgeCompressor` strips XML at depth 1 and resolves screenshots
+at depth K, then freezes the message. A late summary never backfills a frozen
 message. FlashRunner uses this implementation; the Pro transcript ledger
 reuses it over its active region (see the class docstring).
-
-The legacy per-turn full-rescan ``compress_flash_messages`` was removed in M5
-(2026-09-01) after serving as the M1/M2 semantic reference — its surviving
-semantics are asserted directly against ``ScrubEdgeCompressor`` in
-``tests/unit/agents/test_flash_scrub_edge.py``.
 """
 
 from typing import Any, Callable
@@ -36,7 +29,10 @@ from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_HISTORY_SUMMARY_PREFIX = "--- Historical Visual Transition ---\n"
+#: Header written above a resolved visual summary (public: the chunk capsule
+#: lens checks it to avoid repeating a summary already present verbatim).
+HISTORY_SUMMARY_PREFIX = "--- Historical Visual Transition ---\n"
+_HISTORY_SUMMARY_PREFIX = HISTORY_SUMMARY_PREFIX
 _UI_LIST_MARKER = "--- UI Element List ---"
 
 
@@ -53,7 +49,7 @@ def _without_marked_suffix(text: str, markers: tuple[str, ...] = (_UI_LIST_MARKE
 
 
 class ScrubEdgeCompressor:
-    """Scrub-edge context compressor (history-module redesign §3.2, M1).
+    """Replace older observation details with summaries near the message tail.
 
     Mutation discipline — every message is touched at most twice, always near
     the tail, and is then frozen forever:
@@ -75,8 +71,8 @@ class ScrubEdgeCompressor:
     touches the few messages near the scrub edge instead of rescanning the
     whole history.
 
-    Profile generalization (M2): the Pro transcript ledger reuses this exact
-    discipline over its active region. Its observation messages carry no
+    The Pro transcript ledger uses this discipline over its active region.
+    Its observation messages carry no
     ``tool_call_id``, so ``summary_key_getter`` supplies the summary-job key
     (the DataEngine step id) per message; ``strip_markers`` extends the
     depth-1 strip to the Pro tail blocks (UI element list + plan recitation);

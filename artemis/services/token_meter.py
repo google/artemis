@@ -33,12 +33,23 @@ This module never raises into the LLM call path and makes no decisions.
 import threading
 from typing import Any
 
+from artemis.data_engine.context_vars import CURRENT_NODE_NAME
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 _LOCK = threading.Lock()
 _METERS: dict[str, "SessionTokenMeter"] = {}
+
+# Size of the model context window the live Operator/FlashRunner prompt is
+# measured against when the UI reports "context used". The prompt size of the
+# last executor call (``context_base_tokens`` on its ``llm_usage`` trace) is
+# the numerator; this is the denominator.
+OPERATOR_CONTEXT_WINDOW_TOKENS = 1_000_000
+
+# Traced node names whose LLM calls carry the live executor context. Both the
+# Pro Operator and the Flash runner are "the operator" from the user's view.
+OPERATOR_NODE_NAMES = frozenset({"operator", "flashrunner"})
 
 
 def extract_usage(response: Any) -> dict[str, int] | None:
@@ -184,6 +195,9 @@ def record_llm_usage(
         }
         if source:
             payload["source"] = source
+        node = CURRENT_NODE_NAME.get()
+        if node:
+            payload["node"] = str(node)
 
         engine.record_trace(
             type="llm_call",

@@ -12,21 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Session-level message transcript ledger for the Pro operator (M2).
+"""Session message ledger shared by the Pro operator and Flash runner.
 
-Implements the four-region discipline of the history-module redesign §3.2:
+Messages are organized into four regions:
 
 - **S (stable prefix)**: the static system message — byte-identical for the
   whole session (the plan+history section is moved out by the template split).
-- **F (frozen history)**: in M2 only the cold-start restored-history block; L2
-  chunks arrive in M3.
+- **F (frozen history)**: restored history and compressed chunks.
 - **A (active window)**: raw per-turn messages, append-only. Each committed
   turn contributes its tail observation HumanMessage, the operator AIMessages
   (tool_calls and native thinking preserved by reference), the in-turn
   ToolMessages, and the turn's validator result message. The scrub edge
-  (:class:`~artemis.agents.flash.context_compressor.ScrubEdgeCompressor`,
-  generalized in M2) strips old UI lists / plan recitations at depth 1 and
-  resolves screenshots to visual summaries at depth K — messages are never
+  (:class:`~artemis.agents.flash.context_compressor.ScrubEdgeCompressor`) strips
+  old UI lists and plan recitations at depth 1 and resolves screenshots to
+  visual summaries at depth K — messages are never
   removed or reordered, so tool-call/response pairs are never split.
 - **T (current tail)**: built fresh every turn by the operator; passed to
   :meth:`render` and only enters A when the turn is committed.
@@ -75,6 +74,89 @@ def format_session_offset(seconds: float) -> str:
     return f"T+{total // 60:02d}:{total % 60:02d}"
 
 
+#: Placeholder for an image block that is still inside the scrub edge's
+#: pending-grace window when a turn transcript is rendered.
+SCREENSHOT_PLACEHOLDER = "[screenshot]"
+
+_ROLE_LABELS = {
+    "human": "observation",
+    "ai": "operator",
+    "tool": "tool result",
+    "system": "system",
+}
+
+
+def _render_content_text(content: Any) -> str:
+    """Flatten message content to plain text.
+
+    Text blocks pass through verbatim, native thinking blocks are labelled,
+    image blocks become :data:`SCREENSHOT_PLACEHOLDER`.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif not isinstance(block, dict):
+            parts.append(str(block))
+        elif block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+        elif block.get("type") == "thinking":
+            parts.append(f"(thinking) {block.get('thinking', '')}")
+        elif block.get("type") in ("image_url", "image"):
+            parts.append(SCREENSHOT_PLACEHOLDER)
+        else:
+            parts.append(json.dumps(block, ensure_ascii=False, default=str))
+    return "\n".join(part for part in parts if part)
+
+
+def render_turn_transcript(messages: list[BaseMessage]) -> str:
+    """Mechanical plain-text rendering of one committed turn's messages.
+
+    Lossless with respect to what the operator model was shown: every text
+    block, native thinking block, tool call (name and arguments) and tool
+    result is carried verbatim, in message order. Image blocks — present only
+    while a screenshot is still inside the scrub edge's pending-grace window —
+    become a placeholder; a resolved visual-transition summary is already
+    plain text. The segment capsule uses this transcript as its source when
+    compressing the turn.
+
+    A tool result is labelled with its tool's name, resolved through the
+    turn's own preceding tool calls when the message carries no name (the Pro
+    operator's ToolMessages don't); the opaque call id is shown only when no
+    name can be resolved.
+    """
+    lines: list[str] = []
+    names_by_id: dict[str, str] = {}
+    for msg in messages:
+        kind = str(getattr(msg, "type", "") or "message")
+        role = _ROLE_LABELS.get(kind, kind)
+        if kind == "tool":
+            call_id = getattr(msg, "tool_call_id", None)
+            name = getattr(msg, "name", None) or names_by_id.get(str(call_id)) or call_id
+            if name:
+                role = f"{role} {name}"
+            status = getattr(msg, "status", None)
+            if status and status != "success":
+                role = f"{role} ({status})"
+        body = _render_content_text(getattr(msg, "content", None))
+        if body:
+            lines.append(f"[{role}]\n{body}")
+        for call in getattr(msg, "tool_calls", None) or []:
+            if not isinstance(call, dict):
+                continue
+            if call.get("id") and call.get("name"):
+                names_by_id[str(call["id"])] = str(call["name"])
+            args = json.dumps(call.get("args") or {}, ensure_ascii=False, default=str)
+            lines.append(f"[tool call] {call.get('name')}({args})")
+    return "\n".join(lines)
+
+
 class TranscriptLedger:
     """Append-only four-region message ledger for one Pro session.
 
@@ -111,7 +193,7 @@ class TranscriptLedger:
         self._staged: list[BaseMessage] | None = None
         self._turn_count = 0
 
-        # L2/L3 chunk compression (M3). ``_turns`` records each committed
+        # L2/L3 chunk compression. ``_turns`` records each committed
         # turn's message span in ``_active``; a compression event advances
         # ``_active_start`` past whole turns (never splitting tool-call pairs)
         # and replaces the frozen chunk blocks wholesale. The underlying
@@ -168,7 +250,7 @@ class TranscriptLedger:
         self._static = list(messages)
 
     # ------------------------------------------------------------------
-    # F region (M2: cold-start restored history only)
+    # F region: restored history
     # ------------------------------------------------------------------
 
     @property
@@ -308,7 +390,7 @@ class TranscriptLedger:
         )
 
     # ------------------------------------------------------------------
-    # F region (M3): chunk compression primitives
+    # F region: chunk compression
     # ------------------------------------------------------------------
 
     def attach_chunker(self, chunker: Any) -> None:
@@ -328,18 +410,17 @@ class TranscriptLedger:
         return [dict(t) for t in self._turns[self._chunked_turn_count :]]
 
     def turn_text_chars(self, turns: list[dict]) -> int:
-        """Total text characters of the given turns' messages (size trigger)."""
-        total = 0
-        for turn in turns:
-            for msg in self._active[turn["start"] : turn["end"]]:
-                content = getattr(msg, "content", None)
-                if isinstance(content, str):
-                    total += len(content)
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            total += len(block.get("text", ""))
-        return total
+        """Total characters of the given turns' rendered transcripts (size
+        trigger). Measured on the very text the chunk capsule receives, so
+        the trigger sizes exactly what gets compressed."""
+        return sum(len(self.turn_transcript(turn)) for turn in turns)
+
+    def turn_transcript(self, turn: dict) -> str:
+        """Plain-text rendering of one committed turn exactly as it currently
+        stands in the active region (i.e. after the scrub edge), see
+        :func:`render_turn_transcript`. Chunk compression feeds this to the
+        segment capsule so the capsule digests precisely what it replaces."""
+        return render_turn_transcript(self._active[turn["start"] : turn["end"]])
 
     def freeze_turns(self, turn_count: int, frozen_blocks: list[BaseMessage]) -> None:
         """Compression event: consume the oldest ``turn_count`` unchunked turns

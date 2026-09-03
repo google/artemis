@@ -453,10 +453,31 @@ async def get_android_display_state(device_id: str) -> tuple[int, int, int] | No
     return None
 
 
-async def write_recording_manifest(output_dir: Path, mp4_paths: list[Path]) -> Path | None:
-    """Write the browser playlist used for orientation-aware playback."""
+RECORDING_MANIFEST_VERSION = 2
+
+
+async def write_recording_manifest(
+    output_dir: Path,
+    mp4_paths: list[Path],
+    segment_offsets: dict[Path, float] | None = None,
+) -> Path | None:
+    """Write the browser playlist used for orientation-aware playback.
+
+    ``segment_offsets`` maps each MP4 path to the wall-clock offset (seconds)
+    of its first frame relative to the DataEngine session start. Segments are
+    still listed back to back via ``start``/``duration`` for the legacy player
+    timeline, and additionally carry ``offset_ms``/``duration_ms`` so the UI
+    can map a session-relative step time onto the right segment even though
+    scrcpy restarts (rotation, crash recovery) leave gaps between segments.
+    A segment without a known offset is assumed to follow the previous one
+    without a gap.
+    """
     segments = []
     timeline = 0.0
+    session_cursor_ms = 0
+    offsets = {
+        Path(path).resolve(): float(offset) for path, offset in (segment_offsets or {}).items()
+    }
     for path in mp4_paths:
         if not path.exists():
             continue
@@ -467,23 +488,39 @@ async def write_recording_manifest(output_dir: Path, mp4_paths: list[Path]) -> P
         if duration <= 0 or width <= 0 or height <= 0:
             logger.warning(f"Recording segment skipped due to invalid metadata: {path}")
             continue
+        duration_ms = int(round(duration * 1000))
+        known_offset = offsets.get(path.resolve())
+        offset_ms = (
+            max(0, int(round(known_offset * 1000)))
+            if known_offset is not None
+            else session_cursor_ms
+        )
         segments.append(
             {
                 "file": path.name,
                 "start": round(timeline, 3),
                 "duration": round(duration, 3),
+                "offset_ms": offset_ms,
+                "duration_ms": duration_ms,
                 "width": width,
                 "height": height,
             }
         )
         timeline += duration
+        session_cursor_ms = offset_ms + duration_ms
     if not segments:
         return None
     manifest_path = output_dir / "recording.json"
     temporary_manifest_path = output_dir / "recording.part.json"
     temporary_manifest_path.write_text(
         json.dumps(
-            {"version": 1, "duration": round(timeline, 3), "segments": segments},
+            {
+                "version": RECORDING_MANIFEST_VERSION,
+                "duration": round(timeline, 3),
+                "session_offset_ms": segments[0]["offset_ms"],
+                "session_end_ms": session_cursor_ms,
+                "segments": segments,
+            },
             indent=2,
         ),
         encoding="utf-8",

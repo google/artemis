@@ -37,8 +37,11 @@ from artemis.tools.index import get_tool_by_name
 from artemis.tools.tool_wrapper import (
     get_tool_result_content,
     invoke_tool_with_injection,
+    tool_result_messages,
 )
 from artemis.utils.coordinates import (
+    COORDINATE_SPACE_KEY,
+    COORDINATE_SPACE_PIXEL,
     compute_smart_swipe_coordinates,
     parse_swipe_parameters,
 )
@@ -58,7 +61,9 @@ DEFERRING_TOOLS = {
     "video_analyzer",
     "read_note",
     "list_notes",
-    "recall_history",
+    "search_history",
+    "replay_steps",
+    "get_step_screenshot",
     "run_adb_command",
     "manage_task",
     "analyze_task_output",
@@ -639,11 +644,15 @@ class OperatorNode:
                         results.append((f"Error: Tool {tool_name} not supported", "error"))
 
                 for tc, (content, status) in zip(other_calls, results):
-                    tool_outputs.append(
-                        ToolMessage(
-                            tool_call_id=tc["id"],
-                            content=content,
+                    # A step screenshot (content blocks) travels in the carrier
+                    # this model's provider accepts; text stays a ToolMessage.
+                    tool_outputs.extend(
+                        tool_result_messages(
+                            tc["id"],
+                            content,
+                            name=normalize_name(tc["name"]),
                             status=status,
+                            llm=base_llm,
                         )
                     )
 
@@ -732,8 +741,8 @@ class OperatorNode:
                         )
                     action_calls_to_translate = []
                 elif len(action_calls) > burst_cap:
-                    # A multi-action turn is a fast-action burst that the Validator
-                    # fires without the safety net; cap its length before it runs.
+                    # A multi-action turn is a fast-action burst: the Validator vets its first
+                    # member, fires the rest unvetted; cap its length before it runs.
                     validation_errors = True
                     for tc in action_calls:
                         tool_outputs.append(
@@ -1168,6 +1177,7 @@ class OperatorNode:
                 {
                     "action": "tap",
                     "coordinates": el["center"],
+                    COORDINATE_SPACE_KEY: COORDINATE_SPACE_PIXEL,
                     "normalized_coordinates": norm_c,
                     "times": times,
                     "delay_ms": delay_ms,
@@ -1193,6 +1203,7 @@ class OperatorNode:
                 {
                     "action": "long_press_on",
                     "coordinates": el["center"],
+                    COORDINATE_SPACE_KEY: COORDINATE_SPACE_PIXEL,
                     "normalized_coordinates": norm_c,
                     "duration": duration,
                     "target_text": el.get("text"),
@@ -1229,6 +1240,7 @@ class OperatorNode:
                 {
                     "action": "focus_and_input_text",
                     "coordinates": el["center"],
+                    COORDINATE_SPACE_KEY: COORDINATE_SPACE_PIXEL,
                     "normalized_coordinates": norm_c,
                     "text": text,
                     "clear_before_input": clear_exist,
@@ -1310,6 +1322,7 @@ class OperatorNode:
                 {
                     "action": "swipe",
                     "coordinates": [x1, y1, x2, y2],
+                    COORDINATE_SPACE_KEY: COORDINATE_SPACE_PIXEL,
                     "normalized_coordinates": [nx1, ny1, nx2, ny2],
                     "normalized_start_coordinates": [nx1, ny1],
                     "normalized_end_coordinates": [nx2, ny2],

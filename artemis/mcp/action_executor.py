@@ -23,7 +23,8 @@ Kept agent-side (by design, not omission): argument normalization, element-index
 resolution against LangGraph ``State``, smart-swipe resolution, act-then-observe
 capture and ``State`` write-back, tracing (a ``ContextVar`` cannot cross the server's
 task boundary -- see the plan's R2), and the non-device tools (``read_note``,
-``list_notes``, ``ask_explorer``, ``video_analyzer``, ``recall_history``).
+``list_notes``, ``ask_explorer``, ``video_analyzer`` and the shared history tools
+``search_history`` / ``replay_steps`` / ``get_step_screenshot``).
 
 Status is carried by ``ActionResult.ok`` -- the historical substring sniffing on
 ``"Error"``/``"Failed"`` is gone, so typing the literal text "Failed" into a field no
@@ -49,6 +50,8 @@ from artemis.agents.validator.tool_declarations import (
     ToolExecutionResult,
     normalize_coordinate_target,
 )
+from artemis.tools.history import HISTORY_TOOL_NAMES, history_tool_by_name
+from artemis.tools.tool_wrapper import split_multimodal_result
 from artemis.utils.coordinates import (
     compute_smart_swipe_coordinates,
     parse_swipe_parameters,
@@ -69,8 +72,8 @@ __all__ = ["McpActionExecutor"]
 
 
 #: Non-device tools executed agent-side (never behind the action server).
-AGENT_TOOL_NAMES: frozenset[str] = frozenset(
-    {"read_note", "list_notes", "ask_explorer", "video_analyzer", "recall_history"}
+AGENT_TOOL_NAMES: frozenset[str] = (
+    frozenset({"read_note", "list_notes", "ask_explorer", "video_analyzer"}) | HISTORY_TOOL_NAMES
 )
 
 
@@ -532,8 +535,8 @@ class McpActionExecutor:
                     args.get("time_description") or args.get("TimeDescription") or "",
                     args.get("purpose") or args.get("Purpose") or "",
                 )
-            elif raw_name == "recall_history":
-                text, blocks = await self._recall_history(args)
+            elif raw_name in HISTORY_TOOL_NAMES:
+                text, blocks = await self._history_tool(raw_name, args)
                 ok = True
             else:
                 text, ok = await self._ask_explorer(
@@ -551,7 +554,7 @@ class McpActionExecutor:
         # Note texts come from our own failure formatters, so the historical
         # "Error" marker check is reliable there (unlike free-form device
         # output); the Explorer and the video analyzer report their status
-        # explicitly and a history recall is a lookup whose "no match" answer
+        # explicitly and a history lookup's "no match" / "not found" answer
         # is not an error.
         if ok is None:
             ok = "Error" not in (text or "")
@@ -560,7 +563,7 @@ class McpActionExecutor:
             tool_name=name,
             status="success" if ok else "error",
             text_summary=text,
-            # Content blocks (recalled screenshots) ride along for callers that
+            # Content blocks (a step screenshot) ride along for callers that
             # forward multimodal tool results; the text summary stays complete.
             raw_result=blocks,
         )
@@ -583,26 +586,28 @@ class McpActionExecutor:
         except Exception as e:
             return format_list_notes_failure(str(e))
 
-    async def _recall_history(self, args: dict[str, Any]) -> tuple[str, list[dict] | None]:
-        """Deterministic cold-history lookup (same tool the Pro operator binds).
+    async def _history_tool(
+        self, raw_name: str, args: dict[str, Any]
+    ) -> tuple[str, list[dict] | None]:
+        """Runs one of the shared history tools (the same instances the Pro
+        agents bind), dispatched generically by name.
 
-        Returns the text answer and, when screenshots were requested, the
-        multimodal content blocks the tool produced.
+        Returns the text answer and, for a screenshot, the multimodal content
+        blocks the tool produced.
         """
-        from artemis.tools.history_recall import RecallHistoryArgs, recall_history
-
-        accepted = {k: v for k, v in args.items() if k in RecallHistoryArgs.model_fields}
+        tool = history_tool_by_name(raw_name)
+        if tool is None:
+            return f"Error: Tool '{raw_name}' not supported.", None
+        accepted = {k: v for k, v in args.items() if k in tool.args_schema.model_fields}
         try:
-            result = await recall_history.execute(ctx=self.ctx, **accepted)
+            result = await tool.execute(ctx=self.ctx, **accepted)
         except Exception as e:
-            logger.error(f"Error running recall_history: {e}")
-            return f"recall_history failed: {e}", None
-        if isinstance(result, list):
-            texts = [
-                b.get("text", "") for b in result if isinstance(b, dict) and b.get("type") == "text"
-            ]
-            return "\n".join(t for t in texts if t) or "Recalled history.", result
-        return str(result), None
+            logger.error(f"Error running {raw_name}: {e}")
+            return f"{raw_name} failed: {e}", None
+        text, images = split_multimodal_result(result)
+        if images:
+            return text or "Screenshot attached.", result
+        return text, None
 
     async def _video_analyzer(self, time_description: str, purpose: str) -> tuple[str, bool]:
         """Runs the video-analyzing subagent over the session recording.

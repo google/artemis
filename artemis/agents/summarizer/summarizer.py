@@ -80,7 +80,7 @@ class SummarizerNode:
         pre_bytes = self._read_step_image(step_number, "pre")
         post_bytes = self._read_step_image(step_number, "post")
 
-        action_name, action_args = self._extract_action(record, state)
+        action_name, action_args = self._extract_action(record, state, ctx=self.ctx)
         result = getattr(state, "last_execution_result", None)
         # format_result_clean reports only errors/repairs; a clean run keeps
         # the controller's bare status word.
@@ -116,7 +116,7 @@ class SummarizerNode:
             return None
 
     @staticmethod
-    def _extract_action(record: Any, state: State) -> tuple[str, dict]:
+    def _extract_action(record: Any, state: State, *, ctx: Any = None) -> tuple[str, dict]:
         actions = getattr(record, "action_taken", None) if record is not None else None
         if not actions:
             decisions = getattr(state, "structured_decisions", None)
@@ -129,6 +129,15 @@ class SummarizerNode:
             actions = [actions]
         if not isinstance(actions, list) or not actions or not isinstance(actions[0], dict):
             return "no_op", {}
+        # The visual-transition lens is a model: it sees 0–1000 coordinates
+        # only. Pro records pixels (space-marked), so convert once here; a
+        # record already marked normalized passes through untouched.
+        from artemis.utils.coordinates import normalize_any_structure
+
+        device = getattr(ctx, "device", None) if ctx is not None else None
+        width = getattr(device, "device_width", None) or 1080
+        height = getattr(device, "device_height", None) or 2400
+        actions = normalize_any_structure(actions, width, height)
         first = actions[0]
         action_name = first.get("action") or "unknown"
         action_args = {k: v for k, v in first.items() if k != "action"}

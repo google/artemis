@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -108,12 +107,15 @@ async def test_history_analyzer_detailed_query_with_tool_call():
         },
     ]
     mock_ctx.data_engine.get_agent_friendly_steps.return_value = steps
+    mock_ctx.data_engine.get_agent_friendly_steps_in_range.side_effect = lambda s, e: [
+        st for st in steps if s <= st["step_number"] <= e
+    ]
 
-    # Turn 1 LLM response: Tool call to get_step_details for step 2
+    # Turn 1 LLM response: Tool call to replay_steps for step 2
     mock_response_turn_1 = MagicMock()
     mock_response_turn_1.content = ""
     mock_tool_call = {
-        "name": "get_step_details",
+        "name": "replay_steps",
         "args": {"start_step": 2, "end_step": 2},
         "id": "call_123456",
     }
@@ -160,16 +162,14 @@ async def test_history_analyzer_detailed_query_with_tool_call():
         ]  # ToolMessage is second to last after final response is appended
         assert isinstance(tool_msg, ToolMessage)
         assert tool_msg.tool_call_id == "call_123456"
+        assert tool_msg.name == "replay_steps"
 
-        # Parse the JSON in the ToolMessage content
-        tool_result = json.loads(tool_msg.content)
-        assert len(tool_result) == 1
-        assert tool_result[0]["step_number"] == 2
-        assert tool_result[0]["operator_raw_thinking"] == "Toggle the switch to turn wifi on"
-        assert tool_result[0]["action_taken"] == {
-            "action": "tap",
-            "coordinates": [100, 200],
-        }
+        # The shared replay renderer: step header, screen description, thinking.
+        mock_ctx.data_engine.get_agent_friendly_steps_in_range.assert_called_once_with(2, 2)
+        assert "- **Step 2 (Start: 4.5s)**" in tool_msg.content
+        assert "[Screen]: Toggled the wifi switch" in tool_msg.content
+        assert "Toggle the switch to turn wifi on" in tool_msg.content
+        assert "**Step 1" not in tool_msg.content
 
 
 @pytest.mark.asyncio
@@ -282,13 +282,14 @@ def test_history_analyzer_robust_tools_behavior():
     ]
 
     analyzer = HistoryAnalyzer(mock_ctx)
+    mock_ctx.data_engine.get_agent_friendly_steps_in_range.return_value = steps
 
-    # 1. Test get_step_details with string inputs
-    details_tool = analyzer._get_step_details_tool(steps)
-    result_details = details_tool.invoke({"start_step": "1", "end_step": "1"})
-    parsed_result = json.loads(result_details)
-    assert len(parsed_result) == 1
-    assert parsed_result[0]["step_number"] == 1
+    # 1. The shared replay tool coerces string step numbers
+    replay_tool = next(t for t in analyzer._build_tools() if t.name == "replay_steps")
+    result_details = replay_tool.invoke({"start_step": "1", "end_step": "1"})
+    mock_ctx.data_engine.get_agent_friendly_steps_in_range.assert_called_once_with(1, 1)
+    assert "- **Step 1 (Start: 1.0s)**" in result_details
+    assert "[Screen]: Action 1" in result_details
 
     # 2. Test read_note with .md suffix
     from artemis.tools.scratchpad import get_read_note_tool_pure

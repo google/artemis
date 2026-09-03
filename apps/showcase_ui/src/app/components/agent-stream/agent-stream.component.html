@@ -387,17 +387,95 @@ limitations under the License.
   <!-- Floating Top-Right Badges & Toolbar (Pinned overlay, hidden in empty/initial state) -->
   @if (consolidatedBlocks().length > 0 || showPlanningLoader()) {
     <div class="stream-floating-toolbar">
-      <!-- Active Architecture Info Chip (Informational Metadata, Not a Button) -->
-      @if (agentService.activeModel(); as model) {
-        <div
+      <!-- Active Architecture Chip: click opens the run info popover -->
+      @if (agentService.viewedModel(); as model) {
+        <button
+          type="button"
+          #runInfoOrigin="cdkOverlayOrigin"
+          cdkOverlayOrigin
           class="model-info-chip"
           [ngClass]="getModelClass(model.name)"
+          [class.active]="isRunInfoOpen()"
           [title]="getArchitectureTooltip(model)"
+          aria-haspopup="dialog"
+          [attr.aria-expanded]="isRunInfoOpen()"
+          (click)="toggleRunInfo($event)"
           >
           <span class="material-symbols-outlined model-icon">{{ getModelIcon(model.name) }}</span>
           <span class="model-label">Architecture:</span>
           <span class="model-name">{{ getModelDisplayName(model.name) }}</span>
-        </div>
+        </button>
+
+        <ng-template
+          cdkConnectedOverlay
+          [cdkConnectedOverlayOrigin]="runInfoOrigin"
+          [cdkConnectedOverlayOpen]="isRunInfoOpen()"
+          [cdkConnectedOverlayHasBackdrop]="true"
+          cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
+          (backdropClick)="isRunInfoOpen.set(false)"
+          [cdkConnectedOverlayPositions]="dropdownPositions"
+        >
+          <div class="vscode-dropdown-menu run-info-dropdown" role="dialog" aria-label="Run info">
+            <div class="run-info-header">
+              <span class="material-symbols-outlined" [class.is-pro]="runInfoIsPro()">{{ getModelIcon(model.name) }}</span>
+              <span class="run-info-title">{{ getModelDisplayName(model.name) }}</span>
+              @if (model.id) {
+                <span class="run-info-model" [title]="model.id">{{ model.id }}</span>
+              }
+            </div>
+
+            <div class="run-info-row">
+              <span class="run-info-label">Elapsed</span>
+              <span class="run-info-value">{{ runInfoElapsed() }}</span>
+            </div>
+
+            <div class="run-info-row">
+              <span class="run-info-label">Tokens</span>
+              @if (runUsage(); as usage) {
+                <span class="run-info-value">
+                  {{ formatRunTokens(usage.total_tokens) }}
+                  <span class="run-info-sub">{{ formatRunTokens(usage.prompt_tokens) }} in · {{ formatRunTokens(usage.completion_tokens) }} out</span>
+                </span>
+              } @else {
+                <span class="run-info-value is-muted">—</span>
+              }
+            </div>
+
+            <div class="run-info-row is-stacked">
+              <div class="run-info-line">
+                <span class="run-info-label">Context</span>
+                @if (runInfoContextPercent() !== null) {
+                  <span class="run-info-value">
+                    {{ runInfoContextPercent() }}%
+                    <span class="run-info-sub-inline">of {{ formatRunTokens(runUsage()?.operator_context_window_tokens) }}</span>
+                  </span>
+                } @else {
+                  <span class="run-info-value is-muted">—</span>
+                }
+              </div>
+              <div
+                class="run-info-meter"
+                [class.is-high]="(runInfoContextPercent() ?? 0) >= 70"
+                [class.is-critical]="(runInfoContextPercent() ?? 0) >= 90"
+                >
+                <div class="run-info-meter-fill" [style.width.%]="runInfoContextPercent() ?? 0"></div>
+              </div>
+            </div>
+
+            @if (runInfoIsPro()) {
+              <div class="run-info-row">
+                <span class="run-info-label">Result check</span>
+                <span class="run-info-value">{{ runTuningLabel('verify', runInfoTuning()?.verification_level) }}</span>
+              </div>
+              <div class="run-info-row">
+                <span class="run-info-label">Screen reading</span>
+                <span class="run-info-value">{{ runTuningLabel('explore', runInfoTuning()?.explorer_mode) }}</span>
+              </div>
+            } @else {
+              <div class="run-info-note">No extra settings for Flash.</div>
+            }
+          </div>
+        </ng-template>
       }
       <!-- Screen Recording Action Button (Interactive Button) -->
       <button

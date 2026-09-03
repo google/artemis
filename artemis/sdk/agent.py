@@ -42,7 +42,13 @@ from pydantic import BaseModel
 from artemis.agents.flash.runner import FlashRunner
 from artemis.agents.outputter.outputter import outputter
 from artemis.clients.ui_automator_client import UIAutomatorClient
-from artemis.config import OutputConfig, record_events, settings
+from artemis.config import (
+    CheckerConfig,
+    OutputConfig,
+    record_events,
+    run_tuning_for_profile,
+    settings,
+)
 from artemis.constants import RECURSION_LIMIT
 from artemis.context import (
     ArtemisContext,
@@ -91,6 +97,26 @@ logger = get_logger(__name__)
 TOutput = TypeVar("TOutput", bound=BaseModel | None)
 
 load_dotenv()
+
+
+def run_tuning_summary(config: AgentConfig, profile: str | None) -> dict[str, str] | None:
+    """Per-run Pro tuning (verification level, explorer mode) for an SDK config.
+
+    The SDK config carries the Checker switches as flat flags; fold them back
+    into a :class:`CheckerConfig` so the ladder classification stays single-
+    sourced in ``artemis.config``. Returns ``None`` for Flash runs.
+    """
+    return run_tuning_for_profile(
+        profile,
+        checker=CheckerConfig(
+            enabled=not config.disable_checker,
+            midway_checks=not config.disable_midway_checks,
+            final_check=not config.disable_final_check,
+            assert_failure_policy=config.assert_failure_policy,
+        ),
+        explorer=config.explorer,
+        explorer_versions=dict(config.explorer_versions or {}),
+    )
 
 
 class Agent:
@@ -1108,6 +1134,9 @@ class Agent:
         device_data = context.device.model_dump() if context.device else {}
         if task.request.profile:
             device_data["profile"] = task.request.profile
+        run_tuning = run_tuning_summary(self._config, task.request.profile)
+        if run_tuning:
+            device_data["run_tuning"] = run_tuning
 
         target_sid = (
             self._session_id

@@ -39,6 +39,16 @@ def format_action_clean(action_obj) -> str:
     if not act_type:
         return json.dumps(action_obj, ensure_ascii=False)
 
+    # Flash records the tool call verbatim: the action name at the top level
+    # and every argument (app_name, key, text, direction, ...) under ``args``.
+    # Read those as fallbacks so both record shapes render the same phrase.
+    raw_args = action_obj.get("args")
+    if isinstance(raw_args, dict):
+        merged = {k: v for k, v in raw_args.items() if k != "action"}
+        merged.update({k: v for k, v in action_obj.items() if v is not None and k != "args"})
+        merged.setdefault("intent", raw_args.get("action"))
+        action_obj = merged
+
     target_text = action_obj.get("target_text") or action_obj.get("text")
     coords = action_obj.get("coordinates") or action_obj.get("target")
     app_name = (
@@ -72,13 +82,22 @@ def format_action_clean(action_obj) -> str:
             else:
                 return f"Tapped {label} at {coords}"
     elif act_type in ("input_text", "focus_and_input_text"):
-        label = f"'{target_text}'" if target_text else "field"
+        # The field label is the resolved target's text only — the typed text
+        # is not the field's name.
+        field_text = action_obj.get("target_text")
+        label = f"'{field_text}'" if field_text else "field"
         text_val = action_obj.get("text")
         clear_exist = action_obj.get("clear_exist") or action_obj.get("clear_before_input")
         clear_str = " (without clearing)" if clear_exist is False else ""
         return f"Inputted '{text_val}' into {label} at {coords}{clear_str}"
     elif act_type == "swipe":
         direction = action_obj.get("action_direction") or action_obj.get("direction")
+        if not direction and isinstance(action_obj.get("gesture"), str):
+            # Flash swipe-by-direction records the direction as ``gesture``
+            # (or the FA ``action`` word, already mapped to ``intent``).
+            direction = action_obj.get("gesture")
+        if not direction and isinstance(action_obj.get("intent"), str):
+            direction = action_obj.get("intent")
         duration = action_obj.get("duration") or action_obj.get("duration_ms")
         duration_str = f" over {duration}ms" if duration else ""
         if direction:
@@ -100,6 +119,10 @@ def format_action_clean(action_obj) -> str:
         return f"Stopped app '{app_name}'"
     elif act_type == "manage_app":
         intent = action_obj.get("intent")
+        if intent == "launch":
+            return f"Launched app '{app_name}'"
+        if intent == "stop":
+            return f"Stopped app '{app_name}'"
         return f"Managed app '{app_name}' (action: {intent})"
     elif act_type == "wait_for_delay":
         delay_ms = (
@@ -235,7 +258,22 @@ def safe_parse_validation_result(result: Any) -> list:
     return []
 
 
-def format_tool_call_clean(name, args, result) -> str | None:
+#: Limit tool-result text in the live context, which is rebuilt every turn.
+LIVE_RESULT_CHARS = 120
+
+#: Replay allows longer tool results, but still caps large OCR and hierarchy dumps.
+REPLAY_RESULT_CHARS = 6000
+
+
+def _clamp_text(text: str, limit: int) -> str:
+    if limit and len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
+def format_tool_call_clean(
+    name, args, result, *, result_chars: int = LIVE_RESULT_CHARS
+) -> str | None:
     ACTION_TOOLS = {
         "click",
         "click_sequence",
@@ -299,6 +337,10 @@ def format_tool_call_clean(name, args, result) -> str | None:
             "direction": args.get("direction") or args.get("action_direction"),
             "action_direction": args.get("action_direction"),
         }
+
+        if action_name in ("input_text", "focus_and_input_text"):
+            # The typed text is not the field's label.
+            action_obj["target_text"] = args.get("target_text") or args.get("target_text_or_desc")
 
         # Handle special FA swipe "action" parameter
         if action_name == "swipe" and "action" in args:
@@ -377,21 +419,17 @@ def format_tool_call_clean(name, args, result) -> str | None:
                 elif block.get("type") == "image_url":
                     pass
         if text_blocks:
-            res_str = "\n".join(text_blocks)
+            res_str = _clamp_text("\n".join(text_blocks), result_chars)
         else:
-            res_str = str(result)
+            res_str = _clamp_text(str(result), result_chars)
     elif isinstance(result, dict):
         error = result.get("error")
         if error:
             res_str = f"Error: {error}"
         else:
-            res_str = json.dumps(result, ensure_ascii=False)
-            if len(res_str) > 120:
-                res_str = res_str[:120] + "..."
+            res_str = _clamp_text(json.dumps(result, ensure_ascii=False), result_chars)
     else:
-        res_str = str(result)
-        if len(res_str) > 120:
-            res_str = res_str[:120] + "..."
+        res_str = _clamp_text(str(result), result_chars)
 
     return f"`{name}({args_str})` -> {res_str}"
 
@@ -466,6 +504,49 @@ def _burst_member_status(result: Any, index: int) -> str:
     return f" (FAILED: {last.strip()})"
 
 
+def render_step_replay(
+    step: dict,
+    *,
+    result_chars: int = REPLAY_RESULT_CHARS,
+    include_summary: bool = True,
+) -> str:
+    """Render a step's reasoning, tool calls, action, and execution result.
+
+    ``step`` is an agent-friendly record (``DataEngine.get_agent_friendly_step``
+    / ``get_agent_friendly_steps``): coordinates already normalized, traces
+    already expanded into ``interleaved_events``. Used by ``replay_steps`` and
+    the MCP trace inspector. Screenshots are fetched separately.
+    """
+    return _render_step_detailed(
+        step=step,
+        relative_time=str(step.get("relative_time") or "N/A"),
+        summary=step.get("summary"),
+        action=step.get("action_taken"),
+        result=step.get("last_execution_result"),
+        is_most_recent=False,
+        result_chars=result_chars,
+        include_summary=include_summary,
+    )
+
+
+def _screen_description_line(step: dict, summary: Any) -> str | None:
+    """The replay's ``[Screen]`` line: the step's stored screen description
+    (the visual-transition summary), or its status when no text exists yet.
+
+    ``extra_metadata.summary_status`` is ``pending`` while the background
+    summarizer has not finished, ``failed`` when it gave up; without a status
+    the line is omitted altogether.
+    """
+    if summary and str(summary).strip():
+        return f"[Screen]: {str(summary).strip()}"
+    status = str((step.get("extra_metadata") or {}).get("summary_status") or "").lower()
+    if status == "pending":
+        return "[Screen]: (screen description pending)"
+    if status in ("failed", "unavailable"):
+        return "[Screen]: (screen description unavailable)"
+    return None
+
+
 def _render_step_detailed(
     step: dict,
     relative_time: str,
@@ -473,12 +554,22 @@ def _render_step_detailed(
     action: Any,
     result: Any,
     is_most_recent: bool,
+    *,
+    result_chars: int = LIVE_RESULT_CHARS,
+    include_summary: bool = False,
 ) -> str:
     # 1. Step Header
     status_str = "Most Recent Step, " if is_most_recent else ""
 
-    # Summary is omitted from the detailed view header as it is already fully detailed below.
+    # In the live window the summary is omitted from the detailed view header
+    # as it is already fully detailed below; replay callers opt in because the
+    # summary is the Operator's own claim about the step, which an auditor
+    # compares against the evidence that follows.
     step_line = f"- **Step {step['step_number']} ({status_str}Start: {relative_time})**"
+    if include_summary:
+        screen_line = _screen_description_line(step, summary)
+        if screen_line:
+            step_line += f"\n  * {screen_line}"
 
     interleaved = step.get("interleaved_events") or []
 
@@ -596,7 +687,10 @@ def _render_step_detailed(
                 if name in ACTION_TOOLS:
                     continue
                 formatted = format_tool_call_clean(
-                    name, event.get("args") or {}, event.get("result")
+                    name,
+                    event.get("args") or {},
+                    event.get("result"),
+                    result_chars=result_chars,
                 )
                 if formatted:
                     step_line += f"\n    - [Tool Call]: {formatted}"

@@ -30,6 +30,6 @@ You will receive:
 - **CHRONOLOGICAL STEP TRACE (CURRENT STEP)**: The step-by-step chronological history of the current execution turn, including:
   - `[Operator Monologue] / [Operator Native Thought]`: The operator's planning, intentions, progress counting, reasoning, verified states, and explicit mentions of missing prerequisites.
   - `[Operator Tool Call] / [Operator Final Action]`: The actual action(s) planned and executed.
-  - `[Planned Fast-Action Burst]`: A multi-action turn executed back to back without the safety net, with each member's outcome.
+  - `[Planned Fast-Action Burst]`: A multi-action turn: the first member is vetted by the safety net, the rest fire back to back unvetted; each member's outcome is listed.
   - `[Pre-Execution Safety Net]`: Validation checks prior to action execution.
   - `[Result]`: The Validator's execution outcome; an "Error:" line here is an execution incident the Operator must resolve.

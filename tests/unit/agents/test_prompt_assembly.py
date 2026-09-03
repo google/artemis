@@ -85,7 +85,11 @@ def test_full_toolset_is_the_default():
         )
 
 
-@pytest.mark.parametrize("tool", OPERATOR_DEVICE_TOOLS + ("video_analyzer", "recall_history"))
+@pytest.mark.parametrize(
+    "tool",
+    OPERATOR_DEVICE_TOOLS
+    + ("video_analyzer", "search_history", "replay_steps", "get_step_screenshot"),
+)
 def test_removed_tool_leaves_no_reference(tool):
     """The executable definition of 'an absent tool costs the model nothing'."""
     for name, template in load_operator_prompts().items():
@@ -148,7 +152,10 @@ def test_full_set_enum_slots_render_verbatim():
     )
     assert "Helper/Subagent tools (`ask_explorer`, `ask_diagnoser`, `video_analyzer`)" in out
     assert "ADB/task tools (`run_adb_command`, `manage_task`)" in out
-    assert "(`read_note`, `list_notes`, `recall_history`)" in out
+    assert (
+        "(`read_note`, `list_notes`, `search_history`, `replay_steps`, `get_step_screenshot`)"
+        in out
+    )
     # save_note is a write-through tool, never a result-dependent one; the on-demand
     # analyze_task_output is not advertised.
     assert "`save_note`, and" not in out

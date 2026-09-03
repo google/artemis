@@ -169,3 +169,25 @@ def test_record_llm_usage_lens_calls_do_not_touch_last_prompt_tokens():
     assert meter.last_prompt_tokens == 15000  # untouched by the lens call
     assert meter.llm_calls == 2
     assert meter.prompt_tokens == 15300
+
+
+def test_record_llm_usage_tags_the_traced_node():
+    """Each usage trace names the traced node that issued the call so the
+    session usage endpoint can pick the executor's (Operator/FlashRunner)
+    prompt size out as the live context."""
+    from artemis.data_engine.context_vars import CURRENT_NODE_NAME
+
+    engine = Mock()
+    engine.current_session_id = uuid4()
+    engine.current_step_id = None
+
+    token = CURRENT_NODE_NAME.set("operator")
+    try:
+        payload = record_llm_usage(engine, _msg_with_usage(prompt=42000, completion=90))
+    finally:
+        CURRENT_NODE_NAME.reset(token)
+    assert payload["node"] == "operator"
+    assert payload["context_base_tokens"] == 42000
+
+    untagged = record_llm_usage(engine, _msg_with_usage(prompt=10))
+    assert "node" not in untagged

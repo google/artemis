@@ -77,6 +77,10 @@ def test_tool_signatures():
     assert "action" in sig_inspect.parameters
     assert "trace_id" in sig_inspect.parameters
     assert "step_number" in sig_inspect.parameters
+    assert "query" in sig_inspect.parameters
+    assert "step_range" in sig_inspect.parameters
+    assert sig_inspect.parameters["max_results"].default == 5
+    assert "'search'" in (mobile_inspect_trace.__doc__ or "")
 
 
 def test_mobile_run_task_invalid_model():
@@ -501,3 +505,152 @@ def test_mobile_manage_task_stop_via_daemon(temp_trace_env, monkeypatch):
         mock_stop.assert_called_once_with(trace_id)
         assert res["status"] == "cancelled"
         assert trace_store.read_status(trace_id)["status"] == "cancelled"
+
+
+def _seed_trace(temp_dir: str, trace_id: str, *, with_image: bool = True) -> str:
+    """Writes one Flash-style step (with a tool trace and a pre screenshot)
+    through the real storage layer, exactly as a live run would."""
+    import io
+
+    from PIL import Image
+
+    from artemis.data_engine.models import (
+        ImageRecord,
+        SessionMetadata,
+        StepRecord,
+        TraceRecord,
+    )
+    from artemis.data_engine.storage import StorageManager
+
+    storage = StorageManager(os.path.join(temp_dir, "data_engine.db"), temp_dir)
+    storage.create_session(
+        SessionMetadata(session_id=trace_id, initial_goal="Replay test", start_time=1000.0)
+    )
+    image_name = None
+    if with_image:
+        image_name = "a" * 64
+        images_dir = os.path.join(temp_dir, "images")
+        os.makedirs(images_dir, exist_ok=True)
+        buf = io.BytesIO()
+        Image.new("RGB", (1080, 2400), "white").save(buf, format="JPEG")
+        with open(os.path.join(images_dir, f"{image_name}.jpg"), "wb") as f:
+            f.write(buf.getvalue())
+        storage.create_image(
+            ImageRecord(
+                image_name=image_name,
+                ocr_result=[{"text": "Save ocrneedle", "bounds": [0, 0, 10, 10]}],
+            )
+        )
+    step_id = str(uuid.uuid4())
+    storage.create_step(
+        StepRecord(
+            step_id=step_id,
+            session_id=trace_id,
+            step_number=1,
+            timestamp=1012.0,
+            pre_image_name=image_name,
+            summary="Asked the explorer, then tapped Save.",
+            action_taken={"action": "click", "target": [540, 1200], "target_text": "Save"},
+            operator_raw_thinking="Confirm the toggle first.",
+            last_execution_result={"status": "success"},
+            extra_metadata={"width": 1080, "height": 2400},
+        )
+    )
+    storage.create_trace(
+        TraceRecord(
+            trace_id=str(uuid.uuid4()),
+            session_id=trace_id,
+            step_id=step_id,
+            type="tool",
+            name="ask_explorer",
+            status="success",
+            timestamp=1011.0,
+            duration=0.8,
+            payload={"args": {"question": "toggle?"}, "result": "The toggle is ON. " * 100},
+        )
+    )
+    return step_id
+
+
+@pytest.mark.asyncio
+async def test_mobile_inspect_trace_step_details_replays_tool_calls_for_flash(temp_trace_env):
+    """view_step_details works for Flash runs too and replays the recorded
+    tool calls through the same friendly-step path the live DataEngine uses."""
+    trace_id = str(uuid.uuid4())
+    trace_store.init_trace(trace_id, "Replay test", "Flash", "conv-1", device_serial="pixel-7")
+    _seed_trace(temp_trace_env, trace_id)
+
+    res = await mobile_inspect_trace(action="view_step_details", trace_id=trace_id, step_number=1)
+    assert "error" not in res
+    assert res["device_serial"] == "pixel-7"
+    details = res["details"]
+    assert "- **Step 1 (Start: 12.0s)**" in details
+    assert "[Screen]: Asked the explorer, then tapped Save." in details
+    assert "Confirm the toggle first." in details
+    assert "`ask_explorer(" in details
+    assert "The toggle is ON. " * 100 in details
+    # Coordinates are replayed normalized, not as stored pixels.
+    assert "[540, 1200]" not in details
+    assert "Tapped 'Save'" in details
+
+    missing = await mobile_inspect_trace(
+        action="view_step_details", trace_id=trace_id, step_number=9
+    )
+    assert missing["error"] == "Step not found"
+
+
+@pytest.mark.asyncio
+async def test_mobile_inspect_trace_step_screenshots_draw_the_overlay(temp_trace_env):
+    trace_id = str(uuid.uuid4())
+    trace_store.init_trace(trace_id, "Shot test", "Flash", "conv-1", device_serial="pixel-7")
+    _seed_trace(temp_trace_env, trace_id)
+
+    res = await mobile_inspect_trace(
+        action="view_step_screenshots", trace_id=trace_id, step_number=1
+    )
+    assert "error" not in res
+    assert res["before_screenshot"].startswith("file://")
+    assert res["before_screenshot"].endswith(f"{'a' * 64}.jpg")
+    assert res["after_screenshot"] is None
+    overlay = res["action_overlay_screenshot"]
+    assert overlay is not None
+    overlay_path = overlay[len("file://") :]
+    assert os.path.exists(overlay_path)
+    assert overlay_path.endswith("step_1_overlay.jpg")
+    # The overlay differs from the plain pre screenshot: the action was drawn.
+    with open(overlay_path, "rb") as f, open(res["before_screenshot"][7:], "rb") as g:
+        assert f.read() != g.read()
+
+    # Second call reuses the file it already wrote.
+    again = await mobile_inspect_trace(
+        action="view_step_screenshots", trace_id=trace_id, step_number=1
+    )
+    assert again["action_overlay_screenshot"] == overlay
+
+    no_step = await mobile_inspect_trace(
+        action="view_step_screenshots", trace_id=trace_id, step_number=None
+    )
+    assert no_step["error"] == "Missing parameter"
+
+
+@pytest.mark.asyncio
+async def test_mobile_inspect_trace_search_uses_the_shared_history_search(temp_trace_env):
+    trace_id = str(uuid.uuid4())
+    trace_store.init_trace(trace_id, "Search test", "Flash", "conv-1", device_serial="pixel-7")
+    _seed_trace(temp_trace_env, trace_id)
+
+    res = await mobile_inspect_trace(action="search", trace_id=trace_id, query="toggle")
+    assert "error" not in res
+    assert res["device_serial"] == "pixel-7"
+    assert "[Step 1 " in res["results"]
+    assert "Screen: Asked the explorer, then tapped Save." in res["results"]
+
+    # On-screen OCR text of the step's screenshot is part of the search surface.
+    res = await mobile_inspect_trace(action="search", trace_id=trace_id, query="ocrneedle")
+    assert "[Step 1 " in res["results"]
+
+    ledger = await mobile_inspect_trace(action="search", trace_id=trace_id, step_range=[1, 1])
+    assert "Action ledger for Steps 1–1" in ledger["results"]
+
+    empty = await mobile_inspect_trace(action="search", trace_id=trace_id)
+    assert empty["error"] == "Missing parameter"

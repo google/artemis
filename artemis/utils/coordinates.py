@@ -328,30 +328,60 @@ def denormalize_point(nx: int, ny: int, width: int, height: int) -> list[int]:
     return [max(0, min(width - 1, x)), max(0, min(height - 1, y))]
 
 
+#: Pro records physical pixels; Flash records normalized 0–1000 coordinates.
+#: The marker prevents normalization from being applied twice during rendering.
+COORDINATE_SPACE_KEY = "coordinate_space"
+COORDINATE_SPACE_PIXEL = "pixel"
+COORDINATE_SPACE_NORMALIZED = "normalized"
+
+_COORDINATE_FIELDS = ("coordinates", "start_coordinates", "end_coordinates", "target")
+
+
 def normalize_action_dict(action: dict[str, Any], width: int, height: int) -> dict[str, Any]:
-    """Recursively search and normalize coordinate fields inside an action dictionary."""
+    """Normalize the coordinate fields of one recorded action dict (idempotent).
+
+    A dict already stamped ``coordinate_space="normalized"`` is returned as a
+    copy without any conversion; a pixel-space (or legacy unstamped) dict has
+    its ``coordinates`` / ``start_coordinates`` / ``end_coordinates`` /
+    ``target`` fields converted once and comes back stamped ``normalized``, so
+    a second pass over the same output is a no-op.
+    """
     if not isinstance(action, dict):
         return action
 
     action_copy = copy.deepcopy(action)
+    if action_copy.get(COORDINATE_SPACE_KEY) == COORDINATE_SPACE_NORMALIZED:
+        return action_copy
 
+    converted = False
     # Normalize 'coordinates' if present and valid
     coords = action_copy.get("coordinates")
     if coords and isinstance(coords, list):
         if len(coords) == 2:
             action_copy["coordinates"] = normalize_point(coords[0], coords[1], width, height)
+            converted = True
         elif len(coords) == 4:
             p1 = normalize_point(coords[0], coords[1], width, height)
             p2 = normalize_point(coords[2], coords[3], width, height)
             action_copy["coordinates"] = p1 + p2
+            converted = True
 
     # Normalize 'start_coordinates' and 'end_coordinates' for generic formats
-    for key in ["start_coordinates", "end_coordinates", "target"]:
+    for key in _COORDINATE_FIELDS[1:]:
         val = action_copy.get(key)
         if val and isinstance(val, list) and len(val) == 2:
             action_copy[key] = normalize_point(val[0], val[1], width, height)
+            converted = True
 
+    if converted or COORDINATE_SPACE_KEY in action_copy:
+        action_copy[COORDINATE_SPACE_KEY] = COORDINATE_SPACE_NORMALIZED
     return action_copy
+
+
+def _is_action_item(obj: dict[str, Any]) -> bool:
+    """An action item names its action; a container that merely holds an
+    ``action`` dict (an execution incident) is recursed into instead."""
+    return isinstance(obj.get("action"), str) or isinstance(obj.get("name"), str)
 
 
 def normalize_any_structure(obj: Any, width: int, height: int) -> Any:
@@ -360,7 +390,7 @@ def normalize_any_structure(obj: Any, width: int, height: int) -> Any:
         return [normalize_any_structure(item, width, height) for item in obj]
     elif isinstance(obj, dict):
         # If it looks like a single action item
-        if "action" in obj or "name" in obj:
+        if _is_action_item(obj):
             return normalize_action_dict(obj, width, height)
         # Otherwise recurse down keys
         return {k: normalize_any_structure(v, width, height) for k, v in obj.items()}

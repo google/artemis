@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Operator dual prompt path (M2): legacy golden parity and transcript mode.
+"""Operator prompt snapshots and transcript mode.
 
 Flag off (``agent.memory.transcript.enabled=false``): the legacy 2-message
 build must stay byte-for-byte identical — pinned by SHA-256 goldens recorded
-against the pre-split implementation.
+for the current template.
 
 Flag on: ``_build_prompt`` renders ``S + F + A + tail`` from the session
 transcript ledger; the turn's messages are staged after the tool loop and
@@ -51,20 +51,10 @@ from artemis.memory.transcript import (
     TranscriptLedger,
 )
 
-# SHA-256 of the legacy system message rendered by TemplatePromptComponent
-# with the fixed inputs below. Originally recorded BEFORE the M2 template
-# split; re-recorded in M5 (2026-09-01) after the Short-Term Memory block was
-# removed, and again on 2026-09-02 when the Failure Analyzer was retired: the
-# operator.json template gained the Time-Sensitive Tasks principle, the two
-# execution tiers (vetted single action / fast-action burst), the Execution
-# Incident workflow section and the Phase 3 burst-discipline rule; and again
-# on 2026-09-02 after the prompt consolidation (every rule stated once, the
-# transcript/legacy history-marker split, the recited tool budget, the
-# recommended diagnosis triggers); and again on 2026-09-03 for the nested
-# plan-ledger contract and its validation gate. Any other drift means the
-# flag-off path is no longer byte-identical.
-GOLDEN_EMPTY_PLAN = "2ed35be503e3872f008ae5a12616af6f90cde65f23b63adbb6da782079ae4e7c"
-GOLDEN_SENTINEL_PLAN = "8bd6aa60cf3fad8d21cf5c284a01f586c57d209fcd1d2b4a517a791736f9b1de"
+# SHA-256 snapshots of the legacy system message with the fixed inputs below.
+# Update these when an intentional template change alters the rendered prompt.
+GOLDEN_EMPTY_PLAN = "dfcb15a164fa32172cf4bd2ab7b39409229a05dd1d5995eae26992784cfaa4f6"
+GOLDEN_SENTINEL_PLAN = "4b49a3c1ace6387df05a6f1f163dda007e4c2f8ff3d544dac12520317f17d21b"
 
 SCREENSHOT_B64 = base64.b64encode(b"fake-jpeg-bytes").decode("utf-8")
 
@@ -166,13 +156,8 @@ def _no_action_llm(captured: list):
 @pytest.mark.asyncio
 async def test_transcript_mode_two_turns_build_four_regions(tmp_path):
     ctx = _transcript_ctx()
-    # Regression data shape (M2 cold-start bug, on-device A/B 2026-09-01):
-    # turn 1 runs before any step record exists; by turn 2 the first step HAS
-    # been recorded, so `steps` is non-empty while the previous turn is still
-    # staged (turn_count == 0). The cold-start check must not read that
-    # live-session state as a process restart — seeding would be rejected by
-    # the empty-ledger invariant and silently demote every turn to the legacy
-    # 2-message path.
+    # Turn 2 has a recorded step but no committed ledger turn yet. This is
+    # an active session, so it must not trigger cold-start history seeding.
     ctx.data_engine = MagicMock()
     ctx.data_engine.base_dir = str(tmp_path)
     ctx.data_engine.global_base_dir = str(tmp_path)

@@ -64,10 +64,18 @@ logger = get_logger(__name__)
 class StorageManager:
     """Manages persistence for Data Engine using SQLite and File System."""
 
-    def __init__(self, db_path: str | Path, base_trace_dir: str | Path):
+    def __init__(self, db_path: str | Path, base_trace_dir: str | Path, *, read_only: bool = False):
         self.db_path = Path(db_path)
         self.base_trace_dir = Path(base_trace_dir)
         self._lock = threading.RLock()
+        self.read_only = read_only
+
+        if read_only:
+            # Offline readers (MCP trace inspection) never create directories,
+            # tables or WAL files: they open the existing database read-only.
+            if not self.db_path.exists():
+                raise FileNotFoundError(f"Data engine database not found: {self.db_path}")
+            return
 
         # Ensure directories exist
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,7 +86,12 @@ class StorageManager:
     @contextmanager
     def _get_connection(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
-            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            if self.read_only:
+                conn = sqlite3.connect(
+                    f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0
+                )
+            else:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
             conn.row_factory = sqlite3.Row
             try:
                 yield conn

@@ -33,6 +33,7 @@ import { AgentService } from '../../services/agent.service';
 import { StepReplayFrame } from '../../core/models/stream.model';
 import { drawActionCoordinatesOnOverlay } from '../../utils/image-overlay.util';
 import { getActionIcon } from '../../utils/action-formatter.util';
+import { locateTimelineTime, sessionTimeToTimelineTime } from '../../utils/recording-timeline.util';
 
 @Component({
   selector: 'app-floating-video-player',
@@ -179,7 +180,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
       if (video && video.readyState >= 1) {
         const target = this.pendingAbsoluteSeek;
         this.pendingAbsoluteSeek = null;
-        this.seek(target, true);
+        this.seekToSessionTime(target, true);
       }
     });
 
@@ -302,7 +303,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
       if (this.pendingAbsoluteSeek !== null) {
         const target = this.pendingAbsoluteSeek;
         this.pendingAbsoluteSeek = null;
-        this.seek(target, true);
+        this.seekToSessionTime(target, true);
         // A seek into another finalized segment changes the video source. Let
         // that segment's metadata event apply pendingLocalTime.
         if (this.pendingLocalTime !== null) return;
@@ -382,19 +383,30 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     this.seek(0, true);
   }
 
+  /**
+   * Seek to a session-relative time (seconds since the task session started,
+   * the axis step timestamps and analyzer ranges use). Manifest v2 segments
+   * carry real session offsets, so the time lands in the right segment even
+   * across scrcpy restart gaps; legacy playlists fall back to the timeline axis.
+   */
+  public seekToSessionTime(sessionSeconds: number, autoplay = false): void {
+    const segments = this.agentService.activeVideoSegments();
+    this.seek(sessionTimeToTimelineTime(segments, sessionSeconds), autoplay);
+  }
+
+  /** Seek on the back-to-back playlist axis used by the scrubber. */
   public seek(seconds: number, autoplay = false): void {
     const v = this.videoRef?.nativeElement;
     if (!v) return;
     const target = Math.max(0, Math.min(this.duration(), seconds));
     const segments = this.agentService.activeVideoSegments();
-    if (!segments.length) {
+    const location = locateTimelineTime(segments, target);
+    if (!location) {
       v.currentTime = target;
       if (autoplay) v.play().catch(() => {});
       return;
     }
-    let index = segments.findIndex(segment => target < segment.start + segment.duration);
-    if (index < 0) index = segments.length - 1;
-    const localTime = Math.max(0, target - segments[index].start);
+    const { index, localTime } = location;
     if (index === this.activeSegmentIndex()) {
       v.currentTime = localTime;
       if (autoplay) v.play().catch(() => {});

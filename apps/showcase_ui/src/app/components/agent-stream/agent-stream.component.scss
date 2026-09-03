@@ -224,21 +224,44 @@ $stream-row-height: 25px;
       top: 72px;
     }
 
-    /* Model Info Chip: Informational Tag / Metadata (Not clickable) */
+    /* Model Info Chip: click opens the run info popover */
     .model-info-chip {
       display: inline-flex;
       align-items: center;
       gap: 5px;
       height: 30px;
       padding: 0 11px;
+      margin: 0;
       box-sizing: border-box;
       background: rgba(255, 255, 255, 0.72);
       backdrop-filter: blur(16px) saturate(180%);
       -webkit-backdrop-filter: blur(16px) saturate(180%);
       border: 1px solid rgba(226, 232, 240, 0.85);
       border-radius: 15px;
-      cursor: default;
+      cursor: pointer;
       user-select: none;
+      appearance: none;
+      -webkit-appearance: none;
+
+      &:hover {
+        background: rgba(255, 255, 255, 0.92);
+        border-color: rgba(203, 213, 225, 0.95);
+      }
+
+      &.active {
+        background: #eff6ff;
+        border-color: #bfdbfe;
+
+        .model-icon,
+        .model-name {
+          color: #1d4ed8;
+        }
+      }
+
+      &:focus-visible {
+        outline: 2px solid #93c5fd;
+        outline-offset: 1px;
+      }
       box-shadow: 0 2px 6px -1px rgba(15, 23, 42, 0.05), inset 0 1px 1px rgba(255, 255, 255, 0.9);
       font-family: 'Google Sans', 'Google Sans Text', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
@@ -3041,6 +3064,137 @@ $stream-row-height: 25px;
     .material-symbols-outlined {
       font-size: 18px;
       color: #2563eb;
+    }
+  }
+
+  /* Run info popover: elapsed, tokens, context share, Pro tuning */
+  &.run-info-dropdown {
+    width: 288px;
+    gap: 0;
+    padding: 12px 14px 10px;
+
+    .run-info-header {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding-bottom: 9px;
+      border-bottom: 1px solid #e2e8f0;
+
+      .material-symbols-outlined {
+        font-size: 18px;
+        color: #64748b;
+
+        &.is-pro {
+          color: #2563eb;
+        }
+      }
+
+      .run-info-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: #0f172a;
+      }
+
+      .run-info-model {
+        margin-left: auto;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: 'Fira Code', 'Roboto Mono', Consolas, monospace;
+        font-size: 10.5px;
+        color: #94a3b8;
+      }
+    }
+
+    .run-info-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 0;
+      border-bottom: 1px solid #f1f5f9;
+
+      &:last-child {
+        border-bottom: none;
+      }
+
+      &.is-stacked {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0;
+      }
+    }
+
+    .run-info-line {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .run-info-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: #64748b;
+      white-space: nowrap;
+    }
+
+    .run-info-value {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #0f172a;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+
+      &.is-muted {
+        color: #cbd5e1;
+        font-weight: 500;
+      }
+    }
+
+    .run-info-sub {
+      display: block;
+      margin-top: 2px;
+      font-size: 11px;
+      font-weight: 400;
+      color: #94a3b8;
+    }
+
+    .run-info-sub-inline {
+      margin-left: 3px;
+      font-size: 11px;
+      font-weight: 400;
+      color: #94a3b8;
+    }
+
+    .run-info-meter {
+      height: 4px;
+      margin-top: 7px;
+      border-radius: 2px;
+      background: #e2e8f0;
+      overflow: hidden;
+
+      .run-info-meter-fill {
+        height: 100%;
+        border-radius: 2px;
+        background: #2563eb;
+        transition: width 0.3s ease;
+      }
+
+      &.is-high .run-info-meter-fill {
+        background: #f59e0b;
+      }
+
+      &.is-critical .run-info-meter-fill {
+        background: #ef4444;
+      }
+    }
+
+    .run-info-note {
+      padding-top: 9px;
+      font-size: 11.5px;
+      color: #94a3b8;
     }
   }
 

@@ -18,20 +18,25 @@ import { Injectable, signal, inject, computed, DestroyRef, NgZone } from '@angul
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 
-import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse } from '../core/models/session.model';
+import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
-import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE } from '../core/models/stream.model';
+import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
+import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
 const SESSION_CACHE_KEY = 'artemis.sessions.v1';
 
 export interface VideoSegment {
   url: string;
+  /** Back-to-back playlist timeline start (seconds); gaps between segments are not represented. */
   start: number;
   duration: number;
   width: number;
   height: number;
+  /** Session-relative first-frame offset in milliseconds (manifest v2). */
+  offset_ms?: number;
+  duration_ms?: number;
 }
 
 export type RecordingPlaybackStatus =
@@ -202,6 +207,7 @@ export class AgentService {
   public pausedError = signal<string | null>(null);
   public isRetrying = signal<boolean>(false);
   public retryMessage = signal<string | null>(null);
+  /** Architecture / LLM of the task the status poll reports as running. */
   public activeModel = signal<{ name: string; id: string; provider: string } | null>(null);
   public userPinnedSessionId = signal<string | null>(null); // Pinned session if user explicitly selected a non-running task
   public startupProgressBySession = signal<Record<string, StartupProgressEvent[]>>({});
@@ -301,6 +307,19 @@ export class AgentService {
   });
 
   /**
+   * Architecture / LLM of the session being viewed.
+   *
+   * Each session row carries its own `model_info` (resolved by the backend),
+   * so a Pro session stays "Pro" while a Flash task runs elsewhere. Only a
+   * session that has not reached the list yet falls back to the running model.
+   */
+  public viewedModel = computed<ModelInfo | null>(() => {
+    const current = this.currentSession();
+    if (current?.model_info) return current.model_info;
+    return this.activeModel();
+  });
+
+  /**
    * Computed whether the currently viewed session is actively running or paused.
    * Returns false when viewing completed/failed/cancelled tasks, or when no session is selected.
    */
@@ -386,6 +405,11 @@ export class AgentService {
    */
   public getProTuningDefaults(): Observable<ProTuningDefaults> {
     return this.http.get<ProTuningDefaults>('/api/run/defaults');
+  }
+
+  /** Session-wide token totals, live executor context size and the run's tuning. */
+  public getSessionUsage(sessionId: string): Observable<SessionUsage> {
+    return this.http.get<SessionUsage>(`/api/sessions/${encodeURIComponent(sessionId)}/usage`);
   }
 
   /**
@@ -585,7 +609,6 @@ export class AgentService {
       next: (data) => {
         this.rawSessions.set(data);
         this.persistSessionsCache(data);
-        this.updateModelForCurrentView(data);
         // On initial load, if nothing is selected, not pinned, not running, and sessions exist, select latest
         if (!this.currentSessionId() && !this.userPinnedSessionId() && this.agentStatus() !== 'running' && data.length > 0) {
           this.selectSession(data[0].session_id, false);
@@ -720,7 +743,6 @@ export class AgentService {
     this.pausedError.set(null);
     this.fetchNotes(sessionId);
     this.fetchChecks(sessionId);
-    this.updateModelForCurrentView();
 
     // If video window is currently open, dynamically sync/refresh video for new session
     if (this.isVideoWindowOpen()) {
@@ -876,7 +898,6 @@ export class AgentService {
                 this.beginRecordingFinalization(endedId);
               }
             }
-            this.updateModelForCurrentView();
             return;
           }
 
@@ -1577,22 +1598,6 @@ export class AgentService {
   }
 
   /**
-   * Update active model badge according to currently viewed session
-   */
-  private updateModelForCurrentView(sessionsList?: Session[]): void {
-    const curId = this.currentSessionId();
-    const allSessions = sessionsList || this.sessions();
-
-    if (curId) {
-      const selected = allSessions.find(s => s.session_id === curId);
-      if (selected && selected.model_info) {
-        this.activeModel.set(selected.model_info);
-        return;
-      }
-    }
-  }
-
-  /**
    * Clean up event source connection and timers on service destruction
    */
   public destroy(): void {
@@ -1623,10 +1628,12 @@ export class AgentService {
    */
   public fetchChecks(sessionId: string): void {
     if (!sessionId) return;
-    this.http.get<{ records?: any[]; run_outcome?: any }>(`/api/sessions/${sessionId}/checks`).subscribe({
+    this.http.get<{ records?: any[]; streams?: PersistedCheckerStream[]; run_outcome?: any }>(`/api/sessions/${sessionId}/checks`).subscribe({
       next: (res) => {
         if (this.currentSessionId() !== sessionId) return;
-        const snapshot = this.buildCheckerSnapshotLogs(sessionId, res?.records || [], res?.run_outcome || null);
+        const snapshot = this.buildCheckerSnapshotLogs(
+          sessionId, res?.records || [], res?.run_outcome || null, res?.streams || []
+        );
         this.sessionLogs.update((logs) => [
           ...logs.filter((log) => !log.checks_snapshot),
           ...snapshot
@@ -1638,8 +1645,26 @@ export class AgentService {
     });
   }
 
-  private buildCheckerSnapshotLogs(sessionId: string, records: any[], runOutcome: any): any[] {
+  /**
+   * `streams` are the attempts' persisted transcripts (what the Checker
+   * streamed while reaching its verdict): they become the attempt's
+   * `stream_segments`, the same shape the live `llm_stream` chunks build, so
+   * a reopened session interleaves Thought/Work text with tool rows exactly
+   * like the live view did.
+   */
+  private buildCheckerSnapshotLogs(
+    sessionId: string,
+    records: any[],
+    runOutcome: any,
+    streams: PersistedCheckerStream[] = []
+  ): any[] {
     const byAttempt = new Map<string, any>();
+    const segmentsByAttempt = new Map<string, StreamSegment[]>();
+    for (const stream of streams || []) {
+      if (!stream || !stream.attempt_id) continue;
+      const segments = persistedStreamToSegments(stream);
+      if (segments.length > 0) segmentsByAttempt.set(String(stream.attempt_id), segments);
+    }
     for (const rec of records) {
       if (!rec || !rec.attempt_id) continue;
       const attemptId = String(rec.attempt_id);
@@ -1689,6 +1714,8 @@ export class AgentService {
       }
       const ts = attempt.ts ?? Date.now() / 1000;
       attempt.timestamp = ts;
+      const segments = segmentsByAttempt.get(attempt.attempt_id);
+      if (segments) attempt.stream_segments = segments;
       logs.push({
         type: 'checker_event',
         session_id: sessionId,

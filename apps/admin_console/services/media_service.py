@@ -397,15 +397,19 @@ class MediaService:
                     or not segment_path.is_file()
                 ):
                     continue
-                segments.append(
-                    {
-                        "url": cls.path_to_video_url(segment_path),
-                        "start": float(item.get("start", 0)),
-                        "duration": float(item.get("duration", 0)),
-                        "width": int(item.get("width", 0)),
-                        "height": int(item.get("height", 0)),
-                    }
-                )
+                segment = {
+                    "url": cls.path_to_video_url(segment_path),
+                    "start": float(item.get("start", 0)),
+                    "duration": float(item.get("duration", 0)),
+                    "width": int(item.get("width", 0)),
+                    "height": int(item.get("height", 0)),
+                }
+                # Manifest v2 carries the real session-relative timeline so the
+                # UI can seek by step time across scrcpy restart gaps.
+                if item.get("offset_ms") is not None and item.get("duration_ms") is not None:
+                    segment["offset_ms"] = int(item["offset_ms"])
+                    segment["duration_ms"] = int(item["duration_ms"])
+                segments.append(segment)
             return segments
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             return []
@@ -536,29 +540,42 @@ class MediaService:
         return "No task plan created yet."
 
     @staticmethod
+    def _read_jsonl_records(path: Path, label: str, session_id: str) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        if not path.is_file():
+            return records
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict):
+                    records.append(rec)
+        except (OSError, ValueError) as e:
+            logger.warning(f"Failed to read {label} for {session_id}: {e}")
+        return records
+
+    @staticmethod
     def get_session_checks(session_id: str) -> dict[str, Any]:
         """Checker material of one session for UI backfill: the append-only
-        verdict ledger (``check_ledger.jsonl``) and the machine-readable run
-        outcome (``run_outcome.json``), both written by
-        ``artemis.graph.checkpoints``. Missing files mean "no checks ran".
+        verdict ledger (``check_ledger.jsonl``), the per-attempt transcripts of
+        the Checker's streamed reasoning (``check_streams.jsonl``: one record
+        per attempt with timestamped ``segments``) and the machine-readable run
+        outcome (``run_outcome.json``), all written by the Checker /
+        ``artemis.graph.checkpoints``. Missing files mean "no checks ran"
+        (sessions recorded before transcripts existed simply have no streams).
         """
         session_dir = TRACES_PATH / session_id
-        records: list[dict[str, Any]] = []
-        ledger_path = session_dir / "check_ledger.jsonl"
-        if ledger_path.is_file():
-            try:
-                for line in ledger_path.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except ValueError:
-                        continue
-                    if isinstance(rec, dict):
-                        records.append(rec)
-            except (OSError, ValueError) as e:
-                logger.warning(f"Failed to read check ledger for {session_id}: {e}")
+        records = MediaService._read_jsonl_records(
+            session_dir / "check_ledger.jsonl", "check ledger", session_id
+        )
+        streams = MediaService._read_jsonl_records(
+            session_dir / "check_streams.jsonl", "check streams", session_id
+        )
 
         run_outcome: dict[str, Any] | None = None
         outcome_path = session_dir / "run_outcome.json"
@@ -570,7 +587,7 @@ class MediaService:
             except (OSError, ValueError) as e:
                 logger.warning(f"Failed to read run outcome for {session_id}: {e}")
 
-        return {"records": records, "run_outcome": run_outcome}
+        return {"records": records, "streams": streams, "run_outcome": run_outcome}
 
     @staticmethod
     def get_session_notes_content(session_id: str) -> dict[str, str]:

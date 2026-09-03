@@ -30,6 +30,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel
 
+from artemis.core.tool_declaration import ToolDeclaration
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.drivers.factory import get_driver
 from artemis.utils.logger import get_logger
@@ -133,60 +134,38 @@ class ArtemisTool:
             args_schema=self.args_schema,
         )
 
+    def _flat_schema(self) -> tuple[dict[str, dict[str, Any]], list[str]]:
+        if not self.args_schema:
+            return {}, []
+        return _flatten_json_schema_properties(self.args_schema.model_json_schema())
+
+    def to_tool_declaration(self) -> ToolDeclaration:
+        """Build the Flash declaration from the args_schema used by LangChain."""
+        properties, required = self._flat_schema()
+        return ToolDeclaration(
+            name=self.name,
+            description=self.description,
+            parameters={"type": "object", "properties": properties, "required": required},
+        )
+
     def to_genai_declaration(self) -> genai_types.FunctionDeclaration:
         """Exports this tool to a Google GenAI FunctionDeclaration schema."""
+        flat_properties, required = self._flat_schema()
         properties = {}
-        required = []
-
-        if self.args_schema:
-            schema = self.args_schema.model_json_schema()
-            props = schema.get("properties", {})
-            required = schema.get("required", [])
-
-            for prop_name, prop_data in props.items():
-                p_type_str = prop_data.get("type")
-                items_data = prop_data.get("items")
-                if not p_type_str and "anyOf" in prop_data:
-                    for sub_schema in prop_data["anyOf"]:
-                        sub_type = sub_schema.get("type")
-                        if sub_type and sub_type != "null":
-                            p_type_str = sub_type
-                            if "items" in sub_schema and not items_data:
-                                items_data = sub_schema["items"]
-                            break
-                if not p_type_str:
-                    p_type_str = "string"
-
-                p_desc = prop_data.get("description", "")
-
-                genai_type = genai_types.Type.STRING
-                if p_type_str == "integer":
-                    genai_type = genai_types.Type.INTEGER
-                elif p_type_str == "number":
-                    genai_type = genai_types.Type.NUMBER
-                elif p_type_str == "boolean":
-                    genai_type = genai_types.Type.BOOLEAN
-                elif p_type_str == "array":
-                    genai_type = genai_types.Type.ARRAY
-                elif p_type_str == "object":
-                    genai_type = genai_types.Type.OBJECT
-
-                # Handle array items if present
-                items_schema = None
-                if genai_type == genai_types.Type.ARRAY:
-                    item_type_str = (items_data or {}).get("type", "string")
-                    item_genai_type = (
-                        genai_types.Type.INTEGER
-                        if item_type_str == "integer"
-                        else genai_types.Type.STRING
-                    )
-                    items_schema = genai_types.Schema(type=item_genai_type)
-
-                properties[prop_name] = genai_types.Schema(
-                    type=genai_type,
-                    description=p_desc,
-                    items=items_schema,
+        for prop_name, prop in flat_properties.items():
+            genai_type = _GENAI_TYPES.get(prop["type"], genai_types.Type.STRING)
+            items_schema = None
+            if genai_type == genai_types.Type.ARRAY:
+                item_type = (prop.get("items") or {}).get("type", "string")
+                items_schema = genai_types.Schema(
+                    type=_GENAI_TYPES.get(item_type, genai_types.Type.STRING)
                 )
+            properties[prop_name] = genai_types.Schema(
+                type=genai_type,
+                description=prop.get("description", ""),
+                items=items_schema,
+                enum=[str(v) for v in prop["enum"]] if prop.get("enum") else None,
+            )
 
         return genai_types.FunctionDeclaration(
             name=self.name,
@@ -197,3 +176,57 @@ class ArtemisTool:
                 required=required,
             ),
         )
+
+
+_GENAI_TYPES = {
+    "string": genai_types.Type.STRING,
+    "integer": genai_types.Type.INTEGER,
+    "number": genai_types.Type.NUMBER,
+    "boolean": genai_types.Type.BOOLEAN,
+    "array": genai_types.Type.ARRAY,
+    "object": genai_types.Type.OBJECT,
+}
+
+
+def _flatten_property(prop_data: dict[str, Any]) -> dict[str, Any]:
+    """One Pydantic JSON-schema property as a flat single-type entry.
+
+    ``anyOf`` unions (``X | None``) collapse to their first non-null member;
+    ``items`` (array element type) and ``enum`` (``Literal`` choices) are
+    carried over; unknown shapes fall back to ``string``.
+    """
+    p_type = prop_data.get("type")
+    items = prop_data.get("items")
+    enum = prop_data.get("enum")
+    if not p_type and "anyOf" in prop_data:
+        for sub_schema in prop_data["anyOf"]:
+            sub_type = sub_schema.get("type")
+            if sub_type and sub_type != "null":
+                p_type = sub_type
+                items = items or sub_schema.get("items")
+                enum = enum or sub_schema.get("enum")
+                break
+    if not p_type:
+        p_type = "string"
+    entry: dict[str, Any] = {"type": p_type}
+    if p_type == "array":
+        entry["items"] = {"type": (items or {}).get("type") or "string"}
+    if enum:
+        entry["enum"] = list(enum)
+    return entry
+
+
+def _flatten_json_schema_properties(
+    schema: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Flattens a Pydantic model JSON schema into plain JSON-schema properties
+    plus the required-field list. Descriptions are copied verbatim; non-null
+    defaults are kept under ``default``."""
+    properties: dict[str, dict[str, Any]] = {}
+    for prop_name, prop_data in (schema.get("properties") or {}).items():
+        entry = _flatten_property(prop_data)
+        entry["description"] = prop_data.get("description", "")
+        if prop_data.get("default") is not None:
+            entry["default"] = prop_data["default"]
+        properties[prop_name] = entry
+    return properties, list(schema.get("required") or [])

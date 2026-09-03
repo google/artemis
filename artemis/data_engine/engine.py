@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import threading
 import time
@@ -86,6 +87,305 @@ def _derive_foreground_app(ui_tree: Any | None) -> str | None:
     if not counts:
         return None
     return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+#: ``smart_serialize`` stores any image payload inside a trace as this
+#: reference; the hash is the SHA-256 of the decoded image bytes — the same
+#: scheme ``record_step`` uses for ``image_name`` — so a referenced image can
+#: be resolved back to the step screenshot it came from.
+_IMAGE_REF_RE = re.compile(r"<ImageRef: sha256=([0-9a-fA-F]{64})")
+
+#: Text stand-in for an image whose origin is unknown (e.g. an annotated
+#: Explorer overlay that was never stored as a step screenshot).
+GENERIC_IMAGE_LABEL = "[image attached]"
+
+
+def image_ref_hash(value: Any) -> str | None:
+    """The SHA-256 named by an ``<ImageRef: …>`` placeholder, if any."""
+    if not isinstance(value, str):
+        return None
+    match = _IMAGE_REF_RE.search(value)
+    return match.group(1).lower() if match else None
+
+
+def build_image_describer(steps: list[Any]) -> Callable[[str | None], dict[str, Any]]:
+    """Describer that resolves an image hash to the step screenshot it is.
+
+    Returns a callable producing a text block: ``[screenshot: pre-action of
+    Step 3]`` (with the ``image_name`` attached so search can pull that
+    screenshot's OCR/XML as the image's description) or the generic label
+    when the hash matches no recorded step screenshot.
+    """
+    index: dict[str, tuple[int, str]] = {}
+    for step in steps:
+        number = getattr(step, "step_number", None)
+        if number is None and isinstance(step, dict):
+            number = step.get("step_number")
+        for which in ("pre", "post"):
+            name = getattr(step, f"{which}_image_name", None)
+            if name is None and isinstance(step, dict):
+                name = step.get(f"{which}_image_name")
+            if name and name not in index:
+                index[str(name).lower()] = (number, which)
+
+    def describe(image_name: str | None) -> dict[str, Any]:
+        if image_name and image_name.lower() in index:
+            number, which = index[image_name.lower()]
+            return {
+                "type": "text",
+                "text": f"[screenshot: {which}-action of Step {number}]",
+                "image_name": image_name.lower(),
+            }
+        return {"type": "text", "text": GENERIC_IMAGE_LABEL}
+
+    return describe
+
+
+def describe_result_images(result: Any, describer: Callable[[str | None], dict[str, Any]]) -> Any:
+    """Rewrites image blocks inside a stored tool result into text blocks.
+
+    Images are never dropped silently from the text views: a block becomes
+    the description the describer gives it (which step screenshot it is, or
+    a generic label), so replay and search both see that an image was there
+    and, when known, what it showed.
+    """
+    if isinstance(result, list):
+        out = []
+        for block in result:
+            if isinstance(block, dict) and block.get("type") in ("image_url", "image"):
+                url = block.get("image_url")
+                if isinstance(url, dict):
+                    url = url.get("url")
+                if url is None:
+                    url = block.get("source") or block.get("data")
+                out.append(describer(image_ref_hash(url)))
+            else:
+                out.append(describe_result_images(block, describer))
+        return out
+    if isinstance(result, dict):
+        return {k: describe_result_images(v, describer) for k, v in result.items()}
+    return result
+
+
+def build_interleaved_events(
+    traces: list[Any],
+    image_describer: Callable[[str | None], dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Turns one step's raw trace rows into the agent-facing event stream.
+
+    Operator LLM calls become ``thought`` / ``native_thought`` events; top-level
+    tool and sub-agent traces become ``tool_call`` events carrying ``name``,
+    ``args`` and ``result``. Nested calls made *inside* a kept tool/agent trace
+    (e.g. the Explorer's own perception calls) are dropped so only the
+    conclusion the Operator actually saw is replayed. Shared by the live
+    DataEngine and the offline MCP trace inspector so both replay the same
+    events.
+
+    Image blocks inside tool results are rewritten into text descriptions via
+    ``image_describer`` (see ``build_image_describer``); without one they
+    become the generic label.
+    """
+    describer = image_describer or build_image_describer([])
+    interleaved_events: list[dict[str, Any]] = []
+    denylist = (
+        "operator",
+        "perception",
+        "planner",
+        "validator",
+        "summarizer",
+        "checker",
+    )
+
+    relevant_traces = []
+    for t in traces:
+        if t.status not in ("success", "failed"):
+            continue
+
+        is_relevant_llm = False
+        if t.type == "llm_call":
+            curr_parent = t.parent_trace_id
+            visited = set()
+            while curr_parent:
+                if curr_parent in visited:
+                    break
+                visited.add(curr_parent)
+                parent_trace = next(
+                    (x for x in traces if x.trace_id == curr_parent),
+                    None,
+                )
+                if parent_trace:
+                    if parent_trace.name == "operator":
+                        is_relevant_llm = True
+                        t.name = parent_trace.name
+                        break
+                    curr_parent = parent_trace.parent_trace_id
+                else:
+                    break
+
+        if is_relevant_llm:
+            relevant_traces.append(t)
+        elif t.type in ("tool", "agent") and t.name not in denylist:
+            relevant_traces.append(t)
+
+    # Sort by timestamp to ensure exact chronological order
+    relevant_traces.sort(key=lambda x: x.timestamp)
+
+    # Separate set of candidate tool/agent IDs to do top-level filtering
+    # (only keep top-level tool calls)
+    candidate_ids = {t.trace_id for t in relevant_traces if t.type in ("tool", "agent")}
+
+    for t in relevant_traces:
+        if t.type == "llm_call":
+            payload = t.payload or {}
+            response_list = payload.get("response") or []
+            thought_text = ""
+            has_structured_blocks = False
+            if response_list:
+                first_gen = response_list[0]
+                if isinstance(first_gen, dict):
+                    content_val = first_gen.get("content")
+                    if isinstance(content_val, list):
+                        has_structured_blocks = True
+                        for block in content_val:
+                            if isinstance(block, dict):
+                                if (
+                                    block.get("type") == "thinking"
+                                    and block.get("thinking", "").strip()
+                                ):
+                                    interleaved_events.append(
+                                        {
+                                            "type": "native_thought",
+                                            "content": (block["thinking"].strip()),
+                                        }
+                                    )
+                                elif block.get("type") == "text" and block.get("text", "").strip():
+                                    interleaved_events.append(
+                                        {
+                                            "type": "thought",
+                                            "content": (block["text"].strip()),
+                                        }
+                                    )
+                    if not has_structured_blocks:
+                        thought_text = first_gen.get("content") or first_gen.get("text") or ""
+                else:
+                    thought_text = str(first_gen)
+
+            if not has_structured_blocks:
+                if isinstance(thought_text, list):
+                    thought_text = safe_extract_text(thought_text)
+
+                if thought_text and thought_text.strip():
+                    interleaved_events.append(
+                        {
+                            "type": "thought",
+                            "content": thought_text.strip(),
+                        }
+                    )
+        elif t.type in ("tool", "agent"):
+            # Keep only top-level candidate traces (no ancestor in candidates)
+            is_sub_call = False
+            curr_parent = t.parent_trace_id
+            visited = set()
+            while curr_parent:
+                if curr_parent in visited:
+                    break
+                visited.add(curr_parent)
+                if curr_parent in candidate_ids:
+                    is_sub_call = True
+                    break
+                parent_trace = next(
+                    (x for x in traces if x.trace_id == curr_parent),
+                    None,
+                )
+                if parent_trace:
+                    curr_parent = parent_trace.parent_trace_id
+                else:
+                    break
+            if is_sub_call:
+                continue
+
+            payload = t.payload or {}
+            tc_args = payload.get("args") or {}
+
+            if isinstance(tc_args, dict):
+                filtered_args = {
+                    k: v for k, v in tc_args.items() if k not in ("state", "tool_call_id")
+                }
+            else:
+                filtered_args = tc_args
+
+            tc_result = payload.get("result") or payload.get("error") or "No result"
+            tc_result = describe_result_images(tc_result, describer)
+
+            interleaved_events.append(
+                {
+                    "type": "tool_call",
+                    "name": t.name,
+                    "args": filtered_args,
+                    "result": tc_result,
+                }
+            )
+
+    return interleaved_events
+
+
+def relative_time_label(timestamp: float | None, session_start_time: float | None) -> str:
+    """Session-relative ``"12.3s"`` label of a step timestamp (``"0.0s"`` when
+    the session clock is unknown, matching ``DataEngine.get_relative_time``)."""
+    if session_start_time is None or timestamp is None:
+        return "0.0s"
+    return f"{timestamp - session_start_time:.1f}s"
+
+
+def friendly_step(
+    step: StepRecord,
+    traces: list[TraceRecord],
+    image_describer: Callable[[str | None], dict[str, Any]] | None = None,
+    *,
+    session_start_time: float | None = None,
+    default_width: int = 1080,
+    default_height: int = 2400,
+) -> dict[str, Any]:
+    """Agent-friendly record of one stored step.
+
+    JSON columns are already parsed (``StepRecord``), the step's traces are
+    expanded into ``interleaved_events`` (see ``build_interleaved_events``),
+    ``tool_calls`` lists the tool events, ``relative_time`` is the
+    session-relative label and physical coordinates are normalized using the
+    dimensions stamped on the step (falling back to the defaults). Shared by
+    the live ``DataEngine`` and the offline ``OfflineHistoryReader`` so both
+    replay the same record.
+    """
+    step_dict = step.model_dump()
+    step_dict["relative_time"] = relative_time_label(step.timestamp, session_start_time)
+
+    try:
+        step_dict["interleaved_events"] = build_interleaved_events(traces, image_describer)
+    except Exception as e:
+        logger.error(f"Failed to retrieve traces for step {step.step_id}: {e}")
+        step_dict["interleaved_events"] = []
+    step_dict["tool_calls"] = [
+        e for e in step_dict["interleaved_events"] if e["type"] == "tool_call"
+    ]
+
+    # Normalize physical coordinates to normalized ones for agent consumption
+    try:
+        extra = step_dict.get("extra_metadata") or {}
+        width = extra.get("width") or default_width
+        height = extra.get("height") or default_height
+
+        if step_dict.get("action_taken"):
+            step_dict["action_taken"] = normalize_any_structure(
+                step_dict["action_taken"], width, height
+            )
+        if step_dict.get("last_execution_result"):
+            step_dict["last_execution_result"] = normalize_any_structure(
+                step_dict["last_execution_result"], width, height
+            )
+    except Exception as norm_err:
+        logger.error(f"Failed to normalize coordinates in friendly steps history: {norm_err}")
+
+    return step_dict
 
 
 class DataEngine:
@@ -1191,196 +1491,55 @@ class DataEngine:
         if not self.current_session_id:
             return []
         steps_with_traces = self.storage.get_steps_with_traces(self.current_session_id)
+        describer = build_image_describer([step for step, _ in steps_with_traces])
+        return [self._friendly_step(step, traces, describer) for step, traces in steps_with_traces]
+
+    def get_agent_friendly_steps_in_range(
+        self, start_step: int, end_step: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Agent-friendly records of steps ``start_step``..``end_step`` (inclusive,
+        1-based) without loading the traces of the whole session. ``end_step``
+        defaults to ``start_step`` (a single step)."""
+        if not self.current_session_id:
+            return []
+        end_step = start_step if end_step is None else end_step
+        if start_step > end_step:
+            start_step, end_step = end_step, start_step
+        try:
+            steps = self.storage.get_steps(self.current_session_id) or []
+        except Exception as e:
+            logger.error(f"Failed to fetch steps for range lookup: {e}")
+            return []
+        describer = build_image_describer(steps)
         result = []
-        for step, traces in steps_with_traces:
-            step_dict = step.model_dump()
-            step_dict["relative_time"] = self.get_relative_time(step.timestamp)
-
-            interleaved_events = []
-            try:
-                denylist = (
-                    "operator",
-                    "perception",
-                    "planner",
-                    "validator",
-                    "summarizer",
-                    "checker",
-                )
-
-                relevant_traces = []
-                for t in traces:
-                    if t.status not in ("success", "failed"):
-                        continue
-
-                    is_relevant_llm = False
-                    if t.type == "llm_call":
-                        curr_parent = t.parent_trace_id
-                        visited = set()
-                        while curr_parent:
-                            if curr_parent in visited:
-                                break
-                            visited.add(curr_parent)
-                            parent_trace = next(
-                                (x for x in traces if x.trace_id == curr_parent),
-                                None,
-                            )
-                            if parent_trace:
-                                if parent_trace.name == "operator":
-                                    is_relevant_llm = True
-                                    t.name = parent_trace.name
-                                    break
-                                curr_parent = parent_trace.parent_trace_id
-                            else:
-                                break
-
-                    if is_relevant_llm:
-                        relevant_traces.append(t)
-                    elif t.type in ("tool", "agent") and t.name not in denylist:
-                        relevant_traces.append(t)
-
-                # Sort by timestamp to ensure exact chronological order
-                relevant_traces.sort(key=lambda x: x.timestamp)
-
-                # Separate set of candidate tool/agent IDs to do top-level filtering
-                # (only keep top-level tool calls)
-                candidate_ids = {t.trace_id for t in relevant_traces if t.type in ("tool", "agent")}
-
-                for t in relevant_traces:
-                    if t.type == "llm_call":
-                        payload = t.payload or {}
-                        response_list = payload.get("response") or []
-                        thought_text = ""
-                        has_structured_blocks = False
-                        if response_list:
-                            first_gen = response_list[0]
-                            if isinstance(first_gen, dict):
-                                content_val = first_gen.get("content")
-                                if isinstance(content_val, list):
-                                    has_structured_blocks = True
-                                    for block in content_val:
-                                        if isinstance(block, dict):
-                                            if (
-                                                block.get("type") == "thinking"
-                                                and block.get("thinking", "").strip()
-                                            ):
-                                                interleaved_events.append(
-                                                    {
-                                                        "type": "native_thought",
-                                                        "content": (block["thinking"].strip()),
-                                                    }
-                                                )
-                                            elif (
-                                                block.get("type") == "text"
-                                                and block.get("text", "").strip()
-                                            ):
-                                                interleaved_events.append(
-                                                    {
-                                                        "type": "thought",
-                                                        "content": (block["text"].strip()),
-                                                    }
-                                                )
-                                if not has_structured_blocks:
-                                    thought_text = (
-                                        first_gen.get("content") or first_gen.get("text") or ""
-                                    )
-                            else:
-                                thought_text = str(first_gen)
-
-                        if not has_structured_blocks:
-                            if isinstance(thought_text, list):
-                                thought_text = safe_extract_text(thought_text)
-
-                            if thought_text and thought_text.strip():
-                                interleaved_events.append(
-                                    {
-                                        "type": "thought",
-                                        "content": thought_text.strip(),
-                                    }
-                                )
-                    elif t.type in ("tool", "agent"):
-                        # Keep only top-level candidate traces (no ancestor in candidates)
-                        is_sub_call = False
-                        curr_parent = t.parent_trace_id
-                        visited = set()
-                        while curr_parent:
-                            if curr_parent in visited:
-                                break
-                            visited.add(curr_parent)
-                            if curr_parent in candidate_ids:
-                                is_sub_call = True
-                                break
-                            parent_trace = next(
-                                (x for x in traces if x.trace_id == curr_parent),
-                                None,
-                            )
-                            if parent_trace:
-                                curr_parent = parent_trace.parent_trace_id
-                            else:
-                                break
-                        if is_sub_call:
-                            continue
-
-                        payload = t.payload or {}
-                        tc_args = payload.get("args") or {}
-
-                        if isinstance(tc_args, dict):
-                            filtered_args = {
-                                k: v
-                                for k, v in tc_args.items()
-                                if k not in ("state", "tool_call_id")
-                            }
-                        else:
-                            filtered_args = tc_args
-
-                        tc_result = payload.get("result") or payload.get("error") or "No result"
-
-                        interleaved_events.append(
-                            {
-                                "type": "tool_call",
-                                "name": t.name,
-                                "args": filtered_args,
-                                "result": tc_result,
-                            }
-                        )
-
-                step_dict["interleaved_events"] = interleaved_events
-                step_dict["tool_calls"] = [
-                    e for e in interleaved_events if e["type"] == "tool_call"
-                ]
-            except Exception as e:
-                logger.error(f"Failed to retrieve traces for step {step.step_id}: {e}")
-                step_dict["interleaved_events"] = []
-                step_dict["tool_calls"] = []
-
-            # Normalize physical coordinates to normalized ones for agent consumption
-            try:
-                extra = step_dict.get("extra_metadata") or {}
-                width = extra.get("width") or (
-                    getattr(self.ctx.device, "device_width", 1080)
-                    if self.ctx and self.ctx.device
-                    else 1080
-                )
-                height = extra.get("height") or (
-                    getattr(self.ctx.device, "device_height", 2400)
-                    if self.ctx and self.ctx.device
-                    else 2400
-                )
-
-                if step_dict.get("action_taken"):
-                    step_dict["action_taken"] = normalize_any_structure(
-                        step_dict["action_taken"], width, height
-                    )
-                if step_dict.get("last_execution_result"):
-                    step_dict["last_execution_result"] = normalize_any_structure(
-                        step_dict["last_execution_result"], width, height
-                    )
-            except Exception as norm_err:
-                logger.error(
-                    f"Failed to normalize coordinates in friendly steps history: {norm_err}"
-                )
-
-            result.append(step_dict)
+        for step in steps:
+            if start_step <= step.step_number <= end_step:
+                traces = self.storage.get_traces_for_step(step.step_id)
+                result.append(self._friendly_step(step, traces, describer))
         return result
+
+    def get_agent_friendly_step(self, step_number: int) -> dict[str, Any] | None:
+        """Agent-friendly record of one step by its 1-based number, or None."""
+        rows = self.get_agent_friendly_steps_in_range(step_number, step_number)
+        return rows[0] if rows else None
+
+    def _friendly_step(
+        self,
+        step: StepRecord,
+        traces: list[TraceRecord],
+        image_describer: Callable[[str | None], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Live twin of :func:`friendly_step`: the session clock and the device
+        dimensions come from this engine's context."""
+        device = self.ctx.device if self.ctx else None
+        return friendly_step(
+            step,
+            traces,
+            image_describer,
+            session_start_time=self.session_start_time,
+            default_width=getattr(device, "device_width", 1080) if device else 1080,
+            default_height=getattr(device, "device_height", 2400) if device else 2400,
+        )
 
     def register_background_task(self, task_id: str, summary: str, trace_id: UUID | None = None):
         if not self.current_session_id:

@@ -15,66 +15,49 @@
 """MCP Tool: mobile_inspect_trace."""
 
 import json
-import math
 import os
 import sqlite3
 import sys
 from typing import Any
-from PIL import Image, ImageDraw
 
 from mcp_server.base import mcp
 from mcp_server.utils import env_utils
+from artemis.data_engine.history_reader import OfflineHistoryReader
 from artemis.runtime import trace_store
-from artemis.utils.visualization import draw_action_overlay_on_image
-from artemis.utils.task_tree import (
-    _render_step_detailed,
-    build_plan_and_history,
-)
+from artemis.tools.history import load_step_screenshot, replay_steps_text, search_history_text
+from artemis.utils.task_tree import build_plan_and_history
 
 
-def _draw_action_overlay(bg_image_path: str, action_obj: dict, output_path: str) -> bool:
-    """Draws the action overlay on the image using Artemis's native visualization engine."""
+def _write_overlay(annotated_bytes: bytes, output_path: str) -> bool:
+    """Persists an already-drawn action overlay next to the trace."""
     try:
-        if not os.path.exists(bg_image_path):
-            return False
-
-        with open(bg_image_path, "rb") as f:
-            raw_bytes = f.read()
-
-        act_name = action_obj.get("action") or action_obj.get("name") or ""
-        action_args = dict(action_obj.get("args") or {})
-        for k in (
-            "target",
-            "coordinates",
-            "point",
-            "direction",
-            "sequence",
-            "targets",
-            "normalized_coordinates",
-        ):
-            if k in action_obj and k not in action_args:
-                action_args[k] = action_obj[k]
-
-        annotated_bytes = draw_action_overlay_on_image(
-            image_bytes=raw_bytes,
-            action_name=act_name,
-            action_args=action_args,
-        )
-
-        if not annotated_bytes or annotated_bytes == raw_bytes:
-            return False
-
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(annotated_bytes)
         return True
-    except Exception as e:
-        print(f"Error drawing action overlay: {e}", file=sys.stderr)
+    except OSError as e:
+        print(f"Error writing action overlay: {e}", file=sys.stderr)
         return False
 
 
+def _recall_config() -> Any:
+    try:
+        from artemis.config import load_agent_config
+
+        return load_agent_config().memory.recall
+    except Exception:
+        return None
+
+
 @mcp.tool()
-async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | None = None) -> Any:
+async def mobile_inspect_trace(
+    action: str,
+    trace_id: str,
+    step_number: int | None = None,
+    query: str | None = None,
+    step_range: list[int] | None = None,
+    max_results: int = 5,
+) -> Any:
     """Retrieves execution details of a mobile automation task (running or finished).
 
     Use it to monitor progress, verify answers, and diagnose agent errors for
@@ -84,21 +67,35 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
     - **'view_summary'**: High-level execution summary across all steps.
       Pro: hierarchical task plan with per-step status; Flash: full execution
       chain with each step's reasoning and action.
+    - **'search'**: Deterministic keyword / step-range lookup over the full
+      stored history (screen descriptions, exact actions and results,
+      reasoning, tool calls, notes, on-screen OCR/UI-tree text incl.
+      package/activity names, compressed-history ledgers). Every hit carries
+      its step number; a `step_range` also returns that range's per-step
+      action ledger. Requires `query` and/or `step_range`.
     - **'view_step_screenshots'**: Local file paths of one step's screenshots:
       `before_screenshot` (what the agent saw), `after_screenshot` (only set
       when the action failed/was intercepted, else null), and
       `action_overlay_screenshot` (the action visually marked — e.g. red circle
       for taps — key for verifying the agent tapped the right element).
-    - **'view_step_details'**: Deep per-step diagnostics (raw VLM thoughts,
-      exact actions). Pro only — DO NOT use for Flash tasks ('view_summary'
-      already carries their full execution chain).
+    - **'view_step_details'**: Full replay of one step exactly as the agent's
+      own context showed it: what the screen showed, its reasoning, every tool
+      call it made (name, arguments, result — e.g. what the explorer or OCR
+      reported), the planned action, any safety-net interception and the
+      execution result. Coordinates are normalized [x, y]. Works for Flash and
+      Pro tasks.
 
     Args:
-        action: `"view_summary"`, `"view_step_screenshots"`, or
+        action: `"view_summary"`, `"search"`, `"view_step_screenshots"`, or
           `"view_step_details"`.
         trace_id: The task's session identifier from `mobile_run_task`.
         step_number: 1-indexed step to query; required for the two per-step
-          actions, omit for `view_summary`.
+          actions, omit otherwise.
+        query: Keywords for `"search"` (case-insensitive; every
+          whitespace-separated term is matched independently).
+        step_range: Optional `[start, end]` step range (inclusive) for
+          `"search"`.
+        max_results: Maximum `"search"` hits to return (server-side cap applies).
     """
     project_root = env_utils.get_project_root()
     db_path = os.path.join(trace_store.TRACES_DIR, "data_engine.db")
@@ -278,20 +275,45 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
                 "message": f"Failed to format plan and history using Artemis task tree: {e}",
             }
 
-    # 2. Handle Actions requiring step_number
-    elif action in ("view_step_screenshots", "view_step_details"):
+    # 2. Actions served by the offline history reader (same records as the live engine)
+    elif action in ("search", "view_step_screenshots", "view_step_details"):
         status_data = trace_store.read_status(trace_id)
-        is_flash = status_data and status_data.get("model", "").lower() == "flash"
         device_serial = status_data.get("device_serial") if status_data else None
 
-        if action == "view_step_details" and is_flash:
+        try:
+            reader = OfflineHistoryReader(db_path, os.path.dirname(db_path), trace_id)
+        except Exception as e:
             return {
-                "error": "Not applicable for Flash model",
-                "message": (
-                    "Action 'view_step_details' is not needed for Flash model runs. "
-                    "For Flash tasks, 'view_summary' already outputs the complete "
-                    "step-by-step reasoning (thoughts) and executed actions for the entire run."
-                ),
+                "error": "Database error",
+                "message": f"Failed to open the trace database: {e}",
+            }
+
+        # 3. Handle Action: "search"
+        if action == "search":
+            if not query and not step_range:
+                return {
+                    "error": "Missing parameter",
+                    "message": "Action 'search' needs 'query' and/or 'step_range'.",
+                }
+            try:
+                results = search_history_text(
+                    reader,
+                    query=query or "",
+                    step_range=step_range,
+                    max_results=int(max_results or 5),
+                    recall_config=_recall_config(),
+                )
+            except Exception as e:
+                return {
+                    "error": "Search error",
+                    "message": f"Failed to search trace '{trace_id}': {e}",
+                }
+            return {
+                "trace_id": trace_id,
+                "device_serial": device_serial,
+                "query": query or "",
+                "step_range": step_range,
+                "results": results,
             }
 
         if step_number is None:
@@ -301,146 +323,72 @@ async def mobile_inspect_trace(action: str, trace_id: str, step_number: int | No
             }
 
         try:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM steps WHERE session_id = ? AND step_number = ?",
-                (trace_id, step_number),
-            )
-            row = cursor.fetchone()
-
-            if not row:
-                conn.close()
-                return {
-                    "error": "Step not found",
-                    "message": f"Step number {step_number} not found for trace '{trace_id}'.",
-                }
-
-            step_dict = dict(row)
-            for col in ("action_taken", "last_execution_result", "extra_metadata"):
-                if step_dict.get(col):
-                    try:
-                        step_dict[col] = json.loads(step_dict[col])
-                    except (ValueError, TypeError):
-                        # Non-JSON column value: keep the raw string.
-                        pass
-
-            cursor.execute(
-                "SELECT start_time FROM sessions WHERE session_id = ?",
-                (trace_id,),
-            )
-            session_row = cursor.fetchone()
-            session_start_time = session_row["start_time"] if session_row else None
-
-            cursor.execute(
-                "SELECT type, name, status, timestamp, duration, payload FROM traces WHERE step_id = ? ORDER BY timestamp ASC",
-                (step_dict["step_id"],),
-            )
-            trace_rows = cursor.fetchall()
-            events = []
-            for tr in trace_rows:
-                t_dict = dict(tr)
-                if t_dict.get("payload"):
-                    try:
-                        t_dict["payload"] = json.loads(t_dict["payload"])
-                    except (ValueError, TypeError):
-                        # Non-JSON payload: keep the raw string.
-                        pass
-                events.append(t_dict)
-            step_dict["interleaved_events"] = events
-            conn.close()
+            record = reader.get_step_record(step_number)
         except Exception as e:
             return {
                 "error": "Database error",
                 "message": f"Database query failed: {e}",
             }
+        if record is None:
+            return {
+                "error": "Step not found",
+                "message": f"Step number {step_number} not found for trace '{trace_id}'.",
+            }
 
-        # 3. Handle Action: "view_step_screenshots"
+        # 4. Handle Action: "view_step_screenshots"
         if action == "view_step_screenshots":
-            images_dir = os.path.join(trace_store.TRACES_DIR, "images")
-            if not os.path.exists(images_dir):
-                images_dir = os.path.join(project_root, "traces", "images")
-
             pre_image = None
             post_image = None
             overlay_image = None
 
-            if step_dict.get("pre_image_name"):
-                name = step_dict["pre_image_name"]
-                if not name.endswith(".jpg"):
-                    name += ".jpg"
-                path = os.path.join(images_dir, name)
-                if os.path.exists(path):
-                    pre_image = f"file://{path}"
+            pre_path = reader.get_step_image_path(step_number, "pre")
+            if pre_path is not None:
+                pre_image = f"file://{pre_path}"
 
-                    overlay_dir = trace_store.get_trace_dir(trace_id)
-                    os.makedirs(overlay_dir, exist_ok=True)
-                    overlay_filename = f"step_{step_dict['step_number']}_overlay.jpg"
-                    overlay_abs_path = os.path.join(overlay_dir, overlay_filename)
-
-                    action_obj = step_dict.get("action_taken")
-                    action_parsed = (
-                        action_obj[0] if isinstance(action_obj, list) and action_obj else action_obj
-                    )
-
-                    if isinstance(action_parsed, dict) and (
-                        action_parsed.get("action") or action_parsed.get("name")
-                    ):
-                        if not os.path.exists(overlay_abs_path):
-                            success_draw = _draw_action_overlay(
-                                path, action_parsed, overlay_abs_path
-                            )
-                            if success_draw:
-                                overlay_image = f"file://{overlay_abs_path}"
-                        else:
+                overlay_dir = trace_store.get_trace_dir(trace_id)
+                overlay_abs_path = os.path.join(overlay_dir, f"step_{step_number}_overlay.jpg")
+                if os.path.exists(overlay_abs_path):
+                    overlay_image = f"file://{overlay_abs_path}"
+                else:
+                    # The overlay is drawn from the raw stored action (physical
+                    # pixels) by the same loader the agents' tool uses.
+                    shot = load_step_screenshot(reader, step_number, "overlay")
+                    if shot.overlay_drawn and shot.image_bytes:
+                        if _write_overlay(shot.image_bytes, overlay_abs_path):
                             overlay_image = f"file://{overlay_abs_path}"
 
-            if step_dict.get("post_image_name"):
-                name = step_dict["post_image_name"]
-                if not name.endswith(".jpg"):
-                    name += ".jpg"
-                path = os.path.join(images_dir, name)
-                if os.path.exists(path):
-                    post_image = f"file://{path}"
+            post_path = reader.get_step_image_path(step_number, "post")
+            if post_path is not None:
+                post_image = f"file://{post_path}"
 
             return {
                 "trace_id": trace_id,
                 "device_serial": device_serial,
-                "step_number": step_dict["step_number"],
+                "step_number": record.step_number,
                 "before_screenshot": pre_image,
                 "after_screenshot": post_image,
                 "action_overlay_screenshot": overlay_image,
             }
 
-        # 4. Handle Action: "view_step_details"
-        elif action == "view_step_details":
-            relative_time_str = "N/A"
-            if session_start_time and step_dict.get("timestamp"):
-                relative_time_val = step_dict["timestamp"] - session_start_time
-                relative_time_str = f"{relative_time_val:.1f}s"
-
-            rendered_text = _render_step_detailed(
-                step=step_dict,
-                relative_time=relative_time_str,
-                summary=step_dict.get("summary"),
-                action=step_dict.get("action_taken"),
-                result=step_dict.get("last_execution_result"),
-                is_most_recent=False,
-            )
-
+        # 5. Handle Action: "view_step_details"
+        rendered_text = replay_steps_text(reader, step_number, max_steps=1)
+        if rendered_text.startswith("Error"):
             return {
-                "trace_id": trace_id,
-                "device_serial": device_serial,
-                "step_number": step_dict["step_number"],
-                "details": rendered_text,
+                "error": "Formatting error",
+                "message": f"Failed to render step {step_number}: {rendered_text}",
             }
+        return {
+            "trace_id": trace_id,
+            "device_serial": device_serial,
+            "step_number": record.step_number,
+            "details": rendered_text,
+        }
 
     else:
         return {
             "error": "Invalid action",
             "message": (
                 f"Action '{action}' is not supported. Supported actions: "
-                "'view_summary', 'view_step_screenshots', 'view_step_details'."
+                "'view_summary', 'search', 'view_step_screenshots', 'view_step_details'."
             ),
         }

@@ -239,4 +239,3 @@ async def test_mid_stream_failure_records_stream_reset_payload(monkeypatch):
     assert payload["reason"] == "mid_stream_failure"
     assert "stream_exec_id" in payload
     assert "lower API priority" in payload["message"]
-

@@ -320,3 +320,101 @@ def test_commit_records_every_step_key_of_a_multi_action_turn():
     ledger.stage_turn(_turn(2))
     ledger.commit_staged(step_key=None)
     assert ledger.unchunked_turns()[1]["step_keys"] == []
+
+
+# ---------------------------------------------------------------------------
+# Turn transcript rendering (chunk-capsule source)
+# ---------------------------------------------------------------------------
+
+
+def test_render_turn_transcript_is_lossless_over_text_thinking_tools_and_results():
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+
+    from artemis.memory.transcript import SCREENSHOT_PLACEHOLDER, render_turn_transcript
+
+    messages = [
+        HumanMessage(
+            content=[
+                {"type": "text", "text": "# CURRENT OBSERVATION [T+01:00]"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,IMG"}},
+            ]
+        ),
+        AIMessage(
+            content=[
+                {"type": "thinking", "thinking": "compare the two prices"},
+                {"type": "text", "text": "I will recall the earlier price."},
+            ],
+            tool_calls=[
+                {
+                    "name": "search_history",
+                    "args": {"query": "price"},
+                    "id": "c1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(tool_call_id="c1", content="Step 3: price ¥39", status="success"),
+        ToolMessage(
+            tool_call_id="c2", name="adb_shell", content="permission denied", status="error"
+        ),
+        ToolMessage(tool_call_id="c9", content="orphan result"),
+        SystemMessage(content="You have reached the maximum number of tool calls"),
+        AIMessage(
+            content="tap now",
+            tool_calls=[{"name": "click", "args": {"target": [0.5, 0.5]}, "id": "c3"}],
+        ),
+    ]
+    text = render_turn_transcript(messages)
+    assert text.splitlines()[0] == "[observation]"
+    assert "# CURRENT OBSERVATION [T+01:00]" in text
+    assert SCREENSHOT_PLACEHOLDER in text and "IMG" not in text
+    assert "[operator]\n(thinking) compare the two prices\nI will recall the earlier price." in text
+    assert '[tool call] search_history({"query": "price"})' in text
+    # A Pro ToolMessage carries no name: resolved through the turn's own call.
+    assert "[tool result search_history]\nStep 3: price ¥39" in text
+    assert "[tool result adb_shell (error)]\npermission denied" in text
+    assert "[tool result c9]\norphan result" in text  # unresolvable: id shown
+    assert "[system]\nYou have reached the maximum number of tool calls" in text
+    assert '[tool call] click({"target": [0.5, 0.5]})' in text
+    # Order is message order.
+    assert text.index("search_history(") < text.index("price ¥39") < text.index("tap now")
+
+
+def test_ledger_turn_transcript_reflects_the_scrubbed_active_region():
+    """The transcript handed to chunk compression is the turn as it stands
+    after the scrub edge: the UI list stripped, the validator result present."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger
+
+    ledger = TranscriptLedger(clock=lambda: 0.0)
+
+    def turn(i: int) -> list:
+        return [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": f"# CURRENT OBSERVATION [T+00:0{i}]"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,IMG{i}"}},
+                    {"type": "text", "text": f"{PRO_UI_LIST_MARKER}\n[0] Button {i}"},
+                ]
+            ),
+            AIMessage(
+                content=f"thought {i}",
+                tool_calls=[{"name": "click", "args": {}, "id": f"t{i}"}],
+            ),
+            ToolMessage(tool_call_id=f"t{i}", content="Action Recorded"),
+        ]
+
+    ledger.stage_turn(turn(1))
+    ledger.commit_staged(step_key="s1", validator_result={"status": "success"})
+    ledger.stage_turn(turn(2))
+    ledger.commit_staged(step_key="s2", validator_result={"status": "failed", "error": "boom"})
+    ledger.render([HumanMessage(content=[{"type": "text", "text": "tail"}])])
+
+    first, second = ledger.unchunked_turns()
+    text = ledger.turn_transcript(first)
+    assert "thought 1" in text and "[tool call] click({})" in text
+    assert "Button 1" not in text  # depth-1 strip already applied
+    assert "--- Action Execution Result (T+00:00) ---\nStatus: success" in text
+    assert "Status: failed" in ledger.turn_transcript(second)
+    assert "thought 2" not in text  # a turn transcript never leaks into another turn

@@ -60,7 +60,14 @@ def mock_context(tmp_path):
     engine = Mock()
     engine.get_step_number.return_value = 7
     engine.get_step_record.return_value = SimpleNamespace(
-        action_taken=[{"action": "tap", "coordinates": [500, 600], "target_text": "Search"}]
+        action_taken=[
+            {
+                "action": "tap",
+                "coordinates": [540, 1440],
+                "coordinate_space": "pixel",
+                "target_text": "Search",
+            }
+        ]
     )
     engine.get_step_image_path.side_effect = lambda step_number, which="pre": (
         pre_path if which == "pre" else post_path
@@ -84,7 +91,11 @@ async def test_summarizer_dispatches_visual_lens(mock_context):
     mock_context.step_memory.dispatch.assert_called_once_with(
         step_number=7,
         action_name="tap",
-        action_args={"coordinates": [500, 600], "target_text": "Search"},
+        action_args={
+            "coordinates": [500, 600],
+            "coordinate_space": "normalized",
+            "target_text": "Search",
+        },
         pre_img_bytes=b"PRE_IMAGE",
         post_img_bytes=b"POST_IMAGE",
         exec_outcome="success",
@@ -123,8 +134,9 @@ async def test_summarizer_falls_back_to_structured_decisions(mock_context):
 
     state = DummyState(
         structured_decisions=(
-            '[{"action": "swipe", "coordinates": [1, 2, 3, 4]},'
-            ' {"action": "tap", "coordinates": [9, 9]}]'
+            '[{"action": "swipe", "coordinates": [540, 1800, 540, 600],'
+            ' "coordinate_space": "pixel"},'
+            ' {"action": "tap", "coordinates": [540, 1200], "coordinate_space": "pixel"}]'
         ),
         last_execution_result={"status": "success"},
         current_step_id="12345678-1234-5678-1234-567812345678",
@@ -135,8 +147,10 @@ async def test_summarizer_falls_back_to_structured_decisions(mock_context):
 
     kwargs = mock_context.step_memory.dispatch.call_args.kwargs
     assert kwargs["action_name"] == "swipe"
-    assert kwargs["action_args"]["coordinates"] == [1, 2, 3, 4]
-    assert kwargs["action_args"]["additional_actions"] == [{"action": "tap", "coordinates": [9, 9]}]
+    assert kwargs["action_args"]["coordinates"] == [500, 750, 500, 250]
+    assert kwargs["action_args"]["additional_actions"] == [
+        {"action": "tap", "coordinates": [500, 500], "coordinate_space": "normalized"}
+    ]
 
 
 @pytest.mark.asyncio

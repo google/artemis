@@ -621,3 +621,133 @@ def test_get_recent_subgoal_hashes_robust_milestone_exclusion(tmp_path):
 
     # 5. Older failed subgoals from previously completed milestones (hash_failed_old)
     assert hash_failed_old not in keep_hashes
+
+
+# --- Step replay (shared renderer for replay_steps / MCP view_step_details) ----------
+
+
+def _replay_step(tool_result, **overrides):
+    step = {
+        "step_id": "step_4",
+        "step_number": 4,
+        "relative_time": "12.0s",
+        "summary": "Confirmed the Wi-Fi toggle state via the explorer.",
+        "action_taken": {"action": "click", "target": [0.5, 0.5], "target_text": "Save"},
+        "last_execution_result": {"status": "success"},
+        "interleaved_events": [
+            {"type": "thought", "content": "Need to confirm the toggle before saving."},
+            {
+                "type": "tool_call",
+                "name": "ask_explorer",
+                "args": {"question": "Is the Wi-Fi toggle on?"},
+                "result": tool_result,
+            },
+            {"type": "tool_call", "name": "click", "args": {"target": [0.5, 0.5]}, "result": "ok"},
+        ],
+    }
+    step.update(overrides)
+    return step
+
+
+def test_render_step_replay_shows_summary_thoughts_and_full_tool_results():
+    from artemis.utils.task_tree import render_step_replay
+
+    long_result = "The Wi-Fi toggle is ON and the SSID row reads 'HomeNet'. " * 60  # ~3.5k chars
+    out = render_step_replay(_replay_step(long_result))
+
+    assert "- **Step 4 (Start: 12.0s)**" in out
+    assert "[Screen]: Confirmed the Wi-Fi toggle state via the explorer." in out
+    assert "Need to confirm the toggle before saving." in out
+    # The tool call is replayed verbatim: name, args and the whole result.
+    assert "`ask_explorer(" in out
+    assert long_result in out
+    # Action tools are the planned action, not a tool-call line.
+    assert "[Planned Action]: Tapped 'Save' at [0.5, 0.5]" in out
+    assert "`click(" not in out
+
+
+def test_render_step_replay_clamps_only_pathological_results():
+    from artemis.utils.task_tree import REPLAY_RESULT_CHARS, render_step_replay
+
+    huge = "y" * (REPLAY_RESULT_CHARS + 500)
+    out = render_step_replay(_replay_step(huge))
+    assert huge not in out
+    assert ("y" * REPLAY_RESULT_CHARS) + "..." in out
+
+
+def test_live_window_keeps_the_tight_tool_result_clamp():
+    """The Operator's live context window still clamps tool results tightly;
+    only the replay renderer is loose."""
+    from artemis.utils.task_tree import LIVE_RESULT_CHARS
+
+    long_result = "z" * 3000
+    out = build_plan_and_history(
+        "- [ ] Check toggle", [_replay_step(long_result)], "default", last_n_detailed=1
+    )
+    assert long_result not in out
+    assert ("z" * LIVE_RESULT_CHARS) + "..." in out
+    # No screen-description line in the live detailed view.
+    assert "[Screen]:" not in out
+
+
+def test_render_step_replay_reports_missing_screen_description_status():
+    from artemis.utils.task_tree import render_step_replay
+
+    pending = render_step_replay(
+        _replay_step("ok", summary=None, extra_metadata={"summary_status": "pending"})
+    )
+    assert "[Screen]: (screen description pending)" in pending
+    failed = render_step_replay(
+        _replay_step("ok", summary="", extra_metadata={"summary_status": "failed"})
+    )
+    assert "[Screen]: (screen description unavailable)" in failed
+    assert "[Screen]" not in render_step_replay(_replay_step("ok", summary=None))
+
+
+def test_render_step_replay_shows_described_images_in_tool_results():
+    from artemis.utils.task_tree import render_step_replay
+
+    result = [
+        {"type": "text", "text": "--- pre-action screenshot of Step 1 ---"},
+        {"type": "text", "text": "[screenshot: pre-action of Step 1]", "image_name": "ab" * 32},
+    ]
+    out = render_step_replay(_replay_step(result))
+    assert "[screenshot: pre-action of Step 1]" in out
+
+
+def test_format_action_clean_reads_flash_arguments_and_maps_manage_app():
+    """Read Flash action arguments from ``args`` when formatting app launches."""
+    from artemis.utils.task_tree import format_action_clean
+
+    assert (
+        format_action_clean(
+            {
+                "action": "manage_app",
+                "coordinates": None,
+                "args": {"action": "launch", "app_name": "com.android.settings"},
+            }
+        )
+        == "Launched app 'com.android.settings'"
+    )
+    assert (
+        format_action_clean({"action": "manage_app", "args": {"action": "stop", "app_name": "x"}})
+        == "Stopped app 'x'"
+    )
+    # Pro's own shape keeps rendering as before.
+    assert format_action_clean({"action": "launch_app", "app_name": "x"}) == "Launched app 'x'"
+    assert (
+        format_action_clean({"action": "manage_app", "app_name": "x", "intent": "clear"})
+        == "Managed app 'x' (action: clear)"
+    )
+    # Top-level fields win over args; args only fill the gaps.
+    assert (
+        format_action_clean(
+            {
+                "action": "click",
+                "coordinates": [1, 2],
+                "target_text": "Save",
+                "args": {"target": [9, 9]},
+            }
+        )
+        == "Tapped 'Save' at [1, 2]"
+    )

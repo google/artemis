@@ -45,20 +45,38 @@ def test_get_session_checks_reads_ledger_and_outcome(tmp_path, monkeypatch):
         json.dumps({"task_status": "completed", "tests": {"passed": 2, "failed": 0}}),
         encoding="utf-8",
     )
+    stream = {
+        "attempt_id": "abc#1",
+        "checkpoint_id": "abc",
+        "phase": "checkpoint",
+        "trace_id": "trace-1",
+        "ts": 1.5,
+        "truncated": False,
+        "dropped_chars": 0,
+        "segments": [
+            {"execution_id": "e1", "role": "thought", "when": 1.1, "text": "Looking"},
+            {"execution_id": "e1", "role": "answer", "when": 1.2, "text": "Seen"},
+        ],
+    }
+    (session_dir / "check_streams.jsonl").write_text(
+        json.dumps(stream) + "\nnot json\n", encoding="utf-8"
+    )
 
     result = MediaService.get_session_checks("sess-1")
 
     assert [r["attempt_id"] for r in result["records"]] == ["abc#1", "final#1"]
     assert result["records"][0]["subgoal_text"] == "Create the alarm"
     assert result["run_outcome"]["task_status"] == "completed"
+    assert result["streams"] == [stream]
 
 
 def test_get_session_checks_without_material(tmp_path, monkeypatch):
     monkeypatch.setattr(media_service_module, "TRACES_PATH", tmp_path)
     (tmp_path / "sess-2").mkdir()
 
-    assert MediaService.get_session_checks("sess-2") == {"records": [], "run_outcome": None}
-    assert MediaService.get_session_checks("missing") == {"records": [], "run_outcome": None}
+    empty = {"records": [], "streams": [], "run_outcome": None}
+    assert MediaService.get_session_checks("sess-2") == empty
+    assert MediaService.get_session_checks("missing") == empty
 
 
 def test_checks_route_is_registered():

@@ -20,10 +20,18 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { AgentService, StartupProgressEvent } from '../../services/agent.service';
-import { Session, ModelInfo } from '../../core/models/session.model';
+import { Session, ModelInfo, SessionUsage } from '../../core/models/session.model';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { OverlayModule, ConnectedPosition } from '@angular/cdk/overlay';
 import { StepBlock, PhaseBlock, StepEvent, ActionParam, CheckerResult, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE } from '../../core/models/stream.model';
+import {
+  contextPercent,
+  formatCompactTokens,
+  formatElapsed,
+  parseRunTuning,
+  sessionElapsedSeconds,
+  tuningLabel
+} from '../../utils/run-info.util';
 
 export const PLANNING_LOADER_PHRASES: string[] = [
   'Planning next step...',
@@ -234,6 +242,34 @@ export class AgentStreamComponent implements AfterViewInit {
   // Top Nav Dropdown States
   public isTaskDropdownOpen = signal<boolean>(false);
   public isNotesDropdownOpen = signal<boolean>(false);
+
+  // Run info popover (opened from the Flash / Pro chip): elapsed time, token
+  // usage, executor context share and the Pro tuning the run started with.
+  public isRunInfoOpen = signal<boolean>(false);
+  public runUsage = signal<SessionUsage | null>(null);
+  private runInfoClock = signal<number>(Date.now());
+
+  public runInfoIsPro = computed(() => this.getModelClass(this.agentService.viewedModel()?.name) === 'is-pro');
+
+  public runInfoElapsed = computed(() => {
+    const session = this.agentService.currentSession();
+    const running = this.agentService.isCurrentSessionRunning();
+    return formatElapsed(sessionElapsedSeconds(session, running, this.runInfoClock()));
+  });
+
+  public runInfoTuning = computed(() => {
+    const usage = this.runUsage();
+    if (usage?.run_tuning && (usage.run_tuning.verification_level || usage.run_tuning.explorer_mode)) {
+      return usage.run_tuning;
+    }
+    return parseRunTuning(this.agentService.currentSession()?.device_info);
+  });
+
+  public runInfoContextPercent = computed(() => {
+    const usage = this.runUsage();
+    if (!usage) return null;
+    return contextPercent(usage.operator_context_tokens, usage.operator_context_window_tokens);
+  });
 
   // CDK Connected Overlay Positioning Strategy
   public readonly dropdownPositions: ConnectedPosition[] = [
@@ -476,6 +512,28 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   constructor() {
+    // Run info popover: fetch usage when opened or when the viewed session
+    // changes, and keep refreshing while that session is still running.
+    effect((onCleanup) => {
+      const open = this.isRunInfoOpen();
+      const sessionId = this.agentService.currentSessionId();
+      const running = this.agentService.isCurrentSessionRunning();
+      if (!open || !sessionId) return;
+      if (untracked(() => this.runUsage())?.session_id !== sessionId) {
+        this.runUsage.set(null);
+      }
+      this.loadRunUsage(sessionId);
+      if (!running) return;
+      const usageInterval = setInterval(() => this.loadRunUsage(sessionId), 3000);
+      onCleanup(() => clearInterval(usageInterval));
+    });
+    effect((onCleanup) => {
+      if (!this.isRunInfoOpen() || !this.agentService.isCurrentSessionRunning()) return;
+      this.runInfoClock.set(Date.now());
+      const clockInterval = setInterval(() => this.runInfoClock.set(Date.now()), 1000);
+      onCleanup(() => clearInterval(clockInterval));
+    });
+
     // The retry clock only needs to tick while something on screen is timing
     // (startup progress, LLM retry countdowns). An idle page stays quiet.
     this.zone.runOutsideAngular(() => {
@@ -758,6 +816,38 @@ export class AgentStreamComponent implements AfterViewInit {
   public closeAllDropdowns(): void {
     this.isTaskDropdownOpen.set(false);
     this.isNotesDropdownOpen.set(false);
+    this.isRunInfoOpen.set(false);
+  }
+
+  public toggleRunInfo(event: Event): void {
+    event.stopPropagation();
+    this.isRunInfoOpen.update((v) => !v);
+    if (this.isRunInfoOpen()) {
+      this.isTaskDropdownOpen.set(false);
+      this.isNotesDropdownOpen.set(false);
+    }
+  }
+
+  private loadRunUsage(sessionId: string): void {
+    this.agentService.getSessionUsage(sessionId).subscribe({
+      next: (usage) => {
+        if (this.agentService.currentSessionId() !== sessionId) return;
+        this.runUsage.set(usage);
+      },
+      error: (err) => console.error('Failed to load session usage:', err)
+    });
+  }
+
+  public formatRunElapsed(seconds: number): string {
+    return formatElapsed(seconds);
+  }
+
+  public formatRunTokens(tokens: number | null | undefined): string {
+    return formatCompactTokens(tokens);
+  }
+
+  public runTuningLabel(kind: 'verify' | 'explore', id: string | null | undefined): string {
+    return tuningLabel(kind, id);
   }
 
   public getTaskStatus(session: Session): 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled' {

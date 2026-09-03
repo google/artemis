@@ -93,7 +93,10 @@ def test_recall_and_similarity_defaults():
     assert cfg.memory.recall.enabled is True
     assert cfg.memory.recall.max_results == 5
     assert cfg.memory.recall.max_text_tokens == 2000
-    assert cfg.memory.recall.max_image_steps == 1
+    assert cfg.memory.recall.screen_scan_steps == 150
+    assert not hasattr(cfg.memory.recall, "max_image_steps")
+    assert cfg.memory.replay.max_steps == 5
+    assert cfg.memory.replay.max_tokens == 12000
     assert cfg.memory.transcript.similarity_hint is True
     assert cfg.memory.transcript.similarity_max_distance == 5
     assert cfg.memory.policies == {}
@@ -116,7 +119,8 @@ def test_recall_and_policies_overridable():
     cfg = AgentGlobalConfig.model_validate(
         {
             "memory": {
-                "recall": {"enabled": False, "max_results": 3},
+                "recall": {"enabled": False, "max_results": 3, "screen_scan_steps": 20},
+                "replay": {"max_steps": 2, "max_tokens": 4000},
                 "transcript": {"similarity_hint": False},
                 "policies": {"planner": {"last_n_detailed": 3}},
             }
@@ -124,5 +128,8 @@ def test_recall_and_policies_overridable():
     )
     assert cfg.memory.recall.enabled is False
     assert cfg.memory.recall.max_results == 3
+    assert cfg.memory.recall.screen_scan_steps == 20
+    assert cfg.memory.replay.max_steps == 2
+    assert cfg.memory.replay.max_tokens == 4000
     assert cfg.memory.transcript.similarity_hint is False
     assert cfg.memory.policies == {"planner": {"last_n_detailed": 3}}

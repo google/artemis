@@ -930,15 +930,15 @@ async def get_graph(ctx: ArtemisContext) -> CompiledStateGraph:
         else:
             operator_native_tools.append(t)
 
-    # Get specialized tools for Operator
-    from artemis.tools.history_recall import recall_history_wrapper
+    # Get specialized tools for Operator (history tools: shared definitions)
+    from artemis.tools.history import HISTORY_TOOL_WRAPPERS
 
     operator_specialized_wrappers = [
         ask_diagnoser_wrapper,
         run_adb_command_wrapper,
         manage_task_wrapper,
         ask_explorer_wrapper,
-        recall_history_wrapper,
+        *HISTORY_TOOL_WRAPPERS,
     ]
     # ask_committee does not follow the Operator's pre-decision / turn-ending contract.
 

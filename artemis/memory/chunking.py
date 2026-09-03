@@ -12,58 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""L2/L3 history compression: segment chunks, eras, and the emergency snapshot.
+"""History compression into segment chunks, eras, and a session snapshot.
 
-Implements §3.3 of the history-module redesign (M3). A **HistoryChunk** is a
-*segmented ledger*, never a fused capsule: compression shrinks each step's
-width, never the step count. Every chunk renders as three bands:
+Each chunk keeps three bands: synopsis and effects, interval summaries, and a
+per-step action ledger. Capsule generation reads the operator's turn transcripts
+alongside the recorded step facts. Milestone changes, segment size, and token
+limits determine chunk boundaries.
 
-- **① Synopsis & effects** (LLM, :class:`StepCapsuleLens`): three-question
-  prose (doing / did / effect — the effect must name the notes left behind)
-  plus structured fields (verified_facts / unresolved / failed_paths /
-  important_entities / entry_state / exit_state).
-- **② Compressed step summary** (same LLM call): interval narrative whose
-  union must cover the segment's step range seamlessly (machine-checked; a
-  gap forces regeneration, bounded retries degrade to pending).
-- **③ Per-step action ledger** (mechanical, zero-distortion,
-  :func:`build_action_ledger`): one line per step — step number, ``T+mm:ss``
-  session offset, ``format_actions_clean`` semantic action (a fast-action
-  burst lists every member), controller/validator result phrase (an execution
-  incident renders as the ``Error:`` phrase); user-injected instructions
-  verbatim on their own never-evicted lines.
+Original messages remain in context until their capsule is ready. Failed capsule
+jobs retain their source text for retry. Only the hard token limit forces pending
+chunks into the session snapshot. Older chunks fold into eras and then period
+summaries; full step records remain available through the history tools.
 
-Triggers (:class:`HistoryChunkManager`): milestone switch (sole fact source:
-the *stamped* ``subgoal_hash`` changing between consecutive recorded steps;
-plan-write completions only queue an unconfirmed boundary hint), segment size
-(steps / estimated source tokens), and the measured-token soft threshold.
-The hard threshold collapses the frozen region to the L3 session snapshot
-(chunk headers set-merged; a minimal per-step index survives). Chunk-count
-overflow folds the oldest chunks into eras (① set-merged, ② degraded to
-segment title lines, ③ kept); era overflow compresses the oldest eras into
-the extreme-layer **period paragraph** (§10 decision 5, final user review
-2026-09-01): one header line carrying the step range and start/end session
-offsets plus a mechanically assembled one-paragraph synopsis (from the member
-chunks' band-① fields, no extra LLM call), a ``recall_history`` guidance
-line, and the verbatim never-evict user-injection lines. Step-level
-addressability degrades to *period* addressability at this layer only; the
-full per-step ledger stays recallable from the DataEngine.
-
-Async discipline — **ready-gated swap** (user decision 2026-09-01, revising
-the original M3 freeze-then-harvest form): a boundary/size/soft trigger only
-*closes* a segment and dispatches its capsule; the original messages stay in
-the transcript verbatim (lossless-pending, carried from the image layer to the
-segment layer). The swap — freezing the segment's turns and rendering the
-chunk block — happens at the first render at or after the capsule is ready.
-Rationale: a header-less chunk has no ``verified_facts``, and a model that
-sees "what happened" without "what was established" re-doubts verified facts
-and loops. Degradation ladder: capsule generation failure (bounded retries
-exhausted) keeps the original text and re-dispatches (the lens itself falls
-back to a secondary model per attempt); soft-threshold pressure alone still
-keeps the original text (correctness over tokens); only the hard threshold
-force-swaps everything closed — pending chunks included — into the L3
-snapshot. Checkpoint annotations are independent of the header (they bump the
-DB version immediately) and render in pending blocks too; frozen text still
-only re-renders at swap events, so it stays byte-stable in between.
+Checkpoint annotations persist independently of capsule generation. Frozen
+context is rebuilt only when a capsule or snapshot replaces the source turns.
 """
 
 import asyncio
@@ -82,13 +44,13 @@ from artemis.utils.logger import get_logger
 logger = get_logger(__name__)
 
 #: Recall guidance line rendered under an extreme-layer period paragraph
-#: (an era whose per-step ledger overflowed to recall-only; §3.3).
-RECALL_GUIDANCE_TEMPLATE = "  (Step-level ledger via recall_history for steps {start}–{end})"
+#: (an era whose per-step ledger overflowed to recall-only).
+RECALL_GUIDANCE_TEMPLATE = "  (Step-level ledger via search_history for steps {start}–{end})"
 
 CHUNK_PENDING_NOTE = (
     "①/② capsule pending (background generation); the mechanical"
     " ledger below is complete. Original step records remain recallable"
-    " via recall_history."
+    " via search_history / replay_steps."
 )
 
 _NOTE_TOOLS = ("save_note", "update_note", "append_note")
@@ -216,6 +178,23 @@ def validate_interval_coverage(intervals: Any, start_step: int, end_step: int) -
 _CAPSULE_REQUIRED_KEYS = ("doing", "did", "effect", "intervals")
 _CAPSULE_LIST_KEYS = ("verified_facts", "unresolved", "failed_paths", "important_entities")
 
+#: Coordinate literals belong in the action ledger (band 3), not the
+#: interval summary (band 2).
+_COORDINATE_LITERAL_RE = re.compile(
+    r"\[\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?){0,2}\s*\]"
+)
+
+
+def band2_intervals_carry_coordinates(intervals: Any) -> bool:
+    """True when any band-② interval text contains a coordinate literal."""
+    if not isinstance(intervals, list):
+        return False
+    return any(
+        isinstance(interval, dict)
+        and _COORDINATE_LITERAL_RE.search(str(interval.get("text") or ""))
+        for interval in intervals
+    )
+
 
 def collect_note_keys(payload: dict[str, Any]) -> list[str]:
     """Deduplicated note keys written during the segment (payload order)."""
@@ -236,20 +215,46 @@ def _strip_code_fences(text: str) -> str:
     return match.group(1) if match else text
 
 
-class StepCapsuleLens(StepLens):
-    """Chunk-level lens producing bands ①+② in one call (§5).
+def _visual_summary_marker() -> str:
+    """Header the scrub edge writes above a resolved visual summary.
 
-    The payload carries the segment's per-step visual summaries, exact
-    actions, validator results, reasoning excerpts, notes writes, and
-    injected instructions. The rendered summary string is the JSON capsule;
-    an attempt whose interval union fails the mechanical coverage check
-    returns ``None`` so the bounded service retry regenerates it, and on
-    exhaustion the chunk simply stays pending (③ is independently usable).
+    Imported lazily: ``context_compressor`` imports ``artemis.memory``, so a
+    module-level import here would close an import cycle.
+    """
+    from artemis.agents.flash.context_compressor import HISTORY_SUMMARY_PREFIX
+
+    return HISTORY_SUMMARY_PREFIX.strip()
+
+
+class StepCapsuleLens(StepLens):
+    """Chunk-level lens producing bands ①+② in one call.
+
+    The payload carries the segment turn by turn: for each committed turn
+    the mechanical step lines (step number, session offset, action,
+    controller result, visual transition, notes written, injected
+    instruction) followed by the turn's transcript exactly as the operator
+    saw it (:func:`artemis.memory.transcript.render_turn_transcript`). The
+    flat ``steps`` list is kept beside ``turns`` for the machine checks and
+    as the rendering fallback when a segment carries no transcript (e.g. a
+    chunk built without a live ledger). The rendered summary string is the
+    JSON capsule; an attempt whose interval union fails the mechanical
+    coverage check returns ``None`` so the bounded service retry regenerates
+    it, and on exhaustion the chunk simply stays pending (③ is independently
+    usable).
     """
 
     name = "step_capsule"
 
     _PROMPT_PATH = Path(__file__).parent / "step_capsule.md"
+
+    #: Per-turn transcript cap inside one capsule request — a runaway tool
+    #: result must not sink the whole segment. The ledger and the DataEngine
+    #: keep the full text; the cut is announced in place.
+    MAX_TURN_TRANSCRIPT_CHARS = 16000
+
+    #: Tail of a capped transcript kept intact (the validator result closes
+    #: every turn); bounded to a quarter of the cap.
+    TRANSCRIPT_TAIL_KEEP_CHARS = 2000
 
     def __init__(
         self,
@@ -316,26 +321,100 @@ class StepCapsuleLens(StepLens):
             header.append(f"MILESTONE: {label}")
 
         blocks: list[str] = ["\n".join(header)]
-        for step in payload.get("steps", []):
-            part = [
-                f"## Step {step.get('step_number')} ({step.get('offset')})",
-                f"Action: {step.get('action')}",
-                f"Recorded result: {step.get('outcome')}",
-            ]
-            if step.get("visual_summary"):
-                part.append(f"Visual transition: {step['visual_summary']}")
-            if step.get("thinking_excerpt"):
-                part.append(f"Reasoning excerpt: {step['thinking_excerpt']}")
-            for write in step.get("note_writes", []):
-                part.append(f"Note written ({write['tool']} -> {write['key']}): {write['gist']}")
-            if step.get("injected_instruction"):
-                part.append(f'User injected instruction: "{step["injected_instruction"]}"')
-            blocks.append("\n".join(part))
+        turns = payload.get("turns")
+        if turns:
+            for turn in turns:
+                blocks.append(self._render_turn_block(turn))
+        else:
+            for step in payload.get("steps", []):
+                blocks.append(self._render_step_block(step))
 
         return [
             SystemMessage(content=self._prompt),
             HumanMessage(content="\n\n".join(blocks)),
         ]
+
+    @staticmethod
+    def _step_record_lines(step: dict[str, Any], *, include_visual: bool = True) -> list[str]:
+        """Mechanical facts of one step (the same facts band ③ is built from).
+
+        ``include_visual=False`` skips the visual transition line when the
+        turn transcript already carries the resolved summary verbatim.
+        """
+        lines = [
+            f"- Step {step.get('step_number')} ({step.get('offset')}):"
+            f" {step.get('action')} -> {step.get('outcome')}"
+        ]
+        if include_visual and step.get("visual_summary"):
+            lines.append(f"  Visual transition: {step['visual_summary']}")
+        for write in step.get("note_writes") or []:
+            lines.append(f"  Note written ({write['tool']} -> {write['key']}): {write['gist']}")
+        if step.get("injected_instruction"):
+            lines.append(f'  User injected instruction: "{step["injected_instruction"]}"')
+        return lines
+
+    @classmethod
+    def _render_turn_block(cls, turn: dict[str, Any]) -> str:
+        """One committed turn: its recorded step lines, then the transcript the
+        operator saw during that turn (verbatim, capped in place)."""
+        steps = turn.get("steps") or []
+        if not steps:
+            header = "## Turn without a recorded step"
+        elif len(steps) == 1:
+            header = f"## Step {steps[0].get('step_number')} ({steps[0].get('offset')})"
+        else:
+            header = (
+                f"## Steps {steps[0].get('step_number')}–{steps[-1].get('step_number')}"
+                f" ({steps[0].get('offset')} → {steps[-1].get('offset')})"
+            )
+        lines = [header]
+        transcript = str(turn.get("transcript") or "").strip()
+        # The resolved visual summary is already verbatim in the transcript
+        # unless the screenshot was still inside the pending-grace window.
+        include_visual = not transcript or _visual_summary_marker() not in transcript
+        if steps:
+            lines.append("Recorded steps:")
+            for step in steps:
+                lines.extend(cls._step_record_lines(step, include_visual=include_visual))
+        if transcript:
+            lines.append("Transcript as seen by the operator during this turn:")
+            lines.append(cls._cap_transcript(transcript))
+        else:
+            for step in steps:
+                if step.get("thinking_excerpt"):
+                    lines.append(
+                        f"Reasoning excerpt (Step {step.get('step_number')}):"
+                        f" {step['thinking_excerpt']}"
+                    )
+        return "\n".join(lines)
+
+    @classmethod
+    def _cap_transcript(cls, transcript: str) -> str:
+        """Cap one turn transcript in place, keeping its head and its tail.
+
+        The tail is kept intact because the validator result message closes
+        every turn and outranks everything above it (fact priority); the cut
+        lands in the middle and is announced with its size.
+        """
+        cap = cls.MAX_TURN_TRANSCRIPT_CHARS
+        if len(transcript) <= cap:
+            return transcript
+        tail_keep = min(cls.TRANSCRIPT_TAIL_KEEP_CHARS, cap // 4)
+        head, tail = transcript[: cap - tail_keep], transcript[-tail_keep:]
+        cut = len(transcript) - len(head) - len(tail)
+        return (
+            f"{head}\n[… {cut} characters cut here; the full step records remain"
+            f" recallable via replay_steps …]\n{tail}"
+        )
+
+    @classmethod
+    def _render_step_block(cls, step: dict[str, Any]) -> str:
+        """Fallback rendering for a payload without turn transcripts."""
+        lines = [f"## Step {step.get('step_number')} ({step.get('offset')})"]
+        lines.extend(cls._step_record_lines(step))
+        if step.get("thinking_excerpt"):
+            lines.append(f"Reasoning excerpt: {step['thinking_excerpt']}")
+        return "\n".join(lines)
 
     def parse_capsule(self, text: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         """Parse + machine-check one capsule; None on any violation."""
@@ -361,9 +440,16 @@ class StepCapsuleLens(StepLens):
                 f" {payload['start_step']}–{payload['end_step']}; regenerating."
             )
             return None
-        # Notes linkage is a machine check, same rank as ② coverage (user
-        # decision 2026-09-01): every note key written during the segment must
-        # surface in the band-① text, or the capsule regenerates.
+        # Band ② must not restate band ③: a coordinate literal in an interval
+        # text is the ledger written twice, and it fails the attempt the same
+        # way a coverage gap does.
+        if band2_intervals_carry_coordinates(parsed.get("intervals")):
+            logger.warning(
+                "StepCapsuleLens: band ② interval text carries coordinates for Steps"
+                f" {payload['start_step']}–{payload['end_step']}; regenerating."
+            )
+            return None
+        # Regenerate the capsule if band 1 omits any note key written in the segment.
         note_keys = collect_note_keys(payload)
         if note_keys:
             searchable = " ".join(
@@ -427,7 +513,14 @@ class StepCapsuleLens(StepLens):
         parsed = self.parse_capsule(str(content), payload)
         if parsed is None:
             return None
-        return json.dumps(parsed, ensure_ascii=False)
+        capsule = json.dumps(parsed, ensure_ascii=False)
+        # Measure the capsule size against the transcript it replaces.
+        source_chars = len(str(messages[-1].content))
+        logger.info(
+            f"Chunk capsule {key}: source {source_chars} chars -> capsule"
+            f" {len(capsule)} chars ({len(capsule) / max(1, source_chars):.0%})."
+        )
+        return capsule
 
 
 class ChunkCapsuleService(StepMemoryService):
@@ -435,6 +528,15 @@ class ChunkCapsuleService(StepMemoryService):
 
     def __init__(self, ctx: Any, lens: StepCapsuleLens, **kwargs):
         super().__init__(ctx, lens=lens, **kwargs)
+
+    def _on_ready(self, key: JobKey, summary: str) -> None:
+        # The turn transcripts only serve generation. A ready capsule is never
+        # regenerated (only failed ones are re-dispatched), so release the
+        # bulk of the payload instead of holding every segment's source text
+        # for the rest of the session.
+        payload = self._step_inputs.get(key)
+        if payload:
+            payload.pop("turns", None)
 
     @property
     def lens(self) -> StepCapsuleLens:
@@ -533,7 +635,7 @@ def _render_annotations(chunk: ChunkState) -> list[str]:
 
 
 def render_chunk_block(chunk: ChunkState) -> str:
-    """Full three-band chunk block, strictly in §3.3 order (① → ② → ③)."""
+    """Full three-band chunk block, in order (① → ② → ③)."""
     milestone = f' | Milestone "{chunk.milestone_label}"' if chunk.milestone_label else ""
     header = (
         f"[Chunk {chunk.ordinal}{milestone} | {chunk.step_range_label}"
@@ -582,7 +684,7 @@ def _first_sentence(text: str) -> str:
 
 
 def render_era_period_paragraph(era: EraState) -> str:
-    """One-paragraph period synopsis for a recall-only era (§3.3 extreme layer).
+    """One-paragraph period synopsis for a recall-only era.
 
     Mechanically assembled from the member chunks' band-① fields — never an
     extra LLM call: the first non-empty ``doing``, each chunk's first ``did``
@@ -638,11 +740,8 @@ def render_era_period_paragraph(era: EraState) -> str:
 def render_era_block(era: EraState) -> str:
     """Era block: ① merged headers, ② degraded to titles, ③ per-chunk ledgers.
 
-    A recall-only era instead renders as the extreme-layer *period paragraph*
-    (§10 decision 5, final review 2026-09-01): step range + start/end session
-    offsets in the header (period addressability — the coarse foreign key for
-    video alignment), a mechanically assembled synopsis, the recall guidance
-    line, and the verbatim never-evict user-injection lines.
+    A recall-only era includes the step range and session offsets for video
+    alignment, a synopsis, recall guidance, and preserved user instructions.
     """
     if era.recall_only:
         lines = [
@@ -706,7 +805,7 @@ def render_l3_snapshot(
 
     The chunk headers are mechanically set-merged (no summary-of-summary); the
     per-step skeleton survives at minimal width so step-level time perception
-    never breaks (§3.3 L3).
+    never breaks.
     """
     all_chunks = [c for era in eras for c in era.chunks] + list(chunks)
     merged = merge_structured_fields([c.band1 for c in all_chunks if c.band1])
@@ -771,7 +870,7 @@ class HistoryChunkManager:
         self._target_source_tokens = int(getattr(cc, "target_source_tokens", 2000) or 2000)
         self._model_name = getattr(cc, "model", None) or "gemini-3.8-flash"
         self._max_chunks = int(getattr(cc, "max_chunks", 8) or 8)
-        # Independent era cap (M5): None follows max_chunks (pre-M5 behavior).
+        # None uses max_chunks as the era cap.
         self._max_eras = int(getattr(cc, "max_eras", None) or self._max_chunks)
 
         tc = transcript_config
@@ -874,7 +973,7 @@ class HistoryChunkManager:
         """A plan write completed a top-level milestone: queue an *unconfirmed*
         boundary. Only the next stamped step confirms it (a hash change); a
         stamp without a hash change (e.g. the write was vetoed and rolled
-        back) discards the hint — pseudo-switch protection (§3.3)."""
+        back) discards the hint — pseudo-switch protection."""
         self._boundary_hint_pending = True
 
     def on_step_stamped(self, step_id: str, subgoal_hash: str | None) -> None:
@@ -980,7 +1079,7 @@ class HistoryChunkManager:
         # Milestone trigger: a *complete* closed segment — one that ended (a
         # later segment follows, or its hash differs from the current stamp)
         # and has fully aged past the sliding-window floor — closes whole
-        # (§3.3: the previous segment becomes ONE HistoryChunk; the floor only
+        # (the previous segment becomes one HistoryChunk; the floor only
         # delays the event, it never splits the segment). The trailing segment
         # is subject to the size/soft triggers over its eligible portion only.
         selected: list[tuple[str | None, list[dict]]] = []
@@ -1026,7 +1125,7 @@ class HistoryChunkManager:
         steps_by_id = self._load_steps_by_id()
         for seg_hash, seg_turns in selected:
             for slice_turns in self._slices(seg_turns):
-                chunk = self._create_chunk(slice_turns, seg_hash, steps_by_id)
+                chunk = self._create_chunk(slice_turns, seg_hash, steps_by_id, ledger)
                 self._awaiting.append({"chunk": chunk, "turns": list(slice_turns)})
         logger.info(
             f"History segments closed (ready-gated): {len(self._awaiting)} awaiting"
@@ -1154,15 +1253,29 @@ class HistoryChunkManager:
         slice_turns: list[dict],
         seg_hash: str | None,
         steps_by_id: dict[str, dict],
+        ledger: Any = None,
     ) -> ChunkState | None:
         # A turn carries every step id it recorded (``step_keys``, Flash
-        # multi-action turns); older ledgers only expose ``step_key``.
+        # multi-action turns); older ledgers only expose ``step_key``. Each
+        # turn's post-scrub transcript (what the operator saw) rides along
+        # into the capsule payload when a live ledger is available.
         step_keys: list[str] = []
+        turn_records: list[dict[str, Any]] = []
         for turn in slice_turns:
             keys = turn.get("step_keys") or ([turn.get("step_key")] if turn.get("step_key") else [])
+            turn_keys: list[str] = []
             for key in keys:
                 if key and str(key) not in step_keys:
                     step_keys.append(str(key))
+                if key and str(key) in steps_by_id and str(key) not in turn_keys:
+                    turn_keys.append(str(key))
+            transcript = None
+            if ledger is not None:
+                try:
+                    transcript = ledger.turn_transcript(turn)
+                except Exception as e:
+                    logger.warning(f"Turn transcript unavailable for chunk capsule: {e}")
+            turn_records.append({"step_ids": turn_keys, "transcript": transcript})
         steps = [steps_by_id[k] for k in step_keys if k in steps_by_id]
         steps.sort(key=lambda s: s.get("step_number") or 0)
         if not steps:
@@ -1194,28 +1307,42 @@ class HistoryChunkManager:
         # enters self._chunks (and the frozen region) once its capsule is
         # ready, or through the hard-threshold emergency swap.
         self._persist(chunk)
-        self._dispatch_capsule(chunk, steps, session_start)
+        self._dispatch_capsule(chunk, steps, session_start, turn_records)
         return chunk
 
+    @staticmethod
+    def _step_payload(step: dict, session_start: float | None) -> dict[str, Any]:
+        """Mechanical per-step facts handed to the capsule lens."""
+        return {
+            "step_number": step.get("step_number"),
+            "offset": step_offset_label(step, session_start),
+            "action": _action_phrase(step),
+            "outcome": _result_phrase(step.get("last_execution_result")),
+            "visual_summary": step.get("summary"),
+            # Fallback only: rendered when a turn carries no transcript.
+            "thinking_excerpt": (step.get("operator_raw_thinking") or "")[:1200] or None,
+            "note_writes": extract_note_writes(step),
+            "injected_instruction": (step.get("extra_metadata") or {}).get("injected_instruction"),
+        }
+
     def _dispatch_capsule(
-        self, chunk: ChunkState, steps: list[dict], session_start: float | None
+        self,
+        chunk: ChunkState,
+        steps: list[dict],
+        session_start: float | None,
+        turn_records: list[dict[str, Any]] | None = None,
     ) -> None:
-        payload_steps = []
-        for step in steps:
-            payload_steps.append(
-                {
-                    "step_number": step.get("step_number"),
-                    "offset": step_offset_label(step, session_start),
-                    "action": _action_phrase(step),
-                    "outcome": _result_phrase(step.get("last_execution_result")),
-                    "visual_summary": step.get("summary"),
-                    "thinking_excerpt": (step.get("operator_raw_thinking") or "")[:1200] or None,
-                    "note_writes": extract_note_writes(step),
-                    "injected_instruction": (step.get("extra_metadata") or {}).get(
-                        "injected_instruction"
-                    ),
-                }
-            )
+        """Submit the capsule job: flat step facts plus, per committed turn,
+        the transcript the operator saw (the text this chunk will replace)."""
+        payload_steps = [self._step_payload(step, session_start) for step in steps]
+        by_id = {str(step.get("step_id")): entry for step, entry in zip(steps, payload_steps)}
+        payload_turns: list[dict[str, Any]] = []
+        for record in turn_records or []:
+            turn_steps = [by_id[k] for k in record.get("step_ids") or [] if k in by_id]
+            transcript = record.get("transcript")
+            if not turn_steps and not transcript:
+                continue
+            payload_turns.append({"steps": turn_steps, "transcript": transcript})
         payload = {
             "start_step": chunk.start_step_number,
             "end_step": chunk.end_step_number,
@@ -1223,6 +1350,8 @@ class HistoryChunkManager:
             "milestone_label": chunk.milestone_label,
             "steps": payload_steps,
         }
+        if any(t.get("transcript") for t in payload_turns):
+            payload["turns"] = payload_turns
         try:
             self._capsule_service.submit(chunk.capsule_key, payload)
         except Exception as e:

@@ -57,6 +57,28 @@ export interface AgentStatusResponse {
   paused_error?: string | null;
 }
 
+/** Per-run Pro tuning persisted with the session (`device_info.run_tuning`). */
+export interface SessionRunTuning {
+  verification_level?: string | null;
+  explorer_mode?: string | null;
+}
+
+/** `GET /api/sessions/{id}/usage`: session-wide LLM usage and the live executor context. */
+export interface SessionUsage {
+  session_id: string;
+  llm_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;
+  /** Prompt size of the latest Operator / Flash runner call; null before the first call. */
+  operator_context_tokens: number | null;
+  operator_context_window_tokens: number;
+  operator_context_updated_at?: number | null;
+  profile?: string | null;
+  run_tuning?: SessionRunTuning | null;
+}
+
 export type AgentStatus = 'idle' | 'running' | 'completed' | 'offline' | string;
 
 export type TaskStatus = 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled';

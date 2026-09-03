@@ -1,7 +1,7 @@
 """Helper-tool routing in McpActionExecutor (Flash profile).
 
-The Flash runner binds ``ask_explorer``, ``video_analyzer`` and
-``recall_history`` declarations next to its device actions; the executor must
+The Flash runner binds ``ask_explorer``, ``video_analyzer`` and the history
+tools (``search_history`` / ``replay_steps`` / ``get_step_screenshot``) next to its device actions; the executor must
 route them to the same implementations the Pro operator's LangChain tools
 delegate to, as agent-side text tools (no screenshot capture, no device
 action), and report their status explicitly instead of sniffing the text for
@@ -38,7 +38,13 @@ def _state():
 
 def test_helper_tools_are_not_device_actions():
     executor = _make_executor()
-    assert {"ask_explorer", "video_analyzer", "recall_history"} <= AGENT_TOOL_NAMES
+    assert {
+        "ask_explorer",
+        "video_analyzer",
+        "search_history",
+        "replay_steps",
+        "get_step_screenshot",
+    } <= AGENT_TOOL_NAMES
     assert not (AGENT_TOOL_NAMES & executor.action_tool_names)
 
 
@@ -231,22 +237,32 @@ async def test_video_analyzer_exception_is_contained():
 
 
 # ---------------------------------------------------------------------------
-# recall_history
+# history tools (search_history / replay_steps / get_step_screenshot)
 # ---------------------------------------------------------------------------
 
 
+def _history_tool_double(return_value=None, side_effect=None):
+    from artemis.tools.history import SearchHistoryArgs
+
+    tool = Mock()
+    tool.args_schema = SearchHistoryArgs
+    tool.execute = AsyncMock(return_value=return_value, side_effect=side_effect)
+    return tool
+
+
 @pytest.mark.asyncio
-async def test_recall_history_routes_to_the_shared_tool_with_text_result():
+async def test_history_tool_routes_to_the_shared_tool_with_text_result():
     executor = _make_executor()
-    with patch("artemis.tools.history_recall.recall_history") as tool:
-        tool.execute = AsyncMock(return_value="- Step 3 (T+00:30): tap btn3 -> executed")
+    tool = _history_tool_double(return_value="- Step 3 (T+00:30): tap btn3 -> executed")
+    with patch("artemis.mcp.action_executor.history_tool_by_name", return_value=tool) as by_name:
         result = await executor.execute(
-            "recall_history",
+            "search_history",
             {"query": "login Error timeout", "step_range": [1, 5], "unknown_arg": 1},
-            "tc-recall",
+            "tc-search",
             None,
         )
 
+    by_name.assert_called_once_with("search_history")
     tool.execute.assert_awaited_once_with(
         ctx=executor.ctx, query="login Error timeout", step_range=[1, 5]
     )
@@ -257,27 +273,40 @@ async def test_recall_history_routes_to_the_shared_tool_with_text_result():
 
 
 @pytest.mark.asyncio
-async def test_recall_history_forwards_multimodal_blocks():
+async def test_history_tool_forwards_multimodal_blocks():
     executor = _make_executor()
     blocks = [
-        {"type": "text", "text": "Step 4 matched."},
+        {"type": "text", "text": "Screenshot of step 4 (pre-action) is attached."},
         {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAA"}},
     ]
-    with patch("artemis.tools.history_recall.recall_history") as tool:
-        tool.execute = AsyncMock(return_value=blocks)
-        result = await executor.execute(
-            "recall_history", {"query": "settings", "include_images": True}, "tc", None
-        )
+    tool = _history_tool_double(return_value=blocks)
+    with patch("artemis.mcp.action_executor.history_tool_by_name", return_value=tool):
+        result = await executor.execute("get_step_screenshot", {"query": "unused"}, "tc", None)
     assert result.status == "success"
-    assert result.text_summary == "Step 4 matched."
+    assert result.text_summary == "Screenshot of step 4 (pre-action) is attached."
     assert result.raw_result == blocks
 
 
 @pytest.mark.asyncio
-async def test_recall_history_exception_is_contained():
+async def test_history_tool_exception_is_contained():
     executor = _make_executor()
-    with patch("artemis.tools.history_recall.recall_history") as tool:
-        tool.execute = AsyncMock(side_effect=RuntimeError("db gone"))
-        result = await executor.execute("recall_history", {"query": "x"}, "tc", None)
+    tool = _history_tool_double(side_effect=RuntimeError("db gone"))
+    with patch("artemis.mcp.action_executor.history_tool_by_name", return_value=tool):
+        result = await executor.execute("replay_steps", {"query": "x"}, "tc", None)
     assert result.status == "success"  # contained: the answer explains the failure
-    assert result.text_summary == "recall_history failed: db gone"
+    assert result.text_summary == "replay_steps failed: db gone"
+
+
+@pytest.mark.asyncio
+async def test_history_tools_dispatch_to_the_real_shared_instances():
+    """No per-tool branch: every history tool name resolves through the package."""
+    executor = _make_executor()  # ctx.data_engine is None -> tools degrade to text
+    for name in ("search_history", "replay_steps", "get_step_screenshot"):
+        result = await executor.execute(
+            name, {"query": "x", "start_step": 1, "step_number": 1}, "tc", None
+        )
+        assert result.status == "success"
+        assert (
+            "no active execution history" in result.text_summary
+            or "no execution history" in result.text_summary
+        )

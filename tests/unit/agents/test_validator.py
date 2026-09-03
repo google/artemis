@@ -28,6 +28,13 @@ from langchain_core.messages import AIMessage
 import pytest
 
 from artemis.agents.validator.categories import ValidationErrorCategory
+from artemis.agents.validator.execution_loop import BURST_SKIPPED_MARKER
+from artemis.agents.validator.precondition_xml import (
+    XML_STRONG_MIN_ELEMENTS,
+    XML_VERDICT_STRONG,
+    XML_VERDICT_WEAK,
+    classify_xml_verdict,
+)
 from artemis.agents.validator.validator import ValidatorNode
 from artemis.context import ArtemisContext
 from artemis.mcp.action_types import ActionCode, ActionResult
@@ -107,6 +114,28 @@ def temp_screenshot(tmp_path):
     return str(p)
 
 
+def _unrelated_hierarchy(count: int) -> list[dict]:
+    """``count`` labelled rows far below the target region (nothing matches it)."""
+    return [
+        {
+            "text": f"Item {i}",
+            "resource-id": f"row_{i}",
+            "bounds": f"[0,{1000 + i * 100}][1080,{1080 + i * 100}]",
+            "clickable": "true",
+        }
+        for i in range(count)
+    ]
+
+
+_LOGIN_TAP = {
+    "action": "tap",
+    "coordinates": [200, 250],
+    "target_text": "Login",
+    "target_bounds": [100, 200, 300, 300],
+    "target_resource_id": "btn_login",
+}
+
+
 @pytest.fixture
 def mock_mcp():
     fake = FakeActionSession()
@@ -175,17 +204,20 @@ async def test_validator_exec_error_opens_incident(mock_mcp, mock_context, temp_
     assert incident["reason"] == "Error: Element not found"
     assert incident["consecutive_failures"] == 1
     assert incident["burst_size"] == 1
-    assert incident["action_description"] == "Tapped element at [105, 205]"
+    # The Operator reads the incident: the pixel target [105, 205] is rendered
+    # in its own 0-1000 space (1080x2400 frame).
+    assert incident["action_description"] == "Tapped element at [97, 85]"
     # The same record rides in graph state for the Operator prompt.
     assert result["open_incident"] == incident
 
 
 @pytest.mark.asyncio
-async def test_validator_burst_skips_safety_net_and_aborts_on_first_failure(
+async def test_validator_burst_vets_first_member_only_and_aborts_on_first_failure(
     mock_mcp, mock_context, temp_screenshot
 ):
-    """Two or more actions form a fast-action burst: no precondition gate, a
-    single dispatch per member, and the first failure aborts the rest."""
+    """Two or more actions form a fast-action burst: the precondition gate runs
+    for the first member only, every member is dispatched once, and the first
+    failure aborts the rest."""
     calls = []
 
     def handler(name, args):
@@ -213,9 +245,12 @@ async def test_validator_burst_skips_safety_net_and_aborts_on_first_failure(
         ) as mock_gate,
         patch("artemis.utils.image_diff.check_ui_change", return_value=False),
     ):
+        mock_gate.return_value = (True, ValidationErrorCategory.NONE, "")
         result = await node(state)
 
-    mock_gate.assert_not_called()
+    # Only the first member (decided on the still-live screen) is vetted.
+    mock_gate.assert_called_once()
+    assert mock_gate.call_args.args[2]["coordinates"] == [105, 205]
 
     report = result["last_execution_result"]
     assert report["burst"] is True
@@ -234,6 +269,42 @@ async def test_validator_burst_skips_safety_net_and_aborts_on_first_failure(
     assert incident["kind"] == "exec_error"
     assert incident["action_index"] == 1
     assert incident["burst_size"] == 3
+    assert result["open_incident"] == incident
+
+
+@pytest.mark.asyncio
+async def test_validator_burst_first_member_blocked_aborts_whole_burst(
+    mock_mcp, mock_context, temp_screenshot
+):
+    """A refused first member opens a safety-net incident and skips the rest
+    of the burst; nothing is dispatched to the device."""
+    mock_mcp.hierarchy = _unrelated_hierarchy(XML_STRONG_MIN_ELEMENTS + 2)
+    decisions = json.dumps([dict(_LOGIN_TAP), {"action": "press_key", "keycode": "ENTER"}])
+    state = DummyState(structured_decisions=decisions, latest_screenshot=temp_screenshot)
+
+    node = ValidatorNode(mock_context)
+    with (
+        patch("artemis.utils.image_diff.check_ui_change", return_value=False),
+        patch.object(
+            ValidatorNode, "_validate_action_precondition_pixel", new_callable=AsyncMock
+        ) as mock_pixel,
+    ):
+        result = await node(state)
+
+    report = result["last_execution_result"]
+    assert report["burst"] is True
+    assert report["status"] == "failed"
+    assert report["execution"][0]["attempts"][0].startswith("Pre-execution validation failed")
+    assert report["execution"][1]["attempts"] == [BURST_SKIPPED_MARKER]
+    assert mock_mcp.calls_for("click") == []
+    assert mock_mcp.calls_for("press_key") == []
+    mock_pixel.assert_not_called()
+
+    incident = report["incident"]
+    assert incident["kind"] == "safety_net"
+    assert incident["category"] == ValidationErrorCategory.TARGET_DISAPPEARED.value
+    assert incident["action_index"] == 0
+    assert incident["burst_size"] == 2
     assert result["open_incident"] == incident
 
 
@@ -570,6 +641,126 @@ async def test_validator_pre_execution_validation_anonymous_occupant(
         "occupied/intercepted by a different element: interactive anonymous element"
         in incident["reason"]
     )
+
+
+def test_classify_xml_verdict_grades_strength():
+    strong, why = classify_xml_verdict(XML_STRONG_MIN_ELEMENTS, "Login", None)
+    assert (strong, why) == (XML_VERDICT_STRONG, "")
+    assert classify_xml_verdict(XML_STRONG_MIN_ELEMENTS, None, "btn_login")[0] == XML_VERDICT_STRONG
+
+    weak, why = classify_xml_verdict(XML_STRONG_MIN_ELEMENTS - 1, "Login", "btn_login")
+    assert weak == XML_VERDICT_WEAK and "sparse hierarchy" in why
+
+    weak, why = classify_xml_verdict(XML_STRONG_MIN_ELEMENTS, None, None)
+    assert weak == XML_VERDICT_WEAK and "no resource-id/text" in why
+
+
+@pytest.mark.asyncio
+async def test_validator_strong_xml_missing_verdict_is_final_without_pixel_judge(
+    mock_mcp, mock_context, temp_screenshot
+):
+    """A strong XML verdict blocks the action without consulting the pixel judge."""
+    mock_mcp.hierarchy = _unrelated_hierarchy(XML_STRONG_MIN_ELEMENTS + 2)
+    state = DummyState(
+        structured_decisions=json.dumps([dict(_LOGIN_TAP)]), latest_screenshot=temp_screenshot
+    )
+    node = ValidatorNode(mock_context)
+
+    with (
+        patch("artemis.utils.image_diff.check_ui_change", return_value=True),
+        patch.object(
+            ValidatorNode, "_validate_action_precondition_pixel", new_callable=AsyncMock
+        ) as mock_pixel,
+    ):
+        # A positive pixel verdict must not override strong XML evidence.
+        mock_pixel.return_value = (True, ValidationErrorCategory.NONE, "")
+        result = await node(state)
+
+    mock_pixel.assert_not_called()
+    assert mock_mcp.calls_for("click") == []
+
+    incident = result["last_execution_result"]["incident"]
+    assert incident["kind"] == "safety_net"
+    assert incident["category"] == ValidationErrorCategory.TARGET_DISAPPEARED.value
+    assert "was not found on the screen" in incident["reason"]
+    assert "pixel judge not consulted" in incident["reason"]
+    assert incident["evidence"]["xml_verdict"] == XML_VERDICT_STRONG
+    assert incident["evidence"]["xml_element_count"] == XML_STRONG_MIN_ELEMENTS + 2
+    assert incident["evidence"]["pixel_judge"] == "not consulted (strong XML verdict)"
+    # The clause also rides in the action record the traces keep.
+    assert (
+        "pixel judge not consulted"
+        in result["last_execution_result"]["execution"][0]["attempts"][0]
+    )
+
+
+@pytest.mark.asyncio
+async def test_validator_weak_xml_sparse_tree_lets_pixel_judge_allow(
+    mock_mcp, mock_context, temp_screenshot
+):
+    """A sparse hierarchy (WebView/game-like) cannot vouch for a missing target;
+    the pixel judge decides, and a confident "present" lets the action run."""
+    mock_mcp.hierarchy = _unrelated_hierarchy(2)
+    state = DummyState(
+        structured_decisions=json.dumps([dict(_LOGIN_TAP)]), latest_screenshot=temp_screenshot
+    )
+    node = ValidatorNode(mock_context)
+
+    with (
+        patch("artemis.utils.image_diff.check_ui_change", return_value=True),
+        patch.object(
+            ValidatorNode, "_validate_action_precondition_pixel", new_callable=AsyncMock
+        ) as mock_pixel,
+    ):
+        mock_pixel.return_value = (True, ValidationErrorCategory.NONE, "")
+        result = await node(state)
+
+    mock_pixel.assert_called_once()
+    report = result["last_execution_result"]
+    assert report["status"] == "success"
+    assert report["incident"] is None
+    assert len(mock_mcp.calls_for("click")) == 1
+    assert "safety_net_evidence" not in report["execution"][0]
+
+
+@pytest.mark.asyncio
+async def test_validator_weak_xml_identifierless_target_pixel_judge_blocks(
+    mock_mcp, mock_context, temp_screenshot
+):
+    """Bare bounds from a hit test carry no identifiers to search for, so the
+    XML "missing" is weak; the pixel judge is consulted and its refusal is
+    recorded next to the XML verdict."""
+    mock_mcp.hierarchy = _unrelated_hierarchy(XML_STRONG_MIN_ELEMENTS + 2)
+    item = {
+        "action": "tap",
+        "coordinates": [200, 250],
+        "target_class": "android.widget.ImageView",
+        "target_bounds": [100, 200, 300, 300],
+        "target_label_source": "hit_test",
+    }
+    state = DummyState(structured_decisions=json.dumps([item]), latest_screenshot=temp_screenshot)
+    node = ValidatorNode(mock_context)
+
+    with (
+        patch("artemis.utils.image_diff.check_ui_change", return_value=True),
+        patch.object(
+            ValidatorNode, "_validate_action_precondition_pixel", new_callable=AsyncMock
+        ) as mock_pixel,
+    ):
+        mock_pixel.return_value = (
+            False,
+            ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED,
+            "Pixel check failed",
+        )
+        result = await node(state)
+
+    mock_pixel.assert_called_once()
+    incident = result["last_execution_result"]["incident"]
+    assert incident["category"] == ValidationErrorCategory.TARGET_DISAPPEARED.value
+    assert "XML evidence weak (target had no resource-id/text" in incident["reason"]
+    assert "pixel judge did not confirm the target" in incident["reason"]
+    assert incident["evidence"]["xml_verdict"] == XML_VERDICT_WEAK
+    assert incident["evidence"]["pixel_judge"].startswith("consulted (weak XML verdict)")
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { StepBlock, PhaseBlock, StepEvent, StreamSegment, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE } from '../core/models/stream.model';
+import { StepBlock, PhaseBlock, StepEvent, StreamSegment, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream } from '../core/models/stream.model';
 import { isAndroidAction, isReportStatusAction, getReportStatusExplanation, getReportStatusValue, getActionObject } from './action-formatter.util';
 import { getUniqueGenericTools, isInternalPlumbingTool } from './tool-formatter.util';
 
@@ -50,6 +50,76 @@ function findRunningCheckerBlock(blocks: StepBlock[]): number {
     if (blocks[i].type === 'checker' && blocks[i].data?.isCompleted === false) return i;
   }
   return -1;
+}
+
+/**
+ * Rebuild the live `StreamSegment` list of a Checker attempt from its
+ * persisted transcript, so a reopened session renders the same interleaved
+ * Thought/Work segments as the live stream did.
+ */
+export function persistedStreamToSegments(record: PersistedCheckerStream | null | undefined): StreamSegment[] {
+  if (!record || !Array.isArray(record.segments)) return [];
+  const segments: StreamSegment[] = [];
+  for (const seg of record.segments) {
+    if (!seg || typeof seg.text !== 'string' || !seg.text) continue;
+    const when = typeof seg.when === 'number' && seg.when > 0 ? seg.when : (record.ts || 0);
+    segments.push({
+      execution_id: String(seg.execution_id || ''),
+      stream_type: seg.role === 'thought' ? 'thinking' : 'text',
+      text: seg.text,
+      timestamp: new Date(when * 1000).toISOString(),
+      isCompleted: true
+    });
+  }
+  return segments;
+}
+
+function segmentKey(segment: StreamSegment): string {
+  return `${segment.execution_id}|${segment.stream_type}`;
+}
+
+/**
+ * Merge persisted segments into the ones a block already holds. Live chunks
+ * (complete by the time the transcript exists) win over the backfill copy of
+ * the same turn; turns only the transcript knows are added, then everything
+ * is kept in first-chunk order.
+ */
+function mergeStreamSegments(existing: any, incoming: any): StreamSegment[] | undefined {
+  const base: StreamSegment[] = Array.isArray(existing) ? [...existing] : [];
+  const extra: StreamSegment[] = Array.isArray(incoming) ? incoming : [];
+  if (extra.length === 0) return base.length > 0 ? base : undefined;
+  const seen = new Set(base.map(segmentKey));
+  let added = false;
+  for (const segment of extra) {
+    const key = segmentKey(segment);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    base.push(segment);
+    added = true;
+  }
+  if (added) {
+    base.sort((a, b) => getItemTimestamp(a.timestamp, 0) - getItemTimestamp(b.timestamp, 0));
+  }
+  return base;
+}
+
+/**
+ * Keep the flat `operator_*_thinking` fields (joined text + first-seen time)
+ * in step with the segment list for consumers that only know steps.
+ */
+function applyFlatStreamFields(data: any, segments: StreamSegment[]): void {
+  const of = (type: string) => segments.filter((s) => s.stream_type === type && s.text.trim());
+  const joined = (type: string) => of(type).map((s) => s.text).join('\n\n');
+  data.operator_native_thinking = joined('thinking');
+  data.operator_raw_thinking = joined('text');
+  const firstThinking = of('thinking')[0];
+  const firstText = of('text')[0];
+  if (firstThinking && !data.operator_native_thinking_timestamp) {
+    data.operator_native_thinking_timestamp = firstThinking.timestamp;
+  }
+  if (firstText && !data.operator_raw_thinking_timestamp) {
+    data.operator_raw_thinking_timestamp = firstText.timestamp;
+  }
 }
 
 /**
@@ -106,7 +176,10 @@ function applyCheckerLog(blocks: StepBlock[], log: any): void {
     const items = existing?.data?.items?.length
       ? existing.data.items
       : verdicts.map((v: any) => ({ kind: v.kind, text: v.item_text, when: v.when }));
-    const data = {
+    // The ledger backfill carries the attempt's persisted transcript as
+    // ready-made segments; a live block keeps the ones it streamed.
+    const streamSegments = mergeStreamSegments(existing?.data?.stream_segments, d.stream_segments);
+    const data: any = {
       ...(existing?.data || {}),
       ...d,
       status: d.status || 'done',
@@ -114,11 +187,13 @@ function applyCheckerLog(blocks: StepBlock[], log: any): void {
       items,
       findings: Array.isArray(d.findings) ? d.findings : (existing?.data?.findings || []),
       generic_tools: existing?.data?.generic_tools || [],
+      stream_segments: streamSegments,
       started_at: startedAt,
       finished_at: ts,
       duration: startedAt !== undefined && ts !== undefined ? Math.max(0, ts - startedAt) : undefined,
       isCompleted: true
     };
+    if (streamSegments) applyFlatStreamFields(data, streamSegments);
     const block: StepBlock = { id, type: 'checker', timestamp: existing?.timestamp || log.timestamp, data };
     if (existing) blocks[idx] = block; else blocks.push(block);
   }
@@ -224,12 +299,6 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
         if (segmentIndex > -1) segments[segmentIndex] = segment; else segments.push(segment);
         checkerData.stream_segments = segments;
         // Flat fields stay as the joined text for consumers that only know steps.
-        const joined = (type: string) => segments
-          .filter((s) => s.stream_type === type && s.text.trim())
-          .map((s) => s.text)
-          .join('\n\n');
-        checkerData.operator_native_thinking = joined('thinking');
-        checkerData.operator_raw_thinking = joined('text');
         if (streamType === 'thinking') {
           checkerData.operator_native_thinking_timestamp =
             checkerData.operator_native_thinking_timestamp || log.timestamp;
@@ -237,6 +306,7 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           checkerData.operator_raw_thinking_timestamp =
             checkerData.operator_raw_thinking_timestamp || log.timestamp;
         }
+        applyFlatStreamFields(checkerData, segments);
         if (execId && !checkerData.execution_id) {
           checkerData.execution_id = execId;
         }

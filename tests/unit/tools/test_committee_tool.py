@@ -89,7 +89,7 @@ class TestCommitteeTool(unittest.IsolatedAsyncioTestCase):
             mock_response_tool_call = MagicMock()
             mock_response_tool_call.tool_calls = [
                 {
-                    "name": "get_step_details",
+                    "name": "replay_steps",
                     "args": {"start_step": 1, "end_step": 1},
                     "id": "call_1",
                 }

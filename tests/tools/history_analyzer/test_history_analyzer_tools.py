@@ -12,51 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 from artemis.agents.history_analyzer.history_analyzer import HistoryAnalyzer
 from artemis.config import parse_llm_config
 import pytest
 
 
 @pytest.mark.asyncio
-async def test_exec_get_step_details(artemis_context):
-    """Test the exec_get_step_details method with manually configured steps."""
-    analyzer = HistoryAnalyzer(artemis_context)
-    analyzer.history_steps = [
-        {
-            "step_number": 0,
-            "relative_time": 0.0,
-            "summary": "Initial step",
-            "action_taken": "none",
-            "operator_raw_thinking": "Starting up",
-            "last_execution_result": "Success",
-        },
-        {
-            "step_number": 1,
-            "relative_time": 5.0,
-            "summary": "Second step",
-            "action_taken": "click",
-            "operator_raw_thinking": "Clicking button",
-            "last_execution_result": "Success",
-        },
-    ]
-
-    first_step_num = 0
-    result = analyzer.exec_get_step_details(first_step_num, first_step_num)
-
-    assert "Error:" not in result
-    assert "No steps found" not in result
-
-    parsed = json.loads(result)
-    assert isinstance(parsed, list)
-    assert len(parsed) == 1
-    assert parsed[0]["step_number"] == first_step_num
-    assert "summary" in parsed[0]
-
-
-@pytest.mark.asyncio
-async def test_get_step_details_tool_with_fixture(artemis_context):
-    """Test _get_step_details_tool against real steps loaded from the inputs/data_engine.db fixture."""
+async def test_replay_steps_tool_with_fixture(artemis_context):
+    """The analyzer's replay_steps tool against real steps loaded from the
+    inputs/data_engine.db fixture."""
     if not artemis_context.data_engine:
         pytest.skip("DataEngine fixture not initialized")
 
@@ -65,18 +29,21 @@ async def test_get_step_details_tool_with_fixture(artemis_context):
     assert len(steps) > 0
 
     analyzer = HistoryAnalyzer(artemis_context)
-    tool = analyzer._get_step_details_tool(steps)
+    tools = {t.name: t for t in analyzer._build_tools()}
+    assert {
+        "search_history",
+        "replay_steps",
+        "get_step_screenshot",
+        "list_notes",
+        "read_note",
+    } <= set(tools)
 
-    result = tool.invoke({"start_step": 1, "end_step": 3})
+    result = tools["replay_steps"].invoke({"start_step": 1, "end_step": 3})
     assert isinstance(result, str)
-    assert "Error:" not in result
-    assert "No steps found" not in result
-
-    parsed = json.loads(result)
-    assert isinstance(parsed, list)
-    assert len(parsed) == 3
-    assert parsed[0]["step_number"] == 1
-    assert "YouTube" in parsed[0]["summary"]
+    assert not result.startswith("Error")
+    assert "- **Step 1 (" in result
+    assert "- **Step 3 (" in result
+    assert "YouTube" in result
 
 
 @pytest.mark.asyncio

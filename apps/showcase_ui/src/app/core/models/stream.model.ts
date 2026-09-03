@@ -137,7 +137,9 @@ export interface CheckerCheckItem {
 /**
  * One streamed LLM turn of a multi-turn agent (the Checker's tool loop):
  * the text of one execution id with the time its first chunk arrived, so the
- * timeline can interleave it with the tool calls that followed.
+ * timeline can interleave it with the tool calls that followed. Live sessions
+ * build these from `llm_stream` chunks; historical sessions rebuild them from
+ * the persisted transcript (`PersistedCheckerStream`).
  */
 export interface StreamSegment {
   execution_id: string;
@@ -147,6 +149,32 @@ export interface StreamSegment {
   isCompleted?: boolean;
   isReset?: boolean;
   resetMessage?: string;
+}
+
+/** One persisted segment of a Checker attempt's streamed reasoning (backend `check_streams.jsonl`). */
+export interface PersistedStreamSegment {
+  execution_id: string;
+  /** `thought` is the model's reasoning stream, `answer` its visible text. */
+  role: 'thought' | 'answer' | string;
+  /** Unix seconds of the segment's first chunk. */
+  when: number;
+  text: string;
+}
+
+/**
+ * One Checker attempt's persisted transcript as served by
+ * `GET /api/sessions/{id}/checks` (`streams[]`). Text is bounded server-side;
+ * `truncated` says the middle was cut out.
+ */
+export interface PersistedCheckerStream {
+  attempt_id: string;
+  checkpoint_id?: string;
+  phase?: string;
+  trace_id?: string | null;
+  ts?: number;
+  truncated?: boolean;
+  dropped_chars?: number;
+  segments: PersistedStreamSegment[];
 }
 
 /**
@@ -182,7 +210,7 @@ export interface CheckerBlockData {
   duration?: number;
   isCompleted?: boolean;
   generic_tools?: any[];
-  /** Per-turn stream segments (live sessions only); the flat fields below hold the joined text. */
+  /** Per-turn stream segments (live chunks or the persisted transcript); the flat fields below hold the joined text. */
   stream_segments?: StreamSegment[];
   operator_native_thinking?: string;
   operator_raw_thinking?: string;

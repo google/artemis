@@ -20,6 +20,8 @@ from pathlib import Path
 
 from jinja2 import Environment, StrictUndefined, Template
 from langchain_core.messages import HumanMessage, SystemMessage
+
+from artemis.tools.history import HISTORY_TOOL_NAMES
 from PIL import Image
 
 from artemis.context import ArtemisContext
@@ -62,7 +64,13 @@ def load_operator_prompts() -> dict[str, str]:
 
 _PRE_DECISION_HELPER_TOOLS = ("ask_explorer", "ask_diagnoser", "video_analyzer")
 _PRE_DECISION_ADB_TOOLS = ("run_adb_command", "manage_task")
-_PRE_DECISION_MEMORY_TOOLS = ("read_note", "list_notes", "recall_history")
+_PRE_DECISION_MEMORY_TOOLS = (
+    "read_note",
+    "list_notes",
+    "search_history",
+    "replay_steps",
+    "get_step_screenshot",
+)
 _PRE_DECISION_ALL_TOOLS = (
     _PRE_DECISION_HELPER_TOOLS + _PRE_DECISION_ADB_TOOLS + _PRE_DECISION_MEMORY_TOOLS
 )
@@ -188,10 +196,12 @@ def resolve_operator_prompt_tools(ctx: ArtemisContext) -> frozenset[str]:
     if not (setup and getattr(setup, "video_recording_tools_enabled", False)):
         available.discard("video_analyzer")
 
-    # recall_history (M4) needs a DataEngine to search and is config-gated;
-    # the prompt must not advertise it when the tool is not bound this run.
-    if getattr(ctx, "data_engine", None) is None or not _recall_enabled():
-        available.discard("recall_history")
+    # The history tools need a DataEngine to read, and search_history is also
+    # config-gated; the prompt must not advertise a tool that is not bound.
+    if getattr(ctx, "data_engine", None) is None:
+        available.difference_update(HISTORY_TOOL_NAMES)
+    elif not _recall_enabled():
+        available.discard("search_history")
 
     # Device actions the installed actuator backend does not implement disappear
     # from the prompt in lockstep with their tool declarations.
@@ -438,14 +448,13 @@ def _last_successful_action_before(steps: list, step_number: int | None) -> tupl
 
 def _incident_target_label(incident: dict) -> str:
     action = incident.get("action") or {}
+    # The Operator only ever sees 0–1000 coordinates: the recorded pixel
+    # target is the controller's business and is never rendered here.
     normalized = action.get("normalized_coordinates")
-    pixels = action.get("coordinates")
     text = action.get("target_text")
     parts = []
     if normalized:
         parts.append(f"normalized {list(normalized)}")
-    elif pixels:
-        parts.append(f"pixel {list(pixels)}")
     if text:
         parts.append(f'"{text}"')
     return " ".join(parts) if parts else "the recorded target"
@@ -844,7 +853,7 @@ class ScreenshotSimilarityPromptComponent(PromptComponent):
 
 
 def _recall_enabled() -> bool:
-    """Whether the recall_history tool is enabled by configuration (M4)."""
+    """Whether the search_history tool is enabled by configuration."""
     try:
         from artemis.config import load_agent_config
 
@@ -861,7 +870,7 @@ class HistoricalStateHintPromptComponent(PromptComponent):
     including steps already chunk-compressed out of the visible transcript) —
     an O(n) integer scan, no model call, no historical image bytes. On a
     close match to a step *older* than the recent window it injects a one-line
-    hint pointing at ``recall_history``.
+    hint pointing at ``search_history``.
 
     Division of labor with :class:`ScreenshotSimilarityPromptComponent`: that
     component's pixel-exact 3-step look-back covers "stuck on the same
@@ -936,5 +945,5 @@ class HistoricalStateHintPromptComponent(PromptComponent):
             builder.add_human_content(
                 f"Historical state hint: current screen closely resembles the"
                 f" post-action screen from Step {best_step_number}. Use"
-                " recall_history only if its details are needed."
+                " search_history / replay_steps only if its details are needed."
             )

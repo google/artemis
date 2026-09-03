@@ -12,36 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from artemis.agents.outputter.tools import (
-    get_search_history_tool,
-    get_step_details_tool,
-    get_step_screenshot_tool,
-)
-from artemis.context import ArtemisContext
+"""The outputter mounts the shared history tools; smoke-test them against the
+fixture database."""
+
 import pytest
+
+from artemis.context import ArtemisContext
+from artemis.tools.history import get_history_tools
 
 
 @pytest.fixture
-def history_steps(artemis_context: ArtemisContext):
-    if artemis_context.data_engine:
-        return artemis_context.data_engine.get_agent_friendly_steps()
-    return []
+def history_tools(artemis_context: ArtemisContext):
+    search, replay, screenshot = get_history_tools(artemis_context)
+    return {"search_history": search, "replay_steps": replay, "get_step_screenshot": screenshot}
 
 
-def test_get_step_details_tool(history_steps):
-    """Test get_step_details_tool to ensure it runs without errors."""
-    tool = get_step_details_tool(history_steps)
-    result = tool.invoke({"start_step": 1, "end_step": 5})
+def test_replay_steps_tool(history_tools):
+    """replay_steps runs against the fixture history without errors."""
+    result = history_tools["replay_steps"].invoke({"start_step": 1, "end_step": 5})
 
     assert isinstance(result, str)
     assert len(result) > 0
 
 
-def test_get_step_screenshot_tool(artemis_context: ArtemisContext, history_steps):
-    """Test get_step_screenshot_tool to ensure it handles requests gracefully."""
-    tool = get_step_screenshot_tool(artemis_context, history_steps)
-
-    result = tool.invoke({"step_number": 1})
+def test_get_step_screenshot_tool(history_tools):
+    """get_step_screenshot returns content blocks with an image, or a plain explanation."""
+    result = history_tools["get_step_screenshot"].invoke({"step_number": 1})
 
     if isinstance(result, list):
         assert len(result) == 2
@@ -52,10 +48,9 @@ def test_get_step_screenshot_tool(artemis_context: ArtemisContext, history_steps
         assert len(result) > 0
 
 
-def test_get_search_history_tool(artemis_context: ArtemisContext):
-    """Test get_search_history_tool to ensure it can search through history."""
-    tool = get_search_history_tool(artemis_context)
-    result = tool.invoke({"query": "test"})
+def test_search_history_tool(history_tools):
+    """search_history searches the fixture history and always answers in text."""
+    result = history_tools["search_history"].invoke({"query": "test"})
 
     assert isinstance(result, str)
     assert len(result) > 0

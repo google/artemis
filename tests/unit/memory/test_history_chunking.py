@@ -358,7 +358,7 @@ def _hashes(boundary_after: int):
 
 
 def test_milestone_switch_closes_previous_segment_whole_and_gates_swap():
-    """Ready-gated swap (user decision 2026-09-01): a milestone switch closes
+    """Ready-gated swap: a milestone switch closes
     the previous segment whole and dispatches its capsule, but the original
     turns stay in the transcript until the capsule header is ready; the swap
     happens at the first render after readiness."""
@@ -726,7 +726,7 @@ def test_era_overflow_compresses_oldest_era_to_period_paragraph():
     assert "Verified: " in match.group(1)
     # Recall guidance line is retained.
     assert (
-        f"  (Step-level ledger via recall_history for steps"
+        f"  (Step-level ledger via search_history for steps"
         f" {era.start_step_number}–{era.end_step_number})"
     ) in frozen
     # Never-evict: the user injection survives even the period paragraph.
@@ -799,7 +799,7 @@ def test_period_paragraph_degrades_to_milestone_list_when_all_band1_missing():
 
     block = render_era_block(era)
     assert block.startswith(f"[Era 3 | Steps 1–8 | T+01:00 → T+08:59] {paragraph}")
-    assert "(Step-level ledger via recall_history for steps 1–8)" in block
+    assert "(Step-level ledger via search_history for steps 1–8)" in block
     assert 'User @ Step 6: "stay logged in"' in block
 
 
@@ -1034,7 +1034,7 @@ async def test_flush_harvests_late_capsule_and_persists_ready_version():
 
 
 # ---------------------------------------------------------------------------
-# Ready-gated swap (user decision 2026-09-01): degradation ladder
+# Ready-gated swap: degradation ladder
 # ---------------------------------------------------------------------------
 
 
@@ -1098,7 +1098,7 @@ def test_hard_threshold_force_swaps_pending_chunks_into_l3():
 
 
 # ---------------------------------------------------------------------------
-# Band ① note-linkage machine check (user decision 2026-09-01)
+# Band ① note-linkage machine check
 # ---------------------------------------------------------------------------
 
 
@@ -1176,3 +1176,299 @@ def test_chunk_lists_every_step_of_a_multi_action_turn():
     assert chunk.source_step_ids == ["s1", "s2", "s3"]
     assert chunk.start_step_number == 1 and chunk.end_step_number == 3
     assert "- Step 2 (T+00:20)" in chunk.band3
+
+
+# ---------------------------------------------------------------------------
+# Capsule source = the operator's own transcript
+# ---------------------------------------------------------------------------
+
+
+def _rich_turn(i: int) -> list:
+    """A turn that asks the explorer before acting, with a UI list and a
+    native thinking block — the parts the old per-step projection dropped."""
+    from artemis.memory.transcript import PRO_UI_LIST_MARKER
+
+    return [
+        HumanMessage(
+            content=[
+                {"type": "text", "text": f"# CURRENT OBSERVATION [T+00:{i % 60:02d}]"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,IMG_{i}"}},
+                {"type": "text", "text": f"{PRO_UI_LIST_MARKER}\n[0] Buy button"},
+            ]
+        ),
+        AIMessage(
+            content=[
+                {"type": "thinking", "thinking": "need the price first"},
+                {"type": "text", "text": "Ask the explorer for the price."},
+            ],
+            tool_calls=[
+                {
+                    "name": "ask_explorer",
+                    "args": {"question": "price?"},
+                    "id": f"tcx{i}",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(tool_call_id=f"tcx{i}", content="Price shown: ¥39"),
+        AIMessage(
+            content=f"thinking {i}",
+            tool_calls=[
+                {"name": "click", "args": {"target": i}, "id": f"tc{i}", "type": "tool_call"}
+            ],
+        ),
+        ToolMessage(tool_call_id=f"tc{i}", content="Action Recorded"),
+    ]
+
+
+def _payload_with_step(capsule: StubCapsuleService, step_number: int) -> dict:
+    for payload in capsule._step_inputs.values():
+        if any(s.get("step_number") == step_number for s in payload.get("steps", [])):
+            return payload
+    raise AssertionError(f"no capsule payload carries step {step_number}")
+
+
+def test_capsule_payload_carries_each_turn_transcript_as_the_operator_saw_it():
+    """The segment capsule digests exactly the text it replaces: every turn's
+    post-scrub transcript — reasoning (native thinking included), every tool
+    call with its arguments and returned result, the validator result — not
+    a hand-picked projection. Scrubbed parts (UI list, screenshot) are gone
+    from the source too, because the operator no longer saw them either."""
+    steps = [_step(i) for i in range(1, 7)]
+    ledger, chunker, _engine, capsule = _make(steps, min_active=2, max_steps=3)
+    for i in range(1, 7):
+        ledger.commit_staged(
+            step_key=f"s{i - 1}" if i > 1 else None,
+            validator_result={"status": "success"} if i > 1 else None,
+        )
+        ledger.render([_observation(i)])
+        ledger.stage_turn(_rich_turn(i) if i == 2 else _turn(i))
+        chunker.on_step_stamped(f"s{i}", "hash-a")
+
+    payload = _payload_with_step(capsule, 2)
+    turn = next(t for t in payload["turns"] if t["steps"][0]["step_number"] == 2)
+    transcript = turn["transcript"]
+
+    # What the operator saw during that turn, verbatim and in order.
+    assert "(thinking) need the price first" in transcript
+    assert "Ask the explorer for the price." in transcript
+    assert '[tool call] ask_explorer({"question": "price?"})' in transcript
+    assert "[tool result ask_explorer]\nPrice shown: ¥39" in transcript
+    assert '[tool call] click({"target": 2})' in transcript
+    assert "--- Action Execution Result" in transcript and "Status: success" in transcript
+    assert transcript.index("Price shown") < transcript.index("click(")
+    # What the scrub edge already removed from the operator's view.
+    assert "Buy button" not in transcript and "IMG_2" not in transcript
+
+    # The lens request renders the turn block: step facts, then the transcript.
+    lens = StepCapsuleLens(model_name="test", llm=object())
+    text = lens.build_messages(payload)[1].content
+    assert "## Step 2 (T+00:20)" in text
+    assert "- Step 2 (T+00:20): " in text and "Visual transition of step 2." in text
+    assert "Transcript as seen by the operator during this turn:" in text
+    assert text.index("Recorded steps:") < text.index("Price shown: ¥39")
+    assert "Reasoning excerpt" not in text  # the transcript supersedes the excerpt
+
+
+def test_chunk_without_ledger_falls_back_to_per_step_projection():
+    """A chunk built without a live ledger (no transcripts) keeps the
+    per-step fallback rendering so the capsule can still be produced."""
+    steps = [_step(i) for i in range(1, 3)]
+    _ledger, chunker, _engine, capsule = _make(steps)
+    turns = [{"step_key": f"s{i}", "step_keys": [f"s{i}"], "start": 0, "end": 3} for i in (1, 2)]
+    chunk = chunker._create_chunk(turns, None, {s["step_id"]: s for s in steps})
+    assert chunk is not None
+    payload = capsule._step_inputs[chunk.capsule_key]
+    assert "turns" not in payload
+
+    text = StepCapsuleLens(model_name="test", llm=object()).build_messages(payload)[1].content
+    assert "## Step 1 (T+00:10)" in text and "## Step 2 (T+00:20)" in text
+    assert "Reasoning excerpt: thinking 1" in text
+    assert "Transcript as seen by the operator" not in text
+
+
+def test_turn_transcript_is_capped_in_place_inside_the_capsule_request():
+    lens = StepCapsuleLens(model_name="test", llm=object())
+    cap = StepCapsuleLens.MAX_TURN_TRANSCRIPT_CHARS
+    step = {"step_number": 4, "offset": "T+00:40", "action": "tap", "outcome": "executed"}
+    payload = {
+        "start_step": 4,
+        "end_step": 4,
+        "steps": [step],
+        "turns": [{"steps": [step], "transcript": "x" * (cap + 500)}],
+    }
+    text = lens.build_messages(payload)[1].content
+    assert "x" * (cap + 1) not in text
+    assert "500 characters cut here" in text
+
+
+def test_capped_transcript_keeps_its_tail_so_the_validator_result_survives():
+    """The cut lands in the middle: the head (observation + reasoning) and the
+    tail (the validator result that closes every turn) both stay verbatim."""
+    cap = StepCapsuleLens.MAX_TURN_TRANSCRIPT_CHARS
+    tail = "\n[observation]\n--- Action Execution Result (T+09:59) ---\nStatus: failed\nError: boom"
+    transcript = "HEAD-START " + "h" * (cap + 3000) + tail
+    capped = StepCapsuleLens._cap_transcript(transcript)
+    assert capped.startswith("HEAD-START ")
+    assert capped.endswith(tail)
+    assert "characters cut here" in capped
+    assert len(capped) <= cap + 200  # cap plus the announcement line
+
+
+def test_visual_transition_line_is_skipped_when_the_transcript_already_has_it():
+    """The resolved visual summary sits verbatim in the transcript once the
+    scrub edge replaced the screenshot; only an unresolved turn (placeholder
+    still there) gets the DataEngine summary as a separate line."""
+    from artemis.agents.flash.context_compressor import HISTORY_SUMMARY_PREFIX
+
+    step = {
+        "step_number": 4,
+        "offset": "T+00:40",
+        "action": "tap",
+        "outcome": "executed",
+        "visual_summary": "The cart badge changed from 0 to 1.",
+    }
+    resolved = f"[observation]\n{HISTORY_SUMMARY_PREFIX}The cart badge changed from 0 to 1."
+    unresolved = "[observation]\n[screenshot]"
+    for transcript, expected_count in ((resolved, 1), (unresolved, 1), ("", 1)):
+        payload = {"start_step": 4, "end_step": 4, "steps": [step]}
+        if transcript:
+            payload["turns"] = [{"steps": [step], "transcript": transcript}]
+        text = StepCapsuleLens(model_name="test", llm=object()).build_messages(payload)[1].content
+        assert text.count("The cart badge changed from 0 to 1.") == expected_count, transcript
+    resolved_text = (
+        StepCapsuleLens(model_name="test", llm=object())
+        .build_messages(
+            {
+                "start_step": 4,
+                "end_step": 4,
+                "steps": [step],
+                "turns": [{"steps": [step], "transcript": resolved}],
+            }
+        )[1]
+        .content
+    )
+    assert "Visual transition:" not in resolved_text
+    unresolved_text = (
+        StepCapsuleLens(model_name="test", llm=object())
+        .build_messages(
+            {
+                "start_step": 4,
+                "end_step": 4,
+                "steps": [step],
+                "turns": [{"steps": [step], "transcript": unresolved}],
+            }
+        )[1]
+        .content
+    )
+    assert "Visual transition: The cart badge" in unresolved_text
+
+
+def test_size_trigger_measures_the_rendered_transcript_the_capsule_receives():
+    """``turn_text_chars`` sizes the exact text the lens gets — tool-call
+    arguments included — so the source-token trigger and the capsule payload
+    never disagree about how big a segment is."""
+    steps = [_step(i) for i in range(1, 5)]
+    ledger, chunker, _engine, capsule = _make(steps, min_active=1, target_tokens=10**9)
+    _run_turns(ledger, chunker, 1, 4)
+    turns = ledger.unchunked_turns()
+    assert ledger.turn_text_chars(turns) == sum(len(ledger.turn_transcript(t)) for t in turns)
+    assert ledger.turn_text_chars(turns[:1]) == len(ledger.turn_transcript(turns[0]))
+    assert '[tool call] click({"target": 1})' in ledger.turn_transcript(turns[0])
+
+
+@pytest.mark.asyncio
+async def test_ready_capsule_releases_its_turn_transcripts():
+    """Once a capsule landed the job is never re-run, so the service drops the
+    bulky ``turns`` from the retained payload (the flat step facts stay)."""
+    from artemis.memory.chunking import ChunkCapsuleService
+
+    class EchoLens(StepCapsuleLens):
+        async def render(self, key, payload):
+            return json.dumps(_capsule(1, 1))
+
+    service = ChunkCapsuleService(None, EchoLens(model_name="test", llm=object()))
+    payload = {
+        "start_step": 1,
+        "end_step": 1,
+        "step_number": 1,
+        "steps": [{"step_number": 1}],
+        "turns": [{"steps": [{"step_number": 1}], "transcript": "big text"}],
+    }
+    service.submit("chunk:1-1", payload)
+    await service.flush()
+    assert service.has_summary("chunk:1-1")
+    assert "turns" not in service.get_job_payload("chunk:1-1")
+    assert service.get_job_payload("chunk:1-1")["steps"] == [{"step_number": 1}]
+
+
+def test_multi_action_turn_renders_one_block_with_every_recorded_step():
+    lens = StepCapsuleLens(model_name="test", llm=object())
+    steps = [
+        {"step_number": n, "offset": f"T+00:{n}0", "action": f"tap btn{n}", "outcome": "executed"}
+        for n in (7, 8)
+    ]
+    payload = {"start_step": 7, "end_step": 8, "steps": steps}
+    payload["turns"] = [{"steps": steps, "transcript": "[operator]\nfired two taps"}]
+    text = lens.build_messages(payload)[1].content
+    assert "## Steps 7–8 (T+00:70 → T+00:80)" in text
+    assert "- Step 7 (T+00:70): tap btn7 -> executed" in text
+    assert "- Step 8 (T+00:80): tap btn8 -> executed" in text
+    assert "fired two taps" in text
+
+
+# ---------------------------------------------------------------------------
+# Band ② must not restate band ③
+# ---------------------------------------------------------------------------
+
+
+def test_band2_coordinates_are_machine_checked():
+    """A coordinate literal in any band-② interval text fails the attempt
+    (regenerate), same rank as the coverage check: band ③ already carries
+    every action's target, so ② repeating it is the ledger written twice."""
+    from artemis.memory.chunking import band2_intervals_carry_coordinates
+
+    lens = StepCapsuleLens(model_name="test", llm=object())
+    payload = {"start_step": 3, "end_step": 6, "steps": []}
+
+    with_coords = dict(
+        _capsule(3, 6),
+        intervals=[
+            {"start_step": 3, "end_step": 5, "text": "opened three sections in turn"},
+            {"start_step": 6, "end_step": 6, "text": "tapped 'Battery' at [320, 399]"},
+        ],
+    )
+    assert band2_intervals_carry_coordinates(with_coords["intervals"])
+    assert lens.parse_capsule(json.dumps(with_coords), payload) is None
+
+    swipe_literal = dict(
+        _capsule(3, 6),
+        intervals=[{"start_step": 3, "end_step": 6, "text": "swiped [556, 289, 556, 124]"}],
+    )
+    assert lens.parse_capsule(json.dumps(swipe_literal), payload) is None
+
+    behavior_only = dict(
+        _capsule(3, 6),
+        intervals=[
+            {
+                "start_step": 3,
+                "end_step": 6,
+                "text": "Opened 'Apps' and 'Battery' and returned to the main list each time;"
+                " the Battery page showed 100% and 3 rows.",
+            }
+        ],
+    )
+    assert not band2_intervals_carry_coordinates(behavior_only["intervals"])
+    assert lens.parse_capsule(json.dumps(behavior_only), payload) is not None
+
+
+def test_capsule_prompt_forbids_band2_coordinates_and_sets_a_length_target():
+    """The prompt carries the ② contract (behavior + observed result, no
+    coordinates, homogeneous runs merged) and the ①+② soft length target,
+    while keeping the preserve-don't-abstract rule."""
+    prompt = StepCapsuleLens(model_name="test", llm=object())._prompt
+    assert "NEVER include coordinates" in prompt
+    assert "NEVER narrate step by step" in prompt
+    assert "Merge homogeneous consecutive actions" in prompt
+    assert "one third of the source text" in prompt
+    assert "Preserve, don't abstract" in prompt

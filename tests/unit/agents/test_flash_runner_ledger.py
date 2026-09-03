@@ -87,28 +87,55 @@ def test_video_analyzer_bound_only_when_recording_tools_enabled(mock_context):
         assert "video_analyzer" not in names
 
 
-def test_recall_history_bound_only_with_a_data_engine_session(mock_context):
+HISTORY_TOOLS = {"search_history", "replay_steps", "get_step_screenshot"}
+
+
+def test_history_tools_bound_only_with_a_data_engine_session(mock_context):
     with patch("artemis.controllers.unified_controller.get_driver"):
-        # No DataEngine: nothing to search, the tool stays out (as in Pro).
+        # No DataEngine: nothing to read, the tools stay out (as in Pro).
         names = [t.name for t in FlashRunner(mock_context, goal="g")._get_tools()]
-        assert "recall_history" not in names
+        assert not (HISTORY_TOOLS & set(names))
+        prompt = FlashRunner(mock_context, goal="g")._render_system_prompt(
+            FlashRunner(mock_context, goal="g")._get_tools()
+        )
+        assert "search_history" not in prompt and "replay_steps" not in prompt
 
         mock_context.data_engine = Mock()
-        with patch("artemis.tools.history_recall._recall_config", return_value=None):
+        with patch("artemis.tools.history._recall_config", return_value=None):
             runner = FlashRunner(mock_context, goal="g")
             tools = runner._get_tools()
         names = [t.name for t in tools]
-        assert "recall_history" in names
-        declaration = next(t for t in tools if t.name == "recall_history")
-        assert set(declaration.parameters["properties"]) == {
-            "query",
-            "step_range",
-            "include_details",
-            "include_images",
-            "max_results",
-        }
-        assert declaration.parameters["required"] == ["query"]
-        assert "`recall_history`" in runner._render_system_prompt(tools)
+        assert HISTORY_TOOLS <= set(names)
+        assert names[-1] == "report_task_status"
+
+        # Same declarations as the LangChain tools: derived from one args schema.
+        search = next(t for t in tools if t.name == "search_history")
+        assert set(search.parameters["properties"]) == {"query", "step_range", "max_results"}
+        assert search.parameters["required"] == []
+        replay = next(t for t in tools if t.name == "replay_steps")
+        assert set(replay.parameters["properties"]) == {"start_step", "end_step"}
+        assert replay.parameters["required"] == ["start_step"]
+        shot = next(t for t in tools if t.name == "get_step_screenshot")
+        assert shot.parameters["properties"]["which"]["enum"] == ["pre", "post", "overlay"]
+
+        prompt = runner._render_system_prompt(tools)
+        assert "`search_history`" in prompt
+        assert "`replay_steps`" in prompt
+        assert "`get_step_screenshot`" in prompt
+
+
+def test_search_history_alone_follows_the_recall_config_gate(mock_context):
+    from types import SimpleNamespace
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        mock_context.data_engine = Mock()
+        with patch(
+            "artemis.tools.history._recall_config",
+            return_value=SimpleNamespace(enabled=False),
+        ):
+            names = [t.name for t in FlashRunner(mock_context, goal="g")._get_tools()]
+        assert "search_history" not in names
+        assert {"replay_steps", "get_step_screenshot"} <= set(names)
 
 
 def test_video_analyzer_prompt_segment_follows_availability(mock_context):

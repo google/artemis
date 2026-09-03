@@ -16,12 +16,7 @@ import json
 from pathlib import Path
 
 from jinja2 import Template
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from artemis.agents.outputter.tools import (
-    get_search_history_tool,
-    get_step_details_tool,
-    get_step_screenshot_tool,
-)
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from artemis.config import OutputConfig
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace
@@ -36,7 +31,12 @@ from artemis.tools.scratchpad import (
     get_update_note_tool_pure,
 )
 from artemis.tools.video_tool import get_video_analyzer_tool_pure
-from artemis.tools.tool_wrapper import invoke_tool_with_injection
+from artemis.tools.history import get_history_tools
+from artemis.tools.tool_wrapper import (
+    invoke_tool_with_injection,
+    split_multimodal_result,
+    tool_result_messages,
+)
 from artemis.utils.logger import get_logger
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
@@ -112,10 +112,11 @@ async def outputter(
         " LAZY VERIFICATION: If the execution history and the final screenshot"
         " already in your context provide undeniable proof of the outcome, do"
         " not call tools. Directly output your conclusion.\n- ACTIVE RETRIEVAL:"
-        " You should only call tools (e.g., `get_step_details`,"
-        " `get_step_screenshot`, `search_history_for_text`) if you need to"
-        " extract specific hidden data (like verification codes, tracking"
-        " numbers) or if the final state is ambiguous.\n- VIDEO ANALYSIS COST:"
+        " You should only call tools (e.g., `search_history` to locate the"
+        " step, `replay_steps` for its full record, `get_step_screenshot` for"
+        " its image) if you need to extract specific hidden data (like"
+        " verification codes, tracking numbers) or if the final state is"
+        " ambiguous.\n- VIDEO ANALYSIS COST:"
         " The `video_analyzer` tool is expensive. Use it only when necessary"
         " (e.g., to verify video playback or motion).\n- PERSISTENT WRITE: If"
         " you extract important information requested by the user (such as a"
@@ -196,14 +197,8 @@ async def outputter(
         HumanMessage(content=human_message_content),
     ]
 
-    # Setup tools
-    history_steps = []
-    if ctx.data_engine:
-        history_steps = ctx.data_engine.get_agent_friendly_steps()
-
-    details_tool = get_step_details_tool(history_steps)
-    screenshot_tool = get_step_screenshot_tool(ctx, history_steps)
-    search_tool = get_search_history_tool(ctx)
+    # Setup tools (the shared history tools plus notes and video)
+    search_tool, replay_tool, screenshot_tool = get_history_tools(ctx)
     list_notes_tool = get_list_notes_tool_pure(ctx)
     read_note_tool = get_read_note_tool_pure(ctx)
     save_note_tool = get_save_note_tool_pure(ctx)
@@ -212,9 +207,9 @@ async def outputter(
     video_analyzer_tool = get_video_analyzer_tool_pure(ctx)
 
     tools = [
-        details_tool,
-        screenshot_tool,
         search_tool,
+        replay_tool,
+        screenshot_tool,
         list_notes_tool,
         read_note_tool,
         save_note_tool,
@@ -254,9 +249,9 @@ async def outputter(
 
             logger.info(f"Outputter executing tool {tool_name} with args: {args}")
             tool_map = {
-                "get_step_details": details_tool,
+                "search_history": search_tool,
+                "replay_steps": replay_tool,
                 "get_step_screenshot": screenshot_tool,
-                "search_history_for_text": search_tool,
                 "list_notes": list_notes_tool,
                 "read_note": read_note_tool,
                 "save_note": save_note_tool,
@@ -277,22 +272,17 @@ async def outputter(
                     )
                 else:
                     result = f"Error: Tool {tool_name} is not supported."
-                status = (
-                    "success"
-                    if not (isinstance(result, str) and result.startswith("Error"))
-                    else "error"
-                )
+                text, _ = split_multimodal_result(result)
+                status = "error" if text.startswith("Error") else "success"
             except Exception as e:
                 logger.error(f"Error running tool {tool_name}: {e}")
                 result = f"Error running tool {tool_name}: {e}"
                 status = "error"
 
-            messages.append(
-                ToolMessage(
-                    tool_call_id=tc["id"],
-                    content=result if isinstance(result, (str, list)) else str(result),
-                    status=status,
-                )
+            # Step screenshots enter the conversation in the carrier the
+            # model's provider accepts; text results stay a plain ToolMessage.
+            messages.extend(
+                tool_result_messages(tc["id"], result, name=tool_name, status=status, llm=llm)
             )
 
     if raw_answer is None:

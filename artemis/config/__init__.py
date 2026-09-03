@@ -23,6 +23,8 @@ from artemis.config.agent import (
     FlashProfileConfig,
     MemoryChunkingConfig,
     MemoryConfig,
+    MemoryRecallConfig,
+    MemoryReplayConfig,
     MemoryRuntimeConfig,
     MemoryTranscriptConfig,
     OutputterConfig,
@@ -35,6 +37,7 @@ from artemis.config.agent import (
     VERIFICATION_LEVEL_PRESETS,
     VerificationLevel,
     checker_overrides_for_level,
+    run_tuning_for_profile,
     verification_level_for_checker,
 )
 from artemis.config.constants import (
@@ -213,6 +216,8 @@ __all__ = [
     "FlashProfileConfig",
     "MemoryChunkingConfig",
     "MemoryConfig",
+    "MemoryRecallConfig",
+    "MemoryReplayConfig",
     "MemoryRuntimeConfig",
     "MemoryTranscriptConfig",
     "OutputterConfig",
@@ -225,6 +230,7 @@ __all__ = [
     "VERIFICATION_LEVEL_PRESETS",
     "VerificationLevel",
     "checker_overrides_for_level",
+    "run_tuning_for_profile",
     "verification_level_for_checker",
     # Output Config
     "OutputConfig",

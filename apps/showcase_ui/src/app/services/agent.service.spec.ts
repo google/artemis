@@ -125,6 +125,42 @@ describe('AgentService live LLM retry timeline', () => {
     expect(service.isSessionContentLoading()).toBeFalse();
   });
 
+  it('attaches the persisted checker transcript to the attempt it belongs to', () => {
+    const service = createServiceWithoutPolling();
+    (service as any).currentSessionId = signal<string | null>('session-1');
+    (service as any).http = {
+      get: () => of({
+        records: [
+          { attempt_id: 'abc#1', checkpoint_id: 'abc', subgoal_text: 'Create the alarm', trace_id: 't-1', item_text: 'alarm exists', kind: 'verify', status: 'passed', evidence: 'seen', ts: 10 },
+          { attempt_id: 'final#1', checkpoint_id: 'final', trace_id: 't-2', item_text: 'alarm exists', kind: 'verify', status: 'passed', evidence: 'seen', ts: 20 }
+        ],
+        streams: [
+          {
+            attempt_id: 'abc#1',
+            trace_id: 't-1',
+            ts: 11,
+            segments: [
+              { execution_id: 'e-1', role: 'thought', when: 8, text: 'Looking' },
+              { execution_id: 'e-1', role: 'answer', when: 9, text: 'Seen it' }
+            ]
+          }
+        ],
+        run_outcome: null
+      })
+    };
+    service.sessionLogs.set([{ type: 'checker_event', checks_snapshot: true, data: { attempt_id: 'stale' } }]);
+
+    service.fetchChecks('session-1');
+
+    const logs = service.sessionLogs();
+    expect(logs.map((l) => l.data.attempt_id)).toEqual(['abc#1', 'final#1']);
+    expect(logs[0].data.stream_segments).toEqual([
+      { execution_id: 'e-1', stream_type: 'thinking', text: 'Looking', timestamp: new Date(8000).toISOString(), isCompleted: true },
+      { execution_id: 'e-1', stream_type: 'text', text: 'Seen it', timestamp: new Date(9000).toISOString(), isCompleted: true }
+    ]);
+    expect('stream_segments' in logs[1].data).toBeFalse();
+  });
+
   it('follows a just-started task even when status polling saw it first', () => {
     const service = createServiceWithoutPolling();
     (service as any).http = {

@@ -13,30 +13,51 @@
 # limitations under the License.
 
 import asyncio
+import faulthandler
 import json
 import logging
 from pathlib import Path
 import shutil
-from unittest.mock import patch
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from artemis.config import settings
+from langchain_core.messages import AIMessage
+import pytest
+
 from artemis.agents.image_processor.image_processor import ImageProcessor
+from artemis.config import settings
+from artemis.utils.python_executor import PythonExecutor
 from tests.integration.agents.explorer.test_explorer_all_tools.helpers import (
     create_mock_context,
     get_or_create_test_screenshot,
 )
-from artemis.utils.python_executor import PythonExecutor
-import pytest
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("test_explorer_ask_image_processor_jupyter")
 
+# Hard ceiling for the whole test. Kernel startup, one cell and shutdown take a
+# few seconds even on a saturated host; if anything blocks past this point,
+# faulthandler prints every thread's stack to stderr and terminates the process
+# instead of leaving the run hanging.
+TEST_WALL_CLOCK_LIMIT_S = 300
+
 
 @pytest.mark.asyncio
 async def test_explorer_ask_image_processor_jupyter():
     test_name = "test_explorer_ask_image_processor_jupyter"
+    started_at = time.monotonic()
+    faulthandler.dump_traceback_later(TEST_WALL_CLOCK_LIMIT_S, exit=True)
+    original_traces_path = settings.TRACES_PATH
+    try:
+        await _run_scenario(test_name)
+    finally:
+        settings.TRACES_PATH = original_traces_path
+        faulthandler.cancel_dump_traceback_later()
+        logger.info(f"Test wall-clock time: {time.monotonic() - started_at:.1f}s")
 
+
+async def _run_scenario(test_name: str) -> None:
     # 1. Setup outputs directory
     outputs_dir = Path(__file__).resolve().parent / "outputs" / test_name
     outputs_dir.mkdir(parents=True, exist_ok=True)
@@ -90,21 +111,22 @@ async def test_explorer_ask_image_processor_jupyter():
         executed_turns.append({"code": code, "output": result})
         return result
 
-    from langchain_core.messages import AIMessage
-    from unittest.mock import AsyncMock, MagicMock
-
-    sample_code = """
+    # The code runs in a separate kernel process, which does not see this
+    # test's settings.TRACES_PATH override, so the intermediates location is
+    # passed in as a literal path.
+    image_processor_dir = outputs_dir / "images" / "image_processor"
+    sample_code = f"""
 from artemis.utils.cv_canvas import ImageCanvas
 import glob
 from pathlib import Path
-from artemis.config import settings
 
-dirs = sorted(glob.glob(str(Path(settings.TRACES_PATH) / "images" / "image_processor" / "intermediates_*")))
-intermediate_dir = dirs[-1] if dirs else "."
+dirs = sorted(glob.glob(str(Path({str(image_processor_dir)!r}) / "intermediates_*")))
+intermediate_dir = dirs[-1]
 
 canvas = ImageCanvas("img_0", intermediate_dir)
 canvas.crop(10, 10, 50, 50)
 canvas.save(final=True)
+print("saved crop from", intermediate_dir)
 """
 
     mock_llm = MagicMock()
@@ -223,8 +245,22 @@ canvas.save(final=True)
 
     # 6. Assertions
     assert "error" not in result, f"Image Processor failed: {result.get('error')}"
+    assert len(executed_turns) == 1, "Exactly one execute_python turn was expected"
+    cell_output = executed_turns[0]["output"]
+    assert "Traceback" not in cell_output, f"Kernel raised while cropping:\n{cell_output}"
+    assert "Error]" not in cell_output, f"Executor reported an error:\n{cell_output}"
+    assert "saved crop from" in cell_output, f"Unexpected cell output:\n{cell_output}"
     assert "outputs" in result, "Image Processor did not return outputs"
     assert len(result["outputs"]) > 0, "Image Processor did not return any output images"
+    final_entry = result["outputs"][-1]
+    assert final_entry.get("is_output") is True, (
+        "Final image was not produced by the executed code (fell back to the input image)"
+    )
+    assert final_entry["image_id"] != "img_0", (
+        "Final image must be the cropped result, not the input"
+    )
+    assert Path(final_entry["path"]).is_file(), f"Cropped image missing: {final_entry['path']}"
+    assert result.get("summary") == "Cropped target G-Logo region."
     logger.info("Test completed successfully! All assertions passed.")
 
 

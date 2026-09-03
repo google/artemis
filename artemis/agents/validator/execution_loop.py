@@ -18,12 +18,14 @@ Two execution tiers, selected by how many turn-ending actions the Operator
 emitted in the turn:
 
 * **Vetted single action** (one action): the pre-execution Safety Net runs
-  first (XML-first with pixel fallback), then the action executes locally with
-  a short retry loop.
-* **Fast-action burst** (two or more actions): the actions fire back to back
-  with no safety net, no retries and no screenshots in between. The burst is
-  the Operator's tool against turn latency (transient menus, toasts, control
-  bars); the Operator owns the risk. The first failure aborts the rest.
+  first (XML-first; the pixel judge decides only when the XML verdict is
+  weak), then the action executes locally with a short retry loop.
+* **Fast-action burst** (two or more actions): the first member is vetted by
+  the same Safety Net (the screen it was decided on is still the live screen)
+  and a refusal aborts the whole burst; the remaining members fire back to
+  back with no safety net, no retries and no screenshots in between. The burst
+  is the Operator's tool against turn latency (transient menus, toasts,
+  control bars); the Operator owns the risk. The first failure aborts the rest.
 
 Either way, a failure does not spawn a repair agent. The loop opens an
 *execution incident* (:mod:`artemis.agents.validator.incidents`) that rides in
@@ -49,8 +51,10 @@ from artemis.agents.validator.incidents import (
     KIND_SAFETY_NET,
     open_incident,
 )
+from artemis.agents.validator.precondition_xml import XML_VERDICT_STRONG
 from artemis.data_engine.trace import CURRENT_TRACE_ID
 from artemis.graph.state import State
+from artemis.utils.coordinates import normalize_action_dict
 from artemis.utils.logger import get_logger
 from artemis.utils.task_tree import format_action_clean
 
@@ -72,10 +76,29 @@ class _ActionOutcome:
     post_screenshot_b64: str | None = None
 
 
+#: ``safety_net_evidence`` keys the incident carries through verbatim (how the
+#: verdict was reached), next to the normalized location/occupant facts.
+_VERDICT_EVIDENCE_KEYS = ("xml_verdict", "xml_element_count", "xml_weak_reason", "pixel_judge")
+
+
+def _note_pixel_judge(action_item: dict, note: str) -> None:
+    """Records on the action item how the pixel judge figured in the verdict."""
+    action_item.setdefault("safety_net_evidence", {})["pixel_judge"] = note
+
+
 async def _run_precondition_gate(
     node, session, action_item: dict, state: State, pre_screenshot_b64: str, original_coords: list
 ) -> tuple[bool, ValidationErrorCategory, str]:
-    """Runs the pre-execution Safety Net: XML-first with pixel fallback."""
+    """Runs the pre-execution Safety Net: XML-first, pixel judge for weak verdicts.
+
+    The pixel judge (a VLM call) is a fallback for when the hierarchy could not
+    see the target, never a second opinion when it could. A STRONG XML failure
+    (healthy, non-trivial tree; the target's identifiers were searched and not
+    found) is final and blocks the action without consulting the judge. A WEAK
+    one (XML bypassed/timed out, sparse tree, identifier-less target) hands the
+    decision to the judge. The path taken is recorded in ``safety_net_evidence``
+    and appended to the reason as one short clause.
+    """
     is_explorer_candidate = action_item.get("target_class") == "ExplorerCandidate"
     is_ocr_element = "[OCR]" in str(action_item.get("target_class") or "")
     has_index_metadata = bool(
@@ -88,11 +111,17 @@ async def _run_precondition_gate(
         and not is_ocr_element
     )
 
-    if not has_index_metadata:
-        # Fall back to Pixel-based validation for pure coordinate/non-index interactions
-        return await node._validate_action_precondition_pixel(
+    async def _pixel_judge(note: str) -> tuple[bool, ValidationErrorCategory, str]:
+        passed, category, error = await node._validate_action_precondition_pixel(
             session, action_item, pre_screenshot_b64, original_coords, state=state
         )
+        if not passed:
+            _note_pixel_judge(action_item, note)
+        return passed, category, error
+
+    if not has_index_metadata:
+        # Pure coordinate/non-index interactions: the pixel judge is the only gate.
+        return await _pixel_judge("consulted alone (target had no hierarchy metadata)")
 
     # Index-based validation is fastest and safest when metadata is present
     (
@@ -110,27 +139,33 @@ async def _run_precondition_gate(
             f" ({validation_error}). Falling back to"
             " Pixel-based validation..."
         )
-        return await node._validate_action_precondition_pixel(
-            session, action_item, pre_screenshot_b64, original_coords, state=state
-        )
+        return await _pixel_judge("consulted alone (XML bypassed)")
 
+    evidence = action_item.get("safety_net_evidence") or {}
+    if evidence.get("xml_verdict") == XML_VERDICT_STRONG:
+        clause = (
+            f"XML verdict final: {evidence.get('xml_element_count')} nodes searched for the"
+            " target's identifiers; pixel judge not consulted"
+        )
+        _note_pixel_judge(action_item, "not consulted (strong XML verdict)")
+        logger.info(f"Pre-execution XML-based validation failed: {validation_error}. {clause}.")
+        return False, validation_category, f"{validation_error} [{clause}]"
+
+    weak_reason = evidence.get("xml_weak_reason") or "no verdict strength recorded"
     logger.info(
-        "Pre-execution XML-based validation failed:"
-        f" {validation_error}. Attempting Pixel-based"
-        " validation fallback..."
+        f"Pre-execution XML-based validation failed: {validation_error}. XML evidence is"
+        f" weak ({weak_reason}); asking the pixel judge..."
     )
-    (
-        pixel_passed,
-        pixel_category,
-        pixel_error,
-    ) = await node._validate_action_precondition_pixel(
-        session, action_item, pre_screenshot_b64, original_coords, state=state
+    pixel_passed, pixel_category, _pixel_error = await _pixel_judge(
+        "consulted (weak XML verdict); did not confirm the target"
     )
     if pixel_passed and pixel_category == ValidationErrorCategory.NONE:
-        logger.success("Pixel-based validation fallback PASSED! Overriding XML validation failure.")
+        logger.success("Pixel judge confirmed the target is present; overriding weak XML verdict.")
+        action_item.pop("safety_net_evidence", None)
         return True, ValidationErrorCategory.NONE, ""
 
-    return validation_passed, validation_category, validation_error
+    clause = f"XML evidence weak ({weak_reason}); pixel judge did not confirm the target"
+    return validation_passed, validation_category, f"{validation_error} [{clause}]"
 
 
 async def _attempt_local_execution(
@@ -180,14 +215,19 @@ async def _process_action(
     pre_screenshot_b64: str,
     *,
     burst: bool,
+    vetted: bool = True,
 ) -> _ActionOutcome:
-    """Runs precondition checks (vetted tier only) and execution for one action item."""
+    """Runs precondition checks (``vetted`` items only) and execution for one action item.
+
+    ``vetted`` is True for a single action and for the first member of a burst;
+    later burst members fire unvetted. ``burst`` members never retry.
+    """
     action_item = dict(action_item)  # Make a copy to avoid mutating original state actions
     outcome = _ActionOutcome(action_item=action_item)
     attempts_log = []
 
     validation_passed = True
-    if not burst:
+    if vetted:
         # 1. Pre-execution validation (Safety Net)
         original_coords = list(action_item.get("coordinates") or [])
         (
@@ -324,6 +364,9 @@ def _incident_evidence(ctx, outcome: _ActionOutcome) -> dict:
         evidence["occupant"] = raw["occupant"]
         if raw.get("occupant_bounds") is not None:
             evidence["occupant_bounds"] = raw["occupant_bounds"]
+    for key in _VERDICT_EVIDENCE_KEYS:
+        if raw.get(key) is not None:
+            evidence[key] = raw[key]
     return evidence
 
 
@@ -337,6 +380,17 @@ def _current_step_number(ctx, state: State) -> int | None:
     return None
 
 
+def _model_facing_action(ctx, action_item: dict) -> dict:
+    """The action item in the Operator's own 0–1000 coordinate space.
+
+    The live item carries the controller's pixels; every phrase rendered for
+    a model is normalized first, and the space marker makes that idempotent.
+    """
+    width = getattr(getattr(ctx, "device", None), "device_width", None) or 1080
+    height = getattr(getattr(ctx, "device", None), "device_height", None) or 2400
+    return normalize_action_dict(action_item, width, height)
+
+
 def _build_incident(ctx, state: State, outcome: _ActionOutcome, *, index: int, total: int) -> dict:
     step_number = _current_step_number(ctx, state)
     return open_incident(
@@ -345,7 +399,7 @@ def _build_incident(ctx, state: State, outcome: _ActionOutcome, *, index: int, t
         category=outcome.error_category,
         reason=outcome.error_msg,
         action_item=outcome.action_item,
-        action_description=format_action_clean(outcome.action_item),
+        action_description=format_action_clean(_model_facing_action(ctx, outcome.action_item)),
         action_index=index,
         burst_size=total,
         step_number=step_number,
@@ -371,8 +425,8 @@ async def run_validation_loop(node, state: State) -> dict:
     burst = total_actions > 1
     if burst:
         logger.info(
-            f"Fast-action burst: {total_actions} actions will fire back to back"
-            " without the safety net."
+            f"Fast-action burst: {total_actions} actions; the first is vetted by the"
+            " safety net, the rest fire back to back unvetted."
         )
 
     session = await node._get_mcp_session()
@@ -407,7 +461,16 @@ async def run_validation_loop(node, state: State) -> dict:
 
         try:
             outcome = await _process_action(
-                node, state, session, action_item, action_name, last_screenshot_b64, burst=burst
+                node,
+                state,
+                session,
+                action_item,
+                action_name,
+                last_screenshot_b64,
+                burst=burst,
+                # The first burst member was decided on the live screen, so the
+                # safety net still applies to it; later members fire unvetted.
+                vetted=(not burst or index == 0),
             )
             success = outcome.success
             execution.append(outcome.action_item)

@@ -33,6 +33,7 @@ from artemis.graph.state import State
 from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
 from artemis.tools.command_tool import get_run_short_adb_command_tool
 from artemis.tools.diagnoser_submit_answer_tool import get_submit_answer_tool
+from artemis.tools.history import get_history_tools
 from artemis.tools.index import get_tool_by_name
 from artemis.tools.log_tool import get_analyze_logs_tool
 from artemis.tools.mobile.read_hierarchy import get_ui_hierarchy_tool
@@ -40,6 +41,8 @@ from artemis.tools.scratchpad import get_list_notes_tool, get_read_note_tool
 from artemis.tools.tool_wrapper import (
     get_tool_result_content,
     invoke_tool_with_injection,
+    split_multimodal_result,
+    tool_result_messages,
 )
 from artemis.tools.video_tool import get_video_analyzer_tool
 from artemis.tools.wait_tool import get_wait_tool
@@ -63,6 +66,8 @@ class Diagnoser:
     def __init__(self, ctx: ArtemisContext):
         self.ctx = ctx
         self.is_device_online = self._is_device_online()
+        #: The model of the current run; decides how screenshot results travel.
+        self._llm = None
 
     def _is_device_online(self) -> bool:
         try:
@@ -101,6 +106,7 @@ class Diagnoser:
             get_run_short_adb_command_tool(self.ctx),
             get_wait_tool(self.ctx),
             get_ui_hierarchy_tool(self.ctx),
+            *get_history_tools(self.ctx),
             get_submit_answer_tool(self.ctx),
         ]
         if not self.is_device_online:
@@ -452,8 +458,13 @@ class Diagnoser:
             status="success",
         )
 
-    async def _run_tool(self, tc: dict, traced_tools: list, state: State) -> ToolMessage:
-        """Executes one requested tool call and wraps its result as a tool message."""
+    async def _run_tool(self, tc: dict, traced_tools: list, state: State) -> list[BaseMessage]:
+        """Executes one requested tool call and wraps its result as messages.
+
+        Text results are one tool message; a step screenshot travels in the
+        carrier the model's provider accepts (``tool_result_messages``), so
+        base64 never lands in a text field.
+        """
         tool_name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
         logger.info(f"Diagnoser requested tool: {tool_name}")
 
@@ -461,7 +472,7 @@ class Diagnoser:
         status = "success"
         try:
             if tool_name == "video_analyzer":
-                return self._start_video_job(tc, traced_tools, state)
+                return [self._start_video_job(tc, traced_tools, state)]
 
             if ":" in tool_name:
                 tool_to_run = get_tool_by_name(tool_name, traced_tools)
@@ -482,12 +493,7 @@ class Diagnoser:
                             state=state,
                         )
                         result = get_tool_result_content(result_obj)
-                        if isinstance(result, list):
-                            result_str = "\n".join(map(str, result))
-                        elif not isinstance(result, str):
-                            result_str = str(result)
-                        else:
-                            result_str = result
+                        result_str, _ = split_multimodal_result(result)
                         span.result = result
                         if result_str.startswith("Error"):
                             status = "error"
@@ -506,26 +512,21 @@ class Diagnoser:
             result = f"Error running tool {tool_name}: {e}"
             status = "error"
 
-        return ToolMessage(
-            tool_call_id=tc["id"],
-            content=result,
-            status=status,
-        )
+        return tool_result_messages(tc["id"], result, name=tool_name, status=status, llm=self._llm)
 
     async def _execute_tool_calls(
         self, tool_calls: list, traced_tools: list, state: State
-    ) -> list[ToolMessage]:
+    ) -> list[BaseMessage]:
         """Executes all requested tools in parallel, skipping ``google_search``."""
         active_tool_calls = [
             tc
             for tc in tool_calls
             if (tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]) != "google_search"
         ]
-        return list(
-            await asyncio.gather(
-                *(self._run_tool(tc, traced_tools, state) for tc in active_tool_calls)
-            )
+        batches = await asyncio.gather(
+            *(self._run_tool(tc, traced_tools, state) for tc in active_tool_calls)
         )
+        return [message for batch in batches for message in batch]
 
     @trace(type="agent", name="diagnoser")
     async def run(self, prompt: str, state: State) -> str:
@@ -534,6 +535,7 @@ class Diagnoser:
         system_prompt, checker_feedback_template = self._load_prompt_config()
 
         base_llm = get_llm(ctx=self.ctx, name="diagnoser")
+        self._llm = base_llm
         traced_tools = self._build_traced_tools()
 
         plan_and_history = self._build_plan_and_history()

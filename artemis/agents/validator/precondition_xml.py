@@ -51,6 +51,15 @@ W_TEXT = 0.4
 W_BOUNDS = 0.3
 W_COORD = 0.3
 
+#: Strength of a failed XML verdict, recorded in ``safety_net_evidence``.
+#: STRONG verdicts are final; WEAK ones hand the decision to the pixel judge.
+XML_VERDICT_STRONG = "strong"
+XML_VERDICT_WEAK = "weak"
+
+#: A live hierarchy with fewer nodes than this is treated as sparse (a WebView,
+#: game canvas or half-drawn screen): its "not found" is weak evidence.
+XML_STRONG_MIN_ELEMENTS = 8
+
 
 async def validate_action_precondition(
     node, session, action_item: dict, state: State | None = None
@@ -527,6 +536,45 @@ def _describe_occupation(
     return is_occupied, occupant_desc, occupant_bounds
 
 
+def _count_nodes(elements) -> int:
+    """Counts hierarchy nodes, descending into nested ``children`` lists."""
+    total = 0
+    for elem in elements or []:
+        if isinstance(elem, dict):
+            total += 1 + _count_nodes(elem.get("children") or [])
+    return total
+
+
+def classify_xml_verdict(element_count: int, target_text, target_resource_id) -> tuple[str, str]:
+    """Grades a failed XML verdict as strong or weak.
+
+    STRONG: the hierarchy is non-trivial AND the target carried identifiers
+    (resource-id / text / content-desc) that were searched and not matched.
+    Anything else (sparse tree, identifier-less target such as bare bounds from
+    a hit test) is WEAK, and the pixel judge gets the final say.
+
+    Returns ``(strength, weak_reason)``; ``weak_reason`` is empty for STRONG.
+    """
+    if element_count < XML_STRONG_MIN_ELEMENTS:
+        return XML_VERDICT_WEAK, f"sparse hierarchy ({element_count} nodes)"
+    if not (target_text or target_resource_id):
+        return XML_VERDICT_WEAK, "target had no resource-id/text to search for"
+    return XML_VERDICT_STRONG, ""
+
+
+def _annotate_verdict_strength(
+    action_item: dict, elements: list, target_text, target_resource_id
+) -> None:
+    """Records the verdict strength on the action item's ``safety_net_evidence``."""
+    count = _count_nodes(elements)
+    strength, weak_reason = classify_xml_verdict(count, target_text, target_resource_id)
+    evidence = action_item.setdefault("safety_net_evidence", {})
+    evidence["xml_verdict"] = strength
+    evidence["xml_element_count"] = count
+    if weak_reason:
+        evidence["xml_weak_reason"] = weak_reason
+
+
 def _classify_failure(
     elements: list,
     action_item: dict,
@@ -602,6 +650,9 @@ async def validate_action_precondition_single(
     target_bounds = action_item.get("target_bounds")  # [l, t, r, b]
     target_resource_id = action_item.get("target_resource_id")
 
+    # Evidence belongs to one attempt; a retry must not inherit a stale verdict.
+    action_item.pop("safety_net_evidence", None)
+
     width, height = _resolve_screen_dims(ctx, state)
 
     # Calculate diagonal-based scale factor for resolution-independent thresholds
@@ -659,7 +710,7 @@ async def validate_action_precondition_single(
     if best["score"] >= threshold:
         return _handle_match_success(action_item, best, target_text, scale_factor)
 
-    return _classify_failure(
+    verdict = _classify_failure(
         elements,
         action_item,
         best,
@@ -670,3 +721,5 @@ async def validate_action_precondition_single(
         height=height,
         scale_factor=scale_factor,
     )
+    _annotate_verdict_strength(action_item, elements, target_text, target_resource_id)
+    return verdict

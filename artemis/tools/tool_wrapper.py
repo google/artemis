@@ -15,11 +15,12 @@
 from collections.abc import Callable
 import functools
 import inspect
+import re
 import time
-from typing import Annotated, Any, get_args, get_origin
+from typing import Annotated, Any, Literal, get_args, get_origin
 import uuid
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import InjectedToolCallId
 from langgraph.prebuilt import InjectedState
@@ -168,3 +169,104 @@ def get_tool_result_content(result: Any) -> Any:
     if isinstance(result, ToolMessage):
         return result.content
     return result
+
+
+# --- Multimodal tool results ------------------------------------------------------------
+
+ImageCarrier = Literal["tool", "human"]
+
+#: Providers whose tool-result messages may carry image parts directly.
+_TOOL_IMAGE_PROVIDERS = frozenset({"google", "anthropic"})
+
+_STEP_RE = re.compile(r"\bstep\s+(\d+)", re.IGNORECASE)
+
+
+def split_multimodal_result(result: Any) -> tuple[str, list[dict[str, Any]]]:
+    """Splits a tool result into its text and its image content blocks.
+
+    Plain strings have no images; content-block lists contribute their text
+    blocks (joined by newlines) and their ``image_url`` / ``image`` blocks.
+    ``ToolMessage`` results are unwrapped first.
+    """
+    content = get_tool_result_content(result)
+    if content is None:
+        return "", []
+    if isinstance(content, list):
+        texts: list[str] = []
+        images: list[dict[str, Any]] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in ("image_url", "image"):
+                images.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                texts.append(str(block.get("text") or ""))
+            else:
+                texts.append(str(block))
+        return "\n".join(t for t in texts if t), images
+    return content if isinstance(content, str) else str(content), []
+
+
+def resolve_image_carrier(llm_or_provider: Any) -> ImageCarrier:
+    """Which message carries images returned by a tool for this LLM.
+
+    Gemini (direct API) and Anthropic accept image parts inside the tool
+    result message itself (``"tool"``). Vertex AI and the OpenAI-compatible
+    providers (openai / openrouter / xai / ...) reject them there, so the
+    image travels in a ``HumanMessage`` that immediately follows the textual
+    tool result (``"human"``). Accepts a provider name, a provider enum, or an
+    LLM whose ``endpoint.provider`` names the provider that actually issues
+    the request (a fallback model is judged by its own provider).
+    """
+    provider: Any = llm_or_provider
+    if provider is not None and not isinstance(provider, str):
+        # An LLM (RobustChatModelWrapper) names its provider on ``endpoint``;
+        # anything without an endpoint is taken as the provider itself.
+        endpoint = getattr(provider, "endpoint", None)
+        if endpoint is not None:
+            provider = getattr(endpoint, "provider", None)
+    value = str(getattr(provider, "value", provider) or "").lower()
+    return "tool" if value in _TOOL_IMAGE_PROVIDERS else "human"
+
+
+def tool_result_messages(
+    tool_call_id: str,
+    result: Any,
+    *,
+    name: str | None = None,
+    status: str = "success",
+    image_carrier: ImageCarrier | None = None,
+    llm: Any = None,
+) -> list[BaseMessage]:
+    """The conversation messages that deliver one tool result to the model.
+
+    Text-only results become a single ``ToolMessage``. Results carrying images
+    (e.g. ``get_step_screenshot``) are delivered according to the image
+    carrier — given explicitly or resolved from ``llm`` — so every agent loop
+    handles multimodal tool results the same way and no loop ever pastes
+    base64 into a text field. The tool call id, name and status are preserved.
+    """
+    text, images = split_multimodal_result(result)
+    extra = {"name": name} if name else {}
+    if not images:
+        content = get_tool_result_content(result)
+        if not isinstance(content, (str, list)):
+            content = text
+        return [ToolMessage(tool_call_id=tool_call_id, content=content, status=status, **extra)]
+
+    carrier = image_carrier or resolve_image_carrier(llm)
+    if carrier == "tool":
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
+        return [
+            ToolMessage(
+                tool_call_id=tool_call_id, content=[*blocks, *images], status=status, **extra
+            )
+        ]
+
+    match = _STEP_RE.search(text)
+    caption = f"[Screenshot returned by {name or 'the tool'}"
+    if match:
+        caption += f" for step {match.group(1)}"
+    caption += "]"
+    return [
+        ToolMessage(tool_call_id=tool_call_id, content=text, status=status, **extra),
+        HumanMessage(content=[{"type": "text", "text": caption}, *images]),
+    ]

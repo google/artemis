@@ -1,4 +1,4 @@
-import { consolidateLogsToBlocks, getSortedStepEvents } from './stream-aggregator.util';
+import { consolidateLogsToBlocks, getSortedStepEvents, persistedStreamToSegments } from './stream-aggregator.util';
 
 describe('stream aggregator timeline ordering', () => {
   it('interleaves text, tools, and actions by timestamp', () => {
@@ -203,7 +203,7 @@ describe('stream aggregator checker lane', () => {
           parent_trace_id: 'trace-checker-1',
           agent_name: 'checker',
           type: 'tool',
-          name: 'get_step_detail',
+          name: 'replay_steps',
           status: 'success',
           timestamp: '2026-08-25T20:00:07.000Z'
         }
@@ -221,6 +221,114 @@ describe('stream aggregator checker lane', () => {
     expect(events.map((e) => e.type)).toEqual(['text', 'tool', 'text']);
     expect(events[0].data.text).toBe('Let me look at step 2. Done.');
     expect(events[2].data.text).toBe('The alarm is there.');
+  });
+
+  it('rebuilds the persisted transcript into the same interleaved segments as the live stream', () => {
+    const transcript = {
+      attempt_id: 'abc#1',
+      checkpoint_id: 'abc',
+      phase: 'checkpoint',
+      trace_id: 'trace-checker-1',
+      ts: 1787688009,
+      truncated: false,
+      segments: [
+        // 1787688006 = 2026-08-25T20:00:06Z
+        { execution_id: 'exec-1', role: 'thought', when: 1787688006, text: 'Inspecting the alarm list' },
+        { execution_id: 'exec-1', role: 'answer', when: 1787688006.5, text: 'Let me look at step 2.' },
+        { execution_id: 'exec-2', role: 'answer', when: 1787688008, text: 'The alarm is there.' },
+        { execution_id: 'exec-3', role: 'answer', when: 1787688008.5, text: '' }
+      ]
+    };
+    const segments = persistedStreamToSegments(transcript);
+    expect(segments).toEqual([
+      { execution_id: 'exec-1', stream_type: 'thinking', text: 'Inspecting the alarm list', timestamp: '2026-08-25T20:00:06.000Z', isCompleted: true },
+      { execution_id: 'exec-1', stream_type: 'text', text: 'Let me look at step 2.', timestamp: '2026-08-25T20:00:06.500Z', isCompleted: true },
+      { execution_id: 'exec-2', stream_type: 'text', text: 'The alarm is there.', timestamp: '2026-08-25T20:00:08.000Z', isCompleted: true }
+    ]);
+    expect(persistedStreamToSegments(null)).toEqual([]);
+
+    // Historical session: only the ledger backfill (attempt_finished carrying
+    // the rebuilt segments) and the relocated tool trace exist.
+    const tool = {
+      type: 'trace_recorded',
+      timestamp: '2026-08-25T20:00:07.000Z',
+      data: {
+        trace_id: 'tool-detail',
+        parent_trace_id: 'trace-checker-1',
+        agent_name: 'checker',
+        type: 'tool',
+        name: 'replay_steps',
+        status: 'success',
+        timestamp: '2026-08-25T20:00:07.000Z'
+      }
+    };
+    const historical = consolidateLogsToBlocks([
+      {
+        type: 'checker_event',
+        timestamp: '2026-08-25T20:00:09.000Z',
+        checks_snapshot: true,
+        data: {
+          event: 'attempt_finished',
+          phase: 'checkpoint',
+          attempt_id: 'abc#1',
+          checkpoint_id: 'abc',
+          trace_id: 'trace-checker-1',
+          status: 'done',
+          verdicts: [{ item_text: 'alarm exists', kind: 'verify', status: 'passed', evidence: 'seen' }],
+          findings: [],
+          ts: 1756152009,
+          stream_segments: segments
+        }
+      },
+      tool
+    ]);
+    const block = historical.find((b) => b.id === 'checker-abc#1')!;
+    expect(block.data.stream_segments).toEqual(segments);
+    expect(block.data.operator_native_thinking).toBe('Inspecting the alarm list');
+    expect(block.data.operator_raw_thinking).toBe('Let me look at step 2.\n\nThe alarm is there.');
+    expect(block.data.operator_native_thinking_timestamp).toBe('2026-08-25T20:00:06.000Z');
+    expect(block.data.operator_raw_thinking_timestamp).toBe('2026-08-25T20:00:06.500Z');
+    const events = getSortedStepEvents(block.data);
+    expect(events.map((e) => e.type)).toEqual(['thinking', 'text', 'tool', 'text']);
+    expect(events.map((e) => e.data.text ?? e.data.name)).toEqual([
+      'Inspecting the alarm list',
+      'Let me look at step 2.',
+      'replay_steps',
+      'The alarm is there.'
+    ]);
+
+    // Live session: the same turns arrived as llm_stream chunks; a later
+    // ledger backfill must neither duplicate nor reorder them.
+    const chunk = (execId: string, streamType: string, timestamp: string, text: string) => ({
+      type: 'llm_stream',
+      timestamp,
+      data: { execution_id: execId, parent_trace_id: 'trace-checker-1', stream_type: streamType, text, isCompleted: true }
+    });
+    const live = consolidateLogsToBlocks([
+      started,
+      chunk('exec-1', 'thinking', '2026-08-25T20:00:06.000Z', 'Inspecting the alarm list'),
+      chunk('exec-1', 'text', '2026-08-25T20:00:06.500Z', 'Let me look at step 2.'),
+      tool,
+      chunk('exec-2', 'text', '2026-08-25T20:00:08.000Z', 'The alarm is there.'),
+      {
+        type: 'checker_event',
+        timestamp: '2026-08-25T20:00:09.000Z',
+        data: { event: 'attempt_finished', attempt_id: 'abc#1', status: 'done', verdicts: [], findings: [], ts: 1756152009 }
+      },
+      {
+        type: 'checker_event',
+        timestamp: '2026-08-25T20:00:09.000Z',
+        checks_snapshot: true,
+        data: { event: 'attempt_finished', attempt_id: 'abc#1', status: 'done', ts: 1756152009, stream_segments: segments }
+      }
+    ]);
+    const liveBlock = live.find((b) => b.id === 'checker-abc#1')!;
+    expect(liveBlock.data.stream_segments.map((s: any) => [s.execution_id, s.stream_type, s.text])).toEqual(
+      segments.map((s) => [s.execution_id, s.stream_type, s.text])
+    );
+    expect(getSortedStepEvents(liveBlock.data).map((e) => e.data.text ?? e.data.name)).toEqual(
+      events.map((e) => e.data.text ?? e.data.name)
+    );
   });
 
   it('builds the run outcome block once and keeps it idempotent', () => {

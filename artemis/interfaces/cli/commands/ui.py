@@ -16,6 +16,7 @@
 
 import logging
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ import urllib.request
 import webbrowser
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 import typer
 
@@ -87,6 +89,106 @@ def _showcase_build_required(showcase_dir: Path) -> bool:
     return any(path.exists() and path.stat().st_mtime > build_time for path in input_paths)
 
 
+def _npm_install_required(showcase_dir: Path) -> bool:
+    """Return whether ``node_modules`` is missing or older than the package manifests.
+
+    npm rewrites ``node_modules/.package-lock.json`` on every successful
+    install, so its mtime is the "dependencies last synced" stamp.
+    """
+    stamp = showcase_dir / "node_modules" / ".package-lock.json"
+    if not stamp.exists():
+        return True
+    synced_at = stamp.stat().st_mtime
+    manifests = (showcase_dir / "package.json", showcase_dir / "package-lock.json")
+    return any(path.exists() and path.stat().st_mtime > synced_at for path in manifests)
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_HEARTBEAT_INTERVAL_SECONDS = 15.0
+
+
+def _format_elapsed(seconds: float) -> str:
+    """``42s`` / ``3m 51s``."""
+    whole = int(seconds)
+    if whole < 60:
+        return f"{whole}s"
+    return f"{whole // 60}m {whole % 60:02d}s"
+
+
+def _run_build_step(console: Console, label: str, cmd: list[str], cwd: Path) -> None:
+    """Run one build step, relaying its output live and raising on failure.
+
+    The child's stdout/stderr are forwarded line by line (ANSI stripped,
+    indented, dimmed) so npm summaries, ``ng build`` progress and any error
+    reach the terminal as they happen. On an interactive terminal a spinner
+    with the elapsed time keeps ticking through the long silent phases
+    (downloads, bundling); without a TTY a plain heartbeat line is printed
+    every 15 seconds instead so logs are not flooded with spinner frames.
+    """
+    started = time.monotonic()
+    console.print(f"   [bold]{label}[/bold]")
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert process.stdout is not None
+
+    def relay_line(raw: str) -> None:
+        line = _ANSI_ESCAPE_RE.sub("", raw).rstrip()
+        if line.strip():
+            console.print(f"      {escape(line)}", style="dim", highlight=False)
+
+    def stream_output(status=None) -> None:
+        last_heartbeat = started
+        for raw in process.stdout:
+            relay_line(raw)
+            now = time.monotonic()
+            if status is not None:
+                status.update(f"{label} … {_format_elapsed(now - started)}")
+            elif now - last_heartbeat >= _HEARTBEAT_INTERVAL_SECONDS:
+                console.print(f"      still running… {_format_elapsed(now - started)}")
+                last_heartbeat = now
+
+    if console.is_terminal:
+        with console.status(f"{label} … 0s", spinner="dots") as status:
+            ticker_stop = threading.Event()
+
+            def tick() -> None:
+                while not ticker_stop.wait(1.0):
+                    status.update(f"{label} … {_format_elapsed(time.monotonic() - started)}")
+
+            ticker = threading.Thread(target=tick, daemon=True)
+            ticker.start()
+            try:
+                stream_output(status)
+            finally:
+                ticker_stop.set()
+                ticker.join(timeout=2.0)
+    else:
+        heartbeat_stop = threading.Event()
+
+        def heartbeat() -> None:
+            while not heartbeat_stop.wait(_HEARTBEAT_INTERVAL_SECONDS):
+                console.print(f"      still running… {_format_elapsed(time.monotonic() - started)}")
+
+        beat = threading.Thread(target=heartbeat, daemon=True)
+        beat.start()
+        try:
+            stream_output()
+        finally:
+            heartbeat_stop.set()
+            beat.join(timeout=2.0)
+
+    returncode = process.wait()
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, cmd)
+
+
 def ensure_showcase_built(console: Console) -> None:
     """Rebuild the Angular Showcase UI when its sources are newer than the dist build."""
     from artemis.config.paths import ROOT_DIR
@@ -105,12 +207,26 @@ def ensure_showcase_built(console: Console) -> None:
     console.print(
         "   [yellow]🎨 Showcase UI sources changed. Compiling Angular Showcase UI...[/yellow]"
     )
+    started = time.monotonic()
     try:
-        subprocess.run([npm_executable, "install", "--silent"], cwd=showcase_dir, check=True)
-        subprocess.run([npm_executable, "run", "build"], cwd=showcase_dir, check=True)
-        console.print("   [green]✓ Showcase UI built successfully.[/green]\n")
+        if _npm_install_required(showcase_dir):
+            _run_build_step(
+                console,
+                "① npm install (dependencies changed)",
+                [npm_executable, "install", "--no-audit", "--no-fund", "--loglevel=warn"],
+                showcase_dir,
+            )
+        _run_build_step(console, "② ng build", [npm_executable, "run", "build"], showcase_dir)
+        console.print(
+            f"   [green]✓ Showcase UI built in {_format_elapsed(time.monotonic() - started)}."
+            "[/green]\n"
+        )
     except Exception as e:
-        console.print(f"   [red]⚠ Failed to auto-build Showcase UI: {e}[/red]\n")
+        console.print(
+            f"   [red]⚠ Failed to auto-build Showcase UI: {e}[/red]\n"
+            "     [dim]Build it by hand with: cd apps/showcase_ui && npm install && "
+            "npm run build[/dim]\n"
+        )
 
 
 def load_session_reconciler() -> None:

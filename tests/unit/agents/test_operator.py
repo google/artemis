@@ -113,6 +113,7 @@ async def test_perform_action_validation():
         {
             "action": "tap",
             "coordinates": [200, 300],
+            "coordinate_space": "pixel",
             "normalized_coordinates": [185, 125],
             "times": 1,
             "delay_ms": 100,
@@ -143,6 +144,7 @@ async def test_perform_action_validation():
     assert actions[0] == {
         "action": "focus_and_input_text",
         "coordinates": [400, 500],
+        "coordinate_space": "pixel",
         "normalized_coordinates": [370, 208],
         "text": "hello",
         "clear_before_input": True,
@@ -171,6 +173,7 @@ async def test_perform_action_validation():
         {
             "action": "tap",
             "coordinates": [400, 500],
+            "coordinate_space": "pixel",
             "normalized_coordinates": [370, 208],
             "times": 1,
             "delay_ms": 100,
@@ -263,6 +266,7 @@ async def test_bare_coordinate_click_enriched_by_hit_test():
         {
             "action": "tap",
             "coordinates": [540, 1440],
+            "coordinate_space": "pixel",
             "normalized_coordinates": [500, 600],
             "times": 1,
             "delay_ms": 100,
@@ -784,6 +788,7 @@ async def test_long_press_action_translation():
         {
             "action": "long_press_on",
             "coordinates": [200, 300],
+            "coordinate_space": "pixel",
             "normalized_coordinates": [185, 125],
             "duration": 1500,
             "target_text": "Item 1",
@@ -806,6 +811,7 @@ async def test_long_press_action_translation():
         {
             "action": "long_press_on",
             "coordinates": [540, 1440],
+            "coordinate_space": "pixel",
             "normalized_coordinates": [500, 600],
             "duration": 1000,
             "target_text": None,

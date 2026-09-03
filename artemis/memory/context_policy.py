@@ -12,22 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ContextPolicy: the declarative per-agent compiled-history policy table (M4).
+"""Per-agent policies for rendering compiled history.
 
-Every production caller of :func:`artemis.utils.task_tree.build_plan_and_history`
-used to hard-code its visibility kwargs at the call site. This module gathers
-those call sites into one declaration per agent — the rendered output for each
-agent is byte-identical to the previous hard-coded call (pinned by the golden
-tests in ``tests/unit/memory/test_context_policy.py``) — and adds the M4 chunk
-hand-off: when the transcript flag is on and history chunks exist, the
-compiled view replaces chunked-away step lines with chunk blocks.
+Each policy sets the visibility options for
+:func:`artemis.utils.task_tree.build_plan_and_history`. When transcript mode
+is enabled, compressed steps are rendered as chunk blocks.
 
-Chunk view per policy (§10 decision 4):
+Chunk views:
 
 - ``"full"`` (outputter / history_analyzer): the chunk's stored three-band
   rendering including the ③ full-width per-step ledger;
 - ``"digest"`` (everything else): bands ① + ② with the ③ ledger replaced by
-  a ``ledger via recall_history`` marker line.
+  a ``ledger via search_history`` marker line.
 
 Because chunks only exist when ``agent.memory.transcript.enabled`` is on, the
 flag-off output of every agent stays byte-for-byte unchanged.
@@ -46,7 +42,7 @@ logger = get_logger(__name__)
 
 #: Marker appended to a digest-view chunk block in place of the ③ ledger.
 DIGEST_LEDGER_MARKER_TEMPLATE = (
-    "③ Step action ledger: available via recall_history (Steps {start}–{end})"
+    "③ Step action ledger: available via search_history (Steps {start}–{end})"
 )
 
 #: The band-③ heading inside a chunk's stored ``rendered_text``.

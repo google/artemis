@@ -227,12 +227,17 @@
         "max_chunks": 8
         // "max_eras": 8 // independent era cap; omitted = follows max_chunks
       },
-      // Deterministic cold-history recall tool (Pro operator)
+      // search_history: deterministic keyword / step-range lookup over stored history
       "recall": {
         "enabled": true,
         "max_results": 5,
         "max_text_tokens": 2000,
-        "max_image_steps": 1
+        "screen_scan_steps": 150
+      },
+      // replay_steps: full step replays (whole trailing steps are dropped over budget)
+      "replay": {
+        "max_steps": 5,
+        "max_tokens": 12000
       }
     },
     // 🎬 Screen Recording & Video Analyzer Configuration

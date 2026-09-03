@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 import os
 import sqlite3
@@ -300,6 +301,89 @@ class SessionRepository:
                 if session_id and name:
                     result.setdefault(session_id, []).append(name)
             return result
+
+    def get_session_usage(self, session_id: str) -> dict[str, Any]:
+        """Aggregate measured LLM usage for one session.
+
+        Sums every ``llm_usage`` trace the token meter recorded (all agents,
+        Flash and Pro alike) and reports the prompt size of the latest
+        Operator/FlashRunner call as the live executor context. Also echoes
+        the profile and Pro tuning the run was started with, read from the
+        session's stored ``device_info``.
+        """
+        from artemis.services.token_meter import (
+            OPERATOR_CONTEXT_WINDOW_TOKENS,
+            OPERATOR_NODE_NAMES,
+        )
+
+        def _int(value: Any) -> int:
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        llm_calls = prompt = completion = total = cached = 0
+        operator_context: int | None = None
+        operator_context_at: float | None = None
+        with db_session(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT payload, timestamp FROM traces WHERE session_id = ?"
+                " AND type = 'llm_call' AND name = 'llm_usage' ORDER BY timestamp ASC",
+                (session_id,),
+            )
+            for row in cursor.fetchall():
+                raw = row["payload"]
+                try:
+                    payload = json.loads(raw) if isinstance(raw, str) else raw
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                p = _int(payload.get("prompt_tokens"))
+                c = _int(payload.get("completion_tokens"))
+                t = _int(payload.get("total_tokens")) or (p + c)
+                if t <= 0:
+                    continue
+                llm_calls += 1
+                prompt += p
+                completion += c
+                total += t
+                cached += _int(payload.get("cached_tokens"))
+                node = str(payload.get("node") or "").strip().lower()
+                if node in OPERATOR_NODE_NAMES:
+                    operator_context = _int(payload.get("context_base_tokens")) or p
+                    operator_context_at = row["timestamp"]
+
+            cursor.execute("SELECT device_info FROM sessions WHERE session_id = ?", (session_id,))
+            session_row = cursor.fetchone()
+
+        profile: str | None = None
+        run_tuning: dict[str, Any] | None = None
+        if session_row and session_row["device_info"]:
+            try:
+                d_info = json.loads(session_row["device_info"])
+            except (ValueError, TypeError):
+                d_info = None
+            if isinstance(d_info, dict):
+                profile = d_info.get("profile") or None
+                tuning = d_info.get("run_tuning")
+                if isinstance(tuning, dict) and tuning:
+                    run_tuning = dict(tuning)
+
+        return {
+            "session_id": session_id,
+            "llm_calls": llm_calls,
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+            "cached_tokens": cached,
+            "operator_context_tokens": operator_context,
+            "operator_context_window_tokens": OPERATOR_CONTEXT_WINDOW_TOKENS,
+            "operator_context_updated_at": operator_context_at,
+            "profile": profile,
+            "run_tuning": run_tuning,
+        }
 
     def get_session_by_id(self, session_id: str) -> dict[str, Any] | None:
         try:

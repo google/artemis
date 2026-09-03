@@ -12,83 +12,58 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-from pathlib import Path
-from typing import Any
+"""History Analyzer: answers natural-language questions about the session history.
 
-from langchain_core.messages import (
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
-from langchain_core.tools import BaseTool, tool
+Mounts the shared history tools (``search_history`` / ``replay_steps`` /
+``get_step_screenshot``) plus the read-only note tools; tool results enter the
+conversation through ``tool_result_messages`` so a fetched screenshot travels
+in the carrier the model's provider accepts.
+"""
+
+from pathlib import Path
+
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.tools import BaseTool
+
 from artemis.context import ArtemisContext
-from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan, trace
+from artemis.data_engine.trace import TraceSpan, trace
+from artemis.memory.context_policy import build_history_for
 from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
+from artemis.tools.history import get_history_tools
 from artemis.tools.scratchpad import (
     get_list_notes_tool_pure,
     get_read_note_tool_pure,
 )
-from artemis.utils.logger import get_logger
-from artemis.utils.notes import (
-    get_note_file_path,
-    get_notes_dir,
+from artemis.tools.tool_wrapper import (
+    invoke_tool_with_injection,
+    split_multimodal_result,
+    tool_result_messages,
 )
-from artemis.memory.context_policy import build_history_for
+from artemis.utils.logger import get_logger
+from artemis.utils.notes import get_note_file_path
 from artemis.utils.task_tree import get_active_subgoal_hashes
 
 logger = get_logger(__name__)
+
+_FALLBACK_SYSTEM_PROMPT = (
+    "You are a History Analyzer. Your role is to analyze the execution history"
+    " of a session and answer user queries in natural language.\nIf you need"
+    " the full record of specific steps, use the `replay_steps` tool; use"
+    " `search_history` to locate steps by keyword and `get_step_screenshot` to"
+    " look at a step's screen."
+)
 
 
 class HistoryAnalyzer:
     def __init__(self, ctx: ArtemisContext):
         self.ctx = ctx
 
-    def exec_get_step_details(self, start_step: int, end_step: int) -> str:
-        """Retrieve the detailed, full-granularity information for a range of steps (inclusive).
-
-        Use this when you need to inspect specific actions taken, operator
-        thinking, or execution results.
-        """
-        try:
-            s_step = int(start_step)
-            e_step = int(end_step)
-        except (ValueError, TypeError):
-            return (
-                f"Error: start_step and end_step must be integers, got {start_step} and {end_step}."
-            )
-
-        matched_steps = []
-        for s in getattr(self, "history_steps", []):
-            step_num = s.get("step_number")
-            if step_num is not None and s_step <= step_num <= e_step:
-                details = {
-                    "step_number": s.get("step_number"),
-                    "relative_time": s.get("relative_time"),
-                    "summary": s.get("summary"),
-                    "action_taken": s.get("action_taken"),
-                    "operator_raw_thinking": s.get("operator_raw_thinking"),
-                    "last_execution_result": s.get("last_execution_result"),
-                }
-                matched_steps.append(details)
-        if not matched_steps:
-            return f"No steps found in range [{s_step}, {e_step}]."
-        return json.dumps(matched_steps, indent=2, ensure_ascii=False)
-
-    def _get_step_details_tool(self, history_steps: list[dict[str, Any]]) -> BaseTool:
-        self.history_steps = history_steps
-
-        @tool
-        def get_step_details(start_step: int, end_step: int) -> str:
-            """Retrieve the detailed, full-granularity information for a range of steps (inclusive).
-
-            Use this when you need to inspect specific actions taken, operator
-            thinking, or execution results.
-            """
-            return self.exec_get_step_details(start_step, end_step)
-
-        return get_step_details
+    def _build_tools(self) -> list[BaseTool]:
+        return [
+            *get_history_tools(self.ctx),
+            get_list_notes_tool_pure(self.ctx),
+            get_read_note_tool_pure(self.ctx),
+        ]
 
     @trace(type="agent", name="history_analyzer")
     async def run(self, query: str) -> str:
@@ -96,14 +71,13 @@ class HistoryAnalyzer:
             return "Error: DataEngine is not available to retrieve history."
 
         # 1. Fetch all steps from Data Engine
-        self.history_steps = self.ctx.data_engine.get_agent_friendly_steps()
-        if not self.history_steps:
+        history_steps = self.ctx.data_engine.get_agent_friendly_steps()
+        if not history_steps:
             return "No history recorded for this session yet."
 
         # 2. Build the plan and history or step list
         plan_and_history = ""
         try:
-            notes_dir = get_notes_dir(self.ctx.data_engine.base_dir)
             current_plan = ""
             current_path = get_note_file_path(self.ctx.data_engine.base_dir, "task_plan")
             if current_path.exists():
@@ -114,7 +88,7 @@ class HistoryAnalyzer:
                 plan_and_history = build_history_for(
                     "history_analyzer",
                     current_plan,
-                    self.history_steps,
+                    history_steps,
                     active_subgoal_hash,
                     engine=self.ctx.data_engine,
                 )
@@ -127,7 +101,7 @@ class HistoryAnalyzer:
                 [
                     f"- Step {s.get('step_number')} ({s.get('relative_time')}):"
                     f" {s.get('summary') or 'No summary'}"
-                    for s in self.history_steps
+                    for s in history_steps
                 ]
             )
 
@@ -136,12 +110,7 @@ class HistoryAnalyzer:
         if prompt_path.exists():
             system_prompt_template = prompt_path.read_text(encoding="utf-8")
         else:
-            system_prompt_template = (
-                "You are a History Analyzer. Your role is to analyze the"
-                " execution history of a session and answer user queries in"
-                " natural language.\nIf you need specific details for a range"
-                " of steps, use the `get_step_details` tool."
-            )
+            system_prompt_template = _FALLBACK_SYSTEM_PROMPT
 
         system_message_content = (
             system_prompt_template + f"\n\n### Task Plan and Execution History:\n{plan_and_history}"
@@ -149,11 +118,8 @@ class HistoryAnalyzer:
 
         # 4. Prepare LLM and bind tools
         llm = get_llm(ctx=self.ctx, name="history_analyzer")
-        get_step_details = self._get_step_details_tool(self.history_steps)
-
-        list_notes_tool = get_list_notes_tool_pure(self.ctx)
-        read_note_tool = get_read_note_tool_pure(self.ctx)
-        llm = llm.bind_tools(tools=[get_step_details, list_notes_tool, read_note_tool])
+        tools = self._build_tools()
+        llm = llm.bind_tools(tools=tools)
 
         # 5. ReAct Loop
         messages: list[BaseMessage] = [
@@ -178,62 +144,38 @@ class HistoryAnalyzer:
             # Process tool calls
             for tc in response.tool_calls:
                 tool_name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
-                args = tc["args"]
+                args = dict(tc.get("args") or {})
+                tool = next((t for t in tools if t.name == tool_name), None)
 
                 with TraceSpan(name=tool_name, ctx=self.ctx) as span:
                     span.payload = {"args": args}
-                    if tool_name == "get_step_details":
-                        logger.info(
-                            f"HistoryAnalyzer executing tool get_step_details with args: {args}"
-                        )
-                        try:
-                            start_step = int(args.get("start_step", 0))
-                            end_step = int(args.get("end_step", 0))
-                            result = get_step_details.invoke(
-                                {"start_step": start_step, "end_step": end_step}
-                            )
-                            span.result = result
-                            status = "success"
-                        except Exception as e:
-                            span.status = "failed"
-                            span.error = str(e)
-                            result = f"Error running get_step_details: {e}"
-                            status = "error"
-                    elif tool_name == "list_notes":
-                        logger.info("HistoryAnalyzer executing tool list_notes")
-                        try:
-                            result = list_notes_tool.invoke({})
-                            span.result = result
-                            status = "success"
-                        except Exception as e:
-                            span.status = "failed"
-                            span.error = str(e)
-                            result = f"Error running list_notes: {e}"
-                            status = "error"
-                    elif tool_name == "read_note":
-                        logger.info(f"HistoryAnalyzer executing tool read_note with args: {args}")
-                        try:
-                            key = args.get("key", "")
-                            result = read_note_tool.invoke({"key": key})
-                            span.result = result
-                            status = "success"
-                        except Exception as e:
-                            span.status = "failed"
-                            span.error = str(e)
-                            result = f"Error running read_note: {e}"
-                            status = "error"
-                    else:
+                    if tool is None:
                         result = f"Error: Tool {tool_name} is not supported."
                         status = "error"
                         span.status = "failed"
                         span.error = result
+                    else:
+                        logger.info(f"HistoryAnalyzer executing tool {tool_name} with args: {args}")
+                        try:
+                            result = await invoke_tool_with_injection(
+                                tool=tool, args=args, tool_call_id=tc["id"]
+                            )
+                            text, _ = split_multimodal_result(result)
+                            status = "error" if text.startswith("Error") else "success"
+                            span.result = text
+                            if status == "error":
+                                span.status = "failed"
+                                span.error = text
+                        except Exception as e:
+                            span.status = "failed"
+                            span.error = str(e)
+                            result = f"Error running {tool_name}: {e}"
+                            status = "error"
 
-                messages.append(
-                    ToolMessage(
-                        tool_call_id=tc["id"],
-                        content=result,
-                        status=status,
-                    )
+                # A step screenshot travels in the carrier the model's provider
+                # accepts; text results stay a single ToolMessage.
+                messages.extend(
+                    tool_result_messages(tc["id"], result, name=tool_name, status=status, llm=llm)
                 )
 
         return "Error: HistoryAnalyzer failed to resolve the query within maximum turns."

@@ -621,3 +621,85 @@ async def test_next_segment_anchors_at_first_frame(mock_ctx, tmp_path):
     assert session.android_segment_started_at >= before
     assert session.android_rotation == 1
     assert session.local_video_path == tmp_path / "recording_001.mkv"
+
+
+@pytest.mark.asyncio
+async def test_stop_recording_passes_session_offsets_to_manifest(mock_ctx, tmp_path):
+    """The playlist manifest must carry each segment's real session-relative start."""
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+
+    seg0 = tmp_path / "recording.mkv"
+    seg0.write_bytes(b"segment 0")
+    seg1 = tmp_path / "recording_001.mkv"
+    seg1.write_bytes(b"segment 1")
+
+    now = time.time()
+    session_t0 = now - 40.0
+    # First frame landed 1.2s after the session started; rotation restarted
+    # scrcpy so segment 1 begins 11.5s after that first frame (10s of video + 1.5s gap).
+    recording_t0 = session_t0 + 1.2
+    session = RecordingSession(
+        video_id=uuid4(),
+        device_id="emulator-5554",
+        start_time=recording_t0,
+        data_engine_start_time=session_t0,
+        local_video_path=seg1,
+        android_video_segments=[seg0],
+        android_segment_records=[
+            {
+                "path": seg0,
+                "output_path": tmp_path / "recording.mp4",
+                "start": 0.0,
+                "end": 10.0,
+            }
+        ],
+        android_segment_index=1,
+        android_segment_started_at=recording_t0 + 11.5,
+        process=MagicMock(returncode=None, terminate=MagicMock(), wait=AsyncMock()),
+    )
+    set_active_session("emulator-5554", session)
+
+    manifest = AsyncMock(return_value=tmp_path / "recording.json")
+    with (
+        patch(
+            "artemis.controllers.unified_controller.remux_recording_to_mp4",
+            AsyncMock(side_effect=lambda src, dst: (dst.write_bytes(b"mp4"), True)[1]),
+        ),
+        patch("artemis.controllers.unified_controller.write_recording_manifest", manifest),
+    ):
+        res = await controller.stop_video_recording()
+
+    assert res.success is True
+    manifest.assert_awaited_once()
+    output_dir, mp4_paths, offsets = manifest.await_args.args
+    assert output_dir == tmp_path
+    assert mp4_paths == [tmp_path / "recording.mp4", tmp_path / "recording_001.mp4"]
+    assert abs(offsets[tmp_path / "recording.mp4"] - 1.2) < 0.01
+    assert abs(offsets[tmp_path / "recording_001.mp4"] - 12.7) < 0.01
+
+
+def test_segment_session_offsets_without_data_engine_anchor(tmp_path):
+    session = RecordingSession(
+        video_id=uuid4(),
+        device_id="emulator-5554",
+        start_time=1000.0,
+        data_engine_start_time=None,
+        local_video_path=tmp_path / "recording.mkv",
+        android_segment_records=[
+            {"path": tmp_path / "a.mkv", "output_path": tmp_path / "recording.mp4", "start": 0.0},
+            {
+                "path": tmp_path / "b.mkv",
+                "output_path": tmp_path / "recording_001.mp4",
+                "start": 7.5,
+            },
+        ],
+    )
+    fallback = tmp_path / "recording_converted.mp4"
+    offsets = UnifiedMobileController._segment_session_offsets(
+        session, [tmp_path / "recording.mp4", tmp_path / "recording_001.mp4", fallback]
+    )
+    assert offsets[tmp_path / "recording.mp4"] == 0.0
+    assert offsets[tmp_path / "recording_001.mp4"] == 7.5
+    # An emergency fallback remux has no record; it starts at the recording anchor.
+    assert offsets[fallback] == 0.0

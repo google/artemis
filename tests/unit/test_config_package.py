@@ -808,3 +808,42 @@ class TestVerificationLevelPresets:
             )
             == "off"
         )
+
+
+class TestRunTuningSummary:
+    """``run_tuning_for_profile``: the per-run tuning persisted with a session."""
+
+    def test_flash_has_no_tuning(self):
+        from artemis.config import CheckerConfig, ExplorerConfig, run_tuning_for_profile
+
+        kwargs = {"checker": CheckerConfig(), "explorer": ExplorerConfig()}
+        assert run_tuning_for_profile("flash", **kwargs) is None
+        assert run_tuning_for_profile(None, **kwargs) is None
+
+    def test_pro_reports_both_sliders(self):
+        from artemis.config import (
+            CheckerConfig,
+            ExplorerConfig,
+            checker_overrides_for_level,
+            run_tuning_for_profile,
+        )
+
+        summary = run_tuning_for_profile(
+            " Pro ",
+            checker=CheckerConfig(**checker_overrides_for_level("strict")),
+            explorer=ExplorerConfig(pro_mode="ultra"),
+        )
+        assert summary == {"verification_level": "strict", "explorer_mode": "ultra"}
+
+    def test_pro_defaults_match_launcher_defaults(self):
+        from artemis.config import (
+            CheckerConfig,
+            ExplorerConfig,
+            run_tuning_for_profile,
+            verification_level_for_checker,
+        )
+
+        checker, explorer = CheckerConfig(), ExplorerConfig()
+        summary = run_tuning_for_profile("pro", checker=checker, explorer=explorer)
+        assert summary["verification_level"] == verification_level_for_checker(checker)
+        assert summary["explorer_mode"] == explorer.resolve(profile="pro")

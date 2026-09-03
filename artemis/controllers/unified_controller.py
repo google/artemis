@@ -499,6 +499,31 @@ class UnifiedMobileController:
             max(0.0, end_time - session.start_time),
         )
 
+    @staticmethod
+    def _segment_session_offsets(
+        session: RecordingSession, mp4_paths: list[Path]
+    ) -> dict[Path, float]:
+        """Map each finalized segment MP4 to its first-frame offset from session start.
+
+        ``record["start"]`` is relative to the recording's own t=0 (the first
+        frame of the first segment); shifting it by the recording/DataEngine
+        anchor difference yields the session-relative offset the UI needs to
+        align step timestamps with the playlist.
+        """
+        anchor = session.data_engine_start_time
+        recording_shift = (session.start_time - anchor) if anchor is not None else 0.0
+        offsets: dict[Path, float] = {}
+        for record in session.android_segment_records:
+            output_path = Path(record.get("output_path") or record.get("path") or "")
+            if not output_path.name:
+                continue
+            offsets[output_path] = max(0.0, float(record.get("start", 0.0)) + recording_shift)
+        for path in mp4_paths:
+            # Emergency fallback remux of the live file has no record; it is
+            # the whole recording, so it starts at the recording anchor.
+            offsets.setdefault(path, max(0.0, recording_shift))
+        return offsets
+
     def _record_recording_failure(self, session: RecordingSession, message: str) -> None:
         if self.ctx and self.ctx.data_engine:
             self.ctx.data_engine.record_video_failure(
@@ -802,7 +827,9 @@ class UnifiedMobileController:
 
             final_video_path = mp4_paths[0]
             output_dir = final_video_path.parent
-            manifest_path = await write_recording_manifest(output_dir, mp4_paths)
+            manifest_path = await write_recording_manifest(
+                output_dir, mp4_paths, self._segment_session_offsets(session, mp4_paths)
+            )
 
             remove_active_session(device_id)
 

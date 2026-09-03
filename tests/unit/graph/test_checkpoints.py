@@ -702,3 +702,95 @@ async def test_exception_fail_open_releases_but_books_inconclusive(tmp_path):
     for r in read_ledger(tmp_path):
         assert r["status"] == "inconclusive"
         assert "checker blew up" in r["evidence"]
+
+
+# --- Attempt stream transcripts: bounded, append-only, replayable ------------------------
+
+
+def _seg(exec_id, text, role="answer", when=1.0):
+    return {"execution_id": exec_id, "role": role, "when": when, "text": text}
+
+
+def test_clamp_keeps_short_transcripts_verbatim():
+    from artemis.graph.checkpoints import clamp_stream_segments
+
+    segs = [_seg("a", "hello", "thought"), _seg("b", "world")]
+    out, dropped = clamp_stream_segments(segs, limit=20)
+    assert out == segs and dropped == 0
+    assert out[0] is not segs[0]  # copies, the input is never mutated
+
+
+def test_clamp_cuts_the_middle_once_and_keeps_head_and_tail():
+    from artemis.graph.checkpoints import clamp_stream_segments
+
+    segs = [
+        _seg("a", "A" * 40, "thought", when=1.0),
+        _seg("b", "B" * 40, when=2.0),
+        _seg("c", "C" * 40, when=3.0),
+        _seg("d", "D" * 40, when=4.0),
+    ]
+    out, dropped = clamp_stream_segments(segs, limit=100)
+
+    assert dropped == 60
+    # head: 50 chars = all of a + 10 of b; tail: 50 chars = 10 of c + all of d
+    assert [s["execution_id"] for s in out] == ["a", "b", "c", "d"]
+    assert out[0]["text"] == "A" * 40 and out[0]["role"] == "thought"
+    assert out[1]["text"] == "B" * 10 + "\n…[60 chars truncated]…\n"
+    assert out[2]["text"] == "C" * 10
+    assert out[3]["text"] == "D" * 40
+    joined = "".join(s["text"] for s in out)
+    assert joined.count("chars truncated") == 1
+    assert len(joined) == 100 + len("\n…[60 chars truncated]…\n")
+    # Timestamps and the other fields ride along untouched.
+    assert [s["when"] for s in out] == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_clamp_drops_segments_that_fall_entirely_into_the_cut():
+    from artemis.graph.checkpoints import clamp_stream_segments
+
+    segs = [_seg("a", "A" * 10), _seg("mid", "M" * 100), _seg("z", "Z" * 10)]
+    out, dropped = clamp_stream_segments(segs, limit=20)
+    assert dropped == 100
+    assert [s["execution_id"] for s in out] == ["a", "z"]
+    assert out[0]["text"] == "A" * 10
+    assert out[1]["text"] == "\n…[100 chars truncated]…\n" + "Z" * 10
+
+
+def test_clamp_single_huge_segment_keeps_both_ends():
+    from artemis.graph.checkpoints import clamp_stream_segments
+
+    out, dropped = clamp_stream_segments([_seg("a", "H" * 30 + "M" * 100 + "T" * 30)], limit=60)
+    assert dropped == 100
+    assert len(out) == 1
+    assert out[0]["text"] == "H" * 30 + "\n…[100 chars truncated]…\n" + "T" * 30
+
+
+def test_stream_records_round_trip_and_carry_truncation_flags(tmp_path):
+    from artemis.graph.checkpoints import (
+        STREAM_TEXT_LIMIT,
+        append_attempt_stream_record,
+        read_attempt_streams,
+        streams_path,
+    )
+
+    assert STREAM_TEXT_LIMIT == 20_000
+    append_attempt_stream_record(
+        tmp_path,
+        {"attempt_id": "abc#1", "trace_id": "t1", "segments": [_seg("a", "short")]},
+    )
+    append_attempt_stream_record(
+        tmp_path,
+        {"attempt_id": "abc#2", "trace_id": "t2", "segments": [_seg("b", "x" * 50)]},
+        limit=10,
+    )
+    with streams_path(tmp_path).open("a", encoding="utf-8") as f:
+        f.write("not json\n\n")
+
+    records = read_attempt_streams(tmp_path)
+    assert [r["attempt_id"] for r in records] == ["abc#1", "abc#2"]
+    assert records[0]["truncated"] is False and records[0]["dropped_chars"] == 0
+    assert records[0]["segments"] == [_seg("a", "short")]
+    assert isinstance(records[0]["ts"], float)
+    assert records[1]["truncated"] is True and records[1]["dropped_chars"] == 40
+    assert records[1]["segments"][0]["text"] == "x" * 5 + "\n…[40 chars truncated]…\n" + "x" * 5
+    assert read_attempt_streams(tmp_path / "nowhere") == []

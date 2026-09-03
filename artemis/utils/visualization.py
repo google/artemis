@@ -482,6 +482,8 @@ def crop_and_annotate_target(
 
     out_buf = io.BytesIO()
     if crop_size is None:
+        if cropped_img.mode != "RGB":
+            cropped_img = cropped_img.convert("RGB")
         cropped_img.save(out_buf, format="JPEG", quality=85)
     else:
         cropped_img.save(out_buf, format="PNG")
@@ -746,3 +748,42 @@ def draw_action_overlay_on_image(
 
     except Exception:
         return image_bytes
+
+
+def overlay_action_on_screenshot(image_bytes: bytes, action_obj: Any) -> bytes | None:
+    """Draws a recorded step action (as stored in ``action_taken``) onto the
+    step's before-action screenshot.
+
+    Accepts the raw stored action (a dict, or a burst list whose first member
+    is used), maps the usual coordinate keys into the drawing arguments and
+    returns the annotated JPEG bytes. Returns ``None`` when there is nothing to
+    draw (no action, no coordinates, or the drawing left the image unchanged).
+    Shared by the Checker's ``get_step_screenshot(which="overlay")`` and the
+    MCP trace inspector so both produce the same picture.
+    """
+    if not image_bytes:
+        return None
+    action = action_obj[0] if isinstance(action_obj, list) and action_obj else action_obj
+    if not isinstance(action, dict):
+        return None
+    act_name = action.get("action") or action.get("name") or ""
+    if not act_name:
+        return None
+    action_args = dict(action.get("args") or {})
+    for key in (
+        "target",
+        "coordinates",
+        "point",
+        "direction",
+        "sequence",
+        "targets",
+        "normalized_coordinates",
+    ):
+        if key in action and key not in action_args:
+            action_args[key] = action[key]
+    annotated = draw_action_overlay_on_image(
+        image_bytes=image_bytes, action_name=act_name, action_args=action_args
+    )
+    if not annotated or annotated == image_bytes:
+        return None
+    return annotated

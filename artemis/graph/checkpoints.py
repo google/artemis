@@ -15,7 +15,7 @@
 """Plan-driven checkpoint scheduling, the append-only verdict ledger, and exit
 settlement bookkeeping.
 
-Three invariants from the redesign govern everything here:
+Checkpoint processing preserves three invariants:
 
 1. **Append-only history**: the Operator's context is never rolled back or
    switched; verdicts influence the future (status flips forward, findings
@@ -57,6 +57,15 @@ logger = get_logger(__name__)
 
 LEDGER_FILENAME = "check_ledger.jsonl"
 RUN_OUTCOME_FILENAME = "run_outcome.json"
+#: Per-attempt transcript of the Checker's own streamed reasoning (one record
+#: per attempt, appended by the Checker when its run ends). Companion of the
+#: ledger for UI replay: the ledger books verdicts, this file keeps what the
+#: Checker said while reaching them.
+STREAMS_FILENAME = "check_streams.jsonl"
+#: Upper bound on the persisted text of one attempt (all segments together);
+#: the middle is cut out with a marker so both the opening and the conclusion
+#: survive.
+STREAM_TEXT_LIMIT = 20_000
 
 #: Event type published on the DataEngine bus (and forwarded over IPC/SSE to the
 #: admin console) for every visible step of the Checker's process.
@@ -297,6 +306,103 @@ def has_ledger_records(base_dir: str | Path) -> bool:
         return False
 
 
+# --- Attempt stream transcripts (append-only, one record per attempt) ----------------
+
+
+def streams_path(base_dir: str | Path) -> Path:
+    return Path(base_dir) / STREAMS_FILENAME
+
+
+def clamp_stream_segments(
+    segments: list[dict], limit: int = STREAM_TEXT_LIMIT
+) -> tuple[list[dict], int]:
+    """Bounds the total text of an attempt's stream segments to ``limit`` chars.
+
+    The head and the tail of the attempt (in stream order) are kept and the
+    middle is replaced by one ``…[N chars truncated]…`` marker, attached to the
+    segment where the cut happens. Returns ``(segments, dropped_chars)``;
+    segments left with no text are removed.
+    """
+    texts = [str(s.get("text") or "") for s in segments]
+    total = sum(len(t) for t in texts)
+    if total <= limit:
+        return [dict(s) for s in segments], 0
+
+    head_end = limit // 2
+    tail_start = total - (limit - head_end)
+    dropped = tail_start - head_end
+    marker = f"\n…[{dropped} chars truncated]…\n"
+    out: list[dict] = []
+    pos = 0
+    marker_done = False
+    for seg, text in zip(segments, texts):
+        start, end = pos, pos + len(text)
+        pos = end
+        piece = ""
+        if start < head_end:
+            piece += text[: max(0, min(len(text), head_end - start))]
+        if end > tail_start:
+            if not marker_done:
+                piece += marker
+                marker_done = True
+            piece += text[max(0, tail_start - start) :]
+        elif start < head_end < end and not marker_done:
+            piece += marker
+            marker_done = True
+        if not piece:
+            continue
+        out.append({**seg, "text": piece})
+    return out, dropped
+
+
+def append_attempt_stream_record(
+    base_dir: str | Path, record: dict, limit: int = STREAM_TEXT_LIMIT
+) -> None:
+    """Appends one attempt's streamed-reasoning transcript.
+
+    ``record["segments"]`` is a list of ``{execution_id, role, when, text}``
+    dicts (``role`` is ``thought`` for the model's reasoning stream and
+    ``answer`` for its visible text) in the order the turns started. The text
+    is clamped to ``limit`` chars before writing; the record then carries
+    ``truncated`` / ``dropped_chars``.
+    """
+    record = dict(record)
+    record.setdefault("ts", time.time())
+    segments, dropped = clamp_stream_segments(list(record.get("segments") or []), limit)
+    record["segments"] = segments
+    record["truncated"] = dropped > 0
+    record["dropped_chars"] = dropped
+    path = streams_path(base_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.error(f"Failed to append check stream record: {e}")
+
+
+def read_attempt_streams(base_dir: str | Path) -> list[dict]:
+    path = streams_path(base_dir)
+    if not path.exists():
+        return []
+    records: list[dict] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                loaded = json.loads(line)
+            except Exception:
+                logger.warning(f"Skipping malformed check stream line: {line[:120]}")
+                continue
+            if isinstance(loaded, dict):
+                records.append(loaded)
+    except Exception as e:
+        logger.error(f"Failed to read check streams: {e}")
+    return records
+
+
 # --- Plan helpers --------------------------------------------------------------------
 
 
@@ -355,7 +461,7 @@ def revert_subgoal_status(ctx, subgoal_key: str) -> bool:
         return False
 
 
-# --- Verify-finding persistence (four layers; redesign "verify finding") -------------
+# --- Verify-finding persistence (four layers) -------------
 #
 # Layer 1: the append-only ledger above (single source of truth — unchanged).
 # Layer 2: `- finding:` plan lines — a single-direction projection rendered by
@@ -444,7 +550,7 @@ def _log_checker_note(ctx, run: CheckpointRun, verdicts: list) -> None:
     including the eventually passing one — as a persistent repair log. It is
     written through the notes storage API directly (never the model tool
     path), stays on disk after resolution, and is discoverable via read_note /
-    recall_history under the key returned by :func:`checker_note_key`.
+    search_history under the key returned by :func:`checker_note_key`.
     """
     try:
         base_dir = ctx.data_engine.base_dir
@@ -518,7 +624,7 @@ def queue_checkpoints(
         logger.info(f"Queued checkpoint for completed subgoal: {text}")
 
 
-# --- Harvest (§5.2) ------------------------------------------------------------------
+# --- Harvest ------------------------------------------------------------------
 
 
 def _record_verdicts(
@@ -549,7 +655,7 @@ def _record_verdicts(
 
 
 def _annotate_history_chunks(ctx, run: CheckpointRun, verdicts) -> None:
-    """Post-hoc chunk annotation (M3 §9): a verdict harvested after its subgoal's
+    """Annotate an existing history chunk: a verdict harvested after its subgoal's
     segment was chunk-compressed is appended to that chunk and bumps its
     version. Best-effort — history annotation never gates checkpoint booking."""
     try:
@@ -760,7 +866,7 @@ def harvest_finished_checkpoints(ctx, state) -> list[str]:
     return findings
 
 
-# --- Spawn (§5.1: after record_step) -------------------------------------------------
+# --- Spawn after record_step -------------------------------------------------
 
 
 async def spawn_pending_checkpoints(ctx, state, anchor_step_id: str | None) -> list[str]:
@@ -834,7 +940,7 @@ async def spawn_pending_checkpoints(ctx, state, anchor_step_id: str | None) -> l
     return findings
 
 
-# --- Exit settlement barrier (§5.3 phase 1) ------------------------------------------
+# --- Exit settlement barrier ------------------------------------------
 
 
 async def settle_all_checkpoints(ctx, state) -> None:

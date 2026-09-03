@@ -74,7 +74,13 @@ from artemis.services.llm import (
     get_llm,
     invoke_llm_with_timeout_message,
 )
-from artemis.utils.coordinates import parse_swipe_parameters
+from artemis.tools.history import history_tool_declarations
+from artemis.tools.tool_wrapper import tool_result_messages
+from artemis.utils.coordinates import (
+    COORDINATE_SPACE_KEY,
+    COORDINATE_SPACE_NORMALIZED,
+    parse_swipe_parameters,
+)
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -178,25 +184,14 @@ class FlashRunner:
         setup = getattr(self.ctx, "execution_setup", None)
         return getattr(setup, "video_recording_tools_enabled", False) is True
 
-    def _recall_enabled(self) -> bool:
-        """Same gate as the Pro operator: a DataEngine session and the recall config."""
-        from artemis.tools.history_recall import _recall_available
-
-        try:
-            return bool(_recall_available(self.ctx))
-        except Exception:
-            return False
-
     def _get_tools(self) -> list:
         tools = list(VALIDATOR_TOOLS_DECLARATION)
         tools.insert(1, CLICK_SEQUENCE_TOOL)
         tools.append(ASK_EXPLORER_TOOL)
-        # Helper tools shared with the Pro operator, declared next to their
-        # LangChain tools so each contract has one owner.
-        if self._recall_enabled():
-            from artemis.tools.history_recall import RECALL_HISTORY_TOOL
-
-            tools.append(RECALL_HISTORY_TOOL)
+        # Helper tools shared with the Pro operator: the history tools are
+        # declared from the very same args schemas the LangChain tools bind
+        # (same availability gates: a DataEngine session, recall config).
+        tools.extend(history_tool_declarations(self.ctx))
         if self._video_tools_enabled():
             from artemis.tools.video_tool import VIDEO_ANALYZER_TOOL
 
@@ -260,6 +255,9 @@ class FlashRunner:
         except (AttributeError, TypeError, ValueError):
             pass
         return ledger
+
+    #: The model of the current run; decides how screenshot tool results travel.
+    _llm = None
 
     def _init_llm(self):
         """Initializes the Universal LLM via the Service Layer."""
@@ -579,6 +577,9 @@ class FlashRunner:
 
             norm_coords, norm_start, norm_end = self._extract_normalized_coordinates(name, args)
 
+            # Flash records the model's own 0–1000 coordinates verbatim; the
+            # explicit space marker keeps every later normalization pass
+            # (agent-friendly steps, MCP inspector) a no-op on this record.
             action_dict = {
                 "action": name,
                 "coordinates": (
@@ -587,6 +588,7 @@ class FlashRunner:
                     or args.get("sequence")
                     or norm_coords
                 ),
+                COORDINATE_SPACE_KEY: COORDINATE_SPACE_NORMALIZED,
                 "args": args,
             }
             if norm_coords:
@@ -709,21 +711,19 @@ class FlashRunner:
             if exec_result.ui_elements_text:
                 xml_list = exec_result.ui_elements_text
 
-            # Helper tools may return multimodal blocks (recalled screenshots);
+            # Helper tools may return multimodal blocks (a step screenshot);
             # device actions always report text — their post screenshot is the
-            # next observation tail, never a tool-message image.
+            # next observation tail, never a tool-message image. The image
+            # carrier follows the model's provider (tool_result_messages).
             raw_blocks = exec_result.raw_result if name not in action_names else None
             content = (
                 raw_blocks
                 if isinstance(raw_blocks, list) and raw_blocks
                 else exec_result.text_summary or f"Action '{name}' completed."
             )
-            messages.append(
-                ToolMessage(
-                    tool_call_id=tc_id,
-                    name=name,
-                    content=content,
-                    status=exec_result.status,
+            messages.extend(
+                tool_result_messages(
+                    tc_id, content, name=name, status=exec_result.status, llm=self._llm
                 )
             )
 
@@ -842,6 +842,7 @@ class FlashRunner:
 
         # 1. Initialize Universal LLM via Service Layer
         llm = self._init_llm()
+        self._llm = llm
 
         tools_declaration = self._get_tools()
         report_only_tools = [t for t in tools_declaration if t.name == "report_task_status"]

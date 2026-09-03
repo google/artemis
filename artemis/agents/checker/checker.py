@@ -32,9 +32,9 @@ The release decision is computed by the caller from the verdicts
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -46,12 +46,15 @@ from pydantic import BaseModel, Field, ValidationError
 
 from artemis.constants import CHECKER_MAX_ITERATIONS
 from artemis.context import ArtemisContext
+from artemis.data_engine.context_vars import CURRENT_TRACE_ID
 from artemis.data_engine.trace import trace, trace_langchain_tool
 from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
+from artemis.tools.history import get_history_tools
 from artemis.tools.scratchpad import get_read_note_tool_pure
 from artemis.tools.tool_wrapper import (
-    get_tool_result_content,
     invoke_tool_with_injection,
+    split_multimodal_result,
+    tool_result_messages,
 )
 from artemis.utils.logger import get_logger
 from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
@@ -233,77 +236,6 @@ def get_probe_tool(ctx: ArtemisContext) -> BaseTool:
     return probe_device
 
 
-# --- History / step evidence tools ---------------------------------------------------
-
-
-def get_step_detail_tool(ctx: ArtemisContext) -> BaseTool:
-    @tool
-    def get_step_detail(step_no: int) -> str:
-        """Returns the recorded details of one execution step (action taken,
-        summary, metadata) by its step number."""
-        if not ctx.data_engine:
-            return "Error: no execution history available."
-        record = ctx.data_engine.get_step_record(step_no)
-        if record is None:
-            return f"Error: step {step_no} not found."
-        payload = {
-            "step_number": record.step_number,
-            "timestamp": record.timestamp,
-            "summary": record.summary,
-            "action_taken": record.action_taken,
-            "last_execution_result": record.last_execution_result,
-            "extra_metadata": record.extra_metadata,
-            "has_pre_screenshot": bool(record.pre_image_name),
-            "has_post_screenshot": bool(record.post_image_name),
-        }
-        try:
-            return json.dumps(payload, ensure_ascii=False, default=str)
-        except Exception as e:
-            return f"Error serializing step: {e}"
-
-    return get_step_detail
-
-
-class _ScreenshotRequest:
-    """Sentinel result carrying an image to splice into the conversation."""
-
-    def __init__(self, description: str, image_b64: str | None):
-        self.description = description
-        self.image_b64 = image_b64
-
-
-def get_step_screenshot_tool(ctx: ArtemisContext) -> BaseTool:
-    @tool
-    def get_step_screenshot(step_no: int, which: str = "pre") -> str:
-        """Attaches the recorded screenshot of a step to the conversation.
-        `which` is 'pre' (state observed at the start of the step) or 'post'
-        (state after the step's action)."""
-        # The real work happens in the loop's interception; this body only
-        # documents the contract for schema generation.
-        return f"screenshot request: step {step_no} ({which})"
-
-    return get_step_screenshot
-
-
-def _load_step_screenshot(ctx: ArtemisContext, step_no: int, which: str) -> _ScreenshotRequest:
-    if which not in ("pre", "post"):
-        return _ScreenshotRequest(f"Error: 'which' must be 'pre' or 'post', got '{which}'.", None)
-    if not ctx.data_engine:
-        return _ScreenshotRequest("Error: no execution history available.", None)
-    path = ctx.data_engine.get_step_image_path(step_no, which)
-    if path is None:
-        return _ScreenshotRequest(
-            f"No {which}-action screenshot recorded for step {step_no}.", None
-        )
-    try:
-        image_b64 = base64.b64encode(Path(path).read_bytes()).decode("utf-8")
-    except Exception as e:
-        return _ScreenshotRequest(f"Error reading screenshot: {e}", None)
-    return _ScreenshotRequest(
-        f"Screenshot of step {step_no} ({which}-action) is attached below.", image_b64
-    )
-
-
 # --- Prompt assembly (segments x entry x content x config) ---------------------------
 
 
@@ -365,10 +297,12 @@ def build_checker_tools(
     the final screen through its prompt (not a tool), so the table is identical
     for both entries; the difference lives in what the prompt provides.
     Device actions, note writes, and sub-agents are registered for neither.
+
+    The history tools are the shared ``search_history`` / ``replay_steps`` /
+    ``get_step_screenshot`` definitions (read-only, deterministic).
     """
     tools: list[BaseTool] = [
-        get_step_detail_tool(ctx),
-        get_step_screenshot_tool(ctx),
+        *get_history_tools(ctx),
         get_read_note_tool_pure(ctx),
     ]
     if probes_enabled(ctx):
@@ -507,37 +441,6 @@ async def _run_check_loop(
         for tc in response.tool_calls:
             tool_name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
             args = dict(tc["args"])
-            if tool_name == "get_step_screenshot":
-                shot = _load_step_screenshot(
-                    ctx, int(args.get("step_no", -1)), str(args.get("which", "pre"))
-                )
-                # The image is spliced in below; invoking the (traced) tool as
-                # well records the lookup as a tool trace so the timeline shows
-                # it in order with the rest of the check.
-                screenshot_tool = next((t for t in traced_tools if t.name == tool_name), None)
-                if screenshot_tool is not None:
-                    try:
-                        await invoke_tool_with_injection(
-                            tool=screenshot_tool, args=args, tool_call_id=tc["id"]
-                        )
-                    except Exception as e:
-                        logger.debug(f"Screenshot lookup trace not recorded: {e}")
-                messages.append(ToolMessage(tool_call_id=tc["id"], content=shot.description))
-                if shot.image_b64:
-                    messages.append(
-                        HumanMessage(
-                            content=[
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{shot.image_b64}"
-                                    },
-                                }
-                            ]
-                        )
-                    )
-                continue
-
             tool_to_run = next((t for t in traced_tools if t.name == tool_name), None)
             if tool_to_run is None:
                 messages.append(
@@ -552,16 +455,134 @@ async def _run_check_loop(
                 result_obj = await invoke_tool_with_injection(
                     tool=tool_to_run, args=args, tool_call_id=tc["id"]
                 )
-                result_str = get_tool_result_content(result_obj)
-                status = "error" if str(result_str).startswith("Error") else "success"
+                text, _ = split_multimodal_result(result_obj)
+                status = "error" if text.startswith("Error") else "success"
             except Exception as e:
-                result_str = f"Error running tool {tool_name}: {e}"
+                result_obj = f"Error running tool {tool_name}: {e}"
                 status = "error"
-            messages.append(ToolMessage(tool_call_id=tc["id"], content=result_str, status=status))
+            # Screenshots (get_step_screenshot) enter the conversation in the
+            # carrier the model's provider accepts; text results stay a plain
+            # ToolMessage.
+            messages.extend(
+                tool_result_messages(tc["id"], result_obj, name=tool_name, status=status, llm=llm)
+            )
 
     if report is None:
         report = CheckReport(verdicts=[])
     return _normalize_report(report, check_items)
+
+
+# --- Streamed-reasoning transcript -----------------------------------------------------
+
+
+class CheckerStreamCapture:
+    """Collects the Checker's own streamed LLM output for replay.
+
+    The LLM gateway forwards every provider delta to the DataEngine bus as an
+    ``llm_stream`` event carrying the emitting agent's trace id
+    (``parent_trace_id``). Inside the Checker's traced scope that id is the
+    Checker's own, so filtering the bus by it yields exactly the text the live
+    UI rendered for this attempt — one segment per (LLM turn, stream kind),
+    stamped with the time its first chunk arrived. A mid-stream reset
+    (``llm_stream_reset`` / ``discard``) drops that turn's partial text, the
+    same way the live UI does.
+    """
+
+    def __init__(self, ctx: ArtemisContext):
+        self._engine = getattr(ctx, "data_engine", None)
+        try:
+            trace_id = CURRENT_TRACE_ID.get()
+        except LookupError:
+            trace_id = None
+        self.trace_id: str | None = str(trace_id) if trace_id else None
+        self._segments: dict[tuple[str, str], dict] = {}
+        self._subscribed = False
+
+    def __enter__(self) -> CheckerStreamCapture:
+        subscribe = getattr(self._engine, "subscribe", None)
+        if self.trace_id and callable(subscribe):
+            try:
+                subscribe(self._on_event)
+                self._subscribed = True
+            except Exception as e:
+                logger.debug(f"Checker stream capture not attached: {e}")
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if not self._subscribed:
+            return
+        self._subscribed = False
+        try:
+            self._engine.unsubscribe(self._on_event)
+        except Exception as e:
+            logger.debug(f"Checker stream capture not detached: {e}")
+
+    def _on_event(self, event_type: str, data: Any) -> None:
+        if not isinstance(data, dict):
+            return
+        if event_type == "llm_stream":
+            if str(data.get("parent_trace_id") or "") != self.trace_id:
+                return
+            exec_id = str(data.get("execution_id") or "")
+            chunk = data.get("chunk")
+            if not exec_id or not isinstance(chunk, str) or not chunk:
+                return
+            role = "thought" if data.get("stream_type") == "thinking" else "answer"
+            segment = self._segments.get((exec_id, role))
+            if segment is None:
+                self._segments[(exec_id, role)] = {
+                    "execution_id": exec_id,
+                    "role": role,
+                    "when": time.time(),
+                    "text": chunk,
+                }
+            else:
+                segment["text"] += chunk
+        elif event_type == "llm_stream_reset" and data.get("action") == "discard":
+            exec_id = str(data.get("stream_exec_id") or data.get("stream_execution_id") or "")
+            if exec_id:
+                for key in [k for k in self._segments if k[0] == exec_id]:
+                    del self._segments[key]
+
+    @property
+    def segments(self) -> list[dict]:
+        """Segments in the order their first chunk arrived."""
+        return [dict(s) for s in sorted(self._segments.values(), key=lambda s: s["when"])]
+
+
+def _persist_stream(
+    ctx: ArtemisContext,
+    capture: CheckerStreamCapture,
+    *,
+    attempt_id: str | None,
+    phase: str,
+    checkpoint_id: str,
+) -> None:
+    """Writes the attempt's transcript next to the ledger (best-effort).
+
+    Runs when the attempt ends for any reason — verdict, exception, timeout or
+    supersession — so a cancelled attempt still leaves what it said. A
+    transcript is observability, not execution state: writing it never
+    influences booking or release (the ledger stays the source of truth).
+    """
+    segments = capture.segments
+    if not attempt_id or not segments:
+        return
+    try:
+        from artemis.graph.checkpoints import append_attempt_stream_record
+
+        append_attempt_stream_record(
+            ctx.data_engine.base_dir,
+            {
+                "attempt_id": attempt_id,
+                "checkpoint_id": checkpoint_id,
+                "phase": phase,
+                "trace_id": capture.trace_id,
+                "segments": segments,
+            },
+        )
+    except Exception as e:
+        logger.debug(f"Checker stream transcript for {attempt_id} not persisted: {e}")
 
 
 # --- Entry points --------------------------------------------------------------------
@@ -593,12 +614,13 @@ async def run_checkpoint_check(
     state) and persistent-state probes are the only valid sources.
     """
     items = list(check_items)
+    checkpoint_id = attempt_id.split("#", 1)[0] if attempt_id else ""
     logger.info(f"Starting checkpoint check for '{subgoal_text}' ({len(items)} item(s))")
     _announce(
         ctx,
         attempt_id=attempt_id,
         phase="checkpoint",
-        checkpoint_id=attempt_id.split("#", 1)[0] if attempt_id else "",
+        checkpoint_id=checkpoint_id,
         subgoal_text=subgoal_text,
         anchor_step_id=getattr(anchor, "anchor_step_id", None),
         check_items=items,
@@ -638,7 +660,17 @@ async def run_checkpoint_check(
         SystemMessage(content=system_content),
         HumanMessage(content=human_text),
     ]
-    return await _run_check_loop(ctx, messages, tools, items)
+    with CheckerStreamCapture(ctx) as capture:
+        try:
+            return await _run_check_loop(ctx, messages, tools, items)
+        finally:
+            _persist_stream(
+                ctx,
+                capture,
+                attempt_id=attempt_id,
+                phase="checkpoint",
+                checkpoint_id=checkpoint_id,
+            )
 
 
 async def _capture_final_screen(ctx: ArtemisContext) -> tuple[str | None, str]:
@@ -748,4 +780,10 @@ async def run_final_check(
         SystemMessage(content=system_content),
         HumanMessage(content=content),
     ]
-    return await _run_check_loop(ctx, messages, tools, items)
+    with CheckerStreamCapture(ctx) as capture:
+        try:
+            return await _run_check_loop(ctx, messages, tools, items)
+        finally:
+            _persist_stream(
+                ctx, capture, attempt_id=attempt_id, phase="final", checkpoint_id="final"
+            )

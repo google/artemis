@@ -95,7 +95,7 @@ async def test_hint_fires_on_old_matching_step():
     assert len(parts) == 1
     assert "Historical state hint" in parts[0]
     assert "Step 2" in parts[0]
-    assert "recall_history" in parts[0]
+    assert "search_history" in parts[0]
 
 
 @pytest.mark.asyncio

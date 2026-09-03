@@ -662,23 +662,33 @@ export function getToolDisplayLabel(tool: any, isFirstSaveNote: boolean = false)
       const q = args.specific_query || args.query || '';
       return q ? `Analyzing audio track: "${q}"` : 'Analyzing recording audio track';
     }
-    case 'get_step_detail':
-    case 'get_step_details': {
-      const n = args.step_no ?? args.step_number ?? args.step;
+    case 'search_history': {
+      const q = args.query || '';
+      const range = Array.isArray(args.step_range) && args.step_range.length
+        ? ` in steps ${args.step_range[0]}–${args.step_range[args.step_range.length - 1]}`
+        : '';
+      return q ? `Searching execution history for "${q}"${range}` : `Searching execution history${range}`;
+    }
+    case 'replay_steps': {
+      const n = args.start_step;
+      const end = args.end_step;
+      if (n !== undefined && n !== '' && end !== undefined && end !== null && end !== '' && String(end) !== String(n)) {
+        return `Reviewing steps ${n}–${end}`;
+      }
       return n !== undefined && n !== '' ? `Reviewing step ${n}` : 'Reviewing step details';
     }
     case 'get_step_screenshot': {
-      const n = args.step_no ?? args.step_number ?? args.step;
-      const which = String(args.which || '').toLowerCase() === 'post' ? 'after' : 'before';
+      const n = args.step_number;
+      const variant = String(args.which || '').toLowerCase();
+      if (variant === 'overlay') {
+        return n !== undefined && n !== '' ? `Looking at where step ${n}'s action landed` : 'Looking at where an action landed';
+      }
+      const which = variant === 'post' ? 'after' : 'before';
       return n !== undefined && n !== '' ? `Looking at the screen ${which} step ${n}` : 'Looking at a step screenshot';
     }
     case 'probe_device': {
       const kind = args.kind ? String(args.kind).replace(/_/g, ' ') : '';
       return kind ? `Reading ${kind} from the device` : 'Reading device state';
-    }
-    case 'search_history_for_text': {
-      const q = args.text || args.query || '';
-      return q ? `Searching execution trace for "${q}"` : 'Searching execution trace';
     }
     case 'outputter':
     case 'output_synthesis':
@@ -751,15 +761,14 @@ export function getToolIcon(tool: any): string {
       return 'smart_toy';
     case 'analyze_audio_only':
       return 'graphic_eq';
-    case 'get_step_detail':
-    case 'get_step_details':
+    case 'search_history':
+      return 'find_in_page';
+    case 'replay_steps':
       return 'manage_search';
     case 'get_step_screenshot':
       return 'image_search';
     case 'probe_device':
       return 'sensors';
-    case 'search_history_for_text':
-      return 'find_in_page';
     case 'outputter':
     case 'output_synthesis':
       return 'assignment_turned_in';

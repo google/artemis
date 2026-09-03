@@ -22,11 +22,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from artemis.agents.history_analyzer.history_analyzer import HistoryAnalyzer
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import (
     CURRENT_TRACE_ID,
@@ -37,12 +36,15 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.services.llm import get_llm, invoke_llm_with_timeout_message
 from artemis.tools.base import ArtemisTool, ToolCategory
+from artemis.tools.history import get_history_tools
 from artemis.tools.log_tool import get_analyze_logs_tool
 from artemis.tools.scratchpad import get_list_notes_tool, get_read_note_tool
 from artemis.tools.tool_wrapper import (
     ToolWrapper,
     get_tool_result_content,
     invoke_tool_with_injection,
+    split_multimodal_result,
+    tool_result_messages,
 )
 from artemis.tools.types import CyFunctionDetector
 from artemis.tools.video_tool import get_video_analyzer_tool
@@ -232,16 +234,12 @@ async def _execute_committee(
 
         # 4. Prepare Specialized Tools for Members
 
-        # History Analyzer Tools
-        analyzer_inst = HistoryAnalyzer(ctx)
-        history_steps = ctx.data_engine.get_agent_friendly_steps() if ctx.data_engine else []
-        # pylint: disable=protected-access
-        details_tool = analyzer_inst._get_step_details_tool(history_steps)
+        # History Analyzer Tools: the shared history tools plus the note readers
         read_note_tool_hist = get_read_note_tool(ctx)
         list_notes_tool_hist = get_list_notes_tool(ctx)
 
         history_analyzer_tools = [
-            trace_langchain_tool(details_tool, ctx),
+            *get_history_tools(ctx),
             trace_langchain_tool(read_note_tool_hist, ctx),
             trace_langchain_tool(list_notes_tool_hist, ctx),
         ]
@@ -328,11 +326,16 @@ async def _execute_committee(
                 tool_outputs = await asyncio.gather(*(run_tool(tc) for tc in active_tool_calls))
 
                 for tc, result in zip(active_tool_calls, tool_outputs):
-                    messages.append(
-                        ToolMessage(
-                            tool_call_id=tc["id"],
-                            content=result,
-                            status="success" if not result.startswith("Error") else "error",
+                    # A step screenshot (content blocks) travels in the carrier
+                    # the member's provider accepts; text stays a ToolMessage.
+                    text, _ = split_multimodal_result(result)
+                    messages.extend(
+                        tool_result_messages(
+                            tc["id"],
+                            result,
+                            name=tc["name"],
+                            status="error" if text.startswith("Error") else "success",
+                            llm=llm,
                         )
                     )
             return "Error: Reached max iterations in turn."

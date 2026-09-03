@@ -138,3 +138,70 @@ def test_flash_runner_screenshot_pruning(mock_context):
         assert messages[2].content[0]["type"] == "text"
         assert messages[2].content[1]["type"] == "image_url"
         assert messages[2].content[1]["image_url"]["url"] == "data:image/jpeg;base64,SCREENSHOT_3"
+
+
+# --- Recorded action shape (coordinate space + ledger rendering) ---------------------
+
+
+def _record(runner, name, args):
+    from types import SimpleNamespace
+
+    runner.ctx.data_engine = Mock()
+    runner.ctx.data_engine.current_step_id = None
+    runner.ctx.data_engine.record_step.return_value = "step-1"
+    exec_result = SimpleNamespace(
+        status="success", text_summary=f"{name} executed", metadata={}, ui_elements_text="ui"
+    )
+    step_id = runner._record_action_step(
+        name, args, exec_result, "thought", {}, b"pre", ["xml"], b"post"
+    )
+    assert step_id == "step-1"
+    return runner.ctx.data_engine.record_step.call_args.kwargs["action_taken"]
+
+
+def test_record_action_step_stamps_the_normalized_coordinate_space(mock_context):
+    """Flash stores the model's own 0–1000 target verbatim, marked as
+    normalized, so the agent-friendly view never re-normalizes it."""
+    from artemis.utils.coordinates import (
+        COORDINATE_SPACE_KEY,
+        COORDINATE_SPACE_NORMALIZED,
+        normalize_any_structure,
+    )
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    recorded = _record(runner, "click", {"target": [320, 399]})
+    assert recorded["coordinates"] == [320, 399]
+    assert recorded["normalized_coordinates"] == [320, 399]
+    assert recorded[COORDINATE_SPACE_KEY] == COORDINATE_SPACE_NORMALIZED
+    assert normalize_any_structure(recorded, 1080, 2400)["coordinates"] == [320, 399]
+
+
+def test_flash_records_render_in_the_ledger_with_their_arguments(mock_context):
+    """The band-③ phrase reads the tool arguments Flash keeps under ``args``:
+    app launches name the package, key presses the key, inputs the text,
+    direction swipes the direction — never ``'None'``."""
+    from artemis.utils.task_tree import format_actions_clean
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+
+    launch = _record(runner, "manage_app", {"action": "launch", "app_name": "com.android.settings"})
+    assert format_actions_clean(launch) == "Launched app 'com.android.settings'"
+    stop = _record(runner, "manage_app", {"action": "stop", "app_name": "com.android.settings"})
+    assert format_actions_clean(stop) == "Stopped app 'com.android.settings'"
+    direct = _record(runner, "launch_app", {"app_name": "com.android.settings"})
+    assert format_actions_clean(direct) == "Launched app 'com.android.settings'"
+
+    key = _record(runner, "press_key", {"key": "BACK"})
+    assert format_actions_clean(key) == "Pressed key 'BACK'"
+
+    typed = _record(runner, "input_text", {"target": [500, 600], "text": "hello"})
+    assert format_actions_clean(typed) == "Inputted 'hello' into field at [500, 600]"
+
+    swipe_dir = _record(runner, "swipe", {"direction": "up"})
+    assert format_actions_clean(swipe_dir) == "Swiped up"
+    swipe_fa = _record(runner, "swipe", {"action": "down"})
+    assert format_actions_clean(swipe_fa) == "Swiped down"
+    swipe_coords = _record(runner, "swipe", {"coordinates": [556, 289, 556, 124]})
+    assert format_actions_clean(swipe_coords) == "Swiped from [556, 289] to [556, 124]"

@@ -438,3 +438,194 @@ def test_record_step_without_app_data_stamps_nothing(tmp_path):
 
     step = engine.storage.get_steps(engine.current_session_id)[0]
     assert "foreground_app" not in (step.extra_metadata or {})
+
+
+# --- Agent-friendly single-step / range lookups (step replay backing) ----------------
+
+
+def _replay_engine(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+    engine = DataEngine(mock_ctx)
+    engine.start_session("replay lookup session")
+    return engine
+
+
+def _join_pending(engine):
+    for t in list(engine._pending_threads):
+        t.join()
+
+
+def test_friendly_step_range_expands_tool_traces_and_matches_full_listing(tmp_path):
+    engine = _replay_engine(tmp_path)
+    engine.record_step(
+        summary="Asked the explorer about the toggle.",
+        action_taken={"action": "click", "target": [540, 1200], "target_text": "Save"},
+        last_execution_result={"status": "success"},
+    )
+    engine.record_trace(
+        type="tool",
+        name="ask_explorer",
+        payload={"args": {"question": "toggle?"}, "result": "The toggle is ON"},
+        step_id=engine.last_recorded_step_id,
+    )
+    engine.record_step(summary="Second step.", action_taken={"action": "swipe"})
+    engine.record_step(summary="Third step.", action_taken={"action": "press_key", "key": "BACK"})
+    _join_pending(engine)
+
+    rows = engine.get_agent_friendly_steps_in_range(1, 2)
+    assert [r["step_number"] for r in rows] == [1, 2]
+    calls = rows[0]["tool_calls"]
+    assert calls and calls[0]["name"] == "ask_explorer"
+    assert calls[0]["args"] == {"question": "toggle?"}
+    assert calls[0]["result"] == "The toggle is ON"
+    assert any(e["type"] == "tool_call" for e in rows[0]["interleaved_events"])
+
+    # The single-step path renders exactly what the whole-session listing does
+    # (same trace expansion, same coordinate normalization).
+    full = engine.get_agent_friendly_steps()
+    assert rows[0]["action_taken"] == full[0]["action_taken"]
+    assert rows[0]["interleaved_events"] == full[0]["interleaved_events"]
+
+    # Reversed bounds are tolerated; a single step defaults end to start.
+    assert [r["step_number"] for r in engine.get_agent_friendly_steps_in_range(3, 2)] == [2, 3]
+    assert [r["step_number"] for r in engine.get_agent_friendly_steps_in_range(3)] == [3]
+
+    one = engine.get_agent_friendly_step(3)
+    assert one is not None and one["summary"] == "Third step."
+    assert engine.get_agent_friendly_step(99) is None
+
+
+def test_friendly_step_lookups_without_session_are_empty(tmp_path):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_execution_setup = MagicMock()
+    mock_execution_setup.traces_path = str(tmp_path)
+    mock_ctx.execution_setup = mock_execution_setup
+    mock_ctx.device = None
+    engine = DataEngine(mock_ctx)
+    assert engine.get_agent_friendly_steps_in_range(1, 5) == []
+    assert engine.get_agent_friendly_step(1) is None
+
+
+def test_tool_result_images_are_described_as_step_screenshots(tmp_path):
+    """An image a tool result embedded (stored as an <ImageRef: sha256=…>
+    placeholder) is rewritten into the description of the step screenshot it
+    is, never dropped silently; unknown images get the generic label."""
+    import hashlib
+    import io
+
+    from PIL import Image
+
+    from artemis.data_engine.engine import GENERIC_IMAGE_LABEL
+
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 64), "red").save(buf, format="JPEG")
+    pre_bytes = buf.getvalue()
+    pre_hash = hashlib.sha256(pre_bytes).hexdigest()
+
+    engine = _replay_engine(tmp_path)
+    engine.record_step(
+        pre_screenshot_bytes=pre_bytes,
+        summary="Opened the alarms list.",
+        action_taken={"action": "click"},
+        ocr_result=[{"text": "Alarm 07:30 needleocr", "bounds": [0, 0, 10, 10]}],
+    )
+    engine.record_step(summary="Recalled the earlier screen.", action_taken={"action": "click"})
+    engine.record_trace(
+        type="tool",
+        name="get_step_screenshot",
+        payload={
+            "args": {"step_number": 1, "which": "pre"},
+            "result": [
+                {"type": "text", "text": "Screenshot of step 1 (pre-action) is attached."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"<ImageRef: sha256={pre_hash} length=99999>"},
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "<ImageRef: sha256=" + "0" * 64 + " length=5>"},
+                },
+            ],
+        },
+        step_id=engine.last_recorded_step_id,
+    )
+    _join_pending(engine)
+
+    step2 = engine.get_agent_friendly_step(2)
+    result = step2["tool_calls"][0]["result"]
+    assert all(block["type"] == "text" for block in result)
+    assert result[1]["text"] == "[screenshot: pre-action of Step 1]"
+    assert result[1]["image_name"] == pre_hash
+    assert result[2]["text"] == GENERIC_IMAGE_LABEL
+    # Whole-session listing describes the same way.
+    assert engine.get_agent_friendly_steps()[1]["tool_calls"][0]["result"] == result
+
+
+# --- Coordinate space of agent-friendly steps -------------------------
+
+
+def test_flash_normalized_record_survives_agent_friendly_steps_unchanged(tmp_path):
+    """Flash records the model's 0–1000 target with an explicit space marker;
+    the agent-friendly view must not normalize it a second time."""
+    from artemis.utils.coordinates import COORDINATE_SPACE_KEY, COORDINATE_SPACE_NORMALIZED
+
+    engine = _replay_engine(tmp_path)
+    engine.record_step(
+        action_taken={
+            "action": "click",
+            "coordinates": [320, 399],
+            "normalized_coordinates": [320, 399],
+            COORDINATE_SPACE_KEY: COORDINATE_SPACE_NORMALIZED,
+            "args": {"target": [320, 399]},
+        },
+        last_execution_result={"status": "success", "result": "click executed"},
+    )
+    _join_pending(engine)
+
+    row = engine.get_agent_friendly_steps()[0]
+    assert row["action_taken"]["coordinates"] == [320, 399]
+    assert row["action_taken"][COORDINATE_SPACE_KEY] == COORDINATE_SPACE_NORMALIZED
+    assert engine.get_agent_friendly_step(1)["action_taken"]["coordinates"] == [320, 399]
+
+
+def test_pro_pixel_record_is_normalized_exactly_once(tmp_path):
+    """Pro records physical pixels (with the frame size in extra_metadata);
+    the friendly view converts them once, and the result is stamped so a
+    downstream pass (MCP inspector, replay) leaves it alone."""
+    from artemis.utils.coordinates import (
+        COORDINATE_SPACE_KEY,
+        COORDINATE_SPACE_NORMALIZED,
+        COORDINATE_SPACE_PIXEL,
+        normalize_any_structure,
+    )
+
+    engine = _replay_engine(tmp_path)
+    action = {
+        "action": "tap",
+        "coordinates": [540, 1200],
+        "normalized_coordinates": [500, 500],
+        COORDINATE_SPACE_KEY: COORDINATE_SPACE_PIXEL,
+        "target_text": "Battery",
+    }
+    engine.record_step(
+        action_taken=[action],
+        last_execution_result={
+            "status": "success",
+            "execution": [dict(action, attempts=["Success"])],
+        },
+        extra_metadata={"width": 1080, "height": 2400},
+    )
+    _join_pending(engine)
+
+    row = engine.get_agent_friendly_steps()[0]
+    friendly = row["action_taken"][0]
+    assert friendly["coordinates"] == [500, 500]
+    assert friendly[COORDINATE_SPACE_KEY] == COORDINATE_SPACE_NORMALIZED
+    assert row["last_execution_result"]["execution"][0]["coordinates"] == [500, 500]
+
+    again = normalize_any_structure(row["action_taken"], 1080, 2400)
+    assert again == row["action_taken"]

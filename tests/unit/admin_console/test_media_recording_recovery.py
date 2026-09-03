@@ -14,6 +14,7 @@
 
 """Recording files of cancelled / killed workers must survive and be served whole."""
 
+import json
 import os
 from pathlib import Path
 import time
@@ -171,3 +172,61 @@ def test_recover_orphaned_recording_returns_none_without_files(tmp_path):
     missing = tmp_path / "missing" / "recording.mkv"
     assert MediaService.recover_orphaned_recording(str(missing)) is None
     assert MediaService.recover_orphaned_recording(None) is None
+
+
+def test_resolve_video_segments_passes_through_session_offsets(tmp_path, monkeypatch):
+    folder = tmp_path / "artemis-traces" / "web_9_done"
+    folder.mkdir(parents=True)
+    (folder / "recording.mp4").write_bytes(b"seg0")
+    (folder / "recording_001.mp4").write_bytes(b"seg1")
+    (folder / "recording.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "duration": 15.0,
+                "segments": [
+                    {
+                        "file": "recording.mp4",
+                        "start": 0.0,
+                        "duration": 10.0,
+                        "offset_ms": 1200,
+                        "duration_ms": 10000,
+                        "width": 1080,
+                        "height": 1920,
+                    },
+                    {
+                        "file": "recording_001.mp4",
+                        "start": 10.0,
+                        "duration": 5.0,
+                        "offset_ms": 12700,
+                        "duration_ms": 5000,
+                        "width": 1920,
+                        "height": 1080,
+                    },
+                    {"file": "legacy.mp4", "start": 15.0, "duration": 1.0, "width": 1, "height": 1},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (folder / "legacy.mp4").write_bytes(b"legacy")
+    monkeypatch.setattr(media_module, "WORKSPACE_ROOT", tmp_path)
+
+    segments = MediaService.resolve_video_segments(
+        "/videos/artemis-traces/web_9_done/recording.mp4"
+    )
+
+    assert [s["url"] for s in segments] == [
+        "/videos/artemis-traces/web_9_done/recording.mp4",
+        "/videos/artemis-traces/web_9_done/recording_001.mp4",
+        "/videos/artemis-traces/web_9_done/legacy.mp4",
+    ]
+    assert [(s["start"], s["duration"]) for s in segments] == [
+        (0.0, 10.0),
+        (10.0, 5.0),
+        (15.0, 1.0),
+    ]
+    assert segments[0]["offset_ms"] == 1200 and segments[0]["duration_ms"] == 10000
+    assert segments[1]["offset_ms"] == 12700 and segments[1]["duration_ms"] == 5000
+    # Legacy entries without offsets stay offset-free so the UI falls back to back-to-back.
+    assert "offset_ms" not in segments[2]

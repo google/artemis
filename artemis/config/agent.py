@@ -266,6 +266,26 @@ def verification_level_for_checker(checker: "CheckerConfig") -> VerificationLeve
     return "final"
 
 
+def run_tuning_for_profile(
+    profile: str | None,
+    *,
+    checker: "CheckerConfig",
+    explorer: "ExplorerConfig",
+    explorer_versions: dict[str, str] | None = None,
+) -> dict[str, str] | None:
+    """Return Pro verification and explorer settings for session metadata.
+
+    Flash has no per-run tuning and returns None.
+    """
+    key = str(profile or "").strip().lower()
+    if key != "pro":
+        return None
+    return {
+        "verification_level": verification_level_for_checker(checker),
+        "explorer_mode": explorer.resolve(profile="pro", per_agent_overrides=explorer_versions),
+    }
+
+
 class OutputterConfig(BaseModel):
     """Configuration specific to Outputter post-execution report synthesis agent."""
 
@@ -502,36 +522,58 @@ class MemoryTranscriptConfig(BaseModel):
 
 
 class MemoryRecallConfig(BaseModel):
-    """History recall tool options (agent.memory.recall)."""
+    """search_history tool options (agent.memory.recall)."""
 
     enabled: bool = Field(
         default=True,
         description=(
-            "Whether the Pro operator gets the recall_history tool for"
-            " deterministic lookups into cold (compressed/evicted) history."
+            "Whether the operator (Pro and Flash) gets the search_history tool"
+            " for deterministic lookups into cold (compressed/evicted) history."
+            " replay_steps and get_step_screenshot are not gated by this flag."
         ),
     )
     max_results: int = Field(
         default=5,
         ge=1,
         le=20,
-        description="Upper bound on results per recall_history call.",
+        description="Upper bound on results per search_history call.",
     )
     max_text_tokens: int = Field(
         default=2000,
         ge=128,
         description=(
-            "Estimated-token cap (char/4) on one recall_history text response;"
+            "Estimated-token cap (char/4) on one search_history response;"
             " excerpts are truncated to fit."
         ),
     )
-    max_image_steps: int = Field(
-        default=1,
+    screen_scan_steps: int = Field(
+        default=150,
         ge=0,
-        le=1,
         description=(
-            "Maximum number of steps whose real stored screenshots may be"
-            " returned as data URLs when include_images is requested."
+            "How many most-recent steps have their screenshot OCR/UI-tree text"
+            " scanned by search_history (per-image JSON loads are the expensive"
+            " part of the sweep). Narrow with step_range to reach older steps."
+        ),
+    )
+    model_config = {"extra": "allow"}
+
+
+class MemoryReplayConfig(BaseModel):
+    """replay_steps tool options (agent.memory.replay)."""
+
+    max_steps: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="Maximum steps replayed per replay_steps call.",
+    )
+    max_tokens: int = Field(
+        default=12000,
+        ge=128,
+        description=(
+            "Estimated-token budget (char/4) of one replay_steps response."
+            " When exceeded, whole trailing steps are dropped; individual"
+            " steps are kept intact."
         ),
     )
     model_config = {"extra": "allow"}
@@ -574,7 +616,7 @@ class MemoryChunkingConfig(BaseModel):
         ge=1,
         description=(
             "Maximum eras kept with their per-segment ledgers; older eras"
-            " collapse their ledgers to recall_history marker lines. None"
+            " collapse their ledgers to search_history marker lines. None"
             " (default) follows max_chunks, preserving the pre-M5 equal-value"
             " behavior."
         ),
@@ -599,7 +641,11 @@ class MemoryConfig(BaseModel):
     )
     recall: MemoryRecallConfig = Field(
         default_factory=MemoryRecallConfig,
-        description="History recall tool options.",
+        description="search_history tool options.",
+    )
+    replay: MemoryReplayConfig = Field(
+        default_factory=MemoryReplayConfig,
+        description="replay_steps tool options.",
     )
     policies: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
@@ -659,7 +705,8 @@ class ExecutionConfig(BaseModel):
         le=10,
         description=(
             "Maximum turn-ending actions the Operator may chain into one fast-action"
-            " burst (executed back to back without the safety net). A longer turn is"
+            " burst (first member vetted by the safety net, the rest fire back to back"
+            " unvetted). A longer turn is"
             " rejected before execution and fed back to the Operator."
         ),
     )

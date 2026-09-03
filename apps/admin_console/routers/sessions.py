@@ -176,6 +176,15 @@ async def get_session_details(session_id: str):
     return dict(row)
 
 
+@router.get("/api/sessions/{session_id}/usage")
+async def get_session_usage(session_id: str):
+    """Session-wide LLM token totals, live executor context size and run tuning."""
+    try:
+        return await asyncio.to_thread(session_repo.get_session_usage, session_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/sessions/{session_id}/tree")
 async def get_tree(session_id: str):
     try:
