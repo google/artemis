@@ -37,6 +37,8 @@ STANDARD_PATHS=(
     "/usr/local/bin"
     "/usr/local/sbin"
     "${HOME}/.local/bin"
+    "${HOME}/.local/share/node/bin"
+    "${HOME}/.local/share/platform-tools"
     "${HOME}/.cargo/bin"
     "${HOME}/Library/Android/sdk/platform-tools"
     "${HOME}/Android/Sdk/platform-tools"
@@ -46,6 +48,51 @@ for p in "${STANDARD_PATHS[@]}"; do
         export PATH="${p}:${PATH}"
     fi
 done
+
+# Sudo credential and choice state tracking
+SUDO_AUTHENTICATED=false
+SUDO_DECLINED=false
+
+# Helper to check, prompt for, or skip administrator (sudo) privileges gracefully
+request_sudo() {
+    [ "$(id -u)" -eq 0 ] && return 0
+    if ! command -v sudo >/dev/null 2>&1; then
+        return 1
+    fi
+    # If already authenticated or passwordless sudo works
+    if [ "${SUDO_AUTHENTICATED}" = true ] || sudo -n true >/dev/null 2>&1; then
+        SUDO_AUTHENTICATED=true
+        return 0
+    fi
+    # If previously declined or failed in this session, don't nag again
+    if [ "${SUDO_DECLINED}" = true ]; then
+        return 1
+    fi
+    # If interactive terminal, ask user whether to enter sudo password
+    if [ -t 0 ]; then
+        local action="${1:-install system packages}"
+        echo -e "   ${CYAN}🔐 Administrator (sudo) privileges can be used to ${action}.${NC}"
+        local reply=""
+        read -r -p "      Enter sudo password now? [Y/n]: " reply
+        reply=${reply:-Y}
+        if [[ "${reply}" =~ ^[Yy]$ ]]; then
+            if sudo -v; then
+                SUDO_AUTHENTICATED=true
+                echo -e "   ${GREEN}✔ Sudo authenticated successfully.${NC}"
+                return 0
+            else
+                echo -e "   ${YELLOW}⚠ Sudo authentication failed or cancelled. Using user-space fallback.${NC}"
+                SUDO_DECLINED=true
+                return 1
+            fi
+        else
+            echo -e "   ${YELLOW}⏭️  Skipped sudo. Using user-space fallback.${NC}"
+            SUDO_DECLINED=true
+            return 1
+        fi
+    fi
+    return 1
+}
 
 # 2. Check or install uv (Fast Python package manager)
 if ! command -v uv >/dev/null 2>&1; then
@@ -88,11 +135,41 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
             fi
         fi
     elif [ "${OS_NAME}" = "Linux" ]; then
-        if command -v apt-get >/dev/null 2>&1; then
-            if [ "$(id -u)" -eq 0 ]; then
-                apt-get update -qq && apt-get install -y -qq "${MISSING_CORE[@]}" >/dev/null 2>&1 || true
-            elif command -v sudo >/dev/null 2>&1; then
-                sudo -n apt-get update -qq && sudo -n apt-get install -y -qq "${MISSING_CORE[@]}" >/dev/null 2>&1 || true
+        if request_sudo "install missing system components (${MISSING_CORE[*]})"; then
+            local SUDO_PREFIX=""
+            if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
+            if command -v apt-get >/dev/null 2>&1; then
+                ${SUDO_PREFIX} apt-get update -qq && ${SUDO_PREFIX} apt-get install -y -qq "${MISSING_CORE[@]}" || true
+            elif command -v dnf >/dev/null 2>&1; then
+                ${SUDO_PREFIX} dnf install -y "${MISSING_CORE[@]}" || true
+            elif command -v pacman >/dev/null 2>&1; then
+                ${SUDO_PREFIX} pacman -S --noconfirm "${MISSING_CORE[@]}" || true
+            fi
+        fi
+
+        # Fallback: if adb is missing on Linux without root/sudo, install platform-tools in user space
+        if ! command -v adb >/dev/null 2>&1; then
+            ARCH="$(uname -m)"
+            if [[ "${ARCH}" = "x86_64" || "${ARCH}" = "amd64" ]]; then
+                PT_DIR="${HOME}/.local/share/platform-tools"
+                if [ ! -x "${PT_DIR}/adb" ]; then
+                    echo -e "   ${CYAN}📦 Installing Android platform-tools (adb) in user space...${NC}"
+                    TEMP_ZIP="/tmp/platform-tools-$$.zip"
+                    if curl -fsSL "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o "${TEMP_ZIP}" 2>/dev/null; then
+                        mkdir -p "${HOME}/.local/share" "${HOME}/.local/bin"
+                        if command -v unzip >/dev/null 2>&1; then
+                            unzip -q -o "${TEMP_ZIP}" -d "${HOME}/.local/share" 2>/dev/null || true
+                        else
+                            python3 -m zipfile -e "${TEMP_ZIP}" "${HOME}/.local/share" 2>/dev/null || true
+                        fi
+                        rm -f "${TEMP_ZIP}"
+                    fi
+                fi
+                if [ -x "${PT_DIR}/adb" ]; then
+                    ln -sf "${PT_DIR}/adb" "${HOME}/.local/bin/adb"
+                    export PATH="${PT_DIR}:${PATH}"
+                    echo -e "   ${GREEN}✓ adb installed in user space.${NC}"
+                fi
             fi
         fi
     fi
@@ -117,39 +194,57 @@ SHOWCASE_INDEX="${SCRIPT_DIR}/apps/showcase_ui/dist/frontend/browser/index.html"
 SHOWCASE_INDEX_ALT1="${SCRIPT_DIR}/apps/showcase_ui/dist/browser/index.html"
 SHOWCASE_INDEX_ALT2="${SCRIPT_DIR}/apps/showcase_ui/dist/index.html"
 if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "${SHOWCASE_INDEX_ALT2}" ]; then
+    # First: Try loading existing nvm or user-installed node in environment
+    export NVM_DIR="${HOME}/.nvm"
+    if [ -s "${NVM_DIR}/nvm.sh" ]; then
+        # shellcheck disable=SC1090,SC1091
+        . "${NVM_DIR}/nvm.sh" 2>/dev/null || true
+    fi
+    if [ -d "${HOME}/.local/share/node/bin" ] && [[ ":${PATH}:" != *":${HOME}/.local/share/node/bin:"* ]]; then
+        export PATH="${HOME}/.local/share/node/bin:${PATH}"
+    fi
+
     if ! command -v npm >/dev/null 2>&1; then
         OS_NAME="$(uname -s)"
         echo -e "   ${YELLOW}⚡ npm/Node.js not found. Auto-installing Node.js for Showcase UI compilation...${NC}"
         if [ "${OS_NAME}" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
             brew install node >/dev/null 2>&1 || true
         elif [ "${OS_NAME}" = "Linux" ]; then
-            if command -v apt-get >/dev/null 2>&1; then
-                if [ "$(id -u)" -eq 0 ]; then
-                    apt-get update -qq && apt-get install -y -qq nodejs npm >/dev/null 2>&1 || true
-                elif command -v sudo >/dev/null 2>&1; then
-                    sudo -n apt-get update -qq && sudo -n apt-get install -y -qq nodejs npm >/dev/null 2>&1 || true
+            if request_sudo "install Node.js and npm"; then
+                local SUDO_PREFIX=""
+                if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
+                if command -v apt-get >/dev/null 2>&1; then
+                    ${SUDO_PREFIX} apt-get update -qq && ${SUDO_PREFIX} apt-get install -y -qq nodejs npm || true
+                elif command -v dnf >/dev/null 2>&1; then
+                    ${SUDO_PREFIX} dnf install -y nodejs npm || true
+                elif command -v pacman >/dev/null 2>&1; then
+                    ${SUDO_PREFIX} pacman -S --noconfirm nodejs npm || true
                 fi
-            elif command -v dnf >/dev/null 2>&1; then
-                if [ "$(id -u)" -eq 0 ]; then
-                    dnf install -y nodejs npm >/dev/null 2>&1 || true
-                elif command -v sudo >/dev/null 2>&1; then
-                    sudo -n dnf install -y nodejs npm >/dev/null 2>&1 || true
-                fi
-            elif command -v pacman >/dev/null 2>&1; then
-                if [ "$(id -u)" -eq 0 ]; then
-                    pacman -S --noconfirm nodejs npm >/dev/null 2>&1 || true
-                elif command -v sudo >/dev/null 2>&1; then
-                    sudo -n pacman -S --noconfirm nodejs npm >/dev/null 2>&1 || true
+            fi
+
+            # If npm still not found (e.g. no root/sudo privileges on cloud workstation):
+            if ! command -v npm >/dev/null 2>&1; then
+                ARCH="$(uname -m)"
+                NODE_ARCH=""
+                case "${ARCH}" in
+                    x86_64|amd64) NODE_ARCH="x64" ;;
+                    aarch64|arm64) NODE_ARCH="arm64" ;;
+                esac
+                if [ -n "${NODE_ARCH}" ]; then
+                    NODE_VER="v20.18.3"
+                    NODE_DIR="${HOME}/.local/share/node"
+                    echo -e "   ${CYAN}📦 Installing portable Node.js ${NODE_VER} in user space (~/.local)...${NC}"
+                    mkdir -p "${NODE_DIR}" "${HOME}/.local/bin"
+                    if curl -fsSL "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-linux-${NODE_ARCH}.tar.gz" | tar -xz -C "${NODE_DIR}" --strip-components=1 2>/dev/null; then
+                        ln -sf "${NODE_DIR}/bin/node" "${HOME}/.local/bin/node"
+                        ln -sf "${NODE_DIR}/bin/npm" "${HOME}/.local/bin/npm"
+                        ln -sf "${NODE_DIR}/bin/npx" "${HOME}/.local/bin/npx"
+                        export PATH="${NODE_DIR}/bin:${HOME}/.local/bin:${PATH}"
+                        echo -e "   ${GREEN}✓ Portable Node.js installed in user space.${NC}"
+                    fi
                 fi
             fi
         fi
-    fi
-
-    # Try loading nvm if available in user environment
-    export NVM_DIR="${HOME}/.nvm"
-    if [ -s "${NVM_DIR}/nvm.sh" ]; then
-        # shellcheck disable=SC1090,SC1091
-        . "${NVM_DIR}/nvm.sh" 2>/dev/null || true
     fi
 
     if command -v npm >/dev/null 2>&1; then
@@ -197,8 +292,28 @@ else
 fi
 echo ""
 
-# 8. Launch unified Showcase UI & auto-open browser
+# 8. Detect environment & launch unified Showcase UI
+IS_REMOTE=false
+if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ] || [ -n "${SSH_TTY:-}" ] || [ -z "${DISPLAY:-}" ]; then
+    IS_REMOTE=true
+fi
+
 echo -e "   ${GREEN}🚀 Launching Artemis Showcase UI & Admin Console...${NC}"
+
+OPEN_FLAG="--open"
+if [ "${IS_REMOTE}" = true ]; then
+    HOSTNAME_STR="$(hostname 2>/dev/null || echo 'cloud-host')"
+    USER_STR="$(whoami 2>/dev/null || echo 'user')"
+    echo -e "   ${CYAN}☁️  Cloud / Remote environment detected:${NC}"
+    echo -e "      • Access locally via SSH tunnel: ${BOLD}ssh -L 8000:localhost:8000 ${USER_STR}@${HOSTNAME_STR}${NC}"
+    echo -e "      • Or access via Cloudtop / VS Code / Cursor Port Forwarding (Port 8000)"
+    if [ -z "${DISPLAY:-}" ]; then
+        echo -e "      • Headless session detected (browser auto-open disabled)."
+        OPEN_FLAG="--no-open"
+    fi
+    echo ""
+fi
+
 # Launch via `python -m artemis` (not the `artemis` console-script shim) so the
 # long-running server never pins .venv/Scripts/artemis[.exe] against reinstalls.
-exec uv run python -m artemis ui --open "$@"
+exec uv run python -m artemis ui "${OPEN_FLAG}" "$@"

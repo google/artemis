@@ -43,6 +43,10 @@ function Update-EnvironmentPath {
         "$env:ProgramFiles\nodejs",
         "${env:ProgramFiles(x86)}\nodejs",
         "$env:APPDATA\npm",
+        "$env:LOCALAPPDATA\Programs\platform-tools",
+        "$env:LOCALAPPDATA\Programs\node",
+        "$env:USERPROFILE\.local\share\platform-tools",
+        "$env:USERPROFILE\.local\share\node",
         "C:\ProgramData\chocolatey\bin",
         "$env:USERPROFILE\scoop\shims",
         "$env:USERPROFILE\.local\bin",
@@ -57,6 +61,62 @@ function Test-CommandExists {
     param([string]$Command)
     $res = Get-Command $Command -ErrorAction SilentlyContinue
     return ($null -ne $res)
+}
+
+function Install-PortablePlatformTools {
+    $ptDir = "$env:LOCALAPPDATA\Programs\platform-tools"
+    if (Test-Path "$ptDir\adb.exe") {
+        $env:PATH = "$ptDir;$env:PATH"
+        return $true
+    }
+    Write-Host "   [INFO] Installing Android platform-tools (adb) in user space..." -ForegroundColor Cyan
+    try {
+        $zipPath = "$env:TEMP\platform-tools-windows.zip"
+        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile $zipPath -UseBasicParsing
+        New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Programs" -Force | Out-Null
+        Expand-Archive -Path $zipPath -DestinationPath "$env:LOCALAPPDATA\Programs" -Force
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path "$ptDir\adb.exe") {
+            $env:PATH = "$ptDir;$env:PATH"
+            Write-Host "   ✔ adb installed in user space." -ForegroundColor Green
+            return $true
+        }
+    } catch {
+        Write-Host "   ⚠ Failed to install portable platform-tools: $_" -ForegroundColor DarkYellow
+    }
+    return $false
+}
+
+function Install-PortableNode {
+    $nodeDir = "$env:LOCALAPPDATA\Programs\node"
+    if (Test-Path "$nodeDir\node.exe") {
+        $env:PATH = "$nodeDir;$env:PATH"
+        return $true
+    }
+    Write-Host "   [INFO] Installing portable Node.js LTS in user space..." -ForegroundColor Cyan
+    try {
+        $zipPath = "$env:TEMP\node-v20-win-x64.zip"
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.3/node-v20.18.3-win-x64.zip" -OutFile $zipPath -UseBasicParsing
+        $extractDir = "$env:TEMP\node_extract"
+        New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+        $extractedFolder = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
+        if ($extractedFolder) {
+            New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Programs" -Force | Out-Null
+            if (Test-Path $nodeDir) { Remove-Item $nodeDir -Recurse -Force -ErrorAction SilentlyContinue }
+            Move-Item -Path $extractedFolder.FullName -Destination $nodeDir -Force
+        }
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path "$nodeDir\node.exe") {
+            $env:PATH = "$nodeDir;$env:PATH"
+            Write-Host "   ✔ Portable Node.js installed in user space." -ForegroundColor Green
+            return $true
+        }
+    } catch {
+        Write-Host "   ⚠ Failed to install portable Node.js: $_" -ForegroundColor DarkYellow
+    }
+    return $false
 }
 
 # 0. Initial PATH refresh
@@ -74,9 +134,19 @@ if ($missingTools.Count -eq 0) {
     Write-Host "   ✔ All system toolchains are already installed (ADB, FFmpeg, scrcpy)." -ForegroundColor Green
 } else {
     Write-Host "   ! Missing toolchains: $($missingTools -join ', ')" -ForegroundColor DarkYellow
-    Write-Host "   Attempting automatic installation via Windows Package Manager..." -ForegroundColor Gray
-
+    $useWinGet = $false
     if (Test-CommandExists "winget") {
+        if ([Console]::IsInputRedirected -eq $false) {
+            $ans = Read-Host "   Install system packages via WinGet? [Y/n]"
+            if ($ans -eq "" -or $ans -match "^[Yy]") {
+                $useWinGet = $true
+            }
+        } else {
+            $useWinGet = $true
+        }
+    }
+
+    if ($useWinGet) {
         Write-Host "   Detected WinGet. Installing packages..." -ForegroundColor Cyan
         if ($missingTools -contains "adb") {
             Write-Host "   📦 Installing Google.PlatformTools (ADB)..." -ForegroundColor Cyan
@@ -90,15 +160,21 @@ if ($missingTools.Count -eq 0) {
             Write-Host "   📦 Installing Genymobile.scrcpy..." -ForegroundColor Cyan
             winget install --id Genymobile.scrcpy -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
         }
+        Update-EnvironmentPath
     } elseif (Test-CommandExists "choco") {
         Write-Host "   Detected Chocolatey. Installing packages..." -ForegroundColor Cyan
         choco install ($missingTools -join " ") -y | Out-Null
+        Update-EnvironmentPath
     } elseif (Test-CommandExists "scoop") {
         Write-Host "   Detected Scoop. Installing packages..." -ForegroundColor Cyan
         scoop install ($missingTools -join " ") | Out-Null
+        Update-EnvironmentPath
     }
 
-    Update-EnvironmentPath
+    # Zero-admin user-space fallback for adb if still missing
+    if (-not (Test-CommandExists "adb")) {
+        Install-PortablePlatformTools
+    }
 }
 
 # 2. Check and Install uv (Fast Python Package Manager)
@@ -144,10 +220,27 @@ $ShowcaseIndexAlt1 = "$RootDir\apps\showcase_ui\dist\browser\index.html"
 $ShowcaseIndexAlt2 = "$RootDir\apps\showcase_ui\dist\index.html"
 if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1)) -and (-not (Test-Path $ShowcaseIndexAlt2))) {
     if (-not (Test-CommandExists "npm")) {
+        $useWinGetNode = $false
         if (Test-CommandExists "winget") {
+            if ([Console]::IsInputRedirected -eq $false) {
+                $ans = Read-Host "   Install Node.js via WinGet (may require Administrator)? [Y/n]"
+                if ($ans -eq "" -or $ans -match "^[Yy]") {
+                    $useWinGetNode = $true
+                }
+            } else {
+                $useWinGetNode = $true
+            }
+        }
+
+        if ($useWinGetNode) {
             Write-Host "   ⚡ Node.js/npm not found. Installing Node.js LTS via WinGet..." -ForegroundColor Cyan
             winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
             Update-EnvironmentPath
+        }
+
+        # Zero-admin user-space fallback for Node.js if still not found
+        if (-not (Test-CommandExists "npm")) {
+            Install-PortableNode
         }
     }
 

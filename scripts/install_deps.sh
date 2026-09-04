@@ -50,6 +50,8 @@ STANDARD_PATHS=(
     "/usr/local/bin"
     "/usr/local/sbin"
     "${HOME}/.local/bin"
+    "${HOME}/.local/share/node/bin"
+    "${HOME}/.local/share/platform-tools"
     "${HOME}/.cargo/bin"
     "${HOME}/Library/Android/sdk/platform-tools"
     "${HOME}/Android/Sdk/platform-tools"
@@ -66,6 +68,51 @@ ARCH_TYPE="$(uname -m)"
 # Helper to check command availability
 has_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# Sudo credential and choice state tracking
+SUDO_AUTHENTICATED=false
+SUDO_DECLINED=false
+
+# Helper to check, prompt for, or skip administrator (sudo) privileges gracefully
+request_sudo() {
+    [ "$(id -u)" -eq 0 ] && return 0
+    if ! has_cmd sudo; then
+        return 1
+    fi
+    # If already authenticated or passwordless sudo works
+    if [ "${SUDO_AUTHENTICATED}" = true ] || sudo -n true >/dev/null 2>&1; then
+        SUDO_AUTHENTICATED=true
+        return 0
+    fi
+    # If previously declined or failed in this session, don't nag again
+    if [ "${SUDO_DECLINED}" = true ]; then
+        return 1
+    fi
+    # If interactive terminal, ask user whether to enter sudo password
+    if [ -t 0 ]; then
+        local action="${1:-install system packages}"
+        echo -e "   ${CYAN}🔐 Administrator (sudo) privileges can be used to ${action}.${NC}"
+        local reply=""
+        read -r -p "      Enter sudo password now? [Y/n]: " reply
+        reply=${reply:-Y}
+        if [[ "${reply}" =~ ^[Yy]$ ]]; then
+            if sudo -v; then
+                SUDO_AUTHENTICATED=true
+                echo -e "   ${GREEN}✔ Sudo authenticated successfully.${NC}"
+                return 0
+            else
+                echo -e "   ${YELLOW}⚠ Sudo authentication failed or cancelled. Using user-space fallback.${NC}"
+                SUDO_DECLINED=true
+                return 1
+            fi
+        else
+            echo -e "   ${YELLOW}⏭️  Skipped sudo. Using user-space fallback.${NC}"
+            SUDO_DECLINED=true
+            return 1
+        fi
+    fi
+    return 1
 }
 
 echo -e "${BOLD}1. Detecting Operating System & Environment...${NC}"
@@ -131,48 +178,59 @@ install_system_packages() {
         fi
 
     elif [ "${OS_TYPE}" = "Linux" ]; then
-        SUDO_CMD=""
-        if [ "$(id -u)" -ne 0 ]; then
-            if has_cmd sudo; then
-                SUDO_CMD="sudo"
-            else
-                echo -e "   ${YELLOW}⚠ Root/sudo privileges not detected. Please install system tools with your package manager.${NC}"
+        local PKGS=()
+        [ "${need_adb}" = true ] && PKGS+=("adb")
+        [ "${need_ffmpeg}" = true ] && PKGS+=("ffmpeg")
+        [ "${need_scrcpy}" = true ] && PKGS+=("scrcpy")
+
+        if request_sudo "install missing system components (${PKGS[*]})"; then
+            local SUDO_PREFIX=""
+            if [ "$(id -u)" -ne 0 ]; then
+                SUDO_PREFIX="sudo"
+            fi
+
+            if has_cmd apt-get; then
+                echo -e "   ${CYAN}Detected Debian/Ubuntu (apt-get). Synchronizing and installing...${NC}"
+                ${SUDO_PREFIX} apt-get update -qq && ${SUDO_PREFIX} apt-get install -y "${PKGS[@]}" || true
+            elif has_cmd dnf; then
+                echo -e "   ${CYAN}Detected Fedora/RHEL (dnf). Installing packages...${NC}"
+                local DNF_PKGS=()
+                [ "${need_adb}" = true ] && DNF_PKGS+=("android-tools")
+                [ "${need_ffmpeg}" = true ] && DNF_PKGS+=("ffmpeg")
+                [ "${need_scrcpy}" = true ] && DNF_PKGS+=("scrcpy")
+                ${SUDO_PREFIX} dnf install -y "${DNF_PKGS[@]}" || true
+            elif has_cmd pacman; then
+                echo -e "   ${CYAN}Detected Arch Linux (pacman). Installing packages...${NC}"
+                local PAC_PKGS=()
+                [ "${need_adb}" = true ] && PAC_PKGS+=("android-tools")
+                [ "${need_ffmpeg}" = true ] && PAC_PKGS+=("ffmpeg")
+                [ "${need_scrcpy}" = true ] && PAC_PKGS+=("scrcpy")
+                ${SUDO_PREFIX} pacman -S --noconfirm "${PAC_PKGS[@]}" || true
             fi
         fi
 
-        if has_cmd apt-get; then
-            echo -e "   ${CYAN}Detected Debian/Ubuntu (apt-get). Synchronizing and installing...${NC}"
-            PKGS=()
-            [ "${need_adb}" = true ] && PKGS+=("adb")
-            [ "${need_ffmpeg}" = true ] && PKGS+=("ffmpeg")
-            [ "${need_scrcpy}" = true ] && PKGS+=("scrcpy")
-            PKGS+=("curl" "git")
-
-            if [ -n "${SUDO_CMD}" ] || [ "$(id -u)" -eq 0 ]; then
-                ${SUDO_CMD} apt-get update -qq || true
-                ${SUDO_CMD} apt-get install -y "${PKGS[@]}" || true
-            fi
-        elif has_cmd dnf; then
-            echo -e "   ${CYAN}Detected Fedora/RHEL (dnf). Installing packages...${NC}"
-            PKGS=()
-            [ "${need_adb}" = true ] && PKGS+=("android-tools")
-            [ "${need_ffmpeg}" = true ] && PKGS+=("ffmpeg")
-            [ "${need_scrcpy}" = true ] && PKGS+=("scrcpy")
-            PKGS+=("curl" "git")
-
-            if [ -n "${SUDO_CMD}" ] || [ "$(id -u)" -eq 0 ]; then
-                ${SUDO_CMD} dnf install -y "${PKGS[@]}" || true
-            fi
-        elif has_cmd pacman; then
-            echo -e "   ${CYAN}Detected Arch Linux (pacman). Installing packages...${NC}"
-            PKGS=()
-            [ "${need_adb}" = true ] && PKGS+=("android-tools")
-            [ "${need_ffmpeg}" = true ] && PKGS+=("ffmpeg")
-            [ "${need_scrcpy}" = true ] && PKGS+=("scrcpy")
-            PKGS+=("curl" "git")
-
-            if [ -n "${SUDO_CMD}" ] || [ "$(id -u)" -eq 0 ]; then
-                ${SUDO_CMD} pacman -S --noconfirm "${PKGS[@]}" || true
+        # User-space fallback for adb if missing and no root privileges
+        if ! has_cmd adb; then
+            if [[ "${ARCH_TYPE}" = "x86_64" || "${ARCH_TYPE}" = "amd64" ]]; then
+                local PT_DIR="${HOME}/.local/share/platform-tools"
+                if [ ! -x "${PT_DIR}/adb" ]; then
+                    echo -e "   ${CYAN}📦 Installing Android platform-tools (adb) in user space...${NC}"
+                    local TEMP_ZIP="/tmp/platform-tools-$$.zip"
+                    if curl -fsSL "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o "${TEMP_ZIP}" 2>/dev/null; then
+                        mkdir -p "${HOME}/.local/share" "${HOME}/.local/bin"
+                        if has_cmd unzip; then
+                            unzip -q -o "${TEMP_ZIP}" -d "${HOME}/.local/share" 2>/dev/null || true
+                        else
+                            python3 -m zipfile -e "${TEMP_ZIP}" "${HOME}/.local/share" 2>/dev/null || true
+                        fi
+                        rm -f "${TEMP_ZIP}"
+                    fi
+                fi
+                if [ -x "${PT_DIR}/adb" ]; then
+                    ln -sf "${PT_DIR}/adb" "${HOME}/.local/bin/adb"
+                    export PATH="${PT_DIR}:${PATH}"
+                    echo -e "   ${GREEN}✓ adb installed in user space.${NC}"
+                fi
             fi
         fi
     fi
@@ -254,28 +312,55 @@ setup_showcase_ui() {
     local SHOWCASE_INDEX_ALT1="${ROOT_DIR}/apps/showcase_ui/dist/browser/index.html"
     local SHOWCASE_INDEX_ALT2="${ROOT_DIR}/apps/showcase_ui/dist/index.html"
     if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "${SHOWCASE_INDEX_ALT2}" ]; then
-        if ! has_cmd npm; then
-            echo -e "   ${YELLOW}⚡ npm/Node.js not found. Auto-installing Node.js...${NC}"
-            if [ "${OS_TYPE}" = "Darwin" ] && has_cmd brew; then
-                brew install node >/dev/null 2>&1 || true
-            elif [ "${OS_TYPE}" = "Linux" ]; then
-                local SUDO_CMD=""
-                if [ "$(id -u)" -ne 0 ] && has_cmd sudo; then SUDO_CMD="sudo"; fi
-                if has_cmd apt-get; then
-                    ${SUDO_CMD} apt-get update -qq && ${SUDO_CMD} apt-get install -y -qq nodejs npm >/dev/null 2>&1 || true
-                elif has_cmd dnf; then
-                    ${SUDO_CMD} dnf install -y nodejs npm >/dev/null 2>&1 || true
-                elif has_cmd pacman; then
-                    ${SUDO_CMD} pacman -S --noconfirm nodejs npm >/dev/null 2>&1 || true
-                fi
-            fi
-        fi
-
         # Try loading nvm if available in user environment
         export NVM_DIR="${HOME}/.nvm"
         if [ -s "${NVM_DIR}/nvm.sh" ]; then
             # shellcheck disable=SC1090,SC1091
             . "${NVM_DIR}/nvm.sh" 2>/dev/null || true
+        fi
+        if [ -d "${HOME}/.local/share/node/bin" ] && [[ ":${PATH}:" != *":${HOME}/.local/share/node/bin:"* ]]; then
+            export PATH="${HOME}/.local/share/node/bin:${PATH}"
+        fi
+
+        if ! has_cmd npm; then
+            echo -e "   ${YELLOW}⚡ npm/Node.js not found. Auto-installing Node.js...${NC}"
+            if [ "${OS_TYPE}" = "Darwin" ] && has_cmd brew; then
+                brew install node >/dev/null 2>&1 || true
+            elif [ "${OS_TYPE}" = "Linux" ]; then
+                if request_sudo "install Node.js and npm"; then
+                    local SUDO_PREFIX=""
+                    if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
+                    if has_cmd apt-get; then
+                        ${SUDO_PREFIX} apt-get update -qq && ${SUDO_PREFIX} apt-get install -y -qq nodejs npm || true
+                    elif has_cmd dnf; then
+                        ${SUDO_PREFIX} dnf install -y nodejs npm || true
+                    elif has_cmd pacman; then
+                        ${SUDO_PREFIX} pacman -S --noconfirm nodejs npm || true
+                    fi
+                fi
+
+                # If still not found, download portable Node.js into user space
+                if ! has_cmd npm; then
+                    local ARCH="$(uname -m)"
+                    local NODE_ARCH=""
+                    case "${ARCH}" in
+                        x86_64|amd64) NODE_ARCH="x64" ;;
+                        aarch64|arm64) NODE_ARCH="arm64" ;;
+                    esac
+                    if [ -n "${NODE_ARCH}" ]; then
+                        local NODE_VER="v20.18.3"
+                        local NODE_DIR="${HOME}/.local/share/node"
+                        echo -e "   ${CYAN}📦 Installing portable Node.js ${NODE_VER} in user space (~/.local)...${NC}"
+                        mkdir -p "${NODE_DIR}" "${HOME}/.local/bin"
+                        if curl -fsSL "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-linux-${NODE_ARCH}.tar.gz" | tar -xz -C "${NODE_DIR}" --strip-components=1 2>/dev/null; then
+                            ln -sf "${NODE_DIR}/bin/node" "${HOME}/.local/bin/node"
+                            ln -sf "${NODE_DIR}/bin/npm" "${HOME}/.local/bin/npm"
+                            ln -sf "${NODE_DIR}/bin/npx" "${HOME}/.local/bin/npx"
+                            export PATH="${NODE_DIR}/bin:${HOME}/.local/bin:${PATH}"
+                        fi
+                    fi
+                fi
+            fi
         fi
 
         if has_cmd npm; then
