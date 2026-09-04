@@ -15,7 +15,7 @@
  */
 
 import { ActionParam, StepReplayFrame } from '../core/models/stream.model';
-import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequenceCoordinates } from './image-overlay.util';
+import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequenceCoordinates, unwrapTraceAction } from './image-overlay.util';
 import { cleanErrorMessage } from './tool-formatter.util';
 
 /**
@@ -35,35 +35,6 @@ export function safeParseJson(val: any): any {
 // WeakMap memo for parsed action objects to avoid repeated JSON.parse and object allocation across change detection cycles
 const actionObjectCache = new WeakMap<object, any>();
 
-function computeActionObject(action: any): any {
-  if (action && typeof action === 'object' && action.payload) {
-    const payload = typeof action.payload === 'string' ? safeParseJson(action.payload) : action.payload;
-    const innerAction = payload?.args?.action;
-    if (innerAction && typeof innerAction === 'object') {
-      return {
-        ...action,
-        ...innerAction,
-        name: action.name || innerAction.action || innerAction.name,
-        action: innerAction.action || action.name,
-        trace_id: action.trace_id,
-        timestamp: action.timestamp ?? innerAction.timestamp
-      };
-    }
-    const innerArgs = payload?.args;
-    if (innerArgs && typeof innerArgs === 'object') {
-      return {
-        ...action,
-        ...innerArgs,
-        name: action.name || innerArgs.action || innerArgs.name,
-        action: innerArgs.action || action.name,
-        trace_id: action.trace_id,
-        timestamp: action.timestamp ?? innerArgs.timestamp
-      };
-    }
-  }
-  return action;
-}
-
 /**
  * Safely extract action object from possible array or nested structure
  */
@@ -75,7 +46,7 @@ export function getActionObject(action: any): any {
   if (typeof action === 'object') {
     const cached = actionObjectCache.get(action);
     if (cached !== undefined) return cached;
-    const res = computeActionObject(action);
+    const res = unwrapTraceAction(action);
     actionObjectCache.set(action, res);
     return res;
   }

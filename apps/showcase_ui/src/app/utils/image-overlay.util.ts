@@ -15,6 +15,39 @@
  */
 
 /**
+ * Unwrap Flash (`payload.args`) and Pro (`payload.action`) traces.
+ * Preserve trace metadata and leave plain action objects unchanged.
+ */
+export function unwrapTraceAction(record: any): any {
+  if (!record || typeof record !== 'object' || !record.payload) return record;
+
+  let payload = record.payload;
+  if (typeof payload === 'string') {
+    try {
+      payload = JSON.parse(payload);
+    } catch {
+      return record;
+    }
+  }
+  if (!payload || typeof payload !== 'object') return record;
+
+  const asObject = (v: any) => (Array.isArray(v) ? v[0] : v);
+  const candidates = [asObject(payload.args?.action), asObject(payload.action), asObject(payload.args)];
+  const inner = candidates.find(c => c && typeof c === 'object');
+  if (!inner) return record;
+
+  return {
+    ...record,
+    ...inner,
+    args: (record.args && typeof record.args === 'object') ? record.args : inner,
+    name: record.name || inner.action || inner.name,
+    action: inner.action || record.name,
+    trace_id: record.trace_id,
+    timestamp: record.timestamp ?? inner.timestamp
+  };
+}
+
+/**
  * Helper to parse any coordinate representation into an array of numbers.
  * Handles:
  * - [x, y] or [x1, y1, x2, y2]
@@ -141,12 +174,11 @@ export function drawActionCoordinatesOnOverlay(
   const naturalWidth = img.naturalWidth || 1080;
   const naturalHeight = img.naturalHeight || 2400;
 
-  actions.forEach(act => {
+  actions.forEach(record => {
+    const act = unwrapTraceAction(record);
     if (!act || typeof act !== 'object') return;
     const actionName = (act.action || act.name || 'tap').toLowerCase();
-
-    const payload = (act.payload && typeof act.payload === 'object') ? act.payload : {};
-    const args = (payload.args && typeof payload.args === 'object') ? payload.args : (act.args || {});
+    const args = (act.args && typeof act.args === 'object') ? act.args : {};
 
     // Filter out non-touch / system actions that do not operate via touch coordinates
     const nonDrawingActions = [

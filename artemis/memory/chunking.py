@@ -33,7 +33,9 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
+import time
 from typing import Any, Callable
+from uuid import uuid4
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
@@ -54,6 +56,9 @@ CHUNK_PENDING_NOTE = (
 )
 
 _NOTE_TOOLS = ("save_note", "update_note", "append_note")
+
+# Reuse one tool trace per chunk across running, success, and failed states.
+COMPRESSION_TRACE_NAME = "compress_history"
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +533,15 @@ class ChunkCapsuleService(StepMemoryService):
 
     def __init__(self, ctx: Any, lens: StepCapsuleLens, **kwargs):
         super().__init__(ctx, lens=lens, **kwargs)
+        # Report exhausted retries without waiting for the next render.
+        self.failure_hook: Callable[[JobKey], None] | None = None
+
+    def _on_status(self, key: JobKey, status: str) -> None:
+        if status == "failed" and self.failure_hook is not None:
+            try:
+                self.failure_hook(key)
+            except Exception as e:
+                logger.warning(f"Capsule failure hook for {key} raised: {e}")
 
     def _on_ready(self, key: JobKey, summary: str) -> None:
         # The turn transcripts only serve generation. A ready capsule is never
@@ -570,6 +584,15 @@ class ChunkState:
     band1: dict[str, Any] = field(default_factory=dict)
     band2: str | None = None
     annotations: list[dict[str, Any]] = field(default_factory=list)
+    # Segment closure reason: milestone, size, or pressure.
+    trigger: str | None = None
+    trace_id: Any = None
+    trace_step_id: Any = None
+    announced_at: float | None = None
+    # Measure source at close and summary at swap; estimate tokens as chars // 4.
+    # Forced swaps without a capsule leave summary_chars unset.
+    source_chars: int = 0
+    summary_chars: int | None = None
 
     @property
     def capsule_key(self) -> str:
@@ -881,6 +904,8 @@ class HistoryChunkManager:
 
         self._meter_getter = meter_getter
         self._capsule_service = capsule_service or self._build_capsule_service(ctx)
+        if isinstance(self._capsule_service, ChunkCapsuleService):
+            self._capsule_service.failure_hook = self._on_capsule_failed
 
         # Trigger state (fed from the graph).
         self._step_hashes: dict[str, str] = {}
@@ -1053,7 +1078,7 @@ class HistoryChunkManager:
             # bounded to trigger/pressure renders, never every render.
             self._redispatch_failed_capsules()
         self._harvest_capsules()
-        self._swap_ready_segments(ledger, hard=hard)
+        self._swap_ready_segments(ledger, hard=hard, base_tokens=base_tokens)
 
     def _close_new_segments(self, ledger, soft: bool) -> bool:
         """Trigger evaluation: close due segments and dispatch their capsules.
@@ -1082,7 +1107,7 @@ class HistoryChunkManager:
         # (the previous segment becomes one HistoryChunk; the floor only
         # delays the event, it never splits the segment). The trailing segment
         # is subject to the size/soft triggers over its eligible portion only.
-        selected: list[tuple[str | None, list[dict]]] = []
+        selected: list[tuple[str | None, list[dict], str]] = []
         open_hash = self._last_hash
 
         consumed_prefix = 0
@@ -1092,7 +1117,7 @@ class HistoryChunkManager:
             is_last = idx == len(segments) - 1
             closed = (not is_last) or seg_hash != open_hash
             if closed and consumed_prefix + len(seg_turns) <= remaining_eligible:
-                selected.append(segment)
+                selected.append((seg_hash, seg_turns, "milestone"))
                 consumed_prefix += len(seg_turns)
                 continue
             tail_segment = segment
@@ -1113,19 +1138,21 @@ class HistoryChunkManager:
             )
 
         if size_event:
-            selected.append((tail_segment[0], tail_portion))
+            selected.append((tail_segment[0], tail_portion, "size"))
         elif not milestone_event and soft and tail_portion:
             # Soft threshold with nothing else due: close the oldest open
             # segment's eligible portion (bounded by the chunk size cap).
-            selected.append((tail_segment[0], tail_portion[: self._max_steps]))
+            selected.append((tail_segment[0], tail_portion[: self._max_steps], "pressure"))
 
         if not selected:
             return False
 
         steps_by_id = self._load_steps_by_id()
-        for seg_hash, seg_turns in selected:
+        for seg_hash, seg_turns, trigger in selected:
             for slice_turns in self._slices(seg_turns):
-                chunk = self._create_chunk(slice_turns, seg_hash, steps_by_id, ledger)
+                chunk = self._create_chunk(
+                    slice_turns, seg_hash, steps_by_id, ledger, trigger=trigger
+                )
                 self._awaiting.append({"chunk": chunk, "turns": list(slice_turns)})
         logger.info(
             f"History segments closed (ready-gated): {len(self._awaiting)} awaiting"
@@ -1150,10 +1177,11 @@ class HistoryChunkManager:
                     " retained until a capsule lands."
                 )
                 self._capsule_service.submit(key, payload)
+                self._announce(chunk, "running", note="retrying")
             except Exception as e:
                 logger.error(f"Capsule re-dispatch for {key} failed: {e}")
 
-    def _swap_ready_segments(self, ledger, *, hard: bool) -> None:
+    def _swap_ready_segments(self, ledger, *, hard: bool, base_tokens: int | None = None) -> None:
         """Swap the ready prefix of awaiting segments into the frozen region.
 
         Swaps consume the transcript's oldest unchunked turns, so only a
@@ -1161,6 +1189,9 @@ class HistoryChunkManager:
         (and every younger segment's) original text live. The hard threshold
         is the sole exception: everything closed force-swaps, pending chunks
         included, and the frozen region renders as the L3 snapshot.
+
+        ``base_tokens`` is the prompt size before the swap, used to estimate
+        the remaining context on the last swapped chunk's trace.
         """
         if not self._awaiting:
             return
@@ -1188,6 +1219,51 @@ class HistoryChunkManager:
             f" ({len(self._chunks)} chunks, {len(self._eras)} eras,"
             f" {len(self._awaiting)} still awaiting, hard={hard})."
         )
+        # Pending chunks contribute only their minimal index to the L3 snapshot.
+        # Include that size in the context estimate, without a compression ratio.
+        swapped = [e for e in swap if e["chunk"] is not None]
+        source_tokens_total = 0
+        replacement_tokens_total = 0
+        for entry in swapped:
+            chunk = entry["chunk"]
+            if chunk.status == "ready":
+                chunk.summary_chars = len(render_chunk_block(chunk))
+                replacement_chars = chunk.summary_chars
+            else:
+                chunk.summary_chars = None
+                replacement_chars = len(chunk.minimal_index or "")
+            source_tokens_total += chunk.source_chars // 4
+            replacement_tokens_total += replacement_chars // 4
+        context_tokens: int | None = None
+        if base_tokens is not None:
+            context_tokens = max(
+                0, int(base_tokens) - source_tokens_total + replacement_tokens_total
+            )
+
+        for index, entry in enumerate(swapped):
+            chunk = entry["chunk"]
+            turns = len(entry["turns"])
+            forced = hard and chunk.status != "ready"
+            if not forced:
+                result = f"Replaced {turns} turn{'s' if turns != 1 else ''} with the summary."
+            else:
+                result = (
+                    "Context budget reached before the summary was ready;"
+                    f" replaced {turns} turn{'s' if turns != 1 else ''} with a brief"
+                    " snapshot."
+                )
+            extra: dict[str, Any] = {
+                "source_tokens": chunk.source_chars // 4,
+                "summary_tokens": (
+                    chunk.summary_chars // 4 if chunk.summary_chars is not None else None
+                ),
+            }
+            # Show the context estimate once per swap, on its last trace.
+            if context_tokens is not None and index == len(swapped) - 1:
+                extra["context_tokens"] = context_tokens
+                extra["context_budget"] = self._budget
+                extra["context_estimated"] = True
+            self._announce(chunk, "success", result=result, forced=forced, extra=extra)
 
     def _partition(self, eligible: list[dict]) -> list[tuple[str | None, list[dict]]]:
         """Split eligible turns into consecutive same-hash segments."""
@@ -1254,6 +1330,8 @@ class HistoryChunkManager:
         seg_hash: str | None,
         steps_by_id: dict[str, dict],
         ledger: Any = None,
+        *,
+        trigger: str | None = None,
     ) -> ChunkState | None:
         # A turn carries every step id it recorded (``step_keys``, Flash
         # multi-action turns); older ledgers only expose ``step_key``. Each
@@ -1302,13 +1380,88 @@ class HistoryChunkManager:
             band3=build_action_ledger(steps, session_start),
             minimal_index=build_action_ledger(steps, session_start, minimal=True),
             user_lines=[line for line in (injected_instruction_line(s) for s in steps) if line],
+            trigger=trigger,
         )
         # Ready gating: the caller queues the chunk as awaiting — it only
         # enters self._chunks (and the frozen region) once its capsule is
         # ready, or through the hard-threshold emergency swap.
         self._persist(chunk)
         self._dispatch_capsule(chunk, steps, session_start, turn_records)
+        # Attach the trace to the step allocated before this prompt render.
+        chunk.trace_id = uuid4()
+        chunk.trace_step_id = getattr(self._engine, "current_step_id", None)
+        chunk.announced_at = time.time()
+        if ledger is not None:
+            try:
+                chunk.source_chars = int(ledger.turn_text_chars(slice_turns))
+            except Exception as e:
+                logger.debug(f"Chunk source size unavailable for {chunk.capsule_key}: {e}")
+        self._announce(chunk, "running", extra={"source_tokens": chunk.source_chars // 4})
         return chunk
+
+    def _announce(
+        self,
+        chunk: ChunkState,
+        status: str,
+        *,
+        result: str | None = None,
+        error: str | None = None,
+        note: str | None = None,
+        forced: bool = False,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Update the chunk's timeline trace without interrupting compression."""
+        if chunk.trace_id is None:
+            return
+        engine = self._engine
+        if engine is None or not hasattr(engine, "record_trace"):
+            return
+        args: dict[str, Any] = {
+            "start_step": chunk.start_step_number,
+            "end_step": chunk.end_step_number,
+            "steps": len(chunk.source_step_ids),
+            "milestone": chunk.milestone_label,
+            "trigger": chunk.trigger,
+        }
+        if note:
+            args["note"] = note
+        if forced:
+            args["forced"] = True
+        if extra:
+            args.update(extra)
+        payload: dict[str, Any] = {"args": args}
+        if result is not None:
+            payload["result"] = result
+        if error is not None:
+            payload["error"] = error
+        duration = None
+        if status != "running" and chunk.announced_at is not None:
+            duration = max(0.0, time.time() - chunk.announced_at)
+        try:
+            engine.record_trace(
+                type="tool",
+                name=COMPRESSION_TRACE_NAME,
+                payload=payload,
+                step_id=chunk.trace_step_id,
+                status=status,
+                duration=duration,
+                trace_id=chunk.trace_id,
+            )
+        except Exception as e:
+            logger.debug(f"Compression announcement skipped for {chunk.capsule_key}: {e}")
+
+    def _on_capsule_failed(self, key: JobKey) -> None:
+        """Mark the trace failed; keep the chunk pending for a later retry."""
+        for chunk in self._all_chunks():
+            if chunk.status != "pending" or chunk.capsule_key != key:
+                continue
+            self._announce(
+                chunk,
+                "failed",
+                error="Summary attempts exhausted; the full record is kept and"
+                " the summary will be retried later.",
+            )
+            return
 
     @staticmethod
     def _step_payload(step: dict, session_start: float | None) -> dict[str, Any]:

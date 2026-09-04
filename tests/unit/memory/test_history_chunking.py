@@ -78,6 +78,7 @@ class FakeEngine:
         self.session_start_time = SESSION_START
         self.current_session_id = "session-1"
         self.chunk_writes: list[dict] = []
+        self.traces: list[dict] = []
         if base_dir is not None:
             self.base_dir = base_dir
 
@@ -87,6 +88,10 @@ class FakeEngine:
     def record_history_chunk(self, **kwargs):
         self.chunk_writes.append(kwargs)
         return f"chunk-row-{len(self.chunk_writes)}"
+
+    def record_trace(self, **kwargs):
+        self.traces.append(kwargs)
+        return kwargs.get("trace_id")
 
 
 class StubCapsuleService(StepMemoryService):
@@ -1095,6 +1100,75 @@ def test_hard_threshold_force_swaps_pending_chunks_into_l3():
         for n in range(chunk.start_step_number, chunk.end_step_number + 1):
             assert f"- Step {n} (T+" in frozen
     assert len(ledger.unchunked_turns()) < 8  # turns actually consumed
+
+
+# ---------------------------------------------------------------------------
+# Timeline announcement (compress_history trace)
+# ---------------------------------------------------------------------------
+
+
+def test_compression_announces_one_tool_line_from_dispatch_to_swap():
+    """Dispatch and swap share a trace ID and report the change in token usage."""
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 9)]
+    meter = {"value": 60_000}
+    ledger, chunker, engine, capsule = _make(steps, min_active=2, meter=lambda: meter["value"])
+    _run_turns(ledger, chunker, 1, 8, _hashes(4))
+
+    assert len(engine.traces) == 1
+    running = engine.traces[0]
+    assert (running["type"], running["name"], running["status"]) == (
+        "tool",
+        "compress_history",
+        "running",
+    )
+    args = running["payload"]["args"]
+    assert (args["start_step"], args["end_step"], args["steps"]) == (1, 4, 4)
+    assert args["trigger"] == "milestone"
+    assert args["source_tokens"] > 0
+    assert "context_tokens" not in args
+
+    capsule.resolve("chunk:1-4", _capsule(1, 4))
+    ledger.commit_staged(step_key="s8", validator_result={"status": "success"})
+    ledger.render([_observation(9)])
+
+    done = engine.traces[-1]
+    assert done["trace_id"] == running["trace_id"]
+    assert done["status"] == "success"
+    assert done["duration"] is not None and done["duration"] >= 0
+    done_args = done["payload"]["args"]
+    assert done_args["source_tokens"] == args["source_tokens"]
+    assert done_args["summary_tokens"] > 0
+    assert done_args["context_budget"] == 100_000
+    assert done_args["context_estimated"] is True
+    assert done_args["context_tokens"] == (
+        60_000 - done_args["source_tokens"] + done_args["summary_tokens"]
+    )
+    assert "forced" not in done_args
+
+
+def test_forced_swap_announces_snapshot_without_a_ratio():
+    """Forced swaps report estimated context usage without a summary size."""
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 9)]
+    meter = {"value": None}
+    ledger, chunker, engine, _ = _make(steps, min_active=2, meter=lambda: meter["value"])
+    _run_turns(ledger, chunker, 1, 8, _hashes(4))
+    assert any(t["status"] == "running" for t in engine.traces)
+
+    meter["value"] = 95_000
+    ledger.commit_staged(step_key="s8", validator_result={"status": "success"})
+    ledger.render([_observation(9)])  # pressure closes the open tail too, then force-swaps all
+
+    running_ids = {t["trace_id"] for t in engine.traces if t["status"] == "running"}
+    done = [t for t in engine.traces if t["status"] == "success"]
+    assert done and {t["trace_id"] for t in done} <= running_ids
+    for trace in done:
+        assert trace["payload"]["args"]["forced"] is True
+        assert trace["payload"]["args"]["summary_tokens"] is None
+    last_args = done[-1]["payload"]["args"]
+    assert last_args["context_budget"] == 100_000
+    assert 0 < last_args["context_tokens"] < 95_000
+    # The prompt-size figure appears once per swap event, on the last line.
+    assert all("context_tokens" not in t["payload"]["args"] for t in done[:-1])
 
 
 # ---------------------------------------------------------------------------

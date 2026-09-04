@@ -699,10 +699,63 @@ export function getToolDisplayLabel(tool: any, isFirstSaveNote: boolean = false)
     }
     case 'read_url':
       return 'Fetching web page';
+    case 'compress_history':
+      return getCompressionLabel(tool);
 
     default:
       return `Executing ${cleanName.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}`;
   }
+}
+
+function formatTokenFigure(value: any): string {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return '';
+  if (n < 1000) return `${Math.round(n)}`;
+  return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+}
+
+/** Format compression progress and token usage for the timeline. */
+export function getCompressionLabel(tool: any): string {
+  const args = getToolArgs(tool) || {};
+  const start = Number(args.start_step);
+  const end = Number(args.end_step);
+  const hasRange = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end > 0;
+  const range = hasRange
+    ? (start === end ? `step ${start}` : `steps ${start}–${end}`)
+    : 'earlier steps';
+  const rangeCapitalized = range.charAt(0).toUpperCase() + range.slice(1);
+  const status = String(tool?.status || '').toLowerCase();
+
+  if (status === 'failed') {
+    return `Couldn't condense ${range} yet; keeping the full record and retrying later`;
+  }
+  if (status !== 'success') {
+    return String(args.note || '').toLowerCase() === 'retrying'
+      ? `Retrying the memory summary for ${range}…`
+      : `Condensing ${range} into a short memory to free up room…`;
+  }
+
+  const parts: string[] = [];
+  const source = Number(args.source_tokens);
+  const summary = Number(args.summary_tokens);
+  if (args.forced) {
+    parts.push(`${rangeCapitalized} replaced by a brief snapshot (memory was nearly full)`);
+  } else {
+    parts.push(`${rangeCapitalized} condensed into a short memory`);
+    if (source > 0 && summary > 0) {
+      const factor = source / summary;
+      const factorText = factor >= 2 ? ` (${Math.round(factor)}× smaller)` : '';
+      parts.push(`${formatTokenFigure(source)} → ${formatTokenFigure(summary)} tokens${factorText}`);
+    }
+  }
+  const context = Number(args.context_tokens);
+  const budget = Number(args.context_budget);
+  if (context > 0) {
+    parts.push(budget > 0
+      ? `working memory ≈ ${formatTokenFigure(context)} of ${formatTokenFigure(budget)} tokens`
+      : `working memory ≈ ${formatTokenFigure(context)} tokens`);
+  }
+  return parts.join(' · ');
 }
 
 /**
@@ -772,6 +825,8 @@ export function getToolIcon(tool: any): string {
     case 'outputter':
     case 'output_synthesis':
       return 'assignment_turned_in';
+    case 'compress_history':
+      return 'compress';
     default:
       return 'build';
   }

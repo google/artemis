@@ -1,9 +1,64 @@
 import {
   cleanErrorMessage,
+  getCompressionLabel,
+  getToolDisplayLabel,
+  getToolIcon,
   getUniqueGenericTools,
   getVideoAnalysisView,
   shouldShowTool
 } from './tool-formatter.util';
+
+describe('compress_history timeline line', () => {
+  const trace = (status: string, args: Record<string, any>) => ({
+    type: 'tool',
+    name: 'compress_history',
+    status,
+    payload: { args }
+  });
+
+  it('is shown as a plain tool line with its own icon', () => {
+    const running = trace('running', { start_step: 12, end_step: 27 });
+    expect(shouldShowTool(running)).toBeTrue();
+    expect(getToolIcon(running)).toBe('compress');
+    expect(getToolDisplayLabel(running)).toBe(getCompressionLabel(running));
+  });
+
+  it('says which steps are being condensed while running', () => {
+    expect(getCompressionLabel(trace('running', { start_step: 12, end_step: 27 })))
+      .toBe('Condensing steps 12–27 into a short memory to free up room…');
+    expect(getCompressionLabel(trace('running', { start_step: 12, end_step: 27, note: 'retrying' })))
+      .toBe('Retrying the memory summary for steps 12–27…');
+    expect(getCompressionLabel(trace('running', { start_step: 5, end_step: 5 })))
+      .toBe('Condensing step 5 into a short memory to free up room…');
+  });
+
+  it('reports the size reduction and the working memory once done', () => {
+    const done = trace('success', {
+      start_step: 12,
+      end_step: 27,
+      source_tokens: 8400,
+      summary_tokens: 600,
+      context_tokens: 54000,
+      context_budget: 80000
+    });
+    expect(getCompressionLabel(done)).toBe(
+      'Steps 12–27 condensed into a short memory · 8.4k → 600 tokens (14× smaller) · working memory ≈ 54k of 80k tokens'
+    );
+  });
+
+  it('omits the working memory figure on lines that do not carry it', () => {
+    const done = trace('success', { start_step: 1, end_step: 4, source_tokens: 3000, summary_tokens: 1500 });
+    expect(getCompressionLabel(done)).toBe('Steps 1–4 condensed into a short memory · 3k → 1.5k tokens (2× smaller)');
+  });
+
+  it('explains a forced snapshot and a failed attempt in plain words', () => {
+    const forced = trace('success', { start_step: 1, end_step: 4, forced: true, context_tokens: 70000, context_budget: 80000 });
+    expect(getCompressionLabel(forced))
+      .toBe('Steps 1–4 replaced by a brief snapshot (memory was nearly full) · working memory ≈ 70k of 80k tokens');
+    expect(getCompressionLabel(trace('failed', { start_step: 1, end_step: 4 })))
+      .toBe("Couldn't condense steps 1–4 yet; keeping the full record and retrying later");
+  });
+});
 
 describe('cleanErrorMessage', () => {
   it('removes repeated LLM wrapper labels while preserving the provider reason', () => {
