@@ -211,17 +211,21 @@ def heal_adb_keys(adb_path: str | None = None, force: bool = False) -> dict[str,
 
     # Restart ADB server to trigger key generation
     try:
+        clean_env = os.environ.copy()
+        clean_env.pop("ADB_SERVER_SOCKET", None)
         subprocess.run(
             [resolved_adb, "kill-server"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            env=clean_env,
         )
         subprocess.run(
             [resolved_adb, "start-server"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            env=clean_env,
         )
         # Execute adb devices to trigger initial handshake & key material generation if needed
         subprocess.run(
@@ -229,6 +233,7 @@ def heal_adb_keys(adb_path: str | None = None, force: bool = False) -> dict[str,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            env=clean_env,
         )
     except Exception as e:
         logger.error(f"Error restarting ADB server during key healing: {e}")

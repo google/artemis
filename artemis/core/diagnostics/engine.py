@@ -246,17 +246,21 @@ class ReadinessEngine:
                 return heal_adb_keys(adb_path=adb_path)
 
             try:
+                clean_env = os.environ.copy()
+                clean_env.pop("ADB_SERVER_SOCKET", None)
                 subprocess.run(
                     [adb_path, "kill-server"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
+                    env=clean_env,
                 )
                 res = subprocess.run(
                     [adb_path, "start-server"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
+                    env=clean_env,
                 )
                 success = res.returncode == 0
                 return {

@@ -127,12 +127,31 @@ install_system_packages() {
     local need_ffmpeg=false
     local need_scrcpy=false
 
+    if ! has_cmd adb; then
+        for candidate in \
+            "${ANDROID_HOME:-}/platform-tools" \
+            "${ANDROID_SDK_ROOT:-}/platform-tools" \
+            "${HOME}/Library/Android/sdk/platform-tools" \
+            "${HOME}/Android/Sdk/platform-tools" \
+            "${HOME}/.local/share/platform-tools" \
+            "/opt/homebrew/bin" \
+            "/usr/local/bin"; do
+            if [ -n "${candidate}" ] && [ -x "${candidate}/adb" ]; then
+                export PATH="${candidate}:${PATH}"
+                break
+            fi
+        done
+    fi
+
     if ! has_cmd adb; then need_adb=true; fi
     if ! has_cmd ffmpeg; then need_ffmpeg=true; fi
     if ! has_cmd scrcpy; then need_scrcpy=true; fi
 
     if [ "${need_adb}" = false ] && [ "${need_ffmpeg}" = false ] && [ "${need_scrcpy}" = false ]; then
         echo -e "   ${GREEN}✓ All core system tools are already installed.${NC}"
+        if has_cmd adb; then
+            (unset ADB_SERVER_SOCKET; adb start-server >/dev/null 2>&1 || true)
+        fi
         return 0
     fi
 
@@ -233,6 +252,11 @@ install_system_packages() {
                 fi
             fi
         fi
+    fi
+
+    # Ensure local ADB daemon is warm & listening
+    if has_cmd adb; then
+        (unset ADB_SERVER_SOCKET; adb start-server >/dev/null 2>&1 || true)
     fi
 }
 

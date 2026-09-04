@@ -247,11 +247,14 @@ class DevicePool:
             return
         proc = None
         try:
+            clean_env = os.environ.copy()
+            clean_env.pop("ADB_SERVER_SOCKET", None)
             proc = await asyncio.create_subprocess_exec(
                 adb,
                 "start-server",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=clean_env,
             )
             await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except Exception as exc:

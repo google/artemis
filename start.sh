@@ -102,6 +102,23 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # 3. Check and auto-install missing system toolchains (ADB, FFmpeg, scrcpy)
+# Discover standard Android SDK / user-space locations if adb not in PATH
+if ! command -v adb >/dev/null 2>&1; then
+    for candidate in \
+        "${ANDROID_HOME:-}/platform-tools" \
+        "${ANDROID_SDK_ROOT:-}/platform-tools" \
+        "${HOME}/Library/Android/sdk/platform-tools" \
+        "${HOME}/Android/Sdk/platform-tools" \
+        "${HOME}/.local/share/platform-tools" \
+        "/opt/homebrew/bin" \
+        "/usr/local/bin"; do
+        if [ -n "${candidate}" ] && [ -x "${candidate}/adb" ]; then
+            export PATH="${candidate}:${PATH}"
+            break
+        fi
+    done
+fi
+
 MISSING_CORE=()
 if ! command -v adb >/dev/null 2>&1; then MISSING_CORE+=("adb"); fi
 if ! command -v ffmpeg >/dev/null 2>&1; then MISSING_CORE+=("ffmpeg"); fi
@@ -173,6 +190,11 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
             fi
         fi
     fi
+fi
+
+# Ensure local ADB daemon is warm & listening so probes do not hit 'Connection refused'
+if command -v adb >/dev/null 2>&1; then
+    (unset ADB_SERVER_SOCKET; adb start-server >/dev/null 2>&1 || true)
 fi
 
 # 4. Check or initialize .env configuration file
@@ -312,6 +334,11 @@ if [ "${IS_REMOTE}" = true ]; then
         OPEN_FLAG="--no-open"
     fi
     echo ""
+fi
+
+# Ensure local ADB daemon is active and listening before launching UI
+if command -v adb >/dev/null 2>&1; then
+    (unset ADB_SERVER_SOCKET; adb start-server >/dev/null 2>&1 || true)
 fi
 
 # Launch via `python -m artemis` (not the `artemis` console-script shim) so the

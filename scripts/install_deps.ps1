@@ -39,7 +39,9 @@ function Update-EnvironmentPath {
     $standardDirs = @(
         "$env:LOCALAPPDATA\Microsoft\WinGet\Links",
         "$env:LOCALAPPDATA\Android\Sdk\platform-tools",
+        "$env:LOCALAPPDATA\Android\android-sdk\platform-tools",
         "$env:ProgramFiles\Android\platform-tools",
+        "${env:ProgramFiles(x86)}\Android\android-sdk\platform-tools",
         "$env:ProgramFiles\nodejs",
         "${env:ProgramFiles(x86)}\nodejs",
         "$env:APPDATA\npm",
@@ -47,14 +49,32 @@ function Update-EnvironmentPath {
         "$env:LOCALAPPDATA\Programs\node",
         "$env:USERPROFILE\.local\share\platform-tools",
         "$env:USERPROFILE\.local\share\node",
+        "$env:LOCALAPPDATA\nvm",
+        "$env:ProgramData\nvm",
         "C:\ProgramData\chocolatey\bin",
         "$env:USERPROFILE\scoop\shims",
         "$env:USERPROFILE\.local\bin",
         "$env:USERPROFILE\.cargo\bin"
     )
+    if ($env:ANDROID_HOME) { $standardDirs += "$env:ANDROID_HOME\platform-tools" }
+    if ($env:ANDROID_SDK_ROOT) { $standardDirs += "$env:ANDROID_SDK_ROOT\platform-tools" }
+    if ($env:NVM_HOME) { $standardDirs += $env:NVM_HOME }
+    if ($env:NVM_SYMLINK) { $standardDirs += $env:NVM_SYMLINK }
+
     $regPath = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
     $currentPaths = ($env:PATH -split ";") + ($regPath -split ";") + $standardDirs | Where-Object { [string]::IsNullOrWhiteSpace($_) -eq $false -and (Test-Path $_) } | Select-Object -Unique
     $env:PATH = $currentPaths -join ";"
+}
+
+function Start-LocalAdbServer {
+    if (Test-CommandExists "adb") {
+        try {
+            $origSocket = $env:ADB_SERVER_SOCKET
+            Remove-Item Env:\ADB_SERVER_SOCKET -ErrorAction SilentlyContinue
+            & adb start-server 2>$null | Out-Null
+            if ($origSocket) { $env:ADB_SERVER_SOCKET = $origSocket }
+        } catch {}
+    }
 }
 
 function Test-CommandExists {
@@ -132,6 +152,7 @@ if (-not (Test-CommandExists "scrcpy")) { $missingTools += "scrcpy" }
 
 if ($missingTools.Count -eq 0) {
     Write-Host "   ✔ All system toolchains are already installed (ADB, FFmpeg, scrcpy)." -ForegroundColor Green
+    Start-LocalAdbServer
 } else {
     Write-Host "   ! Missing toolchains: $($missingTools -join ', ')" -ForegroundColor DarkYellow
     $useWinGet = $false
@@ -175,6 +196,9 @@ if ($missingTools.Count -eq 0) {
     if (-not (Test-CommandExists "adb")) {
         Install-PortablePlatformTools
     }
+
+    # Ensure local ADB daemon is warm & listening
+    Start-LocalAdbServer
 }
 
 # 2. Check and Install uv (Fast Python Package Manager)
@@ -285,6 +309,7 @@ Write-Host "   ✨ Artemis Environment Ready!                      " -Foreground
 Write-Host "======================================================" -ForegroundColor Cyan
 
 if ($Launch -or $Open) {
+    Start-LocalAdbServer
     Write-Host "🚀 Launching Showcase UI..." -ForegroundColor Green
     uv run artemis ui --open
 } else {
