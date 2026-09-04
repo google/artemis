@@ -136,7 +136,7 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
         fi
     elif [ "${OS_NAME}" = "Linux" ]; then
         if request_sudo "install missing system components (${MISSING_CORE[*]})"; then
-            local SUDO_PREFIX=""
+            SUDO_PREFIX=""
             if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
             if command -v apt-get >/dev/null 2>&1; then
                 ${SUDO_PREFIX} apt-get update -qq && ${SUDO_PREFIX} apt-get install -y -qq "${MISSING_CORE[@]}" || true
@@ -211,7 +211,7 @@ if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "
             brew install node >/dev/null 2>&1 || true
         elif [ "${OS_NAME}" = "Linux" ]; then
             if request_sudo "install Node.js and npm"; then
-                local SUDO_PREFIX=""
+                SUDO_PREFIX=""
                 if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
                 if command -v apt-get >/dev/null 2>&1; then
                     ${SUDO_PREFIX} apt-get update -qq && ${SUDO_PREFIX} apt-get install -y -qq nodejs npm || true
