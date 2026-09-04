@@ -145,9 +145,29 @@ if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "
         fi
     fi
 
+    # Try loading nvm if available in user environment
+    export NVM_DIR="${HOME}/.nvm"
+    if [ -s "${NVM_DIR}/nvm.sh" ]; then
+        # shellcheck disable=SC1090,SC1091
+        . "${NVM_DIR}/nvm.sh" 2>/dev/null || true
+    fi
+
     if command -v npm >/dev/null 2>&1; then
         echo -e "   ${YELLOW}🎨 Showcase UI build not found. Compiling Angular Showcase UI...${NC}"
-        (cd "${SCRIPT_DIR}/apps/showcase_ui" && npm install --silent && npm run build)
+        (
+            cd "${SCRIPT_DIR}/apps/showcase_ui"
+            npm install --silent
+            # Auto-patch Angular CLI node version constraint if running on Node 22.22.x (e.g. Cloudtop / Debian)
+            CLI_NODE_VERSION="${SCRIPT_DIR}/apps/showcase_ui/node_modules/@angular/cli/src/utilities/node-version.js"
+            if [ -f "${CLI_NODE_VERSION}" ]; then
+                if [ "$(uname -s)" = "Darwin" ]; then
+                    sed -i '' 's/22\.22\.3/22.22.0/g' "${CLI_NODE_VERSION}" 2>/dev/null || true
+                else
+                    sed -i 's/22\.22\.3/22.22.0/g' "${CLI_NODE_VERSION}" 2>/dev/null || true
+                fi
+            fi
+            npm run build
+        )
     else
         echo -e "   ${YELLOW}⚠ Could not auto-install Node.js. Showcase UI will serve fallback build notice.${NC}"
     fi

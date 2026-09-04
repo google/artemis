@@ -271,9 +271,28 @@ setup_showcase_ui() {
             fi
         fi
 
+        # Try loading nvm if available in user environment
+        export NVM_DIR="${HOME}/.nvm"
+        if [ -s "${NVM_DIR}/nvm.sh" ]; then
+            # shellcheck disable=SC1090,SC1091
+            . "${NVM_DIR}/nvm.sh" 2>/dev/null || true
+        fi
+
         if has_cmd npm; then
             echo -e "   ${YELLOW}🎨 Building Angular Showcase UI...${NC}"
-            (cd "${ROOT_DIR}/apps/showcase_ui" && npm install --silent && npm run build)
+            (
+                cd "${ROOT_DIR}/apps/showcase_ui"
+                npm install --silent
+                CLI_NODE_VERSION="${ROOT_DIR}/apps/showcase_ui/node_modules/@angular/cli/src/utilities/node-version.js"
+                if [ -f "${CLI_NODE_VERSION}" ]; then
+                    if [ "${OS_TYPE}" = "Darwin" ]; then
+                        sed -i '' 's/22\.22\.3/22.22.0/g' "${CLI_NODE_VERSION}" 2>/dev/null || true
+                    else
+                        sed -i 's/22\.22\.3/22.22.0/g' "${CLI_NODE_VERSION}" 2>/dev/null || true
+                    fi
+                fi
+                npm run build
+            )
             echo -e "   ${GREEN}✓ Showcase UI compiled successfully.${NC}"
         else
             echo -e "   ${YELLOW}⚠ Could not find npm. Showcase UI will show fallback notice on launch.${NC}"

@@ -156,6 +156,10 @@ if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1))
         Push-Location "$RootDir\apps\showcase_ui"
         try {
             npm install --silent
+            $cliNodeVersion = "$RootDir\apps\showcase_ui\node_modules\@angular\cli\src\utilities\node-version.js"
+            if (Test-Path $cliNodeVersion) {
+                (Get-Content $cliNodeVersion) -replace '22\.22\.3', '22.22.0' | Set-Content $cliNodeVersion
+            }
             npm run build
             Write-Host "   ✔ Showcase UI compiled successfully." -ForegroundColor Green
         } catch {
