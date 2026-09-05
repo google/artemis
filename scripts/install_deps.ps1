@@ -46,8 +46,10 @@ function Update-EnvironmentPath {
         "${env:ProgramFiles(x86)}\nodejs",
         "$env:APPDATA\npm",
         "$env:LOCALAPPDATA\Programs\platform-tools",
+        "$env:LOCALAPPDATA\Programs\scrcpy",
         "$env:LOCALAPPDATA\Programs\node",
         "$env:USERPROFILE\.local\share\platform-tools",
+        "$env:USERPROFILE\.local\share\scrcpy",
         "$env:USERPROFILE\.local\share\node",
         "$env:LOCALAPPDATA\nvm",
         "$env:ProgramData\nvm",
@@ -103,6 +105,39 @@ function Install-PortablePlatformTools {
         }
     } catch {
         Write-Host "   ⚠ Failed to install portable platform-tools: $_" -ForegroundColor DarkYellow
+    }
+    return $false
+}
+
+function Install-PortableScrcpy {
+    $scrcpyDir = "$env:LOCALAPPDATA\Programs\scrcpy"
+    if (Test-Path "$scrcpyDir\scrcpy.exe") {
+        $env:PATH = "$scrcpyDir;$env:PATH"
+        return $true
+    }
+    Write-Host "   [INFO] Installing portable scrcpy in user space..." -ForegroundColor Cyan
+    try {
+        $zipPath = "$env:TEMP\scrcpy-win64.zip"
+        Invoke-WebRequest -Uri "https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-win64-v4.1.zip" -OutFile $zipPath -UseBasicParsing
+        $extractDir = "$env:TEMP\scrcpy_extract"
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+        New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+        $extractedFolder = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
+        if ($extractedFolder) {
+            New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Programs" -Force | Out-Null
+            if (Test-Path $scrcpyDir) { Remove-Item $scrcpyDir -Recurse -Force -ErrorAction SilentlyContinue }
+            Move-Item -Path $extractedFolder.FullName -Destination $scrcpyDir -Force
+        }
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path "$scrcpyDir\scrcpy.exe") {
+            $env:PATH = "$scrcpyDir;$env:PATH"
+            Write-Host "   ✔ Portable scrcpy installed in user space." -ForegroundColor Green
+            return $true
+        }
+    } catch {
+        Write-Host "   ⚠ Failed to install portable scrcpy: $_" -ForegroundColor DarkYellow
     }
     return $false
 }
@@ -219,9 +254,12 @@ if ($missingTools.Count -eq 0) {
         Update-EnvironmentPath
     }
 
-    # Zero-admin user-space fallback for adb if still missing
+    # Zero-admin user-space fallback for adb and scrcpy if still missing
     if (-not (Test-CommandExists "adb")) {
         Install-PortablePlatformTools
+    }
+    if (-not (Test-CommandExists "scrcpy")) {
+        Install-PortableScrcpy
     }
 
     # Ensure local ADB daemon is warm & listening
