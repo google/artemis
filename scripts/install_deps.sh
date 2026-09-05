@@ -231,34 +231,26 @@ install_system_packages() {
             fi
 
             if has_cmd apt-get; then
-                echo -e "   ${CYAN}Detected Debian/Ubuntu (apt-get). Synchronizing and installing...${NC}"
-                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 update -qq 2>/dev/null || true
-                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 install -y "${PKGS[@]}" 2>/dev/null || true
+                echo -e "   ${CYAN}Detected Debian/Ubuntu (apt-get). Installing missing packages...${NC}"
+                DEBIAN_FRONTEND=noninteractive ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=3 -o Acquire::http::Timeout=3 -o Acquire::https::Timeout=3 install -y "${PKGS[@]}" 2>/dev/null || true
             elif has_cmd dnf; then
                 echo -e "   ${CYAN}Detected Fedora/RHEL (dnf). Installing packages...${NC}"
                 local DNF_PKGS=()
                 [ "${need_adb}" = true ] && DNF_PKGS+=("android-tools")
                 [ "${need_ffmpeg}" = true ] && DNF_PKGS+=("ffmpeg")
                 [ "${need_scrcpy}" = true ] && DNF_PKGS+=("scrcpy")
-                ${SUDO_PREFIX} dnf install -y "${DNF_PKGS[@]}" || true
+                ${SUDO_PREFIX} dnf install -y "${DNF_PKGS[@]}" 2>/dev/null || true
             elif has_cmd pacman; then
                 echo -e "   ${CYAN}Detected Arch Linux (pacman). Installing packages...${NC}"
                 local PAC_PKGS=()
                 [ "${need_adb}" = true ] && PAC_PKGS+=("android-tools")
                 [ "${need_ffmpeg}" = true ] && PAC_PKGS+=("ffmpeg")
                 [ "${need_scrcpy}" = true ] && PAC_PKGS+=("scrcpy")
-                ${SUDO_PREFIX} pacman -S --noconfirm "${PAC_PKGS[@]}" || true
+                ${SUDO_PREFIX} pacman -S --noconfirm "${PAC_PKGS[@]}" 2>/dev/null || true
             fi
         fi
 
-        # Fallback: if scrcpy is still missing, try snap or install portable scrcpy in user space
-        if ! has_cmd scrcpy; then
-            if has_cmd snap && request_sudo "install scrcpy via snap"; then
-                local SUDO_PREFIX=""
-                if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
-                ${SUDO_PREFIX} snap install scrcpy 2>/dev/null || true
-            fi
-        fi
+        # Fallback: if scrcpy is still missing, install official precompiled portable scrcpy in user space
         if ! has_cmd scrcpy; then
             local SCRCPY_ARCH=""
             case "${ARCH_TYPE}" in
@@ -271,7 +263,7 @@ install_system_packages() {
                     echo -e "   ${CYAN}📦 Installing portable scrcpy in user space (~/.local)...${NC}"
                     mkdir -p "${SCRCPY_DIR}" "${HOME}/.local/bin"
                     local SCRCPY_URL="https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-linux-${SCRCPY_ARCH}-v4.1.tar.gz"
-                    if curl -fsSL "${SCRCPY_URL}" | tar -xz -C "${SCRCPY_DIR}" --strip-components=1 2>/dev/null; then
+                    if curl -fsSL --connect-timeout 5 --max-time 30 "${SCRCPY_URL}" | tar -xz -C "${SCRCPY_DIR}" --strip-components=1 2>/dev/null; then
                         ln -sf "${SCRCPY_DIR}/scrcpy" "${HOME}/.local/bin/scrcpy"
                         export PATH="${SCRCPY_DIR}:${PATH}"
                         echo -e "   ${GREEN}✓ scrcpy installed in user space.${NC}"

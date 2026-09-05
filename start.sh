@@ -178,23 +178,16 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
             SUDO_PREFIX=""
             if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
             if command -v apt-get >/dev/null 2>&1; then
-                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 update -qq 2>/dev/null || true
-                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 install -y -qq "${MISSING_CORE[@]}" 2>/dev/null || true
+                echo -e "   ${CYAN}📦 Installing missing packages (${MISSING_CORE[*]}) via apt-get...${NC}"
+                DEBIAN_FRONTEND=noninteractive ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=3 -o Acquire::http::Timeout=3 -o Acquire::https::Timeout=3 install -y -qq "${MISSING_CORE[@]}" 2>/dev/null || true
             elif command -v dnf >/dev/null 2>&1; then
-                ${SUDO_PREFIX} dnf install -y "${MISSING_CORE[@]}" || true
+                ${SUDO_PREFIX} dnf install -y "${MISSING_CORE[@]}" 2>/dev/null || true
             elif command -v pacman >/dev/null 2>&1; then
-                ${SUDO_PREFIX} pacman -S --noconfirm "${MISSING_CORE[@]}" || true
+                ${SUDO_PREFIX} pacman -S --noconfirm "${MISSING_CORE[@]}" 2>/dev/null || true
             fi
         fi
 
-        # Fallback: if scrcpy is still missing, try snap or install portable scrcpy in user space
-        if ! command -v scrcpy >/dev/null 2>&1; then
-            if command -v snap >/dev/null 2>&1 && request_sudo "install scrcpy via snap"; then
-                local SUDO_PREFIX=""
-                if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
-                ${SUDO_PREFIX} snap install scrcpy 2>/dev/null || true
-            fi
-        fi
+        # Fallback: if scrcpy is still missing, install official precompiled portable scrcpy in user space
         if ! command -v scrcpy >/dev/null 2>&1; then
             ARCH="$(uname -m)"
             SCRCPY_ARCH=""
@@ -208,7 +201,7 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
                     echo -e "   ${CYAN}📦 Installing portable scrcpy in user space (~/.local)...${NC}"
                     mkdir -p "${SCRCPY_DIR}" "${HOME}/.local/bin"
                     SCRCPY_URL="https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-linux-${SCRCPY_ARCH}-v4.1.tar.gz"
-                    if curl -fsSL "${SCRCPY_URL}" | tar -xz -C "${SCRCPY_DIR}" --strip-components=1 2>/dev/null; then
+                    if curl -fsSL --connect-timeout 5 --max-time 30 "${SCRCPY_URL}" | tar -xz -C "${SCRCPY_DIR}" --strip-components=1 2>/dev/null; then
                         ln -sf "${SCRCPY_DIR}/scrcpy" "${HOME}/.local/bin/scrcpy"
                         export PATH="${SCRCPY_DIR}:${PATH}"
                         echo -e "   ${GREEN}✓ scrcpy installed in user space.${NC}"
