@@ -26,6 +26,11 @@ param(
 $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# Ensure modern TLS protocols are enabled for downloads (GitHub releases, nodejs.org, Google repositories)
+try {
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+} catch {}
+
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host "   🚀 Artemis - Windows Smart Installer               " -ForegroundColor Cyan
 Write-Host "======================================================" -ForegroundColor Cyan
@@ -38,34 +43,50 @@ Set-Location $RootDir
 function Update-EnvironmentPath {
     $standardDirs = @(
         "$env:LOCALAPPDATA\Microsoft\WinGet\Links",
+        "$env:LOCALAPPDATA\Programs\node",
+        "$env:USERPROFILE\.local\share\node",
+        "$env:LOCALAPPDATA\Programs\scrcpy",
+        "$env:USERPROFILE\.local\share\scrcpy",
+        "$env:LOCALAPPDATA\Programs\platform-tools",
+        "$env:USERPROFILE\.local\share\platform-tools",
+        "$env:LOCALAPPDATA\Programs\uv",
+        "$env:LOCALAPPDATA\uv",
+        "$env:APPDATA\uv",
+        "$env:USERPROFILE\.cargo\bin",
+        "$env:USERPROFILE\.local\bin",
+        "$env:USERPROFILE\scoop\shims",
+        "C:\ProgramData\chocolatey\bin",
         "$env:LOCALAPPDATA\Android\Sdk\platform-tools",
         "$env:LOCALAPPDATA\Android\android-sdk\platform-tools",
         "$env:ProgramFiles\Android\platform-tools",
         "${env:ProgramFiles(x86)}\Android\android-sdk\platform-tools",
         "$env:ProgramFiles\nodejs",
         "${env:ProgramFiles(x86)}\nodejs",
-        "$env:APPDATA\npm",
-        "$env:LOCALAPPDATA\Programs\platform-tools",
-        "$env:LOCALAPPDATA\Programs\scrcpy",
-        "$env:LOCALAPPDATA\Programs\node",
-        "$env:USERPROFILE\.local\share\platform-tools",
-        "$env:USERPROFILE\.local\share\scrcpy",
-        "$env:USERPROFILE\.local\share\node",
-        "$env:LOCALAPPDATA\nvm",
-        "$env:ProgramData\nvm",
-        "C:\ProgramData\chocolatey\bin",
-        "$env:USERPROFILE\scoop\shims",
-        "$env:USERPROFILE\.local\bin",
-        "$env:USERPROFILE\.cargo\bin"
+        "$env:APPDATA\npm"
     )
+    if ($env:CARGO_HOME) { $standardDirs = @("$env:CARGO_HOME\bin") + $standardDirs }
     if ($env:ANDROID_HOME) { $standardDirs += "$env:ANDROID_HOME\platform-tools" }
     if ($env:ANDROID_SDK_ROOT) { $standardDirs += "$env:ANDROID_SDK_ROOT\platform-tools" }
-    if ($env:NVM_HOME) { $standardDirs += $env:NVM_HOME }
-    if ($env:NVM_SYMLINK) { $standardDirs += $env:NVM_SYMLINK }
+    if ($env:NVM_SYMLINK) { $standardDirs = @($env:NVM_SYMLINK) + $standardDirs }
+    if ($env:NVM_HOME) { $standardDirs = @($env:NVM_HOME) + $standardDirs }
 
     $regPath = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
     $currentPaths = ($env:PATH -split ";") + ($regPath -split ";") + $standardDirs | Where-Object { [string]::IsNullOrWhiteSpace($_) -eq $false -and (Test-Path $_) } | Select-Object -Unique
     $env:PATH = $currentPaths -join ";"
+
+    # Ensure user-space portable tools take absolute priority over system-level outdated versions
+    $portableNode = "$env:LOCALAPPDATA\Programs\node"
+    if (Test-Path "$portableNode\node.exe") {
+        $env:PATH = "$portableNode;$env:PATH"
+    }
+    $portableScrcpy = "$env:LOCALAPPDATA\Programs\scrcpy"
+    if (Test-Path "$portableScrcpy\scrcpy.exe") {
+        $env:PATH = "$portableScrcpy;$env:PATH"
+    }
+    $portablePt = "$env:LOCALAPPDATA\Programs\platform-tools"
+    if (Test-Path "$portablePt\adb.exe") {
+        $env:PATH = "$portablePt;$env:PATH"
+    }
 }
 
 function Start-LocalAdbServer {
@@ -85,6 +106,48 @@ function Test-CommandExists {
     return ($null -ne $res)
 }
 
+function Invoke-DownloadFile {
+    param(
+        [Parameter(Mandatory=$true)][string]$Uri,
+        [Parameter(Mandatory=$true)][string]$OutFile,
+        [int]$TimeoutSec = 45
+    )
+    if (Test-Path $OutFile) {
+        Remove-Item -Path $OutFile -Force -ErrorAction SilentlyContinue
+    }
+
+    # 1. Try Windows built-in curl.exe first (available in Win 10 1803+ and Win 11)
+    if (Test-CommandExists "curl.exe") {
+        try {
+            & curl.exe -f -sSL --connect-timeout 5 --max-time $TimeoutSec "$Uri" -o "$OutFile" 2>$null
+            if ($LASTEXITCODE -eq 0 -and (Test-Path $OutFile) -and ((Get-Item $OutFile).Length -gt 0)) {
+                return $true
+            }
+        } catch {}
+        if (Test-Path $OutFile) {
+            Remove-Item -Path $OutFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # 2. Fallback to Invoke-WebRequest (suppressing progress bar to eliminate PowerShell buffer hangs)
+    try {
+        $prevProgress = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $Uri -OutFile $OutFile -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
+        $ProgressPreference = $prevProgress
+        if ((Test-Path $OutFile) -and ((Get-Item $OutFile).Length -gt 0)) {
+            return $true
+        }
+    } catch {
+        $ProgressPreference = $prevProgress
+    }
+
+    if (Test-Path $OutFile) {
+        Remove-Item -Path $OutFile -Force -ErrorAction SilentlyContinue
+    }
+    return $false
+}
+
 function Install-PortablePlatformTools {
     $ptDir = "$env:LOCALAPPDATA\Programs\platform-tools"
     if (Test-Path "$ptDir\adb.exe") {
@@ -94,14 +157,15 @@ function Install-PortablePlatformTools {
     Write-Host "   [INFO] Installing Android platform-tools (adb) in user space..." -ForegroundColor Cyan
     try {
         $zipPath = "$env:TEMP\platform-tools-windows.zip"
-        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile $zipPath -UseBasicParsing
-        New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Programs" -Force | Out-Null
-        Expand-Archive -Path $zipPath -DestinationPath "$env:LOCALAPPDATA\Programs" -Force
-        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-        if (Test-Path "$ptDir\adb.exe") {
-            $env:PATH = "$ptDir;$env:PATH"
-            Write-Host "   ✔ adb installed in user space." -ForegroundColor Green
-            return $true
+        if (Invoke-DownloadFile -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile $zipPath -TimeoutSec 60) {
+            New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Programs" -Force | Out-Null
+            Expand-Archive -Path $zipPath -DestinationPath "$env:LOCALAPPDATA\Programs" -Force
+            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$ptDir\adb.exe") {
+                $env:PATH = "$ptDir;$env:PATH"
+                Write-Host "   ✔ adb installed in user space." -ForegroundColor Green
+                return $true
+            }
         }
     } catch {
         Write-Host "   ⚠ Failed to install portable platform-tools: $_" -ForegroundColor DarkYellow
@@ -115,26 +179,39 @@ function Install-PortableScrcpy {
         $env:PATH = "$scrcpyDir;$env:PATH"
         return $true
     }
+    # Check if nested from an earlier run and heal
+    $nested = Get-ChildItem -Path $scrcpyDir -Directory -Filter "scrcpy*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($nested -and (Test-Path "$($nested.FullName)\scrcpy.exe")) {
+        Copy-Item -Path "$($nested.FullName)\*" -Destination $scrcpyDir -Recurse -Force
+        Remove-Item -Path $nested.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path "$scrcpyDir\scrcpy.exe") {
+            $env:PATH = "$scrcpyDir;$env:PATH"
+            return $true
+        }
+    }
+
     Write-Host "   [INFO] Installing portable scrcpy in user space..." -ForegroundColor Cyan
     try {
         $zipPath = "$env:TEMP\scrcpy-win64.zip"
-        Invoke-WebRequest -Uri "https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-win64-v4.1.zip" -OutFile $zipPath -UseBasicParsing
-        $extractDir = "$env:TEMP\scrcpy_extract"
-        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
-        New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
-        $extractedFolder = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
-        if ($extractedFolder) {
-            New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Programs" -Force | Out-Null
-            if (Test-Path $scrcpyDir) { Remove-Item $scrcpyDir -Recurse -Force -ErrorAction SilentlyContinue }
-            Move-Item -Path $extractedFolder.FullName -Destination $scrcpyDir -Force
-        }
-        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-        if (Test-Path "$scrcpyDir\scrcpy.exe") {
-            $env:PATH = "$scrcpyDir;$env:PATH"
-            Write-Host "   ✔ Portable scrcpy installed in user space." -ForegroundColor Green
-            return $true
+        if (Invoke-DownloadFile -Uri "https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-win64-v4.1.zip" -OutFile $zipPath -TimeoutSec 60) {
+            $extractDir = "$env:TEMP\scrcpy_extract"
+            if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+            New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+            Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+            $extractedFolder = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
+            if ($extractedFolder) {
+                if (-not (Test-Path $scrcpyDir)) {
+                    New-Item -ItemType Directory -Path $scrcpyDir -Force | Out-Null
+                }
+                Copy-Item -Path "$($extractedFolder.FullName)\*" -Destination $scrcpyDir -Recurse -Force
+            }
+            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+            Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$scrcpyDir\scrcpy.exe") {
+                $env:PATH = "$scrcpyDir;$env:PATH"
+                Write-Host "   ✔ Portable scrcpy installed in user space." -ForegroundColor Green
+                return $true
+            }
         }
     } catch {
         Write-Host "   ⚠ Failed to install portable scrcpy: $_" -ForegroundColor DarkYellow
@@ -143,7 +220,7 @@ function Install-PortableScrcpy {
 }
 
 function Test-NodeCompatible {
-    if (-not (Test-CommandExists "node") -or -not (Test-CommandExists "npm")) { return $false }
+    if (-not (Test-CommandExists "node") -or (-not (Test-CommandExists "npm") -and -not (Test-CommandExists "npm.cmd"))) { return $false }
     try {
         $verRaw = (& node -v 2>$null)
         if (-not $verRaw) { return $false }
@@ -153,8 +230,8 @@ function Test-NodeCompatible {
             $major = [int]$parts[0]
             $minor = [int]$parts[1]
             if ($major -ge 26) { return $true }
-            if ($major -ge 24 -and $minor -ge 15) { return $true }
-            if ($major -ge 22 -and $minor -ge 22) { return $true }
+            if ($major -eq 24 -and $minor -ge 15) { return $true }
+            if ($major -eq 22 -and $minor -ge 22) { return $true }
         }
     } catch {
         return $false
@@ -170,6 +247,19 @@ function Install-PortableNode {
             return $true
         }
     }
+    # Check if nested from an earlier run and heal
+    $nested = Get-ChildItem -Path $nodeDir -Directory -Filter "node-*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($nested -and (Test-Path "$($nested.FullName)\node.exe")) {
+        Copy-Item -Path "$($nested.FullName)\*" -Destination $nodeDir -Recurse -Force
+        Remove-Item -Path $nested.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path "$nodeDir\node.exe") {
+            $env:PATH = "$nodeDir;$env:PATH"
+            if (Test-NodeCompatible) {
+                return $true
+            }
+        }
+    }
+
     Write-Host "   [INFO] Installing portable Node.js LTS (v22.23.2) in user space..." -ForegroundColor Cyan
     try {
         $nodeVer = "v22.23.2"
@@ -177,23 +267,25 @@ function Install-PortableNode {
             if ($env:PROCESSOR_ARCHITECTURE -match "ARM64") { "arm64" } else { "x64" }
         } else { "x64" }
         $zipPath = "$env:TEMP\node-$nodeVer-win-$arch.zip"
-        Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVer/node-$nodeVer-win-$arch.zip" -OutFile $zipPath -UseBasicParsing
-        $extractDir = "$env:TEMP\node_extract"
-        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
-        New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
-        $extractedFolder = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
-        if ($extractedFolder) {
-            New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Programs" -Force | Out-Null
-            if (Test-Path $nodeDir) { Remove-Item $nodeDir -Recurse -Force -ErrorAction SilentlyContinue }
-            Move-Item -Path $extractedFolder.FullName -Destination $nodeDir -Force
-        }
-        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-        if (Test-Path "$nodeDir\node.exe") {
-            $env:PATH = "$nodeDir;$env:PATH"
-            Write-Host "   ✔ Portable Node.js $nodeVer installed in user space." -ForegroundColor Green
-            return $true
+        if (Invoke-DownloadFile -Uri "https://nodejs.org/dist/$nodeVer/node-$nodeVer-win-$arch.zip" -OutFile $zipPath -TimeoutSec 60) {
+            $extractDir = "$env:TEMP\node_extract"
+            if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+            New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+            Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+            $extractedFolder = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
+            if ($extractedFolder) {
+                if (-not (Test-Path $nodeDir)) {
+                    New-Item -ItemType Directory -Path $nodeDir -Force | Out-Null
+                }
+                Copy-Item -Path "$($extractedFolder.FullName)\*" -Destination $nodeDir -Recurse -Force
+            }
+            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+            Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$nodeDir\node.exe") {
+                $env:PATH = "$nodeDir;$env:PATH"
+                Write-Host "   ✔ Portable Node.js $nodeVer installed in user space." -ForegroundColor Green
+                return $true
+            }
         }
     } catch {
         Write-Host "   ⚠ Failed to install portable Node.js: $_" -ForegroundColor DarkYellow
@@ -357,13 +449,26 @@ if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1))
         Write-Host "   🎨 Compiling Angular Showcase UI..." -ForegroundColor Cyan
         Push-Location "$RootDir\apps\showcase_ui"
         try {
-            npm install --silent
+            $npmExec = if (Test-CommandExists "npm.cmd") { "npm.cmd" } else { "npm" }
+            Write-Host "   📦 Installing frontend npm dependencies..." -ForegroundColor Cyan
+            & $npmExec install --no-audit --no-fund --loglevel=error
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "   ⚠ npm install returned exit code $LASTEXITCODE. Trying silent install..." -ForegroundColor DarkYellow
+                & $npmExec install --silent
+            }
             $cliNodeVersion = "$RootDir\apps\showcase_ui\node_modules\@angular\cli\src\utilities\node-version.js"
             if (Test-Path $cliNodeVersion) {
                 (Get-Content $cliNodeVersion) -replace '22\.22\.3', '22.22.0' | Set-Content $cliNodeVersion
             }
-            npm run build
-            Write-Host "   ✔ Showcase UI compiled successfully." -ForegroundColor Green
+            Write-Host "   ⚙ Building Angular frontend application..." -ForegroundColor Cyan
+            & $npmExec run build
+            if (Test-Path $ShowcaseIndex) {
+                Write-Host "   ✔ Showcase UI compiled successfully." -ForegroundColor Green
+            } elseif (Test-Path $ShowcaseIndexAlt1) {
+                Write-Host "   ✔ Showcase UI compiled successfully." -ForegroundColor Green
+            } else {
+                Write-Host "   ⚠ Showcase UI build finished but index.html was not found in expected dist directory." -ForegroundColor DarkYellow
+            }
         } catch {
             Write-Host "   ⚠ Failed to build Showcase UI: $_" -ForegroundColor DarkYellow
         } finally {
@@ -380,8 +485,13 @@ if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1))
 Write-Host "`n6. Toolchain Readiness Summary:" -ForegroundColor Yellow
 $tools = @("adb", "ffmpeg", "scrcpy", "uv", "npm")
 foreach ($t in $tools) {
-    if (Test-CommandExists $t) {
-        $p = (Get-Command $t).Source
+    $hasCmd = Test-CommandExists $t
+    if (-not $hasCmd -and $t -eq "npm") {
+        $hasCmd = Test-CommandExists "npm.cmd"
+    }
+    if ($hasCmd) {
+        $targetName = if ($t -eq "npm" -and -not (Test-CommandExists "npm") -and (Test-CommandExists "npm.cmd")) { "npm.cmd" } else { $t }
+        $p = (Get-Command $targetName).Source
         if ($t -eq "npm" -and (Test-CommandExists "node")) {
             $nVer = (& node -v 2>$null)
             Write-Host "   ✔ $t ($nVer) -> $p" -ForegroundColor Green
@@ -401,10 +511,10 @@ Write-Host "======================================================" -ForegroundC
 if ($Launch -or $Open) {
     Start-LocalAdbServer
     Write-Host "🚀 Launching Showcase UI..." -ForegroundColor Green
-    uv run artemis ui --open
+    uv run python -m artemis ui --open
 } else {
     Write-Host "To start the Showcase UI and interactive onboarding:" -ForegroundColor White
-    Write-Host "  👉 .\start.bat   (or: uv run artemis ui)" -ForegroundColor Cyan
+    Write-Host "  👉 .\start.bat   (or: uv run python -m artemis ui)" -ForegroundColor Cyan
     Write-Host ""
 }
 

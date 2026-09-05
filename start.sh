@@ -221,7 +221,7 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
                 if [ ! -x "${PT_DIR}/adb" ]; then
                     echo -e "   ${CYAN}📦 Installing Android platform-tools (adb) in user space...${NC}"
                     TEMP_ZIP="/tmp/platform-tools-$$.zip"
-                    if curl -fsSL "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o "${TEMP_ZIP}" 2>/dev/null; then
+                    if curl -fsSL --connect-timeout 5 --max-time 30 "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o "${TEMP_ZIP}" 2>/dev/null; then
                         mkdir -p "${HOME}/.local/share" "${HOME}/.local/bin"
                         if command -v unzip >/dev/null 2>&1; then
                             unzip -q -o "${TEMP_ZIP}" -d "${HOME}/.local/share" 2>/dev/null || true
@@ -333,7 +333,7 @@ if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "
                 echo -e "   ${CYAN}📦 Installing portable Node.js ${NODE_VER} in user space (~/.local)...${NC}"
                 rm -rf "${NODE_DIR}"
                 mkdir -p "${NODE_DIR}" "${HOME}/.local/bin"
-                if curl -fsSL "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-${OS_SYS}-${NODE_ARCH}.tar.gz" | tar -xz -C "${NODE_DIR}" --strip-components=1 2>/dev/null; then
+                if curl -fsSL --connect-timeout 5 --max-time 60 "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-${OS_SYS}-${NODE_ARCH}.tar.gz" | tar -xz -C "${NODE_DIR}" --strip-components=1 2>/dev/null; then
                     ln -sf "${NODE_DIR}/bin/node" "${HOME}/.local/bin/node"
                     ln -sf "${NODE_DIR}/bin/npm" "${HOME}/.local/bin/npm"
                     ln -sf "${NODE_DIR}/bin/npx" "${HOME}/.local/bin/npx"

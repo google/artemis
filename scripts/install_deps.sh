@@ -282,7 +282,7 @@ install_system_packages() {
                 if [ ! -x "${PT_DIR}/adb" ]; then
                     echo -e "   ${CYAN}📦 Installing Android platform-tools (adb) in user space...${NC}"
                     local TEMP_ZIP="/tmp/platform-tools-$$.zip"
-                    if curl -fsSL "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o "${TEMP_ZIP}" 2>/dev/null; then
+                    if curl -fsSL --connect-timeout 5 --max-time 30 "https://dl.google.com/android/repository/platform-tools-latest-linux.zip" -o "${TEMP_ZIP}" 2>/dev/null; then
                         mkdir -p "${HOME}/.local/share" "${HOME}/.local/bin"
                         if has_cmd unzip; then
                             unzip -q -o "${TEMP_ZIP}" -d "${HOME}/.local/share" 2>/dev/null || true
@@ -425,10 +425,10 @@ setup_showcase_ui() {
                     if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
                     if has_cmd apt-get; then
                         echo -e "   ${CYAN}📦 Configuring NodeSource Node.js 22 LTS repository...${NC}"
-                        curl -fsSL https://deb.nodesource.com/setup_22.x | ${SUDO_PREFIX} bash - >/dev/null 2>&1 || true
+                        curl -fsSL --connect-timeout 5 --max-time 30 https://deb.nodesource.com/setup_22.x | ${SUDO_PREFIX} bash - >/dev/null 2>&1 || true
                         ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 install -y -qq nodejs 2>/dev/null || true
                     elif has_cmd dnf; then
-                        curl -fsSL https://rpm.nodesource.com/setup_22.x | ${SUDO_PREFIX} bash - >/dev/null 2>&1 || true
+                        curl -fsSL --connect-timeout 5 --max-time 30 https://rpm.nodesource.com/setup_22.x | ${SUDO_PREFIX} bash - >/dev/null 2>&1 || true
                         ${SUDO_PREFIX} dnf install -y nodejs || true
                     elif has_cmd pacman; then
                         ${SUDO_PREFIX} pacman -S --noconfirm nodejs npm || true
@@ -451,7 +451,7 @@ setup_showcase_ui() {
                     echo -e "   ${CYAN}📦 Installing portable Node.js ${NODE_VER} in user space (~/.local)...${NC}"
                     rm -rf "${NODE_DIR}"
                     mkdir -p "${NODE_DIR}" "${HOME}/.local/bin"
-                    if curl -fsSL "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-${OS_SYS}-${NODE_ARCH}.tar.gz" | tar -xz -C "${NODE_DIR}" --strip-components=1 2>/dev/null; then
+                    if curl -fsSL --connect-timeout 5 --max-time 60 "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-${OS_SYS}-${NODE_ARCH}.tar.gz" | tar -xz -C "${NODE_DIR}" --strip-components=1 2>/dev/null; then
                         ln -sf "${NODE_DIR}/bin/node" "${HOME}/.local/bin/node"
                         ln -sf "${NODE_DIR}/bin/npm" "${HOME}/.local/bin/npm"
                         ln -sf "${NODE_DIR}/bin/npx" "${HOME}/.local/bin/npx"
