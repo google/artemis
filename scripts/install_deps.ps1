@@ -107,17 +107,44 @@ function Install-PortablePlatformTools {
     return $false
 }
 
+function Test-NodeCompatible {
+    if (-not (Test-CommandExists "node") -or -not (Test-CommandExists "npm")) { return $false }
+    try {
+        $verRaw = (& node -v 2>$null)
+        if (-not $verRaw) { return $false }
+        $verStr = $verRaw.ToString().Trim().TrimStart('v')
+        $parts = $verStr.Split('.')
+        if ($parts.Count -ge 2) {
+            $major = [int]$parts[0]
+            $minor = [int]$parts[1]
+            if ($major -ge 26) { return $true }
+            if ($major -ge 24 -and $minor -ge 15) { return $true }
+            if ($major -ge 22 -and $minor -ge 22) { return $true }
+        }
+    } catch {
+        return $false
+    }
+    return $false
+}
+
 function Install-PortableNode {
     $nodeDir = "$env:LOCALAPPDATA\Programs\node"
     if (Test-Path "$nodeDir\node.exe") {
         $env:PATH = "$nodeDir;$env:PATH"
-        return $true
+        if (Test-NodeCompatible) {
+            return $true
+        }
     }
-    Write-Host "   [INFO] Installing portable Node.js LTS in user space..." -ForegroundColor Cyan
+    Write-Host "   [INFO] Installing portable Node.js LTS (v22.23.2) in user space..." -ForegroundColor Cyan
     try {
-        $zipPath = "$env:TEMP\node-v20-win-x64.zip"
-        Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.3/node-v20.18.3-win-x64.zip" -OutFile $zipPath -UseBasicParsing
+        $nodeVer = "v22.23.2"
+        $arch = if ([System.Environment]::Is64BitOperatingSystem) {
+            if ($env:PROCESSOR_ARCHITECTURE -match "ARM64") { "arm64" } else { "x64" }
+        } else { "x64" }
+        $zipPath = "$env:TEMP\node-$nodeVer-win-$arch.zip"
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVer/node-$nodeVer-win-$arch.zip" -OutFile $zipPath -UseBasicParsing
         $extractDir = "$env:TEMP\node_extract"
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
         New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
         Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
         $extractedFolder = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
@@ -130,7 +157,7 @@ function Install-PortableNode {
         Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
         if (Test-Path "$nodeDir\node.exe") {
             $env:PATH = "$nodeDir;$env:PATH"
-            Write-Host "   ✔ Portable Node.js installed in user space." -ForegroundColor Green
+            Write-Host "   ✔ Portable Node.js $nodeVer installed in user space." -ForegroundColor Green
             return $true
         }
     } catch {
@@ -243,32 +270,52 @@ $ShowcaseIndex = "$RootDir\apps\showcase_ui\dist\frontend\browser\index.html"
 $ShowcaseIndexAlt1 = "$RootDir\apps\showcase_ui\dist\browser\index.html"
 $ShowcaseIndexAlt2 = "$RootDir\apps\showcase_ui\dist\index.html"
 if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1)) -and (-not (Test-Path $ShowcaseIndexAlt2))) {
-    if (-not (Test-CommandExists "npm")) {
-        $useWinGetNode = $false
-        if (Test-CommandExists "winget") {
-            if ([Console]::IsInputRedirected -eq $false) {
-                $ans = Read-Host "   Install Node.js via WinGet (may require Administrator)? [Y/n]"
-                if ($ans -eq "" -or $ans -match "^[Yy]") {
-                    $useWinGetNode = $true
-                }
-            } else {
-                $useWinGetNode = $true
-            }
+    if (-not (Test-NodeCompatible)) {
+        if (Test-CommandExists "node") {
+            $curVer = (& node -v 2>$null)
+            Write-Host "   ⚡ Detected Node.js $curVer, but Angular CLI requires Node.js >= v22.22.0." -ForegroundColor Yellow
+        } else {
+            Write-Host "   ⚡ Node.js/npm not found (required for Showcase UI)." -ForegroundColor Cyan
         }
 
-        if ($useWinGetNode) {
-            Write-Host "   ⚡ Node.js/npm not found. Installing Node.js LTS via WinGet..." -ForegroundColor Cyan
-            winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
+        # 1. Try nvm if available on Windows
+        if (Test-CommandExists "nvm") {
+            Write-Host "   📦 Installing Node.js 22 LTS via nvm..." -ForegroundColor Cyan
+            & nvm install 22.23.2 | Out-Null
+            & nvm use 22.23.2 | Out-Null
             Update-EnvironmentPath
         }
 
-        # Zero-admin user-space fallback for Node.js if still not found
-        if (-not (Test-CommandExists "npm")) {
+        # 2. Try WinGet
+        if (-not (Test-NodeCompatible)) {
+            $useWinGetNode = $false
+            if (Test-CommandExists "winget") {
+                if ([Console]::IsInputRedirected -eq $false) {
+                    $ans = Read-Host "   Install/Upgrade Node.js via WinGet (may require Administrator)? [Y/n]"
+                    if ($ans -eq "" -or $ans -match "^[Yy]") {
+                        $useWinGetNode = $true
+                    }
+                } else {
+                    $useWinGetNode = $true
+                }
+            }
+
+            if ($useWinGetNode) {
+                Write-Host "   ⚡ Installing/Upgrading Node.js LTS via WinGet..." -ForegroundColor Cyan
+                winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
+                Update-EnvironmentPath
+            }
+        }
+
+        # 3. Zero-admin user-space fallback for Node.js if still not compatible
+        if (-not (Test-NodeCompatible)) {
             Install-PortableNode
         }
     }
 
-    if (Test-CommandExists "npm") {
+    if (Test-NodeCompatible) {
+        $nodeVer = (& node -v 2>$null)
+        Write-Host "   ✔ Node.js $nodeVer is ready." -ForegroundColor Green
         Write-Host "   🎨 Compiling Angular Showcase UI..." -ForegroundColor Cyan
         Push-Location "$RootDir\apps\showcase_ui"
         try {
@@ -285,7 +332,7 @@ if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1))
             Pop-Location
         }
     } else {
-        Write-Host "   ⚠ Could not find npm. Showcase UI will show fallback notice on launch." -ForegroundColor DarkYellow
+        Write-Host "   ⚠ Could not configure compatible Node.js (>= 22.22.0). Showcase UI will show fallback notice on launch." -ForegroundColor DarkYellow
     }
 } else {
     Write-Host "   ✔ Showcase UI build already exists." -ForegroundColor Green
@@ -297,7 +344,12 @@ $tools = @("adb", "ffmpeg", "scrcpy", "uv", "npm")
 foreach ($t in $tools) {
     if (Test-CommandExists $t) {
         $p = (Get-Command $t).Source
-        Write-Host "   ✔ $t -> $p" -ForegroundColor Green
+        if ($t -eq "npm" -and (Test-CommandExists "node")) {
+            $nVer = (& node -v 2>$null)
+            Write-Host "   ✔ $t ($nVer) -> $p" -ForegroundColor Green
+        } else {
+            Write-Host "   ✔ $t -> $p" -ForegroundColor Green
+        }
     } else {
         Write-Host "   ○ $t -> Not found in PATH (Fallbacks active)" -ForegroundColor DarkYellow
     }
