@@ -232,8 +232,8 @@ install_system_packages() {
 
             if has_cmd apt-get; then
                 echo -e "   ${CYAN}Detected Debian/Ubuntu (apt-get). Synchronizing and installing...${NC}"
-                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=60 update -qq 2>/dev/null || true
-                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=60 install -y "${PKGS[@]}" 2>/dev/null || true
+                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 update -qq 2>/dev/null || true
+                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 install -y "${PKGS[@]}" 2>/dev/null || true
             elif has_cmd dnf; then
                 echo -e "   ${CYAN}Detected Fedora/RHEL (dnf). Installing packages...${NC}"
                 local DNF_PKGS=()
@@ -434,7 +434,7 @@ setup_showcase_ui() {
                     if has_cmd apt-get; then
                         echo -e "   ${CYAN}📦 Configuring NodeSource Node.js 22 LTS repository...${NC}"
                         curl -fsSL https://deb.nodesource.com/setup_22.x | ${SUDO_PREFIX} bash - >/dev/null 2>&1 || true
-                        ${SUDO_PREFIX} apt-get install -y -qq nodejs || true
+                        ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 install -y -qq nodejs 2>/dev/null || true
                     elif has_cmd dnf; then
                         curl -fsSL https://rpm.nodesource.com/setup_22.x | ${SUDO_PREFIX} bash - >/dev/null 2>&1 || true
                         ${SUDO_PREFIX} dnf install -y nodejs || true

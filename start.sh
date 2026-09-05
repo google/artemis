@@ -178,8 +178,8 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
             SUDO_PREFIX=""
             if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
             if command -v apt-get >/dev/null 2>&1; then
-                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=60 update -qq 2>/dev/null || true
-                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=60 install -y -qq "${MISSING_CORE[@]}" 2>/dev/null || true
+                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 update -qq 2>/dev/null || true
+                ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 install -y -qq "${MISSING_CORE[@]}" 2>/dev/null || true
             elif command -v dnf >/dev/null 2>&1; then
                 ${SUDO_PREFIX} dnf install -y "${MISSING_CORE[@]}" || true
             elif command -v pacman >/dev/null 2>&1; then
@@ -315,7 +315,7 @@ if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "
                 if command -v apt-get >/dev/null 2>&1; then
                     echo -e "   ${CYAN}📦 Configuring NodeSource Node.js 22 LTS repository...${NC}"
                     curl -fsSL https://deb.nodesource.com/setup_22.x | ${SUDO_PREFIX} bash - >/dev/null 2>&1 || true
-                    ${SUDO_PREFIX} apt-get install -y -qq nodejs || true
+                    ${SUDO_PREFIX} apt-get -o DPkg::Lock::Timeout=5 install -y -qq nodejs 2>/dev/null || true
                 elif command -v dnf >/dev/null 2>&1; then
                     curl -fsSL https://rpm.nodesource.com/setup_22.x | ${SUDO_PREFIX} bash - >/dev/null 2>&1 || true
                     ${SUDO_PREFIX} dnf install -y nodejs || true
