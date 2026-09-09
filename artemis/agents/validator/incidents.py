@@ -16,7 +16,7 @@
 
 Incidents are stored in ``state.open_incident`` and the step's
 ``last_execution_result``. Consecutive failures increment the count; a
-successful terminal action closes the incident. Prompt rendering lives in
+terminal action dispatched without error closes the incident. Prompt rendering lives in
 ``artemis.agents.operator.prompts.ExecutionIncidentPromptComponent``.
 """
 

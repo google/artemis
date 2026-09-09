@@ -17,6 +17,7 @@ from pathlib import Path
 
 from jinja2 import Template
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from artemis.core.tool_failure import ToolFailure, is_tool_failure
 from artemis.config import OutputConfig
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace
@@ -271,9 +272,9 @@ async def outputter(
                         record_trace=True,
                     )
                 else:
-                    result = f"Error: Tool {tool_name} is not supported."
+                    result = ToolFailure(f"Error: Tool {tool_name} is not supported.")
                 text, _ = split_multimodal_result(result)
-                status = "error" if text.startswith("Error") else "success"
+                status = "error" if is_tool_failure(result) else "success"
             except Exception as e:
                 logger.error(f"Error running tool {tool_name}: {e}")
                 result = f"Error running tool {tool_name}: {e}"

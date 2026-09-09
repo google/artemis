@@ -14,6 +14,10 @@
             },
             "description": "Normalized coordinates [x, y] in 0-1000 scale."
           },
+          "target_description": {
+            "type": "string",
+            "description": "What the target is, in a few words (e.g. 'play button', 'search input', 'video body'). Required: a coordinate names nothing by itself."
+          },
           "times": {
             "type": "integer",
             "description": "Number of taps to perform (default 1). Set to 2 for double click."
@@ -24,7 +28,8 @@
           }
         },
         "required": [
-          "target"
+          "target",
+          "target_description"
         ]
       }
     }
@@ -44,9 +49,16 @@
               "items": {
                 "type": "integer"
               },
-              "description": "Normalized coordinates [x, y] in 0-1000 scale (e.g., [500, 280]), or a single integer element index."
+              "description": "Normalized coordinates [x, y] in 0-1000 scale (e.g., [500, 280])."
             },
             "description": "List of targets to tap in sequence, e.g. [[500, 280], [885, 362]]."
+          },
+          "target_descriptions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What each target is, in a few words, one entry per sequence entry in the same order (e.g. ['video body', 'skip button']). Required: a coordinate names nothing by itself."
           },
           "delay_ms": {
             "type": "integer",
@@ -54,7 +66,8 @@
           }
         },
         "required": [
-          "sequence"
+          "sequence",
+          "target_descriptions"
         ]
       }
     }
@@ -74,13 +87,18 @@
             },
             "description": "Normalized coordinates [x, y] in 0-1000 scale."
           },
+          "target_description": {
+            "type": "string",
+            "description": "What the target is, in a few words (e.g. 'play button', 'search input', 'video body'). Required: a coordinate names nothing by itself."
+          },
           "duration_ms": {
             "type": "integer",
             "description": "Duration of press in milliseconds (default 1000ms)."
           }
         },
         "required": [
-          "target"
+          "target",
+          "target_description"
         ]
       }
     }
@@ -104,6 +122,10 @@
             },
             "description": "Coordinates [x, y] of the input box in 0-1000 scale."
           },
+          "target_description": {
+            "type": "string",
+            "description": "What the target is, in a few words (e.g. 'play button', 'search input', 'video body'). Required: a coordinate names nothing by itself."
+          },
           "clear_exist": {
             "type": "boolean",
             "description": "Whether to clear existing text in the input box before typing (default True)."
@@ -111,7 +133,8 @@
         },
         "required": [
           "text",
-          "target"
+          "target",
+          "target_description"
         ]
       }
     }
@@ -153,6 +176,10 @@
           },
           "action": {
             "description": "Backward-compatible swipe gesture: smart direction string ('up', 'down', 'left', 'right') OR precise custom coordinates [start_x, start_y, end_x, end_y] in 0-1000 scale."
+          },
+          "target_description": {
+            "type": "string",
+            "description": "What is being dragged, in a few words (e.g. 'brightness slider knob'). Required for coordinate gestures ('start'/'end' or a coordinates list); ignored for directional scrolling."
           },
           "duration": {
             "type": "integer",

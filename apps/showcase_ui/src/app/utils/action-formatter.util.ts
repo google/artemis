@@ -16,7 +16,7 @@
 
 import { ActionParam, StepReplayFrame } from '../core/models/stream.model';
 import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequenceCoordinates, unwrapTraceAction } from './image-overlay.util';
-import { cleanErrorMessage } from './tool-formatter.util';
+import { cleanErrorMessage, joinTargetDescriptions } from './tool-formatter.util';
 
 /**
  * Safely parse JSON string if it looks like an object/array, otherwise return original value
@@ -247,7 +247,16 @@ export function getActionTargetText(action: any): string {
     const ms = act.time_in_ms || act.delay_ms || act.delay_seconds || args.time_in_ms || args.delay_ms || args.delay_seconds || args.duration;
     if (ms) return `${ms}ms`;
   }
-  return act.target_text || act.target_class || act.element_id || args.target_text || args.element_id || '';
+  // Flash click_sequence carries one self-described target per point; render
+  // them in the same ' → ' chain that getActionCoords uses for the points.
+  if (name === 'click_sequence' || name === 'tap_sequence') {
+    const joined = joinTargetDescriptions(act.target_descriptions ?? args.target_descriptions);
+    if (joined) return joined;
+  }
+  // target_text is observed element text (index targets); target_description is
+  // what the model said it aimed at (coordinate targets). Same label either way.
+  return act.target_text || act.target_description || act.target_class || act.element_id
+    || args.target_text || args.target_description || args.element_id || '';
 }
 
 /**
@@ -361,6 +370,22 @@ export function getActionCoords(action: any): string {
 }
 
 /**
+ * The Validator records "Dispatched" as the terminal attempt of an action the device
+ * accepted (kept only when a retry preceded it); any other terminal attempt is the
+ * failure text. Skipped burst members count as not dispatched.
+ */
+function attemptsFailed(attempts: any): boolean {
+  if (!Array.isArray(attempts) || attempts.length === 0) return false;
+  return String(attempts[attempts.length - 1]) !== 'Dispatched';
+}
+
+function lastFailedAttempt(attempts: any): string | null {
+  if (!Array.isArray(attempts)) return null;
+  const failing = attempts.filter((a: any) => String(a) !== 'Dispatched');
+  return failing.length > 0 ? String(failing[failing.length - 1]) : null;
+}
+
+/**
  * Check if the action execution failed or encountered an execution failure/interception
  */
 export function isActionFailed(action: any, stepData?: any): boolean {
@@ -384,7 +409,7 @@ export function isActionFailed(action: any, stepData?: any): boolean {
         }
         if (Array.isArray(res.execution) && res.execution.length > 0) {
           const firstExec = res.execution[0];
-          if (firstExec && (firstExec.status === 'failed' || firstExec.status === 'error' || firstExec.error || (Array.isArray(firstExec.attempts) && firstExec.attempts.length > 0))) {
+          if (firstExec && (firstExec.status === 'failed' || firstExec.status === 'error' || firstExec.error || attemptsFailed(firstExec.attempts))) {
             return true;
           }
         }
@@ -411,8 +436,9 @@ export function getActionErrorMessage(action: any, stepData?: any): string {
       if (Array.isArray(res.execution) && res.execution.length > 0) {
         const firstExec = res.execution[0];
         if (firstExec) {
-          if (Array.isArray(firstExec.attempts) && firstExec.attempts.length > 0) {
-            return cleanErrorMessage(firstExec.attempts[0]);
+          const failedAttempt = lastFailedAttempt(firstExec.attempts);
+          if (failedAttempt) {
+            return cleanErrorMessage(failedAttempt);
           }
           if (firstExec.error || firstExec.failure_reason || firstExec.message) {
             return cleanErrorMessage(firstExec.error || firstExec.failure_reason || firstExec.message);
@@ -469,7 +495,8 @@ export function extractActionExtraParams(action: any, cache?: WeakMap<any, Actio
   }
 
   const standardKeys = new Set([
-    'action', 'name', 'type', 'target_text', 'text', 'input_text', 'target',
+    'action', 'name', 'type', 'target_text', 'target_description', 'target_descriptions',
+    'text', 'input_text', 'target',
     'coordinates', 'coords', 'target_bounds', 'bounds', 'target_resource_id',
     'resource_id', 'target_class', 'class_name', 'normalized_coordinates',
     'normalized_start_coordinates', 'normalized_end_coordinates',
@@ -980,7 +1007,7 @@ export function extractStepReplayFrames(logsOrSteps: any[]): StepReplayFrame[] {
       isPost: false,
       timestamp: stepData.timestamp,
       summary: stepData.summary || '',
-      status: failed ? 'failed' : 'success'
+      status: failed ? 'failed' : 'dispatched'
     });
   }
 

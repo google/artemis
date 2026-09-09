@@ -615,7 +615,7 @@ def test_pro_pixel_record_is_normalized_exactly_once(tmp_path):
         action_taken=[action],
         last_execution_result={
             "status": "success",
-            "execution": [dict(action, attempts=["Success"])],
+            "execution": [dict(action, attempts=["Dispatched"])],
         },
         extra_metadata={"width": 1080, "height": 2400},
     )

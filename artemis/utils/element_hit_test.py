@@ -12,34 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Record-time action semantics enrichment via element hit testing.
+"""Element hit testing: which indexed element covers a pixel point.
 
-An action addressed by bare coordinates carries no element semantics
-("tap(632,1180)" says nothing about what was tapped). Before such an action is
-persisted to the DataEngine, these helpers resolve the smallest indexed element
-covering the tap point on the pre-action frame and attach best-effort
-``target_text`` / ``target_class`` / ``target_resource_id`` fields, plus a
-``target_label_source`` marker distinguishing model-named targets from
-after-the-fact inference:
-
-- ``"index"``: the model addressed the element by its perception index — the
-  semantics come straight from the indexed element (highest confidence).
-- ``"hit_test"``: inferred by hit testing the coordinates against XML-derived
-  indexed elements on the pre-action frame.
-- ``"ocr"``: inferred by hit testing against OCR-derived indexed elements
-  (used only when no XML-derived element covers the point).
-- ``"none"``: no element covers the point (or no perception data was
-  available) — the action stays a bare-coordinate action.
-
-Enrichment is strictly best-effort: missing/malformed element data degrades to
-``"none"`` and never raises.
+Used by the Explorer to deduplicate candidates against the screen index.
+Recorded coordinate actions use the model's ``target_description``.
 """
 
 from typing import Any
 
 from artemis.utils.visualization import parse_bounds
-
-_LABEL_SOURCE_KEY = "target_label_source"
 
 
 def _element_bounds(element: dict[str, Any]) -> tuple[int, int, int, int] | None:
@@ -69,7 +50,8 @@ def find_element_at_point(
     XML-derived elements are preferred over OCR-derived ones (OCR boxes carry
     text but weaker structure); within each group the smallest covering area
     wins. Returns ``(element, source)`` where source is ``"hit_test"``,
-    ``"ocr"``, or ``"none"`` (with element None).
+    ``"ocr"``, or ``"none"`` (with element None). Malformed element data is
+    skipped; the function never raises on it.
     """
     best_xml: tuple[int, dict[str, Any]] | None = None
     best_ocr: tuple[int, dict[str, Any]] | None = None
@@ -96,26 +78,3 @@ def find_element_at_point(
     if best_ocr is not None:
         return best_ocr[1], "ocr"
     return None, "none"
-
-
-def hit_test_semantics(elements: list[dict[str, Any]] | None, x: int, y: int) -> dict[str, Any]:
-    """Best-effort semantic fields for a bare-coordinate action at pixel (x, y).
-
-    Always returns a dict containing ``target_label_source``; the
-    ``target_text`` / ``target_class`` / ``target_resource_id`` fields are only
-    present when the covering element carries them.
-    """
-    try:
-        element, source = find_element_at_point(elements, int(x), int(y))
-    except Exception:
-        return {_LABEL_SOURCE_KEY: "none"}
-    semantics: dict[str, Any] = {_LABEL_SOURCE_KEY: source}
-    if element is None:
-        return semantics
-    if element.get("text"):
-        semantics["target_text"] = element["text"]
-    if element.get("class"):
-        semantics["target_class"] = element["class"]
-    if element.get("resource_id"):
-        semantics["target_resource_id"] = element["resource_id"]
-    return semantics

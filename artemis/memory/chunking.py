@@ -39,6 +39,7 @@ from uuid import uuid4
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
+from artemis.llm.google import is_google_provider
 from artemis.memory.step_memory import JobKey, StepLens, StepMemoryService
 from artemis.memory.transcript import format_session_offset
 from artemis.utils.logger import get_logger
@@ -80,9 +81,7 @@ def _result_phrase(result: Any) -> str:
     if detail:
         return detail
     status = result.get("status")
-    if status == "success":
-        return "executed"
-    return str(status) if status else "executed"
+    return str(status) if status else "dispatched"
 
 
 def _action_phrase(step: dict) -> str:
@@ -963,7 +962,7 @@ class HistoryChunkManager:
             fallback = getattr(getattr(llm_cfg, "summarizer", None), "fallback", None)
             provider = str(getattr(fallback, "provider", "") or "")
             model = getattr(fallback, "model", None)
-            if model and provider in ("google", "gemini") and model != self._model_name:
+            if model and is_google_provider(provider) and model != self._model_name:
                 return str(model)
         except Exception as exc:
             logger.debug(f"Capsule fallback model resolution skipped: {exc}", exc_info=True)

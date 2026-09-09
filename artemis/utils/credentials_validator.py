@@ -16,6 +16,8 @@
 
 import httpx
 
+from artemis.llm.google.provider import is_google_family_provider
+
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -89,7 +91,7 @@ async def validate_api_key(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            if clean_provider in ("google", "gemini", "vertexai", "vertex"):
+            if is_google_family_provider(clean_provider):
                 # Test Google Gemini via generativelanguage API
                 url = f"https://generativelanguage.googleapis.com/v1beta/models?key={clean_key}&pageSize=1"
                 resp = await client.get(url)

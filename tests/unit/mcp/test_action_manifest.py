@@ -55,7 +55,8 @@ SCOPED_PROMPT_FILES = [
 # note keys, and the availability-slot template helper rendered by
 # apply_operator_prompt_contract. Anything new landing here should be a conscious
 # decision.
-NON_TOOL_IDENTIFIERS = frozenset({"analysis", "task_plan", "tool_enum"})
+#: Backticked identifiers in prompts that are parameters or note keys, not tools.
+NON_TOOL_IDENTIFIERS = frozenset({"analysis", "task_plan", "tool_enum", "target_description"})
 
 _TOOL_REF = re.compile(r"(?:`([a-z][a-z0-9_]{2,})`|\b([a-z][a-z0-9_]{2,})\()")
 

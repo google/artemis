@@ -18,6 +18,7 @@ from typing import Any
 from langchain_core.tools.base import BaseTool
 from pydantic import BaseModel, Field
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
@@ -43,7 +44,7 @@ def search_and_merge_logs(
         try:
             pattern = re.compile(keyword, re.IGNORECASE)
         except re.error as e:
-            return f"Error: Invalid regex: {e}"
+            return ToolFailure(f"Error: Invalid regex: {e}")
     else:
         keyword_lower = keyword.lower()
 
@@ -222,7 +223,7 @@ class SearchLogsTool(ArtemisTool):
             )
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error(f"Failed to search logs: {e}")
-            return f"Error searching logs: {e}"
+            return ToolFailure(f"Error searching logs: {e}")
 
 
 # Universal tool instance & aliases

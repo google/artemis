@@ -36,8 +36,18 @@ and declared**, not accidental:
   be returned automatically").
 * ``wire`` -- what the action MCP server serves, mirroring the actuator protocol
   one-to-one: normalized coordinates, millisecond durations, no addressing sugar.
-  Client-side executors (``McpActionExecutor``, ``MobileActionExecutor``) lower the
+  The client-side executor (``McpActionExecutor``) lowers the
   agent dialects onto it.
+
+A coordinate target names nothing by itself, so both agent dialects pair it with
+``target_description`` (``target_descriptions`` for a ``click_sequence``): the
+model's own statement of what it is aiming at. It is required whenever the target
+is a coordinate (always, in the declaration dialect), recorded verbatim on the
+action, and never sent to the wire. An element index needs none -- its text,
+bounds and id are read from the indexed list -- and the recorded fields stay
+separate (``target_text``/``target_bounds``/... for observed elements,
+``target_description`` for described coordinates) so no reader can mistake the
+model's belief for an observation.
 
 Each ``ActionSpec.param_bridge`` maps operator parameter names onto declaration
 parameter names, so every rename (``duration`` -> ``duration_ms``, ``gesture`` ->
@@ -164,6 +174,22 @@ _COORD_PAIR_JSON = {
     "items": {"type": "integer"},
 }
 
+#: Operator-dialect wording for the description that a coordinate target must carry.
+#: An element index already names its element (its text, id and bounds are recorded
+#: from the indexed list); a bare coordinate names nothing, so the model states what
+#: it is aiming at and that statement is recorded as ``target_description``.
+_OPERATOR_TARGET_DESCRIPTION = (
+    "What the target is, in a few words (e.g. 'play button', 'search input',"
+    " 'video body'). REQUIRED when target is a coordinate pair; ignored for an"
+    " element index."
+)
+
+#: Declaration-dialect wording (coordinates-only dialect: always required).
+_DECLARATION_TARGET_DESCRIPTION = (
+    "What the target is, in a few words (e.g. 'play button', 'search input',"
+    " 'video body'). Required: a coordinate names nothing by itself."
+)
+
 
 # --- Wire bindings -------------------------------------------------------------------
 # Each binding reproduces the exact conversion of the historical hand-written FastMCP
@@ -246,6 +272,13 @@ _SPECS: tuple[ActionSpec, ...] = (
                     " normalized coordinates (list of 2 integers, e.g. [500, 600]).",
                 ),
                 ParamSpec(
+                    "target_description",
+                    str | None,
+                    _OPERATOR_TARGET_DESCRIPTION,
+                    required=False,
+                    default=None,
+                ),
+                ParamSpec(
                     "times",
                     int,
                     "Number of consecutive clicks on this target. Use this for"
@@ -278,6 +311,10 @@ _SPECS: tuple[ActionSpec, ...] = (
                         "items": {"type": "integer"},
                         "description": "Normalized coordinates [x, y] in 0-1000 scale.",
                     },
+                    "target_description": {
+                        "type": "string",
+                        "description": _DECLARATION_TARGET_DESCRIPTION,
+                    },
                     "times": {
                         "type": "integer",
                         "description": (
@@ -289,7 +326,7 @@ _SPECS: tuple[ActionSpec, ...] = (
                         "description": "Delay between taps in milliseconds (default 100).",
                     },
                 },
-                "required": ["target"],
+                "required": ["target", "target_description"],
             },
         ),
         wire=WireDialect(
@@ -301,10 +338,17 @@ _SPECS: tuple[ActionSpec, ...] = (
             ),
             bind=_wire_click,
         ),
-        param_bridge={"target": "target", "times": "times", "delay_ms": "delay_ms"},
+        param_bridge={
+            "target": "target",
+            "target_description": "target_description",
+            "times": "times",
+            "delay_ms": "delay_ms",
+        },
         differences=(
             "target: operator accepts an element index or a coordinate pair; the"
             " declaration and wire dialects take coordinates only."
+            " target_description: recorded, never sent to the wire; the operator"
+            " requires it only for coordinate targets, the declaration always."
         ),
     ),
     ActionSpec(
@@ -324,12 +368,20 @@ _SPECS: tuple[ActionSpec, ...] = (
                             "type": "array",
                             "items": {"type": "integer"},
                             "description": (
-                                "Normalized coordinates [x, y] in 0-1000 scale (e.g., [500, 280]),"
-                                " or a single integer element index."
+                                "Normalized coordinates [x, y] in 0-1000 scale (e.g., [500, 280])."
                             ),
                         },
                         "description": (
                             "List of targets to tap in sequence, e.g. [[500, 280], [885, 362]]."
+                        ),
+                    },
+                    "target_descriptions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "What each target is, in a few words, one entry per sequence"
+                            " entry in the same order (e.g. ['video body', 'skip button'])."
+                            " Required: a coordinate names nothing by itself."
                         ),
                     },
                     "delay_ms": {
@@ -339,7 +391,7 @@ _SPECS: tuple[ActionSpec, ...] = (
                         ),
                     },
                 },
-                "required": ["sequence"],
+                "required": ["sequence", "target_descriptions"],
             },
         ),
         wire=WireDialect(
@@ -352,8 +404,9 @@ _SPECS: tuple[ActionSpec, ...] = (
         ),
         differences=(
             "Declared to Flash only (the Pro Operator chains actions as a fast-action"
-            " burst instead); sequence entries may be element indices at the declaration layer"
-            " (resolved client-side), while the wire takes coordinate pairs only."
+            " burst instead); sequence entries are normalized coordinate pairs in both"
+            " dialects (an element index is refused, never resolved client-side)."
+            " target_descriptions is recorded per entry and never sent to the wire."
         ),
     ),
     ActionSpec(
@@ -370,6 +423,13 @@ _SPECS: tuple[ActionSpec, ...] = (
                     "Long press target. Can be an element index number (int, e.g."
                     " 3) OR normalized coordinates (list of 2 integers, e.g. [500,"
                     " 600]).",
+                ),
+                ParamSpec(
+                    "target_description",
+                    str | None,
+                    _OPERATOR_TARGET_DESCRIPTION,
+                    required=False,
+                    default=None,
                 ),
                 ParamSpec(
                     "duration",
@@ -393,12 +453,16 @@ _SPECS: tuple[ActionSpec, ...] = (
                         "items": {"type": "integer"},
                         "description": "Normalized coordinates [x, y] in 0-1000 scale.",
                     },
+                    "target_description": {
+                        "type": "string",
+                        "description": _DECLARATION_TARGET_DESCRIPTION,
+                    },
                     "duration_ms": {
                         "type": "integer",
                         "description": "Duration of press in milliseconds (default 1000ms).",
                     },
                 },
-                "required": ["target"],
+                "required": ["target", "target_description"],
             },
         ),
         wire=WireDialect(
@@ -409,9 +473,15 @@ _SPECS: tuple[ActionSpec, ...] = (
             ),
             bind=_wire_long_press,
         ),
-        param_bridge={"target": "target", "duration": "duration_ms"},
+        param_bridge={
+            "target": "target",
+            "target_description": "target_description",
+            "duration": "duration_ms",
+        },
         differences=(
             "target: operator accepts an element index or a coordinate pair."
+            " target_description: recorded, never sent to the wire; the operator"
+            " requires it only for coordinate targets, the declaration always."
             " duration: the operator spells the duration parameter `duration` (its"
             " structured decisions and recorded traces carry that key); the"
             " declaration and wire dialects spell it `duration_ms`. Executors accept"
@@ -438,6 +508,13 @@ _SPECS: tuple[ActionSpec, ...] = (
                     "Input target field. Can be an input box element index number"
                     " (int, e.g. 3) OR normalized coordinates (list of 2 integers,"
                     " e.g. [500, 600]).",
+                ),
+                ParamSpec(
+                    "target_description",
+                    str | None,
+                    _OPERATOR_TARGET_DESCRIPTION,
+                    required=False,
+                    default=None,
                 ),
                 ParamSpec(
                     "clear_exist",
@@ -468,6 +545,10 @@ _SPECS: tuple[ActionSpec, ...] = (
                         "items": {"type": "integer"},
                         "description": "Coordinates [x, y] of the input box in 0-1000 scale.",
                     },
+                    "target_description": {
+                        "type": "string",
+                        "description": _DECLARATION_TARGET_DESCRIPTION,
+                    },
                     "clear_exist": {
                         "type": "boolean",
                         "description": (
@@ -476,7 +557,7 @@ _SPECS: tuple[ActionSpec, ...] = (
                         ),
                     },
                 },
-                "required": ["text", "target"],
+                "required": ["text", "target", "target_description"],
             },
         ),
         wire=WireDialect(
@@ -488,11 +569,18 @@ _SPECS: tuple[ActionSpec, ...] = (
             ),
             bind=_wire_input_text,
         ),
-        param_bridge={"target": "target", "text": "text", "clear_exist": "clear_exist"},
+        param_bridge={
+            "target": "target",
+            "target_description": "target_description",
+            "text": "text",
+            "clear_exist": "clear_exist",
+        },
         differences=(
             "target: operator accepts an element index or a coordinate pair, and"
             " requires a target; the wire dialect allows omitting the target to type"
-            " into the already-focused field."
+            " into the already-focused field. target_description: recorded, never"
+            " sent to the wire; the operator requires it only for coordinate targets,"
+            " the declaration always."
         ),
     ),
     ActionSpec(
@@ -510,6 +598,7 @@ _SPECS: tuple[ActionSpec, ...] = (
                 "    end: End normalized coordinates [end_x, end_y] in 0-1000 scale.\n"
                 "    target: Optional target element index (e.g. 2) or container bounds [left, top, right, bottom] to scope the directional swipe within.\n"
                 "    gesture: Backward-compatible parameter: direction string OR custom coordinates list [start_x, start_y, end_x, end_y] in 0-1000 scale.\n"
+                "    target_description: What is being dragged, in a few words (e.g. 'brightness slider knob'). REQUIRED for coordinate gestures ('start'/'end' or a coordinates list); ignored for directional scrolling.\n"
                 "    duration: Optional gesture duration in milliseconds (default 800)."
             ),
             params=(
@@ -551,6 +640,15 @@ _SPECS: tuple[ActionSpec, ...] = (
                     Direction | list[int] | None,
                     "Backward-compatible swipe gesture: smart direction string ('up', 'down', 'left', 'right')"
                     " OR precise custom coordinates [start_x, start_y, end_x, end_y] in 0-1000 scale.",
+                    required=False,
+                    default=None,
+                ),
+                ParamSpec(
+                    "target_description",
+                    str | None,
+                    "What is being dragged, in a few words (e.g. 'brightness slider"
+                    " knob'). REQUIRED for coordinate gestures ('start'/'end' or a"
+                    " coordinates list); ignored for directional scrolling.",
                     required=False,
                     default=None,
                 ),
@@ -609,6 +707,14 @@ _SPECS: tuple[ActionSpec, ...] = (
                             " OR precise custom coordinates [start_x, start_y, end_x, end_y] in 0-1000 scale."
                         ),
                     },
+                    "target_description": {
+                        "type": "string",
+                        "description": (
+                            "What is being dragged, in a few words (e.g. 'brightness slider"
+                            " knob'). Required for coordinate gestures ('start'/'end' or a"
+                            " coordinates list); ignored for directional scrolling."
+                        ),
+                    },
                     "duration": {
                         "type": "integer",
                         "description": (
@@ -635,10 +741,13 @@ _SPECS: tuple[ActionSpec, ...] = (
             "end": "end",
             "target": "target",
             "gesture": "action",
+            "target_description": "target_description",
             "duration": "duration",
         },
         differences=(
-            "gesture/action: the legacy combined direction-or-coordinates parameter is"
+            "target_description: recorded, never sent to the wire; required by both"
+            " agent dialects for coordinate gestures only."
+            " gesture/action: the legacy combined direction-or-coordinates parameter is"
             " spelled `gesture` in the operator dialect and `action` in the"
             " declaration dialect (`action` collides with the operator's structured"
             " decision verb field). Smart directional swipes exist only in the agent"

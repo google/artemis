@@ -143,14 +143,17 @@ def test_flash_runner_screenshot_pruning(mock_context):
 # --- Recorded action shape (coordinate space + ledger rendering) ---------------------
 
 
-def _record(runner, name, args):
+def _record(runner, name, args, metadata=None):
     from types import SimpleNamespace
 
     runner.ctx.data_engine = Mock()
     runner.ctx.data_engine.current_step_id = None
     runner.ctx.data_engine.record_step.return_value = "step-1"
     exec_result = SimpleNamespace(
-        status="success", text_summary=f"{name} executed", metadata={}, ui_elements_text="ui"
+        status="success",
+        text_summary=f"{name} executed",
+        metadata=metadata or {},
+        ui_elements_text="ui",
     )
     step_id = runner._record_action_step(
         name, args, exec_result, "thought", {}, b"pre", ["xml"], b"post"
@@ -205,3 +208,41 @@ def test_flash_records_render_in_the_ledger_with_their_arguments(mock_context):
     assert format_actions_clean(swipe_fa) == "Swiped down"
     swipe_coords = _record(runner, "swipe", {"coordinates": [556, 289, 556, 124]})
     assert format_actions_clean(swipe_coords) == "Swiped from [556, 289] to [556, 124]"
+
+
+def test_flash_records_the_executors_target_semantics(mock_context):
+    """Flash targets are coordinates, so the model's own description (validated
+    and shaped by the executor into ``metadata.target_semantics``) is the only
+    target semantics on record: top level, the shape Pro records, rendered as the
+    action's label. Nothing is inferred when the executor hands back nothing."""
+    from artemis.utils.task_tree import format_actions_clean
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+
+    click_args = {"target": [320, 399], "target_description": "play button"}
+    click = _record(
+        runner,
+        "click",
+        click_args,
+        metadata={"target_semantics": {"target_description": "play button"}},
+    )
+    assert click["target_description"] == "play button"
+    assert "target_text" not in click
+    assert format_actions_clean(click) == "Tapped 'play button' (self-described) at [320, 399]"
+
+    burst = _record(
+        runner,
+        "click_sequence",
+        {"sequence": [[500, 280], [885, 362]], "target_descriptions": ["video body", "skip"]},
+        metadata={"target_semantics": {"target_descriptions": ["video body", "skip"]}},
+    )
+    assert burst["target_descriptions"] == ["video body", "skip"]
+    assert format_actions_clean(burst) == (
+        "Tapped sequence of targets: 'video body' (self-described) at [500, 280],"
+        " 'skip' (self-described) at [885, 362]"
+    )
+
+    bare = _record(runner, "click", {"target": [320, 399]}, metadata={"target_semantics": {}})
+    assert "target_description" not in bare
+    assert "target_text" not in bare

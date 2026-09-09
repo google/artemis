@@ -44,7 +44,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from artemis.agents.flash.summarizer import VisualStepSummarizer
+from artemis.agents.flash.summarizer import VisualStepSummarizer, build_focus_context
 from artemis.agents.validator.tool_declarations import (
     ASK_EXPLORER_TOOL,
     CLICK_SEQUENCE_TOOL,
@@ -123,8 +123,10 @@ class _TurnRecord:
             return None
         for name, status, text in self.actions:
             if status != "success":
-                return {"status": "failed", "error": f"{name}: {text}"}
-        return {"status": "success"}
+                # Executor messages name the action themselves ("Error
+                # executing click: ..."); prefix only the ones that don't.
+                return {"status": "failed", "error": text if name in text else f"{name}: {text}"}
+        return {"status": "dispatched"}
 
 
 class FlashRunner:
@@ -284,10 +286,17 @@ class FlashRunner:
     # Per-turn helpers (observe / think)
     # ------------------------------------------------------------------
 
-    async def _read_injected_instruction(self) -> str | None:
-        """Returns the real-time injected instruction text for this turn, if any."""
+    async def _read_injected_instruction(self) -> tuple[str | None, str | None]:
+        """Consumes this turn's injected instruction: ``(instruction, notice)``.
+
+        ``instruction`` is the user's text verbatim — what the step record,
+        the chunk ledger and the visual-transition lens receive (the same
+        shape Pro stamps). ``notice`` wraps it with the operator-facing
+        directive and rides only on the observation tail. Both are None
+        when nothing was injected.
+        """
         if not (self.ctx.data_engine and self.ctx.data_engine.base_dir):
-            return None
+            return None, None
         try:
             injected_payload = await asyncio.to_thread(
                 _check_injected_instruction_file,
@@ -295,21 +304,22 @@ class FlashRunner:
             )
         except (OSError, ValueError, AttributeError) as e:
             logger.warning(f"Failed to check injected instruction in FlashRunner: {e}")
-            return None
+            return None, None
         if not (injected_payload and injected_payload.get("instruction")):
-            return None
-        injected_text = (
+            return None, None
+        instruction = str(injected_payload["instruction"])
+        notice = (
             "[REAL-TIME INJECTED INSTRUCTION from user]:"
-            f" {injected_payload['instruction']}\nYou MUST immediately"
+            f" {instruction}\nYou MUST immediately"
             " follow this instruction and adjust your plan/actions."
         )
         if injected_payload.get("release_loop"):
-            injected_text += (
+            notice += (
                 "\nThe user has explicitly authorized stopping any"
                 " ongoing monitoring loop; you may now wrap up and"
                 " complete the task."
             )
-        return injected_text
+        return instruction, notice
 
     def _build_tail(
         self,
@@ -597,16 +607,13 @@ class FlashRunner:
                 action_dict["normalized_start_coordinates"] = norm_start
                 action_dict["normalized_end_coordinates"] = norm_end
 
-            # Record-time enrichment computed by the executor from
-            # the pre-action frame (target_text / target_class /
-            # target_resource_id / target_label_source).
-            target_semantics = (exec_result.metadata or {}).get("target_semantics")
-            if isinstance(target_semantics, dict):
-                action_dict.update(target_semantics)
+            # The model's own statement of what it aimed at (target_description),
+            # validated and shaped by the executor into the fields Pro records.
+            action_dict.update((exec_result.metadata or {}).get("target_semantics") or {})
 
             succeeded = exec_result.status == "success"
             last_execution_result = {
-                "status": "success" if succeeded else "failed",
+                "status": "dispatched" if succeeded else "failed",
                 "result": exec_result.text_summary,
             }
             if not succeeded:
@@ -704,6 +711,13 @@ class FlashRunner:
                     exec_outcome=exec_result.text_summary,
                     action_key=str(tc_id),
                     data_engine_step_id=recorded_step_id,
+                    # The model's own reasoning for this turn steers the lens's
+                    # attention; the target it named rides on ``args``.
+                    focus=build_focus_context(
+                        intent=raw_text,
+                        goal=self.goal,
+                        injected_instruction=injected,
+                    ),
                 )
 
             if post_img_bytes:
@@ -719,7 +733,7 @@ class FlashRunner:
             content = (
                 raw_blocks
                 if isinstance(raw_blocks, list) and raw_blocks
-                else exec_result.text_summary or f"Action '{name}' completed."
+                else exec_result.text_summary or f"Action '{name}' dispatched."
             )
             messages.extend(
                 tool_result_messages(
@@ -868,8 +882,9 @@ class FlashRunner:
             self._commit_turn(ledger, previous_turn)
             previous_turn = None
 
-            # Check for real-time injected instructions
-            injected = await self._read_injected_instruction()
+            # Check for real-time injected instructions: the verbatim text
+            # is stamped on the step, the wrapped notice goes to the tail.
+            injected, injected_notice = await self._read_injected_instruction()
 
             # Tool restriction on the final turn (bounded loops only)
             is_final = limit is not None and turns == limit
@@ -878,7 +893,7 @@ class FlashRunner:
                 turns,
                 current_pre_screenshot_bytes,
                 current_xml_list,
-                injected=injected,
+                injected=injected_notice,
                 notices=pending_notices,
                 is_final=is_final,
             )

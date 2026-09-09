@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from artemis.agents.operator.operator import OperatorNode
 from artemis.config.agent import MemoryTranscriptConfig
 from artemis.context import ArtemisContext
+from artemis.core.tool_failure import ToolFailure
 import pytest
 
 # These tests exercise the legacy 2-message prompt path. Since M5 the
@@ -54,7 +55,11 @@ async def test_operator_node_fast_path():
     mock_response.tool_calls = [
         {
             "name": "click",
-            "args": {"target": [50, 50], "reasoning": "Test reasoning"},
+            "args": {
+                "target": [50, 50],
+                "target_description": "button",
+                "reasoning": "Test reasoning",
+            },
             "id": "call_123",
         }
     ]
@@ -121,7 +126,6 @@ async def test_perform_action_validation():
             "target_bounds": "[100,100][300,500]",
             "target_resource_id": "btn_1",
             "target_class": "android.widget.Button",
-            "target_label_source": "index",
         }
     ]
 
@@ -152,7 +156,6 @@ async def test_perform_action_validation():
         "target_bounds": "[300,400][500,600]",
         "target_resource_id": "input_1",
         "target_class": "android.widget.EditText",
-        "target_label_source": "index",
     }
 
     # Test swipe direction
@@ -181,7 +184,6 @@ async def test_perform_action_validation():
             "target_bounds": "[300,400][500,600]",
             "target_resource_id": "input_1",
             "target_class": "android.widget.EditText",
-            "target_label_source": "index",
         }
     ]
 
@@ -235,8 +237,13 @@ async def test_perform_action_validation():
 
 
 @pytest.mark.asyncio
-async def test_bare_coordinate_click_enriched_by_hit_test():
-    """A coordinate click hit tests the pre-action frame for element semantics."""
+async def test_coordinate_click_requires_and_records_the_models_description():
+    """A coordinate target carries the model's own description, never an inferred label.
+
+    Even when an indexed element sits right under the point, nothing is hit
+    tested on the model's behalf: the recorded semantics are exactly what the
+    model declared, kept apart from the observed ``target_*`` fields.
+    """
     from artemis.agents.operator.operator import OperatorNode
     from unittest.mock import MagicMock
     from artemis.graph.state import State
@@ -256,10 +263,22 @@ async def test_bare_coordinate_click_enriched_by_hit_test():
         }
     ]
 
-    # Normalized (500, 600) on the default 1080x2400 device -> pixel (540, 1440),
-    # which falls inside the "Confirm" button bounds.
+    # Coordinates without a description are refused with a retryable error.
+    for args in (
+        {"target": [500, 600]},
+        {"target": [500, 600], "target_description": "   "},
+        {"target": [500, 600], "target_description": 12},
+    ):
+        actions, err = node._translate_and_validate_tool(
+            {"name": "click", "args": args}, mock_state
+        )
+        assert actions == []
+        assert err.startswith("Error:")
+        assert "target_description" in err
+
     actions, err = node._translate_and_validate_tool(
-        {"name": "click", "args": {"target": [500, 600]}}, mock_state
+        {"name": "click", "args": {"target": [500, 600], "target_description": " play button "}},
+        mock_state,
     )
     assert err is None
     assert actions == [
@@ -270,22 +289,59 @@ async def test_bare_coordinate_click_enriched_by_hit_test():
             "normalized_coordinates": [500, 600],
             "times": 1,
             "delay_ms": 100,
-            "target_text": "Confirm",
-            "target_bounds": [500, 1400, 600, 1480],
-            "target_resource_id": "btn_confirm",
-            "target_class": "android.widget.Button",
-            "target_label_source": "hit_test",
+            "target_description": "play button",
         }
     ]
 
-    # Graceful degradation: no perception data at all -> bare coordinates, "none".
-    mock_state.indexed_elements = []
+    # The same rule applies to input_text and the description is ignored for an index.
     actions, err = node._translate_and_validate_tool(
-        {"name": "click", "args": {"target": [500, 600]}}, mock_state
+        {"name": "input_text", "args": {"text": "hi", "target": [500, 600]}}, mock_state
+    )
+    assert actions == [] and "target_description" in err
+    actions, err = node._translate_and_validate_tool(
+        {
+            "name": "input_text",
+            "args": {"text": "hi", "target": 1, "target_description": "ignored"},
+        },
+        mock_state,
     )
     assert err is None
-    assert actions[0]["target_text"] is None
-    assert actions[0]["target_label_source"] == "none"
+    assert actions[0]["target_text"] == "Confirm"
+    assert "target_description" not in actions[0]
+
+
+@pytest.mark.asyncio
+async def test_coordinate_swipe_requires_description_directional_does_not():
+    from artemis.agents.operator.operator import OperatorNode
+    from unittest.mock import MagicMock
+    from artemis.graph.state import State
+
+    node = OperatorNode(MagicMock(), transcript_config=LEGACY_TRANSCRIPT)
+    mock_state = MagicMock(spec=State)
+    mock_state.indexed_elements = []
+    mock_state.latest_ui_hierarchy = None
+
+    actions, err = node._translate_and_validate_tool(
+        {"name": "swipe", "args": {"start": [200, 600], "end": [800, 600]}}, mock_state
+    )
+    assert actions == [] and "target_description" in err
+
+    actions, err = node._translate_and_validate_tool(
+        {
+            "name": "swipe",
+            "args": {"start": [200, 600], "end": [800, 600], "target_description": "volume knob"},
+        },
+        mock_state,
+    )
+    assert err is None
+    assert actions[0]["action"] == "swipe"
+    assert actions[0]["target_description"] == "volume knob"
+
+    actions, err = node._translate_and_validate_tool(
+        {"name": "swipe", "args": {"direction": "up"}}, mock_state
+    )
+    assert err is None
+    assert "target_description" not in actions[0]
 
 
 @pytest.mark.asyncio
@@ -314,10 +370,14 @@ async def test_operator_node_multiple_actions():
     mock_response.tool_calls = [
         {
             "name": "input_text",
-            "args": {"text": "hello", "target": [50, 50]},
+            "args": {"text": "hello", "target": [50, 50], "target_description": "field"},
             "id": "call_1",
         },
-        {"name": "click", "args": {"target": [50, 50]}, "id": "call_2"},
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_2",
+        },
     ]
 
     mock_llm.ainvoke = AsyncMock(return_value=mock_response)
@@ -587,7 +647,13 @@ async def test_operator_tracks_subagent_calls():
     ]
 
     mock_response_2 = MagicMock()
-    mock_response_2.tool_calls = [{"name": "click", "args": {"target": [10, 20]}, "id": "call_2"}]
+    mock_response_2.tool_calls = [
+        {
+            "name": "click",
+            "args": {"target": [10, 20], "target_description": "button"},
+            "id": "call_2",
+        }
+    ]
 
     responses = [mock_response, mock_response_2]
     call_count = 0
@@ -659,7 +725,11 @@ async def test_operator_defer_action_for_gathering():
             "args": {"query": "check something"},
             "id": "call_diagnose",
         },
-        {"name": "click", "args": {"target": [50, 50]}, "id": "call_click"},
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_click",
+        },
     ]
 
     # Second response only calls click
@@ -667,7 +737,7 @@ async def test_operator_defer_action_for_gathering():
     mock_response_2.tool_calls = [
         {
             "name": "click",
-            "args": {"target": [50, 50]},
+            "args": {"target": [50, 50], "target_description": "button"},
             "id": "call_click_final",
         }
     ]
@@ -795,13 +865,20 @@ async def test_long_press_action_translation():
             "target_bounds": "[100,100][300,500]",
             "target_resource_id": "btn_1",
             "target_class": "android.widget.Button",
-            "target_label_source": "index",
         }
     ]
 
     # 2. Test long_press with custom coordinates and default duration
     actions, err = node._translate_and_validate_tool(
         {"name": "long_press", "args": {"target": [500, 600]}}, mock_state
+    )
+    assert actions == [] and "target_description" in err
+    actions, err = node._translate_and_validate_tool(
+        {
+            "name": "long_press",
+            "args": {"target": [500, 600], "target_description": "app icon"},
+        },
+        mock_state,
     )
     assert err is None
     # Since coordinates are in 0-1000 scale, they should be converted using device width (default 1080) and height (default 2400)
@@ -814,11 +891,7 @@ async def test_long_press_action_translation():
             "coordinate_space": "pixel",
             "normalized_coordinates": [500, 600],
             "duration": 1000,
-            "target_text": None,
-            "target_bounds": None,
-            "target_resource_id": None,
-            "target_class": None,
-            "target_label_source": "none",
+            "target_description": "app icon",
         }
     ]
 
@@ -860,7 +933,11 @@ async def test_operator_no_defer_for_note_updating():
             "args": {"key": "progress", "content": "step 1"},
             "id": "call_save",
         },
-        {"name": "click", "args": {"target": [50, 50]}, "id": "call_click"},
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_click",
+        },
     ]
 
     # We only expect 1 LLM call (astream should only yield once)
@@ -943,7 +1020,11 @@ async def test_operator_defer_for_note_reading():
     mock_response_1 = MagicMock()
     mock_response_1.tool_calls = [
         {"name": "read_note", "args": {"key": "progress"}, "id": "call_read"},
-        {"name": "click", "args": {"target": [50, 50]}, "id": "call_click"},
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_click",
+        },
     ]
 
     # 2nd turn: LLM calls only click after receiving note content
@@ -951,7 +1032,7 @@ async def test_operator_defer_for_note_reading():
     mock_response_2.tool_calls = [
         {
             "name": "click",
-            "args": {"target": [50, 50]},
+            "args": {"target": [50, 50], "target_description": "button"},
             "id": "call_click_final",
         }
     ]
@@ -1043,7 +1124,11 @@ async def test_operator_no_defer_for_note_appending():
             "args": {"key": "progress", "content": "step 1"},
             "id": "call_append",
         },
-        {"name": "click", "args": {"target": [50, 50]}, "id": "call_click"},
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_click",
+        },
     ]
 
     responses = [mock_response_1]
@@ -1291,7 +1376,7 @@ async def test_operator_fallback_function_call_parsing():
         additional_kwargs={
             "function_call": {
                 "name": "click",
-                "arguments": '{"target": [123, 456]}',
+                "arguments": '{"target": [123, 456], "target_description": "button"}',
             }
         },
         tool_calls=[],
@@ -1339,7 +1424,12 @@ async def test_operator_swipe_translation():
     actions, err = node._translate_and_validate_tool(
         {
             "name": "swipe",
-            "args": {"start": [100, 200], "end": [500, 600], "duration": 1500},
+            "args": {
+                "start": [100, 200],
+                "end": [500, 600],
+                "duration": 1500,
+                "target_description": "list item",
+            },
         },
         mock_state,
     )
@@ -1348,12 +1438,13 @@ async def test_operator_swipe_translation():
     assert actions[0]["action"] == "swipe"
     assert actions[0]["coordinates"] == [108, 480, 540, 1440]
     assert actions[0]["duration"] == 1500
+    assert actions[0]["target_description"] == "list item"
 
     # 3. Coordinates alias
     actions, err = node._translate_and_validate_tool(
         {
             "name": "swipe",
-            "args": {"coordinates": [200, 300, 400, 500]},
+            "args": {"coordinates": [200, 300, 400, 500], "target_description": "slider"},
         },
         mock_state,
     )
@@ -1374,3 +1465,77 @@ async def test_operator_swipe_translation():
     assert len(actions) == 1
     assert actions[0]["action"] == "swipe"
     assert actions[0]["coordinates"] == [648, 720, 648, 1680]
+
+
+# --- helper tool results: status is structural, never sniffed from the words ----------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result, expected_status",
+    [
+        pytest.param(ToolFailure("Error: note 'progress' not found"), "error", id="tool_failure"),
+        pytest.param("Error 404 was typed into the search box", "success", id="plain_error_text"),
+    ],
+)
+async def test_operator_helper_tool_message_status_is_structural(result, expected_status):
+    from langchain_core.messages import ToolMessage
+
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.execution_setup = None
+    mock_ctx.data_engine = None
+
+    mock_state = MagicMock()
+    mock_state.subagent_calls = []
+    mock_state.initial_goal = "Test goal"
+
+    # Turn 1: read_note next to a click. A failed helper rejects the click; a
+    # deferring helper defers it. Either way turn 2 carries the tool message.
+    turn_1 = MagicMock()
+    turn_1.tool_calls = [
+        {"name": "read_note", "args": {"key": "progress"}, "id": "call_read"},
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_click",
+        },
+    ]
+    turn_2 = MagicMock()
+    turn_2.tool_calls = [
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_click_final",
+        }
+    ]
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(side_effect=[turn_1, turn_2])
+    mock_llm.bind_tools.return_value = mock_llm
+
+    read_note_tool = MagicMock()
+    read_note_tool.name = "read_note"
+    read_note_tool.args = {}
+
+    async def dummy_read_note(key: str, **kwargs):
+        return result
+
+    read_note_tool.coroutine = dummy_read_note
+    read_note_tool.func = None
+
+    with (
+        patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm),
+        patch(
+            "artemis.agents.operator.operator.trace_langchain_tool",
+            side_effect=lambda t, ctx: t,
+        ),
+    ):
+        node = OperatorNode(mock_ctx, tools=[read_note_tool], transcript_config=LEGACY_TRANSCRIPT)
+        await node(mock_state)
+
+    assert mock_llm.ainvoke.await_count == 2
+    second_turn_messages = mock_llm.ainvoke.call_args_list[1].args[0]
+    tool_msgs = {m.tool_call_id: m for m in second_turn_messages if isinstance(m, ToolMessage)}
+    assert tool_msgs["call_read"].status == expected_status
+    assert tool_msgs["call_read"].content == str(result)
+    # The accompanying click is rejected only when the helper actually failed.
+    assert tool_msgs["call_click"].status == ("error" if expected_status == "error" else "success")

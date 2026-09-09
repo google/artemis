@@ -26,6 +26,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from artemis.core.tool_failure import ToolFailure, is_tool_failure
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import (
     CURRENT_TRACE_ID,
@@ -43,7 +44,6 @@ from artemis.tools.tool_wrapper import (
     ToolWrapper,
     get_tool_result_content,
     invoke_tool_with_injection,
-    split_multimodal_result,
     tool_result_messages,
 )
 from artemis.tools.types import CyFunctionDetector
@@ -302,43 +302,42 @@ async def _execute_committee(
                 messages.append(response)
 
                 async def run_tool(tc):
+                    """Keep the raw result so the caller can read ToolMessage.status."""
                     tool_name = tc["name"]
                     logger.info(f"{agent_name} requested tool: {tool_name}")
                     tool_to_run = next((t for t in tools if t.name == tool_name), None)
                     if tool_to_run:
                         try:
                             args = dict(tc["args"])
-                            result = await invoke_tool_with_injection(
+                            return await invoke_tool_with_injection(
                                 tool=tool_to_run,
                                 args=args,
                                 tool_call_id=tc["id"],
                                 state=state,
                             )
-                            return get_tool_result_content(result)
                         except Exception as e:  # pylint: disable=broad-exception-caught
-                            return f"Error: {e}"
+                            return ToolFailure(f"Error: {e}")
                     else:
-                        return f"Error: Tool {tool_name} not found"
+                        return ToolFailure(f"Error: Tool {tool_name} not found")
 
                 active_tool_calls = [
                     tc for tc in response.tool_calls if tc["name"] != "google_search"
                 ]
                 tool_outputs = await asyncio.gather(*(run_tool(tc) for tc in active_tool_calls))
 
-                for tc, result in zip(active_tool_calls, tool_outputs):
-                    # A step screenshot (content blocks) travels in the carrier
-                    # the member's provider accepts; text stays a ToolMessage.
-                    text, _ = split_multimodal_result(result)
+                for tc, raw_result in zip(active_tool_calls, tool_outputs):
+                    # Read status before unwrapping ToolMessage.content.
+                    status = "error" if is_tool_failure(raw_result) else "success"
                     messages.extend(
                         tool_result_messages(
                             tc["id"],
-                            result,
+                            get_tool_result_content(raw_result),
                             name=tc["name"],
-                            status="error" if text.startswith("Error") else "success",
+                            status=status,
                             llm=llm,
                         )
                     )
-            return "Error: Reached max iterations in turn."
+            return ToolFailure("Error: Reached max iterations in turn.")
 
         for r in range(1, rounds + 1):
             logger.info(f"Committee Round {r}")
@@ -407,13 +406,13 @@ async def _run_committee_logic(
 ) -> str:
     """Executes multi-agent committee debate logic."""
     if ctx is None:
-        return "Error: ArtemisContext is required for ask_committee."
+        return ToolFailure("Error: ArtemisContext is required for ask_committee.")
 
     try:
         return await asyncio.wait_for(_execute_committee(ctx, state, avatar_directive), timeout=300)
     except TimeoutError:
         logger.error("Committee timed out after 300 seconds.")
-        return "Error: Committee timed out after 300 seconds."
+        return ToolFailure("Error: Committee timed out after 300 seconds.")
 
 
 ask_committee_wrapper = ToolWrapper(

@@ -20,6 +20,7 @@ import pytest
 from artemis.agents.outputter.outputter import outputter
 from artemis.config import LLM, OutputConfig  # noqa: E402
 from artemis.context import ArtemisContext  # noqa: E402
+from artemis.core.tool_failure import ToolFailure  # noqa: E402
 from artemis.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
@@ -509,3 +510,52 @@ async def test_outputter_executes_save_note_tool(mock_get_llm, mock_context, moc
 
     # Assert final result
     assert result == "Verification code is 123456."
+
+
+# --- tool results: status is structural, never sniffed from the words -----------------
+
+
+# A helper tool reports failure structurally (``ToolFailure``); free-form text
+# that merely starts with "Error" is an ordinary answer.
+_STATUS_CASES = [
+    pytest.param(ToolFailure("Error: note 'progress' not found"), "error", id="tool_failure"),
+    pytest.param("Error 404 was typed into the search box", "success", id="plain_error_text"),
+]
+
+
+def _text_tool(name: str, result):  # noqa: D103
+    from langchain_core.tools import StructuredTool
+
+    async def _run(key: str) -> str:
+        return result
+
+    return StructuredTool.from_function(coroutine=_run, name=name, description=name)
+
+
+@patch("artemis.agents.outputter.outputter.get_read_note_tool_pure")
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result, expected_status", _STATUS_CASES)
+async def test_outputter_tool_message_status_is_structural(
+    mock_get_llm, mock_get_read_note, result, expected_status, mock_context, mock_state
+):
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    mock_get_read_note.return_value = _text_tool("read_note", result)
+    _, mock_llm_with_tools, _ = setup_mock_llm(mock_get_llm)
+    tool_turn = AIMessage(
+        content="", tool_calls=[{"name": "read_note", "args": {"key": "progress"}, "id": "c1"}]
+    )
+    final_turn = AIMessage(content="The answer.", tool_calls=[])
+    mock_llm_with_tools.ainvoke.side_effect = [tool_turn, final_turn]
+
+    config = OutputConfig(structured_output=None, output_description=None)
+    answer = await outputter(ctx=mock_context, output_config=config, graph_output=mock_state)
+
+    assert answer == "The answer."
+    second_turn_messages = mock_llm_with_tools.ainvoke.call_args_list[1].args[0]
+    tool_msgs = [m for m in second_turn_messages if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].tool_call_id == "c1"
+    assert tool_msgs[0].status == expected_status
+    assert tool_msgs[0].content == str(result)

@@ -27,12 +27,45 @@ import re
 
 from google.genai import types
 
+from artemis.agents.video_analyzer import gemini_files
 from artemis.agents.video_analyzer import video_analyzer as _va
+from artemis.agents.video_analyzer.reliability import SubAgentAnswerExhausted
 from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan
+from artemis.llm.google import normalize_usage
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+#: Turns the chunk sub-agent gets to produce an accepted ``submit_answer``
+#: (shared by the static and agentic paths).
+SUB_AGENT_MAX_TURNS = 2
+
+_SUBMIT_NOW_WARNING = "[WARNING] You must call the submit_answer tool now, time is running out."
+_WRONG_TOOL_ERROR = "Tool not recognized. Please use submit_answer."
+_NO_TOOL_CALL_ERROR = "The model replied with text only and never called submit_answer."
+_MISSING_SUMMARY_ERROR = (
+    "submit_answer was called without a 'summary'. Call it again with a non-empty"
+    " 'summary' (and 'analysis') describing what you observed."
+)
+
+
+def _tool_name(name: str | None) -> str:
+    name = name or ""
+    return name.split(":")[-1] if ":" in name else name
+
+
+def _clean_text(value) -> str:
+    return str(value or "").strip().replace("\n", " ")
+
+
+def _validate_answer(
+    summary: str, timeline_events: list, start_time: float, end_time: float | None
+) -> str | None:
+    """Return a validation error for submit_answer, or None if valid."""
+    if not summary:
+        return _MISSING_SUMMARY_ERROR
+    return _validate_timeline_events(timeline_events, start_time, end_time)
 
 
 class _ChunkMedia:
@@ -120,15 +153,9 @@ async def _run_native_chunk_conversation(
         return chunk_result
     finally:
         if file:
-            logger.info(f"Cleaning up cloud file {file.name}...")
-            try:
-                await asyncio.wait_for(
-                    analyzer.client.aio.files.delete(name=file.name),
-                    timeout=30,
-                )
-                analyzer.cloud_files_to_cleanup.discard(file.name)
-            except Exception as ce:
-                logger.error(f"Failed to delete cloud file {file.name}: {ce}")
+            await gemini_files.delete_cloud_file(
+                analyzer.client, file.name, analyzer.cloud_files_to_cleanup
+            )
 
 
 async def _drive_sub_agent_loop(
@@ -140,38 +167,27 @@ async def _drive_sub_agent_loop(
     end_time: float | None,
     specific_query: str,
 ) -> tuple[str, str]:
-    """Iterates the sub-agent conversation until submit_answer is accepted."""
-    sub_max_iterations = 2
-    sub_iterations = 0
-    final_analysis = "No analysis provided."
-    final_summary = "No summary provided."
-    final_full_text = ""
+    """Return a validated answer and persist its timeline events.
 
-    while sub_iterations < sub_max_iterations:
-        sub_iterations += 1
-        if sub_iterations == sub_max_iterations - 1:
+    Raise ``SubAgentAnswerExhausted`` if no answer is accepted within the turn limit.
+    """
+    rejection = _NO_TOOL_CALL_ERROR
+
+    for turn in range(1, SUB_AGENT_MAX_TURNS + 1):
+        if turn == SUB_AGENT_MAX_TURNS - 1:
             sub_agent_contents.append(
                 types.Content(
                     role="user",
-                    parts=[
-                        types.Part.from_text(
-                            text=(
-                                "[WARNING] You must call the"
-                                " submit_answer tool now, time"
-                                " is running out."
-                            )
-                        )
-                    ],
+                    parts=[types.Part.from_text(text=_SUBMIT_NOW_WARNING)],
                 )
             )
 
         full_text, function_calls, original_parts = await _stream_sub_agent_turn(
             analyzer, sub_agent_contents, trace_id
         )
-        final_full_text += full_text + "\n"
 
         if function_calls:
-            answered, final_summary, final_analysis = await _handle_sub_agent_calls(
+            answer, rejection = await _handle_sub_agent_calls(
                 analyzer,
                 sub_agent_contents,
                 function_calls,
@@ -181,12 +197,11 @@ async def _drive_sub_agent_loop(
                 start_time,
                 end_time,
                 specific_query,
-                final_summary,
-                final_analysis,
             )
-            if answered is True:
-                break
+            if answer is not None:
+                return answer
         else:
+            rejection = _NO_TOOL_CALL_ERROR
             sub_agent_contents.append(
                 types.Content(
                     role="model",
@@ -194,7 +209,7 @@ async def _drive_sub_agent_loop(
                 )
             )
 
-    return final_summary, final_analysis
+    raise SubAgentAnswerExhausted(SUB_AGENT_MAX_TURNS, rejection)
 
 
 async def _stream_sub_agent_turn(
@@ -228,24 +243,9 @@ async def _read_sub_agent_stream(analyzer, span, target_stream, current_trace_id
     function_calls = []
     accumulated_parts = []
     async for chunk in target_stream:
-        if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-            span.payload["usage_metadata"] = {
-                "prompt_token_count": getattr(
-                    chunk.usage_metadata,
-                    "prompt_token_count",
-                    0,
-                ),
-                "candidates_token_count": getattr(
-                    chunk.usage_metadata,
-                    "candidates_token_count",
-                    0,
-                ),
-                "total_token_count": getattr(
-                    chunk.usage_metadata,
-                    "total_token_count",
-                    0,
-                ),
-            }
+        usage = normalize_usage(getattr(chunk, "usage_metadata", None))
+        if usage:
+            span.payload["usage_metadata"] = usage
 
         chunk_text = chunk.text or ""
         if chunk_text:
@@ -287,42 +287,33 @@ async def _handle_sub_agent_calls(
     start_time: float,
     end_time: float | None,
     specific_query: str,
-    final_summary: str,
-    final_analysis: str,
-):
-    """Processes function calls from one turn; returns (answered, summary, analysis)."""
-    answered = False
+) -> tuple[tuple[str, str] | None, str | None]:
+    """Return ``(answer, rejection)`` after processing one turn's tool calls.
+
+    Persist events for accepted answers; append rejected calls to the conversation
+    with an error for the model to correct.
+    """
     for fc in function_calls:
-        if (fc.name.split(":")[-1] if ":" in fc.name else fc.name) == "submit_answer":
-            args = fc.args
-            timeline_events = args.get("timeline_events", [])
-            final_summary = args.get("summary", "No summary provided.").strip().replace("\n", " ")
-            final_analysis = (
-                args.get("analysis", "No analysis provided.").strip().replace("\n", " ")
+        if _tool_name(fc.name) != "submit_answer":
+            continue
+        args = dict(fc.args or {})
+        timeline_events = args.get("timeline_events", [])
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+        summary = _clean_text(args.get("summary"))
+        analysis = _clean_text(args.get("analysis"))
+
+        rejection = _validate_answer(summary, timeline_events, start_time, end_time)
+        if rejection is not None:
+            _append_rejection(
+                sub_agent_contents, original_parts, function_calls, full_text, fc.name, rejection
             )
+            return None, rejection
 
-            error_msg = _validate_timeline_events(timeline_events, start_time, end_time)
-            if error_msg is not None:
-                _append_rejection(
-                    sub_agent_contents,
-                    original_parts,
-                    function_calls,
-                    full_text,
-                    fc.name,
-                    error_msg,
-                )
-                answered = "error"
-                break
-
-            await _persist_timeline_events(
-                analyzer, timeline_events, media, start_time, end_time, specific_query
-            )
-
-            answered = True
-            break
-
-    if answered is True or answered == "error":
-        return answered, final_summary, final_analysis
+        await _persist_timeline_events(
+            analyzer, timeline_events, media, start_time, end_time, specific_query
+        )
+        return (summary, analysis or "No analysis provided."), None
 
     _append_rejection(
         sub_agent_contents,
@@ -330,9 +321,9 @@ async def _handle_sub_agent_calls(
         function_calls,
         full_text,
         function_calls[0].name,
-        ("Tool not recognized. Please use submit_answer."),
+        _WRONG_TOOL_ERROR,
     )
-    return answered, final_summary, final_analysis
+    return None, _WRONG_TOOL_ERROR
 
 
 def _validate_timeline_events(

@@ -26,13 +26,31 @@ from pathlib import Path
 from google.genai import types
 
 from artemis.agents.video_analyzer import video_analyzer as _va
-from artemis.agents.video_analyzer.reliability import classify_video_failure
+from artemis.agents.video_analyzer.chunk_conversation import (
+    _MISSING_SUMMARY_ERROR,
+    _NO_TOOL_CALL_ERROR,
+    _SUBMIT_NOW_WARNING,
+    _WRONG_TOOL_ERROR,
+    SUB_AGENT_MAX_TURNS,
+    _append_rejection,
+    _clean_text,
+    _tool_name,
+)
+from artemis.agents.video_analyzer.reliability import (
+    SubAgentAnswerExhausted,
+    classify_video_failure,
+)
 from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.data_engine.trace import TraceSpan
 from artemis.llm.reliability import retry_policy_for
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_BAD_CONFIDENCE_ERROR = (
+    "Error: 'confidence_score' is missing or out of bounds. It must be a float"
+    " between 0.0 and 1.0 inclusive. Fix the payload and call submit_answer again."
+)
 
 
 class _AudioMedia:
@@ -427,29 +445,18 @@ async def _run_native_audio_conversation(
 
 
 async def _drive_audio_agent_loop(analyzer, sub_agent_contents: list) -> tuple[str, str, float]:
-    """Iterates the audio agent conversation until submit_answer is accepted."""
-    sub_max_iterations = 2
-    sub_iterations = 0
-    final_confidence_score = 0.0
-    final_summary = "No summary provided."
-    final_analysis = "No analysis provided."
-    final_full_text = ""
+    """Return a validated (summary, analysis, confidence_score).
 
-    while sub_iterations < sub_max_iterations:
-        sub_iterations += 1
-        if sub_iterations == sub_max_iterations - 1:
+    Raise ``SubAgentAnswerExhausted`` if no answer is accepted within the turn limit.
+    """
+    rejection = _NO_TOOL_CALL_ERROR
+
+    for turn in range(1, SUB_AGENT_MAX_TURNS + 1):
+        if turn == SUB_AGENT_MAX_TURNS - 1:
             sub_agent_contents.append(
                 types.Content(
                     role="user",
-                    parts=[
-                        types.Part.from_text(
-                            text=(
-                                "[WARNING] You must call the"
-                                " submit_answer tool now, time"
-                                " is running out."
-                            )
-                        )
-                    ],
+                    parts=[types.Part.from_text(text=_SUBMIT_NOW_WARNING)],
                 )
             )
 
@@ -468,26 +475,16 @@ async def _drive_audio_agent_loop(analyzer, sub_agent_contents: list) -> tuple[s
             )
 
         full_text = response.text or ""
-        final_full_text += full_text + "\n"
         function_calls = response.function_calls or []
 
         if function_calls:
-            (
-                answered,
-                final_summary,
-                final_analysis,
-                final_confidence_score,
-            ) = _handle_audio_function_calls(
-                sub_agent_contents,
-                response,
-                function_calls,
-                final_summary,
-                final_analysis,
-                final_confidence_score,
+            answer, rejection = _handle_audio_function_calls(
+                sub_agent_contents, response, function_calls, full_text
             )
-            if answered is True:
-                break
+            if answer is not None:
+                return answer
         else:
+            rejection = _NO_TOOL_CALL_ERROR
             sub_agent_contents.append(
                 types.Content(
                     role="model",
@@ -495,83 +492,52 @@ async def _drive_audio_agent_loop(analyzer, sub_agent_contents: list) -> tuple[s
                 )
             )
 
-    return final_summary, final_analysis, final_confidence_score
+    raise SubAgentAnswerExhausted(SUB_AGENT_MAX_TURNS, rejection)
+
+
+def _validate_audio_answer(summary: str, confidence_score) -> str | None:
+    """Return a validation error for the audio answer, or None if valid."""
+    if not summary:
+        return _MISSING_SUMMARY_ERROR
+    if (
+        not isinstance(confidence_score, (int, float))
+        or isinstance(confidence_score, bool)
+        or not (0.0 <= float(confidence_score) <= 1.0)
+    ):
+        return _BAD_CONFIDENCE_ERROR
+    return None
 
 
 def _handle_audio_function_calls(
     sub_agent_contents: list,
     response,
     function_calls: list,
-    final_summary: str,
-    final_analysis: str,
-    final_confidence_score: float,
-):
-    """Processes audio-agent function calls; returns (answered, summary, analysis, score)."""
-    answered = False
+    full_text: str,
+) -> tuple[tuple[str, str, float] | None, str | None]:
+    """Return (answer, rejection), appending any rejection to the conversation."""
+    original_parts = response.candidates[0].content.parts
     for fc in function_calls:
-        if (fc.name.split(":")[-1] if ":" in fc.name else fc.name) == "submit_answer":
-            args = fc.args
-            if (
-                "confidence_score" not in args
-                or not isinstance(
-                    args["confidence_score"],
-                    (int, float),
-                )
-                or not (0.0 <= float(args["confidence_score"]) <= 1.0)
-            ):
-                error_msg = (
-                    "Error: 'confidence_score' is"
-                    " missing or out of bounds. It must"
-                    " be a float between 0.0 and 1.0"
-                    " inclusive. Fix the payload and"
-                    " call submit_answer again."
-                )
-                sub_agent_contents.append(
-                    types.Content(
-                        role="model",
-                        parts=response.candidates[0].content.parts,
-                    )
-                )
-                sub_agent_contents.append(
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_function_response(
-                                name=fc.name,
-                                response={"error": error_msg},
-                            )
-                        ],
-                    )
-                )
-                answered = "error"
-                break
+        if _tool_name(fc.name) != "submit_answer":
+            continue
+        args = dict(fc.args or {})
+        summary = _clean_text(args.get("summary"))
+        analysis = _clean_text(args.get("analysis"))
 
-            final_summary = args.get("summary", "No summary provided.").strip().replace("\n", " ")
-            final_analysis = (
-                args.get("analysis", "No analysis provided.").strip().replace("\n", " ")
+        rejection = _validate_audio_answer(summary, args.get("confidence_score"))
+        if rejection is not None:
+            _append_rejection(
+                sub_agent_contents, original_parts, function_calls, full_text, fc.name, rejection
             )
-            final_confidence_score = float(args["confidence_score"])
-            answered = True
-            break
+            return None, rejection
 
-    if answered is True or answered == "error":
-        return answered, final_summary, final_analysis, final_confidence_score
+        return (summary, analysis or "No analysis provided.", float(args["confidence_score"])), None
 
-    sub_agent_contents.append(
-        types.Content(
-            role="model",
-            parts=response.candidates[0].content.parts,
-        )
+    _append_rejection(
+        sub_agent_contents,
+        original_parts,
+        function_calls,
+        full_text,
+        function_calls[0].name,
+        _WRONG_TOOL_ERROR,
     )
-    sub_agent_contents.append(
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_function_response(
-                    name=function_calls[0].name,
-                    response={"error": ("Tool not recognized. Please use submit_answer.")},
-                )
-            ],
-        )
-    )
-    return answered, final_summary, final_analysis, final_confidence_score
+    return None, _WRONG_TOOL_ERROR

@@ -367,8 +367,8 @@ class TranscriptLedger:
             try:
                 from artemis.utils.task_tree import format_result_clean
 
-                # format_result_clean reports only errors/repairs; success
-                # renders as the bare status line.
+                # format_result_clean reports only errors/repairs; a dispatched
+                # action renders as the bare status line.
                 detail = format_result_clean(result)
             except Exception:
                 detail = None

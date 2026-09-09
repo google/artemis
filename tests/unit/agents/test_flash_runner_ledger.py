@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from artemis.agents.flash.runner import FlashRunner
+from artemis.agents.flash.runner import FlashRunner, _TurnRecord
 from artemis.agents.validator.tool_declarations import ToolExecutionResult
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
@@ -43,7 +43,7 @@ from artemis.memory.transcript import (
 
 OBSERVATION_HEADER_RE = re.compile(r"^# CURRENT OBSERVATION \[T\+\d{2,}:\d{2}\]$")
 RESULT_RE = re.compile(
-    rf"^{re.escape(EXECUTION_RESULT_MARKER)} \(T\+\d{{2,}}:\d{{2}}\) ---\nStatus: success$"
+    rf"^{re.escape(EXECUTION_RESULT_MARKER)} \(T\+\d{{2,}}:\d{{2}}\) ---\nStatus: dispatched$"
 )
 
 
@@ -199,6 +199,44 @@ def test_observation_tail_has_pro_shape(mock_context):
 
 
 # ---------------------------------------------------------------------------
+# Injected instruction: verbatim text for the record and the lens, wrapped
+# notice for the observation tail only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_injected_instruction_splits_verbatim_text_from_operator_notice(
+    mock_context, tmp_path
+):
+    """The user's words are what the step record, the chunk ledger and the
+    visual lens receive (Pro parity); the 'You MUST immediately ...' directive
+    is operator-facing and rides on the observation tail alone."""
+    import json
+
+    (tmp_path / "injected_instruction.json").write_text(
+        json.dumps({"instruction": "Skip the popup and log in", "release_loop": True}),
+        encoding="utf-8",
+    )
+    mock_context.data_engine = Mock()
+    mock_context.data_engine.base_dir = str(tmp_path)
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="Log in")
+        instruction, notice = await runner._read_injected_instruction()
+
+    assert instruction == "Skip the popup and log in"
+    assert notice.startswith(
+        "[REAL-TIME INJECTED INSTRUCTION from user]: Skip the popup and log in"
+    )
+    assert "You MUST immediately follow this instruction" in notice
+    assert "authorized stopping any ongoing monitoring loop" in notice
+    assert not (tmp_path / "injected_instruction.json").exists()
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        assert await runner._read_injected_instruction() == (None, None)
+
+
+# ---------------------------------------------------------------------------
 # End-to-end loop over the ledger (mocked model / executor)
 # ---------------------------------------------------------------------------
 
@@ -258,7 +296,11 @@ async def test_run_builds_prompt_from_ledger_with_session_offsets(mock_context):
         AIMessage(
             content="I will tap then wait.",
             tool_calls=[
-                {"name": "click", "args": {"target": [500, 600]}, "id": "tc1"},
+                {
+                    "name": "click",
+                    "args": {"target": [500, 600], "target_description": "Settings"},
+                    "id": "tc1",
+                },
                 {"name": "wait_for_delay", "args": {"seconds": 1}, "id": "tc2"},
             ],
         ),
@@ -358,3 +400,48 @@ async def test_run_no_tool_call_turn_is_nudged_not_terminated(mock_context):
         and any(EXECUTION_RESULT_MARKER in b.get("text", "") for b in m.content)
         for m in turn2_messages
     )
+
+
+# ---------------------------------------------------------------------------
+# _TurnRecord.result: the turn's execution result in the validator-report shape
+# ---------------------------------------------------------------------------
+
+
+def test_turn_record_result_is_none_for_helper_only_turns():
+    assert _TurnRecord().result() is None
+
+
+def test_turn_record_result_is_dispatched_when_every_action_was_accepted():
+    record = _TurnRecord(
+        actions=[("click", "success", "Tapped at [500, 500]"), ("swipe", "success", "Swiped up.")]
+    )
+    assert record.result() == {"status": "dispatched"}
+
+
+def test_turn_record_failed_result_keeps_an_executor_message_that_names_the_action():
+    """Executor messages already name the action; they are not prefixed again."""
+    record = _TurnRecord(
+        actions=[
+            ("click", "success", "Tapped at [500, 500]"),
+            ("swipe", "error", "Error executing swipe: direction 'sideways' is not valid"),
+        ]
+    )
+    assert record.result() == {
+        "status": "failed",
+        "error": "Error executing swipe: direction 'sideways' is not valid",
+    }
+
+
+def test_turn_record_failed_result_prefixes_an_error_that_does_not_name_the_action():
+    record = _TurnRecord(actions=[("type_text", "error", "Device is offline")])
+    assert record.result() == {"status": "failed", "error": "type_text: Device is offline"}
+
+
+def test_turn_record_reports_the_first_failure_of_a_multi_action_turn():
+    record = _TurnRecord(
+        actions=[
+            ("click", "error", "click rejected: coordinates out of bounds"),
+            ("swipe", "error", "never reached"),
+        ]
+    )
+    assert record.result()["error"] == "click rejected: coordinates out of bounds"

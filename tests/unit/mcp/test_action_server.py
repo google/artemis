@@ -40,7 +40,7 @@ async def test_click_end_to_end():
     try:
         res = await session.call("click", {"target": [500, 500]})
         assert res.ok
-        assert res.message == "Clicked at [500, 500] (normalized) successfully."
+        assert res.message == "Tapped at [500, 500] (normalized)."
         assert actuator.action_history[-1]["action"] == "tap"
         assert actuator.action_history[-1]["x"] == 500
         assert actuator.action_history[-1]["y"] == 1000

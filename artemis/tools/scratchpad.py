@@ -18,6 +18,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools.base import BaseTool
 from pydantic import BaseModel, Field
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
@@ -643,7 +644,7 @@ class SaveNotePureTool(ArtemisTool):
             save_note_content(base_dir, k, c)
             return f"Successfully saved note to {k}.md."
         except Exception as e:  # pylint: disable=broad-exception-caught
-            return f"Failed to save note {k}.md: {e}"
+            return ToolFailure(f"Failed to save note {k}.md: {e}")
 
 
 # Universal pure tool instance & aliases
@@ -711,7 +712,7 @@ class UpdateNotePureTool(ArtemisTool):
                 return f"Successfully updated note '{k}'.\nWARNING: {warning}"
             return f"Successfully updated note '{k}'."
         except Exception as e:  # pylint: disable=broad-exception-caught
-            return f"Failed to update note '{k}': {e}"
+            return ToolFailure(f"Failed to update note '{k}': {e}")
 
 
 # Universal pure tool instance & aliases
@@ -775,7 +776,7 @@ class AppendNotePureTool(ArtemisTool):
             append_note_content(base_dir, k, c)
             return f"Successfully appended note to {k}.md."
         except Exception as e:  # pylint: disable=broad-exception-caught
-            return f"Failed to append note {k}.md: {e}"
+            return ToolFailure(f"Failed to append note {k}.md: {e}")
 
 
 # Universal pure tool instance & aliases

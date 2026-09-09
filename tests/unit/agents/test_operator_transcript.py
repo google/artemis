@@ -53,8 +53,8 @@ from artemis.memory.transcript import (
 
 # SHA-256 snapshots of the legacy system message with the fixed inputs below.
 # Update these when an intentional template change alters the rendered prompt.
-GOLDEN_EMPTY_PLAN = "2ed35be503e3872f008ae5a12616af6f90cde65f23b63adbb6da782079ae4e7c"
-GOLDEN_SENTINEL_PLAN = "8bd6aa60cf3fad8d21cf5c284a01f586c57d209fcd1d2b4a517a791736f9b1de"
+GOLDEN_EMPTY_PLAN = "d8cf83565c766d32893b124c974060bbd98de2d862c3b9925e546ea0c946c324"
+GOLDEN_SENTINEL_PLAN = "8f871b5e5700ba5ee07ed03b80a8f82664abe68b0c170d3185bf1ee35f7821ed"
 
 SCREENSHOT_B64 = base64.b64encode(b"fake-jpeg-bytes").decode("utf-8")
 
@@ -198,7 +198,7 @@ async def test_transcript_mode_two_turns_build_four_regions(tmp_path):
             _transcript_state(
                 current_step_id="step-1",
                 structured_decisions='[{"action": "tap"}]',
-                last_execution_result={"status": "success"},
+                last_execution_result={"status": "dispatched"},
             )
         )
 
@@ -237,7 +237,7 @@ async def test_transcript_actionless_turn_commits_without_validator_message():
             _transcript_state(
                 current_step_id="step-1",
                 structured_decisions="",
-                last_execution_result={"status": "success"},
+                last_execution_result={"status": "dispatched"},
             )
         )
 

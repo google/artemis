@@ -43,7 +43,7 @@ def _step(number: int, subgoal_hash: str, summary: str | None = None) -> dict:
         "summary": summary or f"Step {number} summary text.",
         "action_taken": {"action": "click", "target_text": f"button {number}"},
         "operator_raw_thinking": f"thinking {number}",
-        "last_execution_result": {"status": "success"},
+        "last_execution_result": {"status": "dispatched"},
         "extra_metadata": {"subgoal_hash": subgoal_hash},
     }
 
@@ -182,9 +182,9 @@ RENDERED_CHUNK = (
     "  - Steps 1–3: opened the app and logged in\n"
     "\n"
     "③ Step action ledger\n"
-    "- Step 1 (T+00:10): click['button 1'] -> executed\n"
-    "- Step 2 (T+00:20): click['button 2'] -> executed\n"
-    "- Step 3 (T+00:30): click['button 3'] -> executed"
+    "- Step 1 (T+00:10): click['button 1'] -> dispatched\n"
+    "- Step 2 (T+00:20): click['button 2'] -> dispatched\n"
+    "- Step 3 (T+00:30): click['button 3'] -> dispatched"
 )
 
 

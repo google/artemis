@@ -26,11 +26,16 @@ import asyncio
 from pathlib import Path
 
 from artemis.agents.video_analyzer import video_analyzer as _va
+from artemis.agents.video_analyzer.chunk_agentic import run_agentic_chunk_conversation
 from artemis.agents.video_analyzer.chunk_conversation import (
     _ChunkMedia,
     _run_native_chunk_conversation,
 )
-from artemis.agents.video_analyzer.reliability import classify_video_failure
+from artemis.agents.video_analyzer.reliability import (
+    AgenticVideoDegraded,
+    classify_video_failure,
+    is_agentic_rejection,
+)
 from artemis.llm.reliability import retry_policy_for
 from artemis.utils.logger import get_logger
 
@@ -76,12 +81,19 @@ async def exec_single_chunk(
 
     media = _ChunkMedia()
 
-    for attempt in range(max_retries + 1):
+    attempt = 0
+    while attempt <= max_retries:
+        # The mode this attempt was launched in: a parallel chunk may degrade
+        # the run while this one is still in flight.
+        attempt_mode = analyzer.video_processing
         try:
             logger.info(
                 f"Attempt {attempt + 1}/{max_retries + 1} for sub-agent:"
                 f" start={current_start}, end={current_end}"
             )
+            # A sibling may switch the run to static during queuing or media
+            # preparation. Check the size before preparation and before dispatch.
+            _ensure_fits_static_ceiling(analyzer, current_start, current_end)
             result, slowdown_factor = await _prepare_chunk_media(
                 analyzer, media, current_start, current_end
             )
@@ -94,6 +106,7 @@ async def exec_single_chunk(
                 end_time,
                 specific_query,
             )
+            _ensure_fits_static_ceiling(analyzer, current_start, current_end)
 
             if not analyzer.use_native_gemini:
                 chunk_result = await analyzer._exec_single_chunk_universal(
@@ -116,6 +129,18 @@ async def exec_single_chunk(
                 )
                 return chunk_result
 
+            if analyzer.video_processing == "agentic":
+                return await run_agentic_chunk_conversation(
+                    analyzer,
+                    media,
+                    current_start,
+                    current_end,
+                    start_time,
+                    end_time,
+                    specific_query,
+                    lease_owner,
+                )
+
             return await _run_native_chunk_conversation(
                 analyzer,
                 media,
@@ -134,6 +159,22 @@ async def exec_single_chunk(
             # stream output from the failed attempt is discarded, never
             # surfaced as a complete answer.
             failure = classify_video_failure(e)
+            if attempt_mode == "agentic" and is_agentic_rejection(failure, e):
+                # Switch to static and let the coordinator resize the interval.
+                _degrade_agentic_to_static(analyzer, e, failure)
+                return await _finish_failed_chunk(
+                    analyzer,
+                    media,
+                    current_start,
+                    current_end,
+                    specific_query,
+                    lease_owner,
+                    AgenticVideoDegraded(
+                        f"Agentic video processing rejected ({e}); re-plan"
+                        f" {current_start:.1f}s-{current_end:.1f}s at the static chunk size"
+                    ),
+                    retryable=False,
+                )
             attempts_so_far = attempt + 1
             if not failure.retryable:
                 logger.warning(
@@ -181,9 +222,48 @@ async def exec_single_chunk(
                 source="video_sub_agent",
             )
             await asyncio.sleep(delay)
+            attempt += 1
 
     raise RuntimeError(
         f"Video sub-agent exhausted retries for {current_start:.1f}s-{current_end:.1f}s"
+    )
+
+
+def _degrade_agentic_to_static(analyzer, error: Exception, failure) -> None:
+    """Switches the rest of this run to static video understanding (idempotent)."""
+    if analyzer.video_processing != "agentic":
+        return
+    logger.warning(
+        f"Agentic video processing rejected ({error}); the rest of this run"
+        " analyzes video in static mode"
+    )
+    _va._record_llm_event(
+        "llm_fallback",
+        {
+            "reason": "agentic_video_rejected",
+            "category": failure.category.value,
+            "error": str(error)[:500],
+        },
+    )
+    analyzer.video_processing = "static"
+    analyzer.chunk_size_seconds = analyzer.static_chunk_size_seconds
+
+
+def _ensure_fits_static_ceiling(analyzer, current_start: float, current_end: float) -> None:
+    """Refuses to analyze a clip sized for the agentic ceiling once the run is static.
+
+    Raises :class:`AgenticVideoDegraded`, which the attempt loop treats as a
+    non-retryable failure: the lease is released via ``fail_segment`` and the
+    coordinator re-plans the interval into static-sized pieces.
+    """
+    if analyzer.video_processing == "agentic":
+        return
+    if current_end - current_start <= analyzer.chunk_size_seconds + 1e-3:
+        return
+    raise AgenticVideoDegraded(
+        f"Run degraded to static video processing while {current_start:.1f}s-{current_end:.1f}s"
+        f" was pending; re-plan it at the static chunk size"
+        f" ({analyzer.chunk_size_seconds:.0f}s)"
     )
 
 

@@ -130,59 +130,41 @@ async def test_ask_explorer_exception_is_contained():
     assert result.text_summary == "Error executing ask_explorer: boom"
 
 
-# ---------------------------------------------------------------------------
-# Legacy MobileActionExecutor parity (same ask_explorer semantics)
-# ---------------------------------------------------------------------------
-
-
-def _make_legacy_executor(**kwargs):
-    from artemis.agents.validator.tool_declarations import MobileActionExecutor
-
-    ctx = Mock()
-    ctx.data_engine = None
-    ctx.device.device_width = 1080
-    ctx.device.device_height = 2400
-    actuator = Mock()
-    actuator.controller = Mock()
-    return MobileActionExecutor(ctx, actuator=actuator, **kwargs)
-
-
 @pytest.mark.asyncio
-async def test_legacy_executor_ask_explorer_status_follows_the_outcome():
-    executor = _make_legacy_executor()
+async def test_default_agent_name_reaches_the_tier_resolver_and_status_follows_the_outcome():
+    """Without an explicit agent name the executor asks the Explorer as ``validator``;
+    a clean not-found is an answer, an Explorer run failure is an error."""
+    executor = _make_executor()
     assert executor.agent_name == "validator"
 
     not_found = ExplorerOutcome(message="Not visible.")
-    with patch("artemis.tools.explorer_tool.locate", new=AsyncMock(return_value=not_found)):
-        # The pipeline functions are imported at module load in the legacy executor.
-        with patch(
-            "artemis.agents.validator.tool_declarations.locate",
-            new=AsyncMock(return_value=not_found),
-        ) as locate:
-            result = await executor.execute(
-                "ask_explorer", {"task_description": "gear icon"}, "tc", _state()
-            )
+    with patch(
+        "artemis.tools.explorer_tool.locate", new=AsyncMock(return_value=not_found)
+    ) as locate:
+        result = await executor.execute(
+            "ask_explorer", {"task_description": "gear icon"}, "tc", _state()
+        )
     assert locate.await_args.args[2] == "gear icon"
     assert locate.await_args.kwargs["agent_name"] == "validator"
-    assert result.status == "success"  # a clean not-found is an answer, not a failure
+    assert result.status == "success"
 
     failed = ExplorerOutcome.failure("Explorer failed: boom")
-    with patch(
-        "artemis.agents.validator.tool_declarations.locate", new=AsyncMock(return_value=failed)
-    ):
+    with patch("artemis.tools.explorer_tool.locate", new=AsyncMock(return_value=failed)):
         result = await executor.execute("ask_explorer", {"query": "gear icon"}, "tc", _state())
     assert result.status == "error"
 
 
 @pytest.mark.asyncio
-async def test_legacy_executor_agent_name_reaches_the_tier_resolver():
-    executor = _make_legacy_executor(agent_name="flash")
+async def test_flash_agent_name_reaches_the_tier_resolver():
+    """The Flash profile resolves the Explorer tier from ``agent_name="flash"``."""
+    executor = _make_executor(agent_name="flash")
     with patch(
-        "artemis.agents.validator.tool_declarations.locate",
+        "artemis.tools.explorer_tool.locate",
         new=AsyncMock(return_value=ExplorerOutcome(message="no")),
     ) as locate:
         await executor.execute("ask_explorer", {"query": "x"}, "tc", _state())
     assert locate.await_args.kwargs["agent_name"] == "flash"
+    assert locate.await_args.args[0] is executor.ctx
 
 
 # ---------------------------------------------------------------------------
@@ -293,19 +275,21 @@ async def test_history_tool_exception_is_contained():
     tool = _history_tool_double(side_effect=RuntimeError("db gone"))
     with patch("artemis.mcp.action_executor.history_tool_by_name", return_value=tool):
         result = await executor.execute("replay_steps", {"query": "x"}, "tc", None)
-    assert result.status == "success"  # contained: the answer explains the failure
+    # Contained (no exception escapes) and reported structurally: the answer
+    # explains the failure and the status says it is one.
+    assert result.status == "error"
     assert result.text_summary == "replay_steps failed: db gone"
 
 
 @pytest.mark.asyncio
 async def test_history_tools_dispatch_to_the_real_shared_instances():
     """No per-tool branch: every history tool name resolves through the package."""
-    executor = _make_executor()  # ctx.data_engine is None -> tools degrade to text
+    executor = _make_executor()  # ctx.data_engine is None -> tools report a failure
     for name in ("search_history", "replay_steps", "get_step_screenshot"):
         result = await executor.execute(
             name, {"query": "x", "start_step": 1, "step_number": 1}, "tc", None
         )
-        assert result.status == "success"
+        assert result.status == "error"
         assert (
             "no active execution history" in result.text_summary
             or "no execution history" in result.text_summary

@@ -140,11 +140,12 @@ async def _attempt_local_execution(
             exec_success = False
             exec_error = str(e)
 
-        # Skip polling: assume execution success implies action success
+        # No effect polling: "dispatched" only says the device accepted the
+        # command; whether it had the intended effect is the Operator's call.
         if exec_success:
             success = True
             error_msg = ""
-            attempts_log.append("Success")
+            attempts_log.append("Dispatched")
             break
         else:
             success = False
@@ -456,7 +457,7 @@ async def run_validation_loop(node, state: State) -> dict:
 
     report = {
         "execution": execution,
-        "status": "success" if success else "failed",
+        "status": "dispatched" if success else "failed",
         "burst": burst,
         "incident": incident,
     }

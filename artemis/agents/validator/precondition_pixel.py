@@ -67,11 +67,18 @@ def _init_llm_and_prompt(ctx: ArtemisContext, get_llm_fn):
 
 
 def _describe_target(action_item: dict) -> str:
-    """Describe the structured action target for the pixel judge."""
+    """Describe the structured action target for the pixel judge.
+
+    Three kinds, keyed on provenance: an index-addressed target carries observed
+    element metadata; a coordinate target carries only the Operator's own
+    statement of what it aimed at (``target_description``); a legacy record may
+    carry neither.
+    """
     label = action_item.get("target_text")
     resource_id = action_item.get("target_resource_id")
     class_name = action_item.get("target_class")
     bounds = action_item.get("target_bounds")
+    description = action_item.get("target_description")
     lines = ["[Target]", f"Action: {action_item.get('action')}"]
     if label or resource_id or class_name or bounds:
         lines.append("Kind: specific UI control")
@@ -85,9 +92,12 @@ def _describe_target(action_item: dict) -> str:
             lines.append("Label: (unlabelled; identify it by its shape in Image 1)")
         if bounds:
             lines.append(f"Bounds at decision time: {bounds}")
+    elif description:
+        lines.append("Kind: described target")
+        lines.append(f"Operator's description: {description}")
     else:
         lines.append(
-            "Kind: coordinates only (no UI hierarchy element was found under the point;"
+            "Kind: coordinates only (no target metadata recorded;"
             " inspect Image 1 for a control at the red dot)"
         )
     return "\n".join(lines)

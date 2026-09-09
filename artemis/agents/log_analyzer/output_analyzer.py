@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Annotated
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
+from artemis.core.tool_failure import ToolFailure, is_tool_failure
 from artemis.context import ArtemisContext
 from artemis.services.llm import get_llm, invoke_llm_with_timeout_message
 from artemis.tools.mobile.search_logs import search_and_merge_logs
@@ -147,15 +148,15 @@ class TaskOutputAnalyzerNode:
                     try:
                         result = tool_to_run.invoke(args)
                     except Exception as e:
-                        result = f"Failed to run tool {tool_name}: {e}"
+                        result = ToolFailure(f"Failed to run tool {tool_name}: {e}")
                 else:
-                    result = f"Error: Tool {tool_name} not found."
+                    result = ToolFailure(f"Error: Tool {tool_name} not found.")
 
                 current_messages.append(
                     ToolMessage(
                         tool_call_id=tc["id"],
                         content=str(result),
-                        status="success" if not str(result).startswith("Error") else "error",
+                        status="error" if is_tool_failure(result) else "success",
                     )
                 )
 

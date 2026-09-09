@@ -1,10 +1,13 @@
 import {
   cleanErrorMessage,
+  extractToolExtraParams,
   getCompressionLabel,
   getToolDisplayLabel,
   getToolIcon,
+  getToolTargetText,
   getUniqueGenericTools,
   getVideoAnalysisView,
+  joinTargetDescriptions,
   shouldShowTool
 } from './tool-formatter.util';
 
@@ -253,5 +256,61 @@ describe('shouldShowTool (Option A Single Source of Truth)', () => {
       type: 'tool'
     };
     expect(shouldShowTool(plumbingTool)).toBeFalse();
+  });
+});
+
+describe('getToolTargetText self-described targets', () => {
+  it('uses target_description for coordinate tools when no target_text is observed', () => {
+    expect(getToolTargetText({
+      name: 'click',
+      payload: { args: { coordinates: [500, 900], target_description: 'play button' } }
+    })).toBe('play button');
+    expect(getToolTargetText({
+      name: 'exec_long_press',
+      args: { coordinates: [500, 900], target_description: 'song row' }
+    })).toBe('song row');
+  });
+
+  it('prefers observed target_text over target_description', () => {
+    expect(getToolTargetText({
+      name: 'click',
+      payload: { args: { target_text: 'Play', target_description: 'play button' } }
+    })).toBe('Play');
+  });
+
+  it('chains click_sequence target_descriptions with the coordinate arrow', () => {
+    expect(getToolTargetText({
+      name: 'click_sequence',
+      payload: { args: { sequence: [[500, 300], [876, 360]], target_descriptions: ['play button', 'close ×'] } }
+    })).toBe('play button → close ×');
+  });
+
+  it('falls back gracefully when click_sequence descriptions are missing or short', () => {
+    expect(getToolTargetText({
+      name: 'click_sequence',
+      payload: { args: { sequence: [[500, 300], [876, 360]] } }
+    })).toBe('');
+    expect(getToolTargetText({
+      name: 'click_sequence',
+      payload: { args: { sequence: [[500, 300], [876, 360]], target_descriptions: ['play button'] } }
+    })).toBe('play button');
+    expect(getToolTargetText({
+      name: 'click_sequence',
+      payload: { args: { sequence: [[500, 300]], target_descriptions: [null, ''], target_description: 'fallback' } }
+    })).toBe('fallback');
+    expect(joinTargetDescriptions(undefined)).toBe('');
+    expect(joinTargetDescriptions('play button')).toBe('');
+  });
+});
+
+describe('extractToolExtraParams', () => {
+  it('hides target_description and target_descriptions from the extra parameter list', () => {
+    const keys = extractToolExtraParams({
+      name: 'click_sequence',
+      args: { sequence: [[1, 2]], target_descriptions: ['a'], target_description: 'b', interval_ms: 50 }
+    }).map(p => p.key);
+    expect(keys).not.toContain('Target Descriptions');
+    expect(keys).not.toContain('Target Description');
+    expect(keys).toContain('Interval Ms');
   });
 });

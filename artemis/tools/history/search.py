@@ -40,7 +40,9 @@ import json
 import sqlite3
 from typing import Any
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.utils.logger import get_logger
+from artemis.utils.task_tree import format_actions_clean
 
 logger = get_logger(__name__)
 
@@ -133,13 +135,27 @@ def _events_text(step: dict) -> str:
     return "\n".join(parts)
 
 
+def _action_text(action_taken: Any) -> str:
+    """Combine the rendered action with raw fields for search.
+
+    Rendered excerpts identify self-described targets. Raw JSON also makes
+    resource IDs, bounds, and other fields searchable.
+    """
+    if not action_taken:
+        return ""
+    try:
+        rendered = format_actions_clean(action_taken)
+    except Exception:
+        rendered = ""
+    raw = json.dumps(action_taken, ensure_ascii=False, default=str)
+    return f"{rendered}\n{raw}" if rendered else raw
+
+
 def _step_haystack(step: dict) -> str:
     extra = step.get("extra_metadata") or {}
     fields = [
         str(step.get("summary") or ""),
-        json.dumps(step.get("action_taken"), ensure_ascii=False, default=str)
-        if step.get("action_taken")
-        else "",
+        _action_text(step.get("action_taken")),
         json.dumps(step.get("last_execution_result"), ensure_ascii=False, default=str)
         if step.get("last_execution_result")
         else "",
@@ -262,7 +278,7 @@ def search_history_text(
     try:
         steps: list[dict] = reader.get_agent_friendly_steps() or []
     except Exception as e:
-        return f"search_history failed to load history: {e}"
+        return ToolFailure(f"search_history failed to load history: {e}")
 
     range_start, range_end = _parse_range(step_range)
 

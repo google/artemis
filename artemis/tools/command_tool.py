@@ -47,6 +47,7 @@ import uuid
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.agents.log_analyzer.output_analyzer import TaskOutputAnalyzerNode
 from artemis.context import ArtemisContext
 from artemis.controllers.platform_specific_commands_controller import (
@@ -681,7 +682,7 @@ class RunAdbCommandTool(ArtemisTool):
                     timeout=wait_seconds,
                 )
             except TimeoutError:
-                return (
+                return ToolFailure(
                     f"Error: Command did not finish within {wait_seconds:.1f}s."
                     " Background tasks are not available on this device"
                     " connection; bound the command (logcat -d, top -n 1,"
@@ -689,7 +690,7 @@ class RunAdbCommandTool(ArtemisTool):
                 )
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.error(f"Failed to execute virtual adb shell for '{cmd_line}': {e}")
-                return f"Failed to execute adb command: {e}"
+                return ToolFailure(f"Failed to execute adb command: {e}")
             clean_output, new_env, script_exit = BackgroundTask.parse_output(str(output))
             if run_persistent and new_env is not None:
                 registry.persistent_envs[terminal_id] = _filter_persistent_env(new_env)
@@ -720,7 +721,7 @@ class RunAdbCommandTool(ArtemisTool):
             )
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error(f"Failed to spawn adb shell process for command '{cmd_line}': {e}")
-            return f"Failed to spawn adb process: {e}"
+            return ToolFailure(f"Failed to spawn adb process: {e}")
 
         stdout_data: list[str] = []
         try:
@@ -916,7 +917,7 @@ class ManageTaskTool(ArtemisTool):
             )
 
         if not task_id:
-            return "Error: TaskId is required for status, kill, or send_input actions."
+            return ToolFailure("Error: TaskId is required for status, kill, or send_input actions.")
 
         task = registry.background.get(task_id)
 
@@ -952,15 +953,15 @@ class ManageTaskTool(ArtemisTool):
                 await task.stop(ctx, status="killed")
                 return f"Task {task_id} successfully terminated."
             except Exception as e:  # pylint: disable=broad-exception-caught
-                return f"Failed to terminate task {task_id}: {e}"
+                return ToolFailure(f"Failed to terminate task {task_id}: {e}")
 
         if action == "send_input":
             if not task:
                 return f"Task {task_id} is not active."
             if not input_str:
-                return "Error: Input is required for send_input action."
+                return ToolFailure("Error: Input is required for send_input action.")
             if not task.interactive or task.process.stdin is None:
-                return (
+                return ToolFailure(
                     f"Error: Task {task_id} was launched without Interactive=true, so its"
                     " stdin is closed. Relaunch the command with Interactive=true."
                 )
@@ -969,7 +970,7 @@ class ManageTaskTool(ArtemisTool):
                 await task.process.stdin.drain()
                 return f"Input successfully sent to task {task_id}."
             except Exception as e:  # pylint: disable=broad-exception-caught
-                return f"Failed to send input: {e}"
+                return ToolFailure(f"Failed to send input: {e}")
 
         return "Unsupported action."
 
@@ -1065,9 +1066,9 @@ class RunShortAdbCommandTool(ArtemisTool):
                 )
                 return f"ADB command completed.\nOutput:\n{output}"
             except TimeoutError:
-                return f"Error: Command timed out after {timeout:.0f} seconds."
+                return ToolFailure(f"Error: Command timed out after {timeout:.0f} seconds.")
             except Exception as e:  # pylint: disable=broad-exception-caught
-                return f"Error running command: {e}"
+                return ToolFailure(f"Error running command: {e}")
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -1084,7 +1085,7 @@ class RunShortAdbCommandTool(ArtemisTool):
             )
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error(f"Failed to spawn adb shell process for command '{cmd_line}': {e}")
-            return f"Failed to spawn adb process: {e}"
+            return ToolFailure(f"Failed to spawn adb process: {e}")
 
         try:
             stdout_data, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
@@ -1101,9 +1102,9 @@ class RunShortAdbCommandTool(ArtemisTool):
                     process.kill()
                 except (ProcessLookupError, OSError):
                     pass
-            return f"Error: Command timed out after {timeout:.0f} seconds."
+            return ToolFailure(f"Error: Command timed out after {timeout:.0f} seconds.")
         except Exception as e:  # pylint: disable=broad-exception-caught
-            return f"Error running command: {e}"
+            return ToolFailure(f"Error running command: {e}")
 
 
 # Universal tool instance & aliases
@@ -1181,7 +1182,7 @@ class AnalyzeTaskOutputTool(ArtemisTool):
 
         task_info = _get_task_info(task_id, ctx)
         if not task_info:
-            return f"Error: Task {task_id} not found."
+            return ToolFailure(f"Error: Task {task_id} not found.")
 
         analyzer = TaskOutputAnalyzerNode(ctx)
         result = await analyzer.run(

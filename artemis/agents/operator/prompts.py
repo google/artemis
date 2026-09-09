@@ -33,6 +33,7 @@ from artemis.tools.command_tool import (
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.plan_grammar import parse_plan, render_plan_grammar_spec
+from artemis.utils.task_tree import SELF_DESCRIBED_MARKER
 
 logger = get_logger(__name__)
 
@@ -418,7 +419,7 @@ def _max_burst_actions_for_prompt() -> int:
 
 
 def _last_successful_action_before(steps: list, step_number: int | None) -> tuple[str, int] | None:
-    """The most recent step before ``step_number`` whose terminal action executed.
+    """The most recent step before ``step_number`` whose terminal action was dispatched.
 
     Returns ``(clean action description, step number)`` or None. This is the
     Operator's best candidate for the *trigger* of a transient state: the
@@ -437,7 +438,7 @@ def _last_successful_action_before(steps: list, step_number: int | None) -> tupl
         if not action:
             continue
         result = step.get("last_execution_result")
-        if isinstance(result, dict) and result.get("status") not in (None, "success"):
+        if isinstance(result, dict) and result.get("status") not in (None, "dispatched"):
             continue
         candidates.append((number, format_actions_clean(action)))
     if not candidates:
@@ -451,12 +452,13 @@ def _incident_target_label(incident: dict) -> str:
     # The Operator only ever sees 0–1000 coordinates: the recorded pixel
     # target is the controller's business and is never rendered here.
     normalized = action.get("normalized_coordinates")
-    text = action.get("target_text")
     parts = []
     if normalized:
         parts.append(f"normalized {list(normalized)}")
-    if text:
-        parts.append(f'"{text}"')
+    if action.get("target_text"):
+        parts.append(f'"{action["target_text"]}"')
+    elif action.get("target_description"):
+        parts.append(f'"{action["target_description"]}" {SELF_DESCRIBED_MARKER}')
     return " ".join(parts) if parts else "the recorded target"
 
 
@@ -526,7 +528,7 @@ def render_execution_incident(incident: dict, steps: list) -> str:
         )
     elif category in ("target_disappeared", "pixel_target_disappeared"):
         prior_str = (
-            f" Your last successfully executed action was `{prior[0]}` (Step {prior[1]});"
+            f" Your last dispatched action was `{prior[0]}` (Step {prior[1]});"
             " if the vanished target belonged to a state that action summoned, that action"
             " is the trigger."
             if prior

@@ -237,7 +237,7 @@ export interface StepReplayFrame {
   actionText?: string;
   targetText?: string;
   coords?: string;
-  status?: 'success' | 'failed' | string;
+  status?: 'dispatched' | 'failed' | string;
   isPost?: boolean;
   timestamp?: number;
   phaseId?: string;

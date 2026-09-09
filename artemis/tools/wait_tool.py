@@ -76,7 +76,7 @@ class WaitTool(ArtemisTool):
 
         logger.info(f"Diagnoser waiting for {sec} seconds...")
         await asyncio.sleep(sec)
-        return f"Successfully waited for {sec} seconds."
+        return f"Waited {sec} seconds."
 
 
 # Universal tool instance & aliases

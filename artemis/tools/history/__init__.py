@@ -26,6 +26,7 @@ from typing import Any, Literal
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.core.tool_declaration import ToolDeclaration
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.tools.base import ArtemisTool
@@ -176,9 +177,9 @@ class SearchHistoryTool(ArtemisTool):
     ) -> str:
         reader = getattr(ctx, "data_engine", None) if ctx else None
         if reader is None:
-            return "search_history unavailable: no active execution history."
+            return ToolFailure("search_history unavailable: no active execution history.")
         if not query and not step_range:
-            return (
+            return ToolFailure(
                 "search_history needs a query and/or a step_range — e.g."
                 ' search_history(query="login timeout") or'
                 ' search_history(query="", step_range=[1, 40]).'
@@ -193,7 +194,7 @@ class SearchHistoryTool(ArtemisTool):
             )
         except Exception as e:
             logger.error(f"search_history failed: {e}")
-            return f"search_history failed: {e}"
+            return ToolFailure(f"search_history failed: {e}")
 
 
 # --- replay_steps ------------------------------------------------------------------------
@@ -246,7 +247,7 @@ class ReplayStepsTool(ArtemisTool):
     ) -> str:
         reader = getattr(ctx, "data_engine", None) if ctx else None
         if reader is None:
-            return "Error: no execution history available."
+            return ToolFailure("Error: no execution history available.")
         cfg = _replay_config()
         try:
             return replay_steps_text(
@@ -258,7 +259,7 @@ class ReplayStepsTool(ArtemisTool):
             )
         except Exception as e:
             logger.error(f"replay_steps failed: {e}")
-            return f"replay_steps failed: {e}"
+            return ToolFailure(f"replay_steps failed: {e}")
 
 
 # --- get_step_screenshot -----------------------------------------------------------------
@@ -310,12 +311,12 @@ class GetStepScreenshotTool(ArtemisTool):
     ) -> list[dict[str, Any]] | str:
         reader = getattr(ctx, "data_engine", None) if ctx else None
         if reader is None:
-            return "Error: no execution history available."
+            return ToolFailure("Error: no execution history available.")
         try:
             return load_step_screenshot(reader, step_number, which).to_content_blocks()
         except Exception as e:
             logger.error(f"get_step_screenshot failed: {e}")
-            return f"get_step_screenshot failed: {e}"
+            return ToolFailure(f"get_step_screenshot failed: {e}")
 
 
 # --- Instances, declarations, exports ------------------------------------------------------

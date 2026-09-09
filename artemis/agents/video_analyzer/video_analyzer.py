@@ -53,6 +53,7 @@ from artemis.agents.video_analyzer.gemini_files import (
     cleanup_abandoned_gemini_files,
 )
 from artemis.agents.video_analyzer.reliability import (
+    AgenticVideoDegraded,
     VideoCircuitBreaker,
     classify_video_failure,
 )
@@ -67,6 +68,11 @@ from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.context import ArtemisContext
 from artemis.controllers.controller_factory import get_controller
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan, trace
+from artemis.llm.google import (
+    is_gemini_model,
+    resolve_video_processing,
+    strip_provider_prefix,
+)
 from artemis.llm.reliability import retry_policy_for
 from artemis.services.llm import _record_llm_event, _record_llm_retry, get_llm
 from artemis.utils.logger import get_logger
@@ -152,7 +158,19 @@ class VideoAnalyzer:
             "enable_ledger",
             getattr(agent_config, "enable_video_ledger", True),
         )
-        self.chunk_size_seconds = float(getattr(self.video_config, "chunk_size_seconds", 60.0))
+        self.static_chunk_size_seconds = float(
+            getattr(self.video_config, "chunk_size_seconds", 60.0)
+        )
+        self.agentic_chunk_size_seconds = float(
+            getattr(self.video_config, "agentic_chunk_size_seconds", 600.0)
+        )
+        self.agentic_call_timeout_seconds = float(
+            getattr(self.video_config, "agentic_call_timeout_seconds", 300.0)
+        )
+        # Effective chunk ceiling; re-derived once the engine picks a
+        # video-processing mode (agentic sub-agents take long clips).
+        self.chunk_size_seconds = self.static_chunk_size_seconds
+        self.video_processing = "static"
         self.min_chunk_seconds = float(getattr(self.video_config, "min_chunk_seconds", 4.0))
         self.max_split_depth = int(getattr(self.video_config, "max_split_depth", 4))
         self.action_window_seconds = float(getattr(self.video_config, "action_window_seconds", 2.0))
@@ -399,25 +417,19 @@ class VideoAnalyzer:
         llm_config = getattr(ctx, "llm_config", None)
         utils_cfg = getattr(llm_config, "utils", None) if llm_config else None
         llm_cfg = getattr(utils_cfg, "video_analyzer", None) if utils_cfg else None
-        model_str = (
-            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.8-flash"
-        ).lower()
-        self.model_name = (
+        self.model_name = strip_provider_prefix(
             llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.8-flash"
         )
-        if "/" in self.model_name:
-            self.model_name = self.model_name.split("/")[-1]
 
         has_google_key = bool(
             settings.GOOGLE_API_KEY and settings.GOOGLE_API_KEY.get_secret_value()
         )
-        is_gemini_model = "gemini" in model_str
 
         # If client is already set on ctx or explicit Gemini configuration
         self.client = getattr(ctx, "_genai_client", None)
         if self.client is not None:
             self.use_native_gemini = True
-        elif has_google_key and is_gemini_model:
+        elif has_google_key and is_gemini_model(self.model_name):
             try:
                 self.client = genai.Client(api_key=settings.GOOGLE_API_KEY.get_secret_value())
                 ctx._genai_client = self.client
@@ -430,6 +442,29 @@ class VideoAnalyzer:
                 self.use_native_gemini = False
         else:
             self.use_native_gemini = False
+        self._resolve_video_processing()
+
+    def _resolve_video_processing(self) -> None:
+        """Picks static vs agentic video understanding for the sub-agents.
+
+        Agentic processing (Gemini Interactions API) needs the native client
+        and a supporting model; the configured knob (``auto`` / ``agentic`` /
+        ``static``) decides the rest. The chunk ceiling follows the mode
+        because agentic sub-agents are built to take long clips.
+        """
+        configured = getattr(self.video_config, "processing", "auto")
+        mode = "static"
+        if self.use_native_gemini:
+            mode = resolve_video_processing(configured, self.model_name)
+        self.video_processing = mode
+        self.chunk_size_seconds = (
+            self.agentic_chunk_size_seconds if mode == "agentic" else self.static_chunk_size_seconds
+        )
+        if mode == "agentic":
+            logger.info(
+                f"Video sub-agents use agentic video understanding on {self.model_name}"
+                f" (chunk ceiling {self.chunk_size_seconds:.0f}s)"
+            )
 
     @property
     def blackboard_ledger(self) -> str:
@@ -565,6 +600,18 @@ class VideoAnalyzer:
             self.local_dirs_to_cleanup.add(metadata_path.parent)
         return requested_start, requested_end, None
 
+    def _plan_chunks(self, intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """Cuts intervals into consecutive chunks of at most ``chunk_size_seconds``."""
+        target_chunk_size = self.chunk_size_seconds
+        chunks: list[tuple[float, float]] = []
+        for gap_start, gap_end in intervals:
+            cursor = gap_start
+            while cursor < gap_end:
+                chunk_end = min(gap_end, cursor + target_chunk_size)
+                chunks.append((round(cursor, 3), round(chunk_end, 3)))
+                cursor = chunk_end
+        return chunks
+
     @trace(type="tool", name="spawn_sub_agent")
     async def exec_spawn_sub_agent(
         self, start_time: float, end_time: float | None, specific_query: str
@@ -600,21 +647,14 @@ class VideoAnalyzer:
             )
             return "CACHED VIDEO ANALYSIS: " + " ".join(cached_results)
 
-        target_chunk_size = self.chunk_size_seconds
-        chunks: list[tuple[float, float]] = []
-        for gap_start, gap_end in missing:
-            cursor = gap_start
-            while cursor < gap_end:
-                chunk_end = min(gap_end, cursor + target_chunk_size)
-                chunks.append((round(cursor, 3), round(chunk_end, 3)))
-                cursor = chunk_end
+        chunks = self._plan_chunks(missing)
         logger.info(
             f"Video blackboard planned {len(chunks)} uncovered chunk(s) for "
             f"{requested_start:.1f}s-{requested_end:.1f}s"
         )
 
         async def analyze_with_recovery(
-            cs: float, ce: float, depth: int = 0
+            cs: float, ce: float, depth: int = 0, *, retried_static: bool = False
         ) -> tuple[list[str], list[str]]:
             try:
                 async with API_SEMAPHORE:
@@ -623,8 +663,40 @@ class VideoAnalyzer:
             except Exception as error:
                 failure = classify_video_failure(error)
                 duration = ce - cs
+                fits_ceiling = duration <= self.chunk_size_seconds + 1e-3
+                degraded = isinstance(error, AgenticVideoDegraded)
+                if degraded and fits_ceiling and not retried_static:
+                    # Retry short intervals once in static mode without splitting.
+                    logger.warning(
+                        f"Retrying {cs:.1f}s-{ce:.1f}s in static mode: it already fits"
+                        f" the {self.chunk_size_seconds:.0f}s chunk ceiling"
+                    )
+                    return await analyze_with_recovery(cs, ce, depth, retried_static=True)
+                pieces = (
+                    self._plan_chunks([(cs, ce)])
+                    if failure.should_split and not fits_ceiling
+                    else []
+                )
+                if len(pieces) > 1:
+                    # Split clips planned before a downgrade at the new ceiling.
+                    logger.warning(
+                        f"Re-planning failed {cs:.1f}s-{ce:.1f}s chunk into {len(pieces)}"
+                        f" piece(s) of at most {self.chunk_size_seconds:.0f}s"
+                        f" after {failure.category.value}"
+                    )
+                    parts = await asyncio.gather(
+                        *(analyze_with_recovery(ps, pe, depth) for ps, pe in pieces)
+                    )
+                    return (
+                        [item for values, _ in parts for item in values],
+                        [item for _, failures in parts for item in failures],
+                    )
+                # Bisecting only helps genuine size/timeout failures; a
+                # degraded interval that fits the ceiling has had its one
+                # static retry and is terminal.
                 can_split = (
                     failure.should_split
+                    and not degraded
                     and depth < self.max_split_depth
                     and duration >= self.min_chunk_seconds * 2
                 )
@@ -767,9 +839,7 @@ class VideoAnalyzer:
             temperature = 0.2
             thinking_level = None
             if llm_cfg:
-                self.model_name = llm_cfg.model
-                if "/" in self.model_name:
-                    self.model_name = self.model_name.split("/")[-1]
+                self.model_name = strip_provider_prefix(llm_cfg.model)
                 if getattr(llm_cfg, "temperature", None) is not None:
                     temperature = llm_cfg.temperature
                 if getattr(llm_cfg, "thinking_level", None) is not None:

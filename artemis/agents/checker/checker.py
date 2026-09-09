@@ -44,6 +44,7 @@ from langchain_core.tools import BaseTool, tool
 
 from pydantic import BaseModel, Field, ValidationError
 
+from artemis.core.tool_failure import ToolFailure, is_tool_failure
 from artemis.constants import CHECKER_MAX_ITERATIONS
 from artemis.context import ArtemisContext
 from artemis.data_engine.context_vars import CURRENT_TRACE_ID
@@ -57,6 +58,7 @@ from artemis.tools.tool_wrapper import (
     tool_result_messages,
 )
 from artemis.utils.logger import get_logger
+from artemis.utils.task_tree import format_actions_clean
 from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 from artemis.utils.ocr_xml_fusion import (
     _crop_image_remove_status_bar,
@@ -204,7 +206,11 @@ def build_probe_argv(kind: str, params: dict[str, Any] | None = None) -> list[st
 
 
 async def _execute_probe(ctx: ArtemisContext, argv: list[str]) -> str:
-    """Executes a validated probe argv over the ADB device channel."""
+    """Executes a validated probe argv over the ADB device channel.
+
+    A failed probe answers with a :class:`ToolFailure` so the tool loop marks
+    the result as an error structurally rather than by its wording.
+    """
     try:
         adb_client = ctx.get_adb_client()
         device = adb_client.device(serial=ctx.device.device_id)
@@ -214,7 +220,7 @@ async def _execute_probe(ctx: ArtemisContext, argv: list[str]) -> str:
             text = text[:_PROBE_OUTPUT_LIMIT] + "\n... [output truncated]"
         return text
     except Exception as e:
-        return f"Error executing probe: {e}"
+        return ToolFailure(f"Error executing probe: {e}")
 
 
 def get_probe_tool(ctx: ArtemisContext) -> BaseTool:
@@ -230,7 +236,7 @@ def get_probe_tool(ctx: ArtemisContext) -> BaseTool:
         try:
             argv = build_probe_argv(kind, params)
         except ValueError as e:
-            return f"Error: {e}"
+            return ToolFailure(f"Error: {e}")
         return await _execute_probe(ctx, argv)
 
     return probe_device
@@ -330,8 +336,11 @@ def _format_history(ctx: ArtemisContext, limit: int = 60) -> str:
         action = s.get("action_taken")
         action_str = ""
         if action and not summary:
+            # The shared renderer keeps the target's provenance visible: a
+            # self-described coordinate target reads "'play button' (self-described)",
+            # an observed index target reads "'Login'" with no marker.
             try:
-                action_str = json.dumps(action, ensure_ascii=False)[:160]
+                action_str = format_actions_clean(action)[:160]
             except Exception:
                 action_str = str(action)[:160]
         lines.append(f"- Step {num} ({rel}): {summary or action_str}".rstrip())
@@ -456,7 +465,7 @@ async def _run_check_loop(
                     tool=tool_to_run, args=args, tool_call_id=tc["id"]
                 )
                 text, _ = split_multimodal_result(result_obj)
-                status = "error" if text.startswith("Error") else "success"
+                status = "error" if is_tool_failure(result_obj) else "success"
             except Exception as e:
                 result_obj = f"Error running tool {tool_name}: {e}"
                 status = "error"

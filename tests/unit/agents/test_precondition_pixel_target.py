@@ -64,6 +64,10 @@ def test_coordinates_only_target_is_labelled_as_surface():
 
     first_text = messages[1].content[0]["text"]
     assert "Kind: coordinates only" in first_text
+    # No hit test runs any more: the block states that nothing was recorded, it
+    # does not claim the point was looked up in the UI hierarchy.
+    assert "no target metadata recorded" in first_text
+    assert "UI hierarchy" not in first_text
     assert "Label:" not in first_text
     assert "Resource ID:" not in first_text
     assert not any("Original Thinking" in t for t in _texts(messages))
@@ -77,13 +81,12 @@ def test_label_alone_counts_as_named_control():
     assert "Resource ID" not in text
 
 
-def test_unlabelled_hit_test_element_is_still_a_control():
+def test_unlabelled_indexed_element_is_still_a_control():
     item = {
         "action": "tap",
         "coordinates": [1001, 718],
         "target_class": "android.widget.ImageView",
         "target_bounds": [922, 655, 1080, 781],
-        "target_label_source": "hit_test",
     }
     text = pp._describe_target(item)
     assert "Kind: specific UI control" in text
@@ -92,9 +95,33 @@ def test_unlabelled_hit_test_element_is_still_a_control():
     assert "[922, 655, 1080, 781]" in text
 
 
+def test_described_coordinate_target_is_its_own_kind():
+    """The model's description is presented as its belief, not as observed metadata."""
+    item = {"action": "tap", "coordinates": [540, 400], "target_description": "play button"}
+    text = pp._describe_target(item)
+    assert "Kind: described target" in text
+    assert "Operator's description: play button" in text
+    assert "Kind: specific UI control" not in text
+    assert "Label:" not in text
+
+
+def test_observed_metadata_outranks_description():
+    item = {
+        "action": "tap",
+        "coordinates": [10, 10],
+        "target_text": "Submit",
+        "target_description": "ignored",
+    }
+    text = pp._describe_target(item)
+    assert "Kind: specific UI control" in text
+    assert "Label: Submit" in text
+    assert "described target" not in text
+
+
 def test_prompt_rules_are_keyed_on_target_kind():
     prompt = Path(pp.__file__).with_name("pixel_safety_net.md").read_text(encoding="utf-8")
     assert "`Kind: specific UI control`" in prompt
+    assert "`Kind: described target`" in prompt
     assert "`Kind: coordinates only`" in prompt
     assert "hidden" in prompt
     assert "Identify what appears under the red dot" in prompt

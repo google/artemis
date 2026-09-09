@@ -39,6 +39,7 @@ from artemis.memory.step_memory import JobKey, StepMemoryService
 from artemis.services.llm import RobustChatModelWrapper, get_google_llm, get_llm
 from artemis.services.token_meter import record_llm_usage
 from artemis.utils.logger import get_logger
+from artemis.utils.task_tree import format_actions_clean
 from artemis.utils.visualization import draw_action_overlay_on_image
 
 logger = get_logger(__name__)
@@ -60,6 +61,79 @@ def degenerate_summary_reason(text: str) -> str | None:
     if len(text) > SUMMARY_MAX_CHARS:
         return f"too long ({len(text)} chars > {SUMMARY_MAX_CHARS})"
     return None
+
+
+#: Header of the operator-focus block that leads the lens input. It shares
+#: the ``--- [`` shape of the frame headers so an echoed header trips the
+#: same degenerate-output guard.
+FOCUS_BLOCK_HEADER = "--- [0] OPERATOR FOCUS (context for attention, not evidence) ---"
+
+#: Cap on the operator reasoning excerpt carried in the focus block. The
+#: expectation statement closes the reasoning, so the tail is kept intact
+#: and the cut lands in the middle.
+FOCUS_INTENT_MAX_CHARS = 900
+FOCUS_INTENT_TAIL_CHARS = 600
+
+
+def _cap_intent(text: str) -> str:
+    if len(text) <= FOCUS_INTENT_MAX_CHARS:
+        return text
+    head_len = FOCUS_INTENT_MAX_CHARS - FOCUS_INTENT_TAIL_CHARS
+    head, tail = text[:head_len], text[-FOCUS_INTENT_TAIL_CHARS:]
+    cut = len(text) - len(head) - len(tail)
+    return f"{head}\n[… {cut} characters cut here …]\n{tail}"
+
+
+def build_focus_context(
+    *,
+    intent: str | None = None,
+    goal: str | None = None,
+    subgoal: str | None = None,
+    injected_instruction: str | None = None,
+) -> dict[str, str] | None:
+    """Collect operator context to guide the visual summary's focus.
+
+    Target descriptions remain on the action. Return None if all fields are empty.
+    """
+    focus: dict[str, str] = {}
+    if isinstance(goal, str) and goal.strip():
+        focus["goal"] = goal.strip()
+    if isinstance(subgoal, str) and subgoal.strip():
+        focus["subgoal"] = subgoal.strip()
+    if isinstance(injected_instruction, str) and injected_instruction.strip():
+        focus["injected_instruction"] = injected_instruction.strip()
+    if isinstance(intent, str) and intent.strip():
+        focus["intent"] = _cap_intent(intent.strip())
+    return focus or None
+
+
+def render_focus_block(focus: dict[str, str], *, dual: bool = True) -> str:
+    """Plain-text focus block (goal, sub-goal, instruction, then reasoning).
+
+    ``dual=False`` (a single decision frame, every Pro step) labels the
+    reasoning so its expectation is read as the operator's aim only: the
+    outcome is not in the frame and must not be described.
+    """
+    lines = [FOCUS_BLOCK_HEADER]
+    if focus.get("goal"):
+        lines.append(f"Task goal: {focus['goal']}")
+    if focus.get("subgoal"):
+        lines.append(f"Active sub-goal: {focus['subgoal']}")
+    if focus.get("injected_instruction"):
+        lines.append(f"User instruction at this step: {focus['injected_instruction']}")
+    if focus.get("intent"):
+        if dual:
+            lines.append(
+                "Operator reasoning for this step (why this target, what screen"
+                " change it expected):"
+            )
+        else:
+            lines.append(
+                "Operator reasoning for this step (why this target; the expected"
+                " outcome is NOT in this frame and must not be described):"
+            )
+        lines.append(focus["intent"])
+    return "\n".join(lines)
 
 
 class VisualStepSummarizer(StepMemoryService):
@@ -148,6 +222,7 @@ class VisualStepSummarizer(StepMemoryService):
         *,
         action_key: str | None = None,
         data_engine_step_id: UUID | str | None = None,
+        focus: dict[str, str] | None = None,
     ) -> None:
         """Dispatches an asynchronous summarization task without blocking the caller.
 
@@ -155,6 +230,10 @@ class VisualStepSummarizer(StepMemoryService):
         tool_call_id (``action_key``) is retained as an alias so the message
         compressor can keep querying by it. Callers with neither provide the
         step ordinal, matching the legacy keying.
+
+        ``focus`` (:func:`build_focus_context`) is the operator's own context
+        for the step; the lens renders it ahead of the frames so the details
+        the operator was after are transcribed rather than summarized away.
         """
         key: JobKey
         aliases: tuple[JobKey, ...] = ()
@@ -173,8 +252,31 @@ class VisualStepSummarizer(StepMemoryService):
             "post_img_bytes": post_img_bytes,
             "exec_outcome": exec_outcome,
             "data_engine_step_id": data_engine_step_id,
+            "focus": focus,
         }
         self.submit(key, payload, aliases=aliases)
+
+    @staticmethod
+    def _action_phrase(action_name: str, action_args: dict[str, Any] | None) -> str:
+        """The action as every other history reader sees it (``format_actions_clean``).
+
+        A described coordinate target renders as ``'play button' (self-described)``,
+        an observed element as ``'Play'``; a Pro burst lists every member.
+        """
+        args = dict(action_args or {})
+        extra = args.pop("additional_actions", None)
+        # Flash's coordinate swipe names its points ``start``/``end``; the
+        # history renderer reads ``start_coordinates``/``end_coordinates``.
+        if action_name == "swipe" and "start" in args and "end" in args:
+            args.setdefault("start_coordinates", args["start"])
+            args.setdefault("end_coordinates", args["end"])
+        try:
+            first = {"action": action_name, **args}
+            actions = [first, *extra] if isinstance(extra, list) and extra else first
+            return format_actions_clean(actions)
+        except Exception as exc:
+            logger.debug(f"Action phrase rendering fell back to raw args: {exc}", exc_info=True)
+            return f"{action_name}({action_args})"
 
     def _meter_lens_call(self, response: Any) -> None:
         """Meter one raw-model lens call as an ``llm_usage`` trace, best-effort.
@@ -236,15 +338,15 @@ class VisualStepSummarizer(StepMemoryService):
             dual = bool(pre_bytes) and bool(post_bytes)
             template = self._prompt_template if dual else self._single_prompt_template
             rendered_prompt = Template(template).render(step_number=step_number)
-            content_blocks: list[dict[str, Any]] = [
-                {
-                    "type": "text",
-                    "text": (
-                        f"Step {step_number} Physical Action: {action_name}({action_args})\n"
-                        f"Controller Outcome: {exec_outcome}"
-                    ),
-                }
+            lead_lines = [
+                f"Step {step_number} Physical Action: {self._action_phrase(action_name, action_args)}",
+                f"Action arguments (verbatim): {action_name}({action_args})",
+                f"Controller Outcome: {exec_outcome}",
             ]
+            focus = input_data.get("focus")
+            if isinstance(focus, dict) and focus:
+                lead_lines.extend(["", render_focus_block(focus, dual=dual)])
+            content_blocks: list[dict[str, Any]] = [{"type": "text", "text": "\n".join(lead_lines)}]
 
             if pre_bytes:
                 # 🎨 Visually mark the exact action (tap ripple, sequence numbers, swipe arrow) on the BEFORE screenshot
@@ -318,10 +420,12 @@ class VisualStepSummarizer(StepMemoryService):
                     f"VisualStepSummarizer: Generated summary for Step {step_number}: {summary_text[:80]}..."
                 )
 
-                # Free binary image buffers from memory once summary is secured
+                # Free binary image buffers (and the focus text) once the
+                # summary is secured; a landed job is never re-rendered.
                 if key in self._step_inputs:
                     self._step_inputs[key]["pre_img_bytes"] = None
                     self._step_inputs[key]["post_img_bytes"] = None
+                    self._step_inputs[key]["focus"] = None
 
                 # Update DataEngine telemetry if active
                 if self.ctx.data_engine:

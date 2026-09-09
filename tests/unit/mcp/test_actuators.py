@@ -38,7 +38,7 @@ async def test_click_converts_normalized_to_pixels(actuator):
     res = await actuator.click(500, 500)
     assert res.ok and res.code is ActionCode.OK
     # Historical wording is part of the contract: transcripts and traces assert on it.
-    assert res.message == "Clicked at [500, 500] (normalized) successfully."
+    assert res.message == "Tapped at [500, 500] (normalized)."
     assert res.normalized_coordinates == [500, 500]
     assert actuator.action_history[-1] == {
         "action": "tap",
@@ -53,9 +53,7 @@ async def test_click_converts_normalized_to_pixels(actuator):
 async def test_click_sequence_taps_each_point(actuator):
     res = await actuator.click_sequence([(100, 100), (900, 900)], delay_ms=1)
     assert res.ok
-    assert res.message == (
-        "Sequence clicked successfully: Tapped at [100, 200]; Tapped at [900, 1800]"
-    )
+    assert res.message == ("Tapped in sequence at [100, 100]; [900, 900] (normalized).")
     taps = [h for h in actuator.action_history if h["action"] == "tap"]
     assert [(t["x"], t["y"]) for t in taps] == [(100, 200), (900, 1800)]
 
@@ -64,7 +62,7 @@ async def test_click_sequence_taps_each_point(actuator):
 async def test_long_press_message_and_duration(actuator):
     res = await actuator.long_press(250, 750, duration_ms=1500)
     assert res.ok
-    assert res.message == ("Long pressed at [250, 750] (normalized) for 1500ms successfully.")
+    assert res.message == "Long-pressed at [250, 750] (normalized) for 1500ms."
     assert res.duration_ms == 1500
 
 
@@ -72,7 +70,7 @@ async def test_long_press_message_and_duration(actuator):
 async def test_swipe_reports_normalized_endpoints(actuator):
     res = await actuator.swipe((500, 800), (500, 200), 400)
     assert res.ok
-    assert res.message == "Swipe completed successfully. Swiped from [500, 800] to [500, 200]."
+    assert res.message == "Swiped from [500, 800] to [500, 200] (normalized)."
     assert res.normalized_coordinates == [500, 800, 500, 200]
 
 
@@ -82,7 +80,7 @@ async def test_press_key_forwards_unknown_keycode_to_driver(actuator):
     # matching the historical adb_server behavior of accepting any Android key event.
     res = await actuator.press_key("KEYCODE_DPAD_DOWN")
     assert res.ok
-    assert res.message == "Executed key press 'KEYCODE_DPAD_DOWN'."
+    assert res.message == "Pressed key 'KEYCODE_DPAD_DOWN'."
     assert actuator.action_history[-1]["action"] == "press_key"
 
 
@@ -98,7 +96,7 @@ async def test_input_text_append_moves_cursor_and_preserves_text(actuator, monke
     monkeypatch.setattr("asyncio.sleep", _instant_sleep)
     res = await actuator.input_text("hello", (500, 300), clear_exist=False)
     assert res.ok
-    assert res.message == "Executed typing 'hello'."
+    assert res.message == "Typed 'hello' at [500, 300] (normalized)."
     actions = [h["action"] for h in actuator.action_history]
     # Append semantics: focus tap, cursor-to-end (KEYCODE_MOVE_END), then type without
     # clearing — matching the historical adb_server focus_and_input_text contract.
@@ -128,7 +126,7 @@ async def _instant_sleep(_delay, *args, **kwargs):
 async def test_wait_for_delay(actuator):
     res = await actuator.wait_for_delay(1)
     assert res.ok
-    assert res.message == "Waited for 1ms successfully."
+    assert res.message == "Waited 1ms."
 
 
 def test_partial_capabilities_are_reported():

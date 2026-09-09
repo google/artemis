@@ -53,10 +53,50 @@ class VideoFailure:
 
 
 _MEDIA_MARKERS = ("ffmpeg", "codec", "corrupt", "invalid video", "invalid audio", "media")
+_AGENTIC_REJECTION_MARKERS = ("processing", "agentic")
+
+
+class SubAgentAnswerExhausted(RuntimeError):
+    """The sub-agent exhausted its turns without a valid submit_answer.
+
+    The caller records a failed segment so a later claim can retry it. The shared
+    classifier permits retries, splitting, and fallback for this failure.
+    """
+
+    def __init__(self, turns: int, reason: str):
+        self.turns = turns
+        self.reason = reason
+        super().__init__(
+            f"submit_answer was not accepted within {turns} turn(s); last rejection: {reason}"
+        )
+
+
+class AgenticVideoDegraded(RuntimeError):
+    """Return an interval to the coordinator after switching to static mode.
+
+    The coordinator splits oversized clips and retries smaller clips as-is.
+    """
+
+
+def is_agentic_rejection(failure: VideoFailure, error: BaseException) -> bool:
+    """True when a bad request is the API refusing agentic video processing.
+
+    Only an HTTP 400 whose message mentions ``processing`` / ``agentic``
+    qualifies; other bad requests (413 payload too large, 404, ...) keep the
+    shared handling.
+    """
+    if failure.category is not VideoFailureCategory.BAD_REQUEST:
+        return False
+    if extract_status_code(error) != 400:
+        return False
+    message = str(error).lower()
+    return any(marker in message for marker in _AGENTIC_REJECTION_MARKERS)
 
 
 def classify_video_failure(error: BaseException) -> VideoFailure:
     """Convert provider/transport/media exceptions into recovery decisions."""
+    if isinstance(error, AgenticVideoDegraded):
+        return VideoFailure(VideoFailureCategory.BAD_REQUEST, False, True, False)
     generic = classify_failure(error)
     message = str(error).lower()
     has_media_marker = any(marker in message for marker in _MEDIA_MARKERS)

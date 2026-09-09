@@ -131,7 +131,7 @@ def test_validator_result_message_carries_session_offset():
         ledger,
         2,
         prev_key="step-1",
-        prev_result={"status": "success", "execution": [{"action": "tap", "attempts": ["ok"]}]},
+        prev_result={"status": "dispatched", "execution": [{"action": "tap", "attempts": ["ok"]}]},
     )
 
     result_messages = [
@@ -142,7 +142,7 @@ def test_validator_result_message_carries_session_offset():
     assert len(result_messages) == 1
     text = result_messages[0].content[0]["text"]
     assert OFFSET_RE.search(text), text
-    assert "Status: success" in text
+    assert "Status: dispatched" in text
     assert "ago" not in text
 
 
@@ -229,7 +229,7 @@ def test_tool_call_response_pairs_are_never_split():
             ledger,
             i,
             prev_key=f"step-{i - 1}" if i > 1 else None,
-            prev_result={"status": "success"} if i > 1 else None,
+            prev_result={"status": "dispatched"} if i > 1 else None,
             tool_call_count=2,
         )
 
@@ -279,7 +279,7 @@ def test_no_ago_wording_in_ledger_output():
             ledger,
             i,
             prev_key=f"step-{i - 1}" if i > 1 else None,
-            prev_result={"status": "success"} if i > 1 else None,
+            prev_result={"status": "dispatched"} if i > 1 else None,
         )
     blob = " ".join(str(m.content) for m in ledger.active_messages)
     assert " ago" not in blob
@@ -406,7 +406,7 @@ def test_ledger_turn_transcript_reflects_the_scrubbed_active_region():
         ]
 
     ledger.stage_turn(turn(1))
-    ledger.commit_staged(step_key="s1", validator_result={"status": "success"})
+    ledger.commit_staged(step_key="s1", validator_result={"status": "dispatched"})
     ledger.stage_turn(turn(2))
     ledger.commit_staged(step_key="s2", validator_result={"status": "failed", "error": "boom"})
     ledger.render([HumanMessage(content=[{"type": "text", "text": "tail"}])])
@@ -415,6 +415,6 @@ def test_ledger_turn_transcript_reflects_the_scrubbed_active_region():
     text = ledger.turn_transcript(first)
     assert "thought 1" in text and "[tool call] click({})" in text
     assert "Button 1" not in text  # depth-1 strip already applied
-    assert "--- Action Execution Result (T+00:00) ---\nStatus: success" in text
+    assert "--- Action Execution Result (T+00:00) ---\nStatus: dispatched" in text
     assert "Status: failed" in ledger.turn_transcript(second)
     assert "thought 2" not in text  # a turn transcript never leaks into another turn

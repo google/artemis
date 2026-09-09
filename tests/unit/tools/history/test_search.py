@@ -31,6 +31,7 @@ import pytest
 from PIL import Image
 
 from artemis.context import ArtemisContext
+from artemis.core.tool_failure import is_tool_failure
 from artemis.data_engine.engine import DataEngine
 from artemis.tools.history import (
     SearchHistoryTool,
@@ -310,6 +311,17 @@ async def test_execute_requires_query_or_range(engine):
     tool = SearchHistoryTool()
     out = await tool.execute(ctx=SimpleNamespace(data_engine=engine), query="", step_range=None)
     assert "needs a query and/or a step_range" in out
+    # A usage error is a request the tool did not serve: reported structurally.
+    assert is_tool_failure(out)
+
+
+@pytest.mark.asyncio
+async def test_execute_reports_history_load_error_structurally():
+    reader = MagicMock()
+    reader.get_agent_friendly_steps.side_effect = RuntimeError("db locked")
+    out = await search_history.execute(ctx=SimpleNamespace(data_engine=reader), query="login")
+    assert "search_history failed to load history: db locked" in out
+    assert is_tool_failure(out)
 
 
 @pytest.mark.asyncio
@@ -332,3 +344,30 @@ def test_availability_requires_engine_and_config():
     assert search_history.is_available(SimpleNamespace(data_engine=None)) is False
     assert search_history.is_available(SimpleNamespace(data_engine=object())) is True
     assert search_history_available(SimpleNamespace(data_engine=object())) is True
+
+
+def test_action_matches_keep_target_provenance(engine):
+    """The action haystack is the shared ledger rendering, so an excerpt shows a
+    self-described coordinate target with its marker and an observed index
+    target without one."""
+    from artemis.utils.task_tree import SELF_DESCRIBED_MARKER
+
+    engine.record_step(
+        summary="Started playback.",
+        action_taken={
+            "action": "click",
+            "coordinates": [500, 600],
+            "target_description": "play button",
+        },
+        last_execution_result={"status": "dispatched"},
+    )
+    _flush(engine)
+
+    described = search_history_text(engine, query="play button", recall_config=_cfg())
+    assert "[Step 4 " in described
+    assert f"'play button' {SELF_DESCRIBED_MARKER}" in described
+
+    observed = search_history_text(engine, query="Login entry", recall_config=_cfg())
+    assert "[Step 1 " in observed
+    assert "'Login entry'" in observed
+    assert SELF_DESCRIBED_MARKER not in observed

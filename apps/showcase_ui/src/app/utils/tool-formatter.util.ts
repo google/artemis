@@ -912,6 +912,19 @@ export function getToolTitle(tool: any): string {
 }
 
 /**
+ * Join per-point self-described targets (click_sequence `target_descriptions`)
+ * into one label, chained with ' → ' like the coordinate rendering.
+ * Returns '' when the value is missing or holds no usable text.
+ */
+export function joinTargetDescriptions(descriptions: any): string {
+  if (!Array.isArray(descriptions)) return '';
+  const parts = descriptions
+    .map(d => (d === null || d === undefined) ? '' : String(d).trim())
+    .filter(d => d.length > 0);
+  return parts.join(' → ');
+}
+
+/**
  * Get target text description for tools
  */
 export function getToolTargetText(tool: any): string {
@@ -950,6 +963,11 @@ export function getToolTargetText(tool: any): string {
   if (name === 'report_failure_analysis') {
     return args.status || args.reason || args.analysis || '';
   }
+  if (name === 'click_sequence' || name === 'tap_sequence') {
+    // One self-described target per point, chained like getToolCoords does.
+    const joined = joinTargetDescriptions(args.target_descriptions);
+    if (joined) return joined;
+  }
   if (args.target && typeof args.target === 'string') {
     return args.target;
   }
@@ -959,7 +977,7 @@ export function getToolTargetText(tool: any): string {
   if (args.index !== undefined) {
     return `Element #${args.index}`;
   }
-  return args.target_text || args.target_class || args.element || args.element_text || (name !== 'input_text' ? args.text : '') || '';
+  return args.target_text || args.target_description || args.target_class || args.element || args.element_text || (name !== 'input_text' ? args.text : '') || '';
 }
 
 /**
@@ -1162,7 +1180,8 @@ export function extractToolExtraParams(toolData: any, cache?: WeakMap<any, Actio
   }
 
   const standardKeys = new Set([
-    'action', 'name', 'type', 'target_text', 'text', 'input_text', 'target',
+    'action', 'name', 'type', 'target_text', 'target_description', 'target_descriptions',
+    'text', 'input_text', 'target',
     'coordinates', 'coords', 'target_bounds', 'bounds', 'target_resource_id',
     'resource_id', 'target_class', 'class_name', 'normalized_coordinates',
     'pre_image_name', 'post_image_name', 'pre_screenshot', 'post_screenshot',

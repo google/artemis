@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from artemis.core.tool_failure import is_tool_failure
 from artemis.tools.history import ReplayStepsTool, replay_steps, replay_steps_text
 
 
@@ -81,6 +82,12 @@ def test_replay_single_step_reversed_bounds_and_missing_step():
     assert replay_steps_text(_reader([]), 9) == "Error: step 9 not found."
     assert replay_steps_text(_reader([]), 9, 12) == "Error: no recorded steps in range 9–12."
     assert "must be integers" in replay_steps_text(_reader([]), "x")
+
+    # Every refusal is a structural failure, not just "Error"-looking text.
+    assert is_tool_failure(replay_steps_text(_reader([]), 9))
+    assert is_tool_failure(replay_steps_text(_reader([]), 9, 12))
+    assert is_tool_failure(replay_steps_text(_reader([]), "x"))
+    assert not is_tool_failure(replay_steps_text(_reader([_friendly_step(2)]), 2))
 
 
 def test_replay_caps_the_range_per_call():

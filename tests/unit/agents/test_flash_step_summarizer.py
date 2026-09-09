@@ -20,7 +20,13 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from artemis.agents.flash.context_compressor import ScrubEdgeCompressor
-from artemis.agents.flash.summarizer import VisualStepSummarizer
+from artemis.agents.flash.summarizer import (
+    FOCUS_BLOCK_HEADER,
+    FOCUS_INTENT_MAX_CHARS,
+    VisualStepSummarizer,
+    build_focus_context,
+    render_focus_block,
+)
 from artemis.context import ArtemisContext
 from artemis.sdk.builders import Builders
 
@@ -558,6 +564,175 @@ async def test_raw_lens_call_meters_llm_usage_without_touching_context_base(mock
     assert payload["source"].startswith("lens:visual_transition:")
     assert payload["prompt_tokens"] == 120
     assert meter.last_prompt_tokens == 777
+
+
+@pytest.mark.asyncio
+async def test_focus_block_and_provenance_marked_action_phrase_reach_the_lens(mock_context):
+    """The lens input opens with the action as every history reader sees it
+    (self-described target marked), the verbatim arguments, the outcome, and
+    the operator focus block; the system prompt teaches how to use it."""
+    summarizer = VisualStepSummarizer(mock_context)
+    captured: list = []
+
+    async def mock_ainvoke(messages):
+        captured.append(messages)
+        return AIMessage(
+            content=(
+                "In Step 3, I tapped the switch marked in red on the 'Wi-Fi' row, which"
+                " read 'Off' before; afterwards it showed 'On' and the list stayed empty."
+            )
+        )
+
+    summarizer._llm = Mock()
+    summarizer._llm.ainvoke = AsyncMock(side_effect=mock_ainvoke)
+
+    summarizer.dispatch(
+        step_number=3,
+        action_name="click",
+        action_args={"target": [880, 410], "target_description": "Wi-Fi toggle"},
+        pre_img_bytes=b"pre",
+        post_img_bytes=b"post",
+        exec_outcome="Tapped at [880, 410] (normalized).",
+        focus=build_focus_context(
+            intent="The Wi-Fi row shows Off. I will tap its switch and expect it to read On.",
+            goal="Turn on Wi-Fi",
+            subgoal="Enable Wi-Fi > Tap the Wi-Fi switch",
+            injected_instruction="Do not join any network yet.",
+        ),
+    )
+    await summarizer.flush()
+
+    assert summarizer.has_summary(3)
+    system_text = str(captured[0][0].content)
+    lead_text = captured[0][1].content[0]["text"]
+    assert "# OPERATOR FOCUS" in system_text
+    assert "Absence is a fact" in system_text
+    assert lead_text.startswith(
+        "Step 3 Physical Action: Tapped 'Wi-Fi toggle' (self-described) at [880, 410]\n"
+    )
+    assert "Action arguments (verbatim): click({'target': [880, 410]" in lead_text
+    assert "Controller Outcome: Tapped at [880, 410] (normalized)." in lead_text
+    assert FOCUS_BLOCK_HEADER in lead_text
+    assert "Task goal: Turn on Wi-Fi" in lead_text
+    assert "Active sub-goal: Enable Wi-Fi > Tap the Wi-Fi switch" in lead_text
+    assert "User instruction at this step: Do not join any network yet." in lead_text
+    assert "expect it to read On." in lead_text
+    # The focus precedes the frames: context first, evidence second.
+    assert captured[0][1].content[1]["text"].startswith("--- [1] BEFORE ACTION SCREEN")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_without_focus_carries_no_focus_block(mock_context):
+    """Callers without operator context (older call sites, tests) get the
+    plain lead block: no focus header, observed target rendered unmarked."""
+    summarizer = VisualStepSummarizer(mock_context)
+    captured: list = []
+
+    async def mock_ainvoke(messages):
+        captured.append(messages)
+        return AIMessage(
+            content="In Step 1, I tapped the 'Search' field marked in red; the keyboard opened."
+        )
+
+    summarizer._llm = Mock()
+    summarizer._llm.ainvoke = AsyncMock(side_effect=mock_ainvoke)
+
+    summarizer.dispatch(
+        step_number=1,
+        action_name="tap",
+        action_args={"coordinates": [500, 600], "target_text": "Search"},
+        pre_img_bytes=b"pre",
+        post_img_bytes=None,
+        exec_outcome="dispatched",
+    )
+    await summarizer.flush()
+
+    lead_text = captured[0][1].content[0]["text"]
+    assert lead_text.startswith("Step 1 Physical Action: Tapped 'Search' at [500, 600]\n")
+    assert "(self-described)" not in lead_text
+    assert FOCUS_BLOCK_HEADER not in lead_text
+    assert summarizer.get_job_payload(1)["focus"] is None
+
+
+@pytest.mark.asyncio
+async def test_single_frame_focus_label_forbids_describing_the_outcome(mock_context):
+    """With one decision frame (every Pro step) the reasoning is labelled as the
+    operator's aim only, never as an expected screen change to narrate."""
+    summarizer = VisualStepSummarizer(mock_context)
+    captured: list = []
+
+    async def mock_ainvoke(messages):
+        captured.append(messages)
+        return AIMessage(
+            content="In Step 2, I tapped the 'Pay' button marked in red on a checkout screen totalling '$42.00'."
+        )
+
+    summarizer._llm = Mock()
+    summarizer._llm.ainvoke = AsyncMock(side_effect=mock_ainvoke)
+
+    summarizer.dispatch(
+        step_number=2,
+        action_name="tap",
+        action_args={"coordinates": [500, 900], "target_text": "Pay"},
+        pre_img_bytes=b"decision_frame",
+        post_img_bytes=None,
+        exec_outcome="dispatched",
+        focus=build_focus_context(intent="Tap Pay; I expect a confirmation dialog."),
+    )
+    await summarizer.flush()
+
+    lead_text = captured[0][1].content[0]["text"]
+    assert "the expected outcome is NOT in this frame and must not be described" in lead_text
+    assert "what screen change it expected" not in lead_text
+    # The focus text is released once the summary landed, like the frames.
+    assert summarizer.get_job_payload(2)["focus"] is None
+
+
+def test_action_phrase_renders_flash_swipe_points_and_bursts():
+    """Flash's ``start``/``end`` swipe points and a Pro burst's additional
+    actions render through the shared history phrase, never as None."""
+    phrase = VisualStepSummarizer._action_phrase(
+        "swipe", {"start": [500, 800], "end": [500, 200], "target_description": "video list"}
+    )
+    assert phrase == "Swiped 'video list' (self-described) from [500, 800] to [500, 200]"
+    assert VisualStepSummarizer._action_phrase("swipe", {"direction": "up"}) == "Swiped up"
+
+    burst = VisualStepSummarizer._action_phrase(
+        "tap",
+        {
+            "coordinates": [100, 200],
+            "target_description": "Skip ad",
+            "additional_actions": [
+                {"action": "tap", "coordinates": [300, 400], "target_text": "Play"}
+            ],
+        },
+    )
+    assert burst.startswith("Fast-action burst (2 actions, unvetted): ")
+    assert "Tapped 'Skip ad' (self-described) at [100, 200] -> Tapped 'Play' at [300, 400]" in burst
+
+
+def test_build_focus_context_drops_blank_fields_and_caps_reasoning_tail_intact():
+    """Blank/None fields never appear; an over-long reasoning keeps its tail
+    (where the operator states the expected screen change) and announces
+    the cut in place."""
+    assert (
+        build_focus_context(intent="  ", goal=None, subgoal="", injected_instruction=None) is None
+    )
+
+    head = "H" * 500
+    tail = "I expect the toggle to read On."
+    filler = "x" * (FOCUS_INTENT_MAX_CHARS * 2)
+    focus = build_focus_context(intent=head + filler + tail, goal="Turn on Wi-Fi")
+    assert set(focus) == {"goal", "intent"}
+    assert focus["intent"].startswith("HHHH")
+    assert focus["intent"].endswith(tail)
+    assert "characters cut here" in focus["intent"]
+    assert len(focus["intent"]) < FOCUS_INTENT_MAX_CHARS + 80
+
+    block = render_focus_block(focus)
+    assert block.splitlines()[0] == FOCUS_BLOCK_HEADER
+    assert "Task goal: Turn on Wi-Fi" in block
+    assert "Active sub-goal" not in block
 
 
 def test_flash_config_and_builder():

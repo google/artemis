@@ -16,8 +16,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import StructuredTool
 from artemis.agents.history_analyzer.history_analyzer import HistoryAnalyzer
 from artemis.context import ArtemisContext
+from artemis.core.tool_failure import ToolFailure
 import pytest
 
 
@@ -374,3 +376,65 @@ async def test_history_analyzer_integration_with_task_tree():
         assert args[3] == expected_hash
 
         assert kwargs.get("engine") is mock_ctx.data_engine
+
+
+# --- tool results: status is structural, never sniffed from the words -----------------
+
+
+# A helper tool reports failure structurally (``ToolFailure``); free-form text
+# that merely starts with "Error" is an ordinary answer.
+_STATUS_CASES = [
+    pytest.param(ToolFailure("Error: note 'progress' not found"), "error", id="tool_failure"),
+    pytest.param("Error 404 was typed into the search box", "success", id="plain_error_text"),
+]
+
+
+def _text_tool(name: str, result):
+    async def _run(key: str) -> str:
+        return result
+
+    return StructuredTool.from_function(coroutine=_run, name=name, description=name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result, expected_status", _STATUS_CASES)
+async def test_history_analyzer_tool_message_status_is_structural(result, expected_status):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.data_engine = MagicMock()
+    mock_ctx.data_engine.base_dir = "/tmp/fake_traces"
+    mock_ctx.data_engine.get_agent_friendly_steps.return_value = [
+        {"step_number": 1, "relative_time": "1.2s", "summary": "Opened the settings app"}
+    ]
+
+    tool_turn = MagicMock(content="")
+    tool_turn.tool_calls = [{"name": "read_note", "args": {"key": "progress"}, "id": "c1"}]
+    final_turn = MagicMock(content="done")
+    final_turn.tool_calls = []
+    responses = [tool_turn, final_turn]
+
+    async def mock_astream(*args, **kwargs):
+        yield responses.pop(0)
+
+    mock_llm = MagicMock()
+    mock_llm.bind_tools.return_value = mock_llm
+    mock_llm.astream.side_effect = mock_astream
+
+    with (
+        patch(
+            "artemis.agents.history_analyzer.history_analyzer.get_llm",
+            return_value=mock_llm,
+        ),
+        patch.object(
+            HistoryAnalyzer, "_build_tools", return_value=[_text_tool("read_note", result)]
+        ),
+        patch("pathlib.Path.exists", return_value=False),
+    ):
+        answer = await HistoryAnalyzer(mock_ctx).run("What did the note say?")
+
+    assert answer == "done"
+    second_turn_messages = mock_llm.astream.call_args_list[1][0][0]
+    tool_msgs = [m for m in second_turn_messages if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].tool_call_id == "c1"
+    assert tool_msgs[0].status == expected_status
+    assert tool_msgs[0].content == str(result)

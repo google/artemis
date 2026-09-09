@@ -37,7 +37,7 @@ STEPS = [
     {
         "step_number": 11,
         "action_taken": [{"action": "click", "coordinates": [540, 1800], "target_text": "player"}],
-        "last_execution_result": {"status": "success"},
+        "last_execution_result": {"status": "dispatched"},
     },
     {
         "step_number": 12,
@@ -98,6 +98,20 @@ def test_open_incident_continues_the_previous_count():
 # --- rendering ----------------------------------------------------------------------
 
 
+def test_render_labels_a_described_coordinate_target_by_its_description():
+    incident = _disappeared()
+    incident["action"] = {
+        "action": "tap",
+        "coordinates": [950, 288],
+        "normalized_coordinates": [880, 120],
+        "target_description": "skip ad button",
+    }
+    text = render_execution_incident(incident, STEPS)
+    assert 'normalized [880, 120] "skip ad button" (self-described)' in text
+    # An observed (index) target carries no marker.
+    assert '"Skip" (self-described)' not in render_execution_incident(_disappeared(), STEPS)
+
+
 def test_render_disappeared_names_target_trigger_and_burst_exception():
     text = render_execution_incident(_disappeared(), STEPS)
     assert text.startswith(EXECUTION_INCIDENT_MARKER)
@@ -106,7 +120,7 @@ def test_render_disappeared_names_target_trigger_and_burst_exception():
     # Recorded target with normalized coordinates and text.
     assert 'normalized [880, 120] "Skip"' in text
     # The last successful action before the incident is the trigger candidate.
-    assert "Your last successfully executed action was `Tapped 'player' at [540, 1800]`" in text
+    assert "Your last dispatched action was `Tapped 'player' at [540, 1800]`" in text
     assert "(Step 11)" in text
     # Facts and evidence only: the response protocol is stated once, in the
     # static system prompt, so the per-turn block never restates it.
@@ -145,7 +159,7 @@ def test_render_burst_abort_and_exec_error():
 
 def test_render_without_history_omits_the_trigger_hint():
     text = render_execution_incident(_disappeared(), [])
-    assert "last successfully executed action" not in text
+    assert "last dispatched action" not in text
     assert 'Its recorded target was normalized [880, 120] "Skip".' in text
 
 

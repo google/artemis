@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.utils.task_tree import render_step_replay
 
 DEFAULT_MAX_STEPS = 5
@@ -48,12 +49,12 @@ def replay_steps_text(
 ) -> str:
     """Replays steps ``start_step``..``end_step`` (inclusive, 1-based) from ``reader``."""
     if reader is None:
-        return "Error: no execution history available."
+        return ToolFailure("Error: no execution history available.")
     try:
         start = int(start_step)
         end = start if end_step is None else int(end_step)
     except (TypeError, ValueError):
-        return (
+        return ToolFailure(
             f"Error: start_step and end_step must be integers, got {start_step!r} and {end_step!r}."
         )
     if start > end:
@@ -71,11 +72,11 @@ def replay_steps_text(
     try:
         steps: list[dict] = reader.get_agent_friendly_steps_in_range(start, end) or []
     except Exception as e:
-        return f"Error loading steps {start}–{end}: {e}"
+        return ToolFailure(f"Error loading steps {start}–{end}: {e}")
     if not steps:
         if start == end:
-            return f"Error: step {start} not found."
-        return f"Error: no recorded steps in range {start}–{end}."
+            return ToolFailure(f"Error: step {start} not found.")
+        return ToolFailure(f"Error: no recorded steps in range {start}–{end}.")
 
     budget_tokens = max(1, int(max_tokens or DEFAULT_MAX_TOKENS))
     rendered: list[str] = []
@@ -89,7 +90,7 @@ def replay_steps_text(
         try:
             text = render_step_replay(step)
         except Exception as e:
-            return f"Error rendering steps {start}–{end}: {e}"
+            return ToolFailure(f"Error rendering steps {start}–{end}: {e}")
         cost = _estimate_tokens(text) + 1
         # The first step is always replayed; afterwards the budget drops whole
         # trailing steps rather than truncating a step in the middle.

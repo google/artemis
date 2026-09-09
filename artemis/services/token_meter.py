@@ -34,6 +34,7 @@ import threading
 from typing import Any
 
 from artemis.data_engine.context_vars import CURRENT_NODE_NAME
+from artemis.llm.google import usage_from_message
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -55,59 +56,18 @@ OPERATOR_NODE_NAMES = frozenset({"operator", "flashrunner"})
 def extract_usage(response: Any) -> dict[str, int] | None:
     """Extracts unified token usage from an LLM response message, best-effort.
 
-    Prefers LangChain's normalized ``usage_metadata``; falls back to raw
-    provider shapes in ``response_metadata``. Returns None when the response
-    carries no usable usage numbers.
+    Thin wrapper over :func:`artemis.llm.google.usage.usage_from_message`
+    that keeps the meter's historical four-key shape. Returns None when the
+    response carries no usable usage numbers.
     """
-    usage: dict[str, Any] | None = None
-    raw = getattr(response, "usage_metadata", None)
-    if isinstance(raw, dict) and raw:
-        usage = raw
-    else:
-        meta = getattr(response, "response_metadata", None)
-        if isinstance(meta, dict):
-            candidate = meta.get("usage_metadata") or meta.get("token_usage")
-            if isinstance(candidate, dict) and candidate:
-                usage = candidate
+    usage = usage_from_message(response)
     if usage is None:
         return None
-
-    def _int(value: Any) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-
-    prompt = _int(
-        usage.get("input_tokens") or usage.get("prompt_tokens") or usage.get("prompt_token_count")
-    )
-    completion = _int(
-        usage.get("output_tokens")
-        or usage.get("completion_tokens")
-        or usage.get("candidates_token_count")
-    )
-    total = _int(usage.get("total_tokens") or usage.get("total_token_count")) or (
-        prompt + completion
-    )
-
-    cached = 0
-    details = usage.get("input_token_details")
-    if isinstance(details, dict):
-        cached = _int(details.get("cache_read"))
-    if not cached:
-        cached = _int(
-            usage.get("cached_content_token_count")
-            or usage.get("cachedContentTokenCount")
-            or usage.get("cached_tokens")
-        )
-
-    if total <= 0:
-        return None
     return {
-        "prompt_tokens": prompt,
-        "completion_tokens": completion,
-        "total_tokens": total,
-        "cached_tokens": cached,
+        "prompt_tokens": usage["prompt_tokens"],
+        "completion_tokens": usage["completion_tokens"],
+        "total_tokens": usage["total_tokens"],
+        "cached_tokens": usage["cached_tokens"],
     }
 
 

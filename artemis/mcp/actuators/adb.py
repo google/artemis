@@ -14,10 +14,9 @@
 
 """ADB-backed actuator: the reference implementation of the actuator contract.
 
-The device-call bodies here were extracted from
-``artemis.agents.validator.tool_declarations.MobileActionExecutor``; the outcome
-message wording is preserved byte-for-byte because agent transcripts, trace payloads,
-and existing tests assert on it.
+Outcome messages describe the dispatched command, such as
+"Tapped at [x, y] (normalized)." The agent verifies the effect from subsequent
+observations.
 
 Error convention: device-level refusals the controller *reports* (an ``error`` field,
 a falsy success flag) come back as ``ActionResult(ok=False)`` with the historical
@@ -147,13 +146,13 @@ class AdbActuator:
                     f"Error executing click at step {i + 1}: {err}",
                     detail=str(err),
                 )
-            outcomes.append(f"Tapped at [{x}, {y}]")
+            outcomes.append(f"[{nx}, {ny}]")
             if i < len(points) - 1:
                 await asyncio.sleep(max(0, delay_ms) / 1000.0)
 
         return ActionResult.success(
             "click_sequence",
-            f"Sequence clicked successfully: {'; '.join(outcomes)}",
+            f"Tapped in sequence at {'; '.join(outcomes)} (normalized).",
         )
 
     # --- Optional actions ------------------------------------------------------------
@@ -166,7 +165,7 @@ class AdbActuator:
             return ActionResult.failure("click", f"Error executing click: {err}", detail=str(err))
         return ActionResult.success(
             "click",
-            f"Clicked at [{nx}, {ny}] (normalized) successfully.",
+            f"Tapped at [{nx}, {ny}] (normalized).",
             normalized_coordinates=[int(nx), int(ny)],
         )
 
@@ -182,7 +181,7 @@ class AdbActuator:
             )
         return ActionResult.success(
             "long_press",
-            f"Long pressed at [{nx}, {ny}] (normalized) for {duration_ms}ms successfully.",
+            f"Long-pressed at [{nx}, {ny}] (normalized) for {duration_ms}ms.",
             normalized_coordinates=[int(nx), int(ny)],
             duration_ms=duration_ms,
         )
@@ -227,7 +226,8 @@ class AdbActuator:
 
         return ActionResult.success(
             "input_text",
-            f"Executed typing '{text}'.",
+            f"Typed '{text}'"
+            + (f" at [{coords[0]}, {coords[1]}] (normalized)." if coords else "."),
             normalized_coordinates=coords,
         )
 
@@ -246,7 +246,7 @@ class AdbActuator:
             return ActionResult.failure("swipe", f"Error dragging: {err}", detail=str(err))
         return ActionResult.success(
             "swipe",
-            f"Swipe completed successfully. Swiped from [{nx1}, {ny1}] to [{nx2}, {ny2}].",
+            f"Swiped from [{nx1}, {ny1}] to [{nx2}, {ny2}] (normalized).",
             normalized_coordinates=[int(nx1), int(ny1), int(nx2), int(ny2)],
             duration_ms=duration_ms,
         )
@@ -281,7 +281,7 @@ class AdbActuator:
             if not res:
                 return ActionResult.failure("press_key", f"Error executing key press '{key}'.")
 
-        return ActionResult.success("press_key", f"Executed key press '{key}'.")
+        return ActionResult.success("press_key", f"Pressed key '{key}'.")
 
     async def manage_app(self, action: str, app_name: str) -> ActionResult:
         # Imported lazily: launch_app pulls in tool wrappers that are costly at import.
@@ -310,7 +310,7 @@ class AdbActuator:
             if success:
                 return ActionResult.success(
                     "manage_app",
-                    f"Launched app '{app_name}' ({target_pkg}) successfully.",
+                    f"Launched app '{app_name}' ({target_pkg}); foreground confirmed.",
                 )
             return ActionResult.failure(
                 "manage_app",
@@ -322,7 +322,9 @@ class AdbActuator:
                 res_term = self.controller.terminate_app(target_pkg)
                 if inspect.iscoroutine(res_term):
                     await res_term
-            return ActionResult.success("manage_app", f"Terminated app '{app_name}' successfully.")
+            return ActionResult.success(
+                "manage_app", f"Force-stopped app '{app_name}' ({target_pkg})."
+            )
         return ActionResult.failure(
             "manage_app",
             f"Invalid manage_app action: {action}",
@@ -334,7 +336,7 @@ class AdbActuator:
         await asyncio.sleep(delay_s)
         return ActionResult.success(
             "wait_for_delay",
-            f"Waited for {time_in_ms}ms successfully.",
+            f"Waited {time_in_ms}ms.",
             duration_ms=int(time_in_ms),
         )
 
@@ -360,7 +362,8 @@ class AdbActuator:
         if found:
             return ActionResult.success(
                 "wait_for_text",
-                f"Successfully waited for text '{text}' to {target_state}.",
+                f"Text '{text}' {'appeared' if target_state == 'appear' else 'disappeared'}"
+                f" in the UI tree after {int((time.time() - start) * 1000)}ms.",
             )
         return ActionResult.failure(
             "wait_for_text",
@@ -371,7 +374,7 @@ class AdbActuator:
     async def open_link(self, url: str) -> ActionResult:
         success = await self.controller.open_url(url)
         if success:
-            return ActionResult.success("open_link", f"Opened link '{url}' successfully.")
+            return ActionResult.success("open_link", f"Opened link '{url}'.")
         return ActionResult.failure("open_link", f"Failed to open link '{url}'.")
 
     async def erase_one_char(self) -> ActionResult:
@@ -394,7 +397,7 @@ class AdbActuator:
         if success:
             return ActionResult.success(
                 "focus_and_clear_text",
-                f"Cleared text at [{nx}, {ny}] (normalized) successfully.",
+                f"Cleared text at [{nx}, {ny}] (normalized).",
                 normalized_coordinates=[int(nx), int(ny)],
             )
         return ActionResult.failure("focus_and_clear_text", "Failed to erase text.")

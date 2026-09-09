@@ -49,6 +49,7 @@ from artemis.config import settings
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
+from artemis.llm.google import is_gemini_model, strip_provider_prefix
 from artemis.utils.logger import get_logger
 from artemis.utils.ocr_api import is_ocr_configured
 
@@ -118,9 +119,7 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         llm_cfg = getattr(llm_config, "explorer", None) if llm_config else None
         model = getattr(llm_cfg, "model", None) if llm_cfg else None
         model_name = model if isinstance(model, str) and model else DEFAULT_EXPLORER_MODEL
-        if "/" in model_name:
-            model_name = model_name.split("/")[-1]
-        return model_name
+        return strip_provider_prefix(model_name)
 
     def _detect_native_engine(self) -> bool:
         """True when the native google-genai SDK should drive the reasoning loop.
@@ -129,7 +128,7 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         client already shared on the context) the SDK cannot be constructed,
         so such configurations run through the universal LangChain engine.
         """
-        if "gemini" not in self.model_name.lower():
+        if not is_gemini_model(self.model_name):
             return False
         if getattr(self.ctx, "_genai_client", None) is not None:
             return True

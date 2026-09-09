@@ -32,6 +32,7 @@ from artemis.agents.video_analyzer import video_analyzer as _va
 from artemis.agents.video_analyzer.reliability import classify_video_failure
 from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan
+from artemis.llm.google import normalize_usage
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -349,24 +350,9 @@ async def _consume_main_stream(
     function_calls = []
 
     async for chunk in stream:
-        if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-            span.payload["usage_metadata"] = {
-                "prompt_token_count": getattr(
-                    chunk.usage_metadata,
-                    "prompt_token_count",
-                    0,
-                ),
-                "candidates_token_count": getattr(
-                    chunk.usage_metadata,
-                    "candidates_token_count",
-                    0,
-                ),
-                "total_token_count": getattr(
-                    chunk.usage_metadata,
-                    "total_token_count",
-                    0,
-                ),
-            }
+        usage = normalize_usage(getattr(chunk, "usage_metadata", None))
+        if usage:
+            span.payload["usage_metadata"] = usage
 
         chunk_text = chunk.text or ""
         text += chunk_text

@@ -316,4 +316,4 @@ def test_untracked_messages_are_never_touched(mock_context):
     assert messages[0].content == "[REAL-TIME INJECTED INSTRUCTION from user]: stay put"
     assert messages[2].content == "thinking"
     # Image-only tool message froze with the defensive fallback text.
-    assert messages[1].content == [{"type": "text", "text": "Action completed."}]
+    assert messages[1].content == [{"type": "text", "text": "Action dispatched."}]

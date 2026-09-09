@@ -18,7 +18,10 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from artemis.context import ArtemisContext
+from artemis.core.tool_failure import ToolFailure
 from artemis.tools.committee_tool import get_ask_committee_tool
 
 
@@ -210,3 +213,141 @@ class TestCommitteeTool(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- member tool results: status is structural, never sniffed from the words ----------
+
+
+def _text_tool(name: str, result):
+    from langchain_core.tools import StructuredTool
+
+    async def _run(start_step: int, end_step: int | None = None) -> str:
+        return result
+
+    return StructuredTool.from_function(coroutine=_run, name=name, description=name)
+
+
+async def _run_committee_with_history_tool(tmp_path, history_tool):
+    """Drives one debate round whose History Analyzer calls ``history_tool``
+    once; returns the messages of that member's second turn."""
+    from langchain_core.messages import AIMessage
+
+    (tmp_path / "notes").mkdir()
+    screenshot = tmp_path / "shot.jpg"
+    screenshot.write_bytes(b"fake image bytes")
+
+    ctx = MagicMock(spec=ArtemisContext)
+    ctx.device = MagicMock()
+    ctx.device.device_width = 1080
+    ctx.device.device_height = 2400
+    ctx.data_engine = MagicMock()
+    ctx.data_engine.base_dir = str(tmp_path)
+    ctx.data_engine.get_agent_friendly_steps.return_value = [
+        {"pre_image_name": "test_image", "step_number": 1}
+    ]
+    ctx.execution_setup = MagicMock()
+    ctx.execution_setup.committee_debate_rounds = 1
+
+    state = MagicMock()
+    state.initial_goal = "Test Goal"
+    state.messages = []
+    state.latest_ui_hierarchy = None
+    state.latest_screenshot = str(screenshot)
+    state.focused_app_info = None
+    state.device_date = None
+    state.structured_decisions = None
+    state.complete_subgoals_by_ids = []
+
+    def _text_turn(text):
+        return AIMessage(content=text, tool_calls=[])
+
+    llm_pl = MagicMock()
+    llm_pl.bind_tools.return_value = llm_pl
+    llm_pl.ainvoke = AsyncMock(side_effect=[_text_turn("Op: tap."), _text_turn("Final.")])
+
+    llm_diag = MagicMock()
+    llm_diag.bind_tools.return_value = llm_diag
+    llm_diag.ainvoke = AsyncMock(return_value=_text_turn("Diag: fine."))
+
+    llm_hist = MagicMock()
+    llm_hist.bind_tools.return_value = llm_hist
+    llm_hist.ainvoke = AsyncMock(
+        side_effect=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "replay_steps", "args": {"start_step": 1, "end_step": 1}, "id": "c1"}
+                ],
+            ),
+            _text_turn("Hist: step 1 seen."),
+        ]
+    )
+    members = {
+        "planner_avatar": llm_pl,
+        "diagnoser_expert": llm_diag,
+        "history_analyzer_expert": llm_hist,
+    }
+
+    with (
+        patch(
+            "artemis.tools.committee_tool.get_llm",
+            side_effect=lambda ctx, name, temperature=None: members[name],
+        ),
+        patch("artemis.tools.committee_tool.get_history_tools", return_value=[history_tool]),
+        patch("artemis.tools.committee_tool.trace_langchain_tool", side_effect=lambda t, ctx: t),
+    ):
+        tool = get_ask_committee_tool(ctx)
+        from artemis.data_engine.trace import CURRENT_TRACE_ID
+
+        token = CURRENT_TRACE_ID.set("test_trace_id")
+        try:
+            outcome = await tool.ainvoke({"avatar_directive": "Advocate", "state": state})
+        finally:
+            CURRENT_TRACE_ID.reset(token)
+
+    assert "Final." in outcome
+    assert llm_hist.ainvoke.await_count == 2
+    return llm_hist.ainvoke.call_args_list[1].args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result, expected_status",
+    [
+        pytest.param(ToolFailure("Error: step 1 not found."), "error", id="tool_failure"),
+        pytest.param("Error 404 was typed into the search box", "success", id="plain_error_text"),
+    ],
+)
+async def test_committee_member_tool_message_status_is_structural(
+    tmp_path, result, expected_status
+):
+    from langchain_core.messages import ToolMessage
+
+    messages = await _run_committee_with_history_tool(tmp_path, _text_tool("replay_steps", result))
+
+    tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].tool_call_id == "c1"
+    assert tool_msgs[0].status == expected_status
+    assert tool_msgs[0].content == str(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_status", ["error", "success"])
+async def test_committee_member_keeps_tool_message_status(tmp_path, tool_status):
+    """A tool answering with a ``ToolMessage`` (video analyzer, note tools)
+    carries failure only in ``status``: its content is plain str. The member
+    loop must read the status off the raw message, not off the unwrapped
+    content, or every such failure is re-labelled a success."""
+    from langchain_core.messages import ToolMessage
+
+    returned = ToolMessage(tool_call_id="c1", content="boom", status=tool_status)
+    messages = await _run_committee_with_history_tool(
+        tmp_path, _text_tool("replay_steps", returned)
+    )
+
+    tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].tool_call_id == "c1"
+    assert tool_msgs[0].status == tool_status
+    assert tool_msgs[0].content == "boom"

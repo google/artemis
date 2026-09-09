@@ -25,6 +25,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.agents.video_analyzer.video_analyzer import VideoAnalyzer
 from artemis.context import ArtemisContext
 from artemis.core.tool_declaration import ToolDeclaration
@@ -220,11 +221,11 @@ class VideoAnalyzerPureTool(ArtemisTool):
             agent = VideoAnalyzer(ctx)
             agent_outcome, status = await agent.run(time_desc, purp)
             if status == "failed":
-                return f"Video analysis failed: {agent_outcome}"
+                return ToolFailure(f"Video analysis failed: {agent_outcome}")
             return agent_outcome
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error(f"Error in pure video_analyzer tool: {e}")
-            return f"Error running video analyzer: {e}"
+            return ToolFailure(f"Error running video analyzer: {e}")
 
 
 # Universal pure tool instance & aliases

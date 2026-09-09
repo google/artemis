@@ -532,7 +532,7 @@ def test_build_plan_and_history_fast_action_burst():
         "* [Planned Fast-Action Burst]: 3 actions fired back to back without the"
         " safety net" in output
     )
-    assert "    1. Tapped element at [500, 900] (executed)" in output
+    assert "    1. Tapped element at [500, 900] (dispatched)" in output
     assert "    2. Tapped 'Skip' at [880, 120] (FAILED: Error: tap rejected)" in output
     assert "    3. Pressed key 'BACK' (skipped)" in output
     assert (
@@ -750,4 +750,89 @@ def test_format_action_clean_reads_flash_arguments_and_maps_manage_app():
             }
         )
         == "Tapped 'Save' at [1, 2]"
+    )
+
+
+def test_format_action_clean_marks_self_described_coordinate_targets():
+    """A coordinate target's label is the model's own description, and every
+    later reader sees it marked as such; an index target's observed element
+    text carries no marker."""
+    from artemis.utils.task_tree import SELF_DESCRIBED_MARKER, format_action_clean
+
+    assert SELF_DESCRIBED_MARKER == "(self-described)"
+    assert (
+        format_action_clean(
+            {"action": "tap", "coordinates": [540, 1440], "target_description": "play button"}
+        )
+        == "Tapped 'play button' (self-described) at [540, 1440]"
+    )
+    # Observed text outranks the description when both are present, unmarked.
+    assert (
+        format_action_clean(
+            {
+                "action": "tap",
+                "coordinates": [1, 2],
+                "target_text": "Play",
+                "target_description": "play button",
+            }
+        )
+        == "Tapped 'Play' at [1, 2]"
+    )
+    assert (
+        format_action_clean(
+            {
+                "action": "long_press_on",
+                "coordinates": [1, 2],
+                "duration": 1500,
+                "target_description": "app icon",
+            }
+        )
+        == "Long pressed 'app icon' (self-described) at [1, 2] for 1500ms"
+    )
+    assert (
+        format_action_clean(
+            {
+                "action": "focus_and_input_text",
+                "coordinates": [3, 4],
+                "text": "hello",
+                "target_description": "search box",
+            }
+        )
+        == "Inputted 'hello' into 'search box' (self-described) at [3, 4]"
+    )
+    assert (
+        format_action_clean(
+            {
+                "action": "swipe",
+                "coordinates": [100, 500, 900, 500],
+                "duration": 800,
+                "target_description": "brightness knob",
+            }
+        )
+        == "Swiped 'brightness knob' (self-described) from [100, 500] to [900, 500] over 800ms"
+    )
+    # Flash keeps the description under ``args``; it is read from there too.
+    assert (
+        format_action_clean(
+            {
+                "action": "click",
+                "coordinates": [320, 399],
+                "args": {"target": [320, 399], "target_description": "skip ad"},
+            }
+        )
+        == "Tapped 'skip ad' (self-described) at [320, 399]"
+    )
+    assert format_action_clean(
+        {
+            "action": "click_sequence",
+            "coordinates": [[500, 280], [885, 362]],
+            "target_descriptions": ["video body", "skip button"],
+        }
+    ) == (
+        "Tapped sequence of targets: 'video body' (self-described) at [500, 280],"
+        " 'skip button' (self-described) at [885, 362]"
+    )
+    # Unnamed targets stay unnamed: no marker without a description.
+    assert format_action_clean({"action": "tap", "coordinates": [1, 2]}) == (
+        "Tapped element at [1, 2]"
     )

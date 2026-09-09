@@ -19,6 +19,7 @@ from uuid import uuid4
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
+from artemis.core.tool_failure import is_tool_failure
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import (
     TraceSpan,
@@ -28,6 +29,7 @@ from artemis.data_engine.trace import (
 from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
 from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER, operator_shell_tool
+from artemis.llm.google import usage_from_message
 from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
 from artemis.tools.command_tool import (
     analyze_task_output_wrapper,
@@ -46,7 +48,6 @@ from artemis.utils.coordinates import (
     parse_swipe_parameters,
 )
 from artemis.utils.decorators import wrap_with_callbacks
-from artemis.utils.element_hit_test import find_element_at_point
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.plan_grammar import parse_plan
@@ -90,6 +91,13 @@ from artemis.agents.operator.prompts import (
     render_transcript_static_system,
 )
 from artemis.agents.operator.prompts import load_operator_prompts
+
+
+def _described(value: Any) -> str | None:
+    """Trim target_description, returning None for missing or blank values."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 class OperatorNode:
@@ -462,25 +470,13 @@ class OperatorNode:
             bound_llm = base_llm.bind_tools(tools=traced_tools)
             response = await invoke_llm_with_timeout_message(acomplete(bound_llm, current_messages))
 
-            if hasattr(response, "response_metadata") and response.response_metadata:
-                usage = (
-                    response.response_metadata.get("usage_metadata")
-                    or response.response_metadata.get("token_usage")
-                    or {}
+            usage = usage_from_message(response)
+            if usage is not None:
+                logger.info(
+                    f"LLM usage: prompt_tokens={usage['prompt_tokens']}"
+                    f" (cached={usage['cached_tokens']}),"
+                    f" completion_tokens={usage['completion_tokens']}"
                 )
-                prompt_tokens = usage.get("prompt_token_count") or usage.get("prompt_tokens")
-                cached_tokens = usage.get("cached_content_token_count") or usage.get(
-                    "cached_tokens", 0
-                )
-                completion_tokens = usage.get("candidates_token_count") or usage.get(
-                    "completion_tokens"
-                )
-                if prompt_tokens is not None:
-                    logger.info(
-                        f"LLM usage: prompt_tokens={prompt_tokens}"
-                        f" (cached={cached_tokens}),"
-                        f" completion_tokens={completion_tokens}"
-                    )
 
             if response.content:
                 if isinstance(response.content, str):
@@ -589,30 +585,10 @@ class OperatorNode:
                                 )
 
                                 content = get_tool_result_content(result_obj)
-                                status = "success"
-
-                                if isinstance(result_obj, ToolMessage) and result_obj.status:
-                                    status = result_obj.status
-
-                                is_err = status == "error"
-                                if not is_err:
-                                    if isinstance(content, str):
-                                        if content.startswith(
-                                            "Failed"
-                                        ) or content.lower().startswith("error"):
-                                            is_err = True
-                                    elif isinstance(content, list):
-                                        for block in content:
-                                            if (
-                                                isinstance(block, dict)
-                                                and block.get("type") == "text"
-                                            ):
-                                                text = block.get("text", "")
-                                                if text.startswith(
-                                                    "Failed"
-                                                ) or text.lower().startswith("error"):
-                                                    is_err = True
-                                                    break
+                                # Failure is structural (a ToolMessage status or a
+                                # ToolFailure text), never sniffed from the words.
+                                is_err = is_tool_failure(result_obj)
+                                status = "error" if is_err else "success"
 
                                 if is_err:
                                     other_tool_failed = True
@@ -811,44 +787,6 @@ class OperatorNode:
             native_thinking,
             tool_limit_exceeded,
         )
-
-    async def _run_other_tool(
-        self,
-        tc,
-        traced_tools,
-        new_subagent_calls,
-        state: State,
-        raw_thoughts: list,
-        native_thoughts: list,
-    ) -> str:
-        tool_name = tc["name"]
-        logger.info(f"Operator requested tool: {tool_name}")
-        if tool_name in ["ask_diagnoser", "video_analyzer"]:
-            new_subagent_calls.append(tool_name)
-        if ":" in tool_name:
-            tool_to_run = get_tool_by_name(tool_name, traced_tools)
-        else:
-            tool_to_run = next((t for t in traced_tools if t.name == tool_name), None)
-        if tool_to_run:
-            try:
-                args = dict(tc["args"])
-
-                state.operator_raw_thinking = "\n".join(raw_thoughts) if raw_thoughts else None
-                state.operator_native_thinking = (
-                    "\n".join(native_thoughts) if native_thoughts else None
-                )
-
-                result_obj = await invoke_tool_with_injection(
-                    tool=tool_to_run,
-                    args=args,
-                    tool_call_id=tc["id"],
-                    state=state,
-                )
-                return get_tool_result_content(result_obj)
-            except Exception as e:
-                return f"Error running tool {tool_name}: {e}"
-        else:
-            return f"Error: Tool {tool_name} not supported"
 
     @wrap_with_callbacks(
         before=lambda: logger.info("Starting Operator Agent..."),
@@ -1110,9 +1048,13 @@ class OperatorNode:
             except (AttributeError, TypeError):
                 pass
 
-        def resolve_target_element(
-            target: Any,
-        ) -> tuple[dict | None, str | None]:
+        def resolve_target_element(target: Any, description: Any) -> tuple[dict | None, str | None]:
+            """Resolves a target to ``{"center": [x, y], **semantics}``.
+
+            An element index carries observed semantics (text, bounds, id, class
+            straight from the indexed list); a coordinate pair carries only the
+            model's own ``target_description``. The two never mix.
+            """
             if isinstance(target, (int, float)):
                 try:
                     target_int = int(target)
@@ -1120,7 +1062,14 @@ class OperatorNode:
                     return None, f"Error: Invalid target index {target}."
                 indexed_elements = getattr(state, "indexed_elements", None) or []
                 if 1 <= target_int <= len(indexed_elements):
-                    return {**indexed_elements[target_int - 1], "label_source": "index"}, None
+                    el = indexed_elements[target_int - 1]
+                    return {
+                        "center": el.get("center"),
+                        "target_text": el.get("text"),
+                        "target_bounds": el.get("bounds"),
+                        "target_resource_id": el.get("resource_id"),
+                        "target_class": el.get("class"),
+                    }, None
                 return (
                     None,
                     (
@@ -1129,26 +1078,21 @@ class OperatorNode:
                     ),
                 )
             elif isinstance(target, list) and len(target) == 2:
+                described = _described(description)
+                if described is None:
+                    return (
+                        None,
+                        (
+                            f"Error: Coordinate target {target} requires"
+                            " 'target_description' (what the element is, in a few"
+                            " words). Provide it, or address the element by index."
+                        ),
+                    )
                 try:
                     nx, ny = map(float, target)
                     x = int(max(0, min(width - 1, nx * width / 1000)))
                     y = int(max(0, min(height - 1, ny * height / 1000)))
-                    # Record-time enrichment: a bare-coordinate target carries no
-                    # element semantics, so hit test the pre-action frame's indexed
-                    # elements to best-effort recover what sits under the point.
-                    hit_el, hit_source = find_element_at_point(
-                        getattr(state, "indexed_elements", None), x, y
-                    )
-                    hit_el = hit_el or {}
-                    return {
-                        "center": [x, y],
-                        "text": hit_el.get("text"),
-                        "bounds": hit_el.get("bounds"),
-                        "class": hit_el.get("class"),
-                        "resource_id": hit_el.get("resource_id"),
-                        "is_ocr": bool(hit_el.get("is_ocr")),
-                        "label_source": hit_source,
-                    }, None
+                    return {"center": [x, y], "target_description": described}, None
                 except (ValueError, TypeError):
                     return (
                         None,
@@ -1162,11 +1106,15 @@ class OperatorNode:
                 ),
             )
 
+        def target_fields(el: dict) -> dict:
+            """The recorded target semantics: observed (index) or described (coords)."""
+            return {k: v for k, v in el.items() if k != "center"}
+
         if tool_name == "click":
             target = args.get("target")
             times = args.get("times", 1)
             delay_ms = args.get("delay_ms", 100)
-            el, err = resolve_target_element(target)
+            el, err = resolve_target_element(target, args.get("target_description"))
             if err:
                 return [], err
             norm_c = [
@@ -1181,18 +1129,14 @@ class OperatorNode:
                     "normalized_coordinates": norm_c,
                     "times": times,
                     "delay_ms": delay_ms,
-                    "target_text": el.get("text"),
-                    "target_bounds": el.get("bounds"),
-                    "target_resource_id": el.get("resource_id"),
-                    "target_class": el.get("class"),
-                    "target_label_source": el.get("label_source", "none"),
+                    **target_fields(el),
                 }
             ], None
 
         elif tool_name == "long_press":
             target = args.get("target")
             duration = args.get("duration", 1000)
-            el, err = resolve_target_element(target)
+            el, err = resolve_target_element(target, args.get("target_description"))
             if err:
                 return [], err
             norm_c = [
@@ -1206,11 +1150,7 @@ class OperatorNode:
                     COORDINATE_SPACE_KEY: COORDINATE_SPACE_PIXEL,
                     "normalized_coordinates": norm_c,
                     "duration": duration,
-                    "target_text": el.get("text"),
-                    "target_bounds": el.get("bounds"),
-                    "target_resource_id": el.get("resource_id"),
-                    "target_class": el.get("class"),
-                    "target_label_source": el.get("label_source", "none"),
+                    **target_fields(el),
                 }
             ], None
 
@@ -1227,7 +1167,7 @@ class OperatorNode:
                     (f"Error: 'text' must be a string, got {type(text).__name__}."),
                 )
 
-            el, err = resolve_target_element(target)
+            el, err = resolve_target_element(target, args.get("target_description"))
             if err:
                 return [], err
 
@@ -1244,11 +1184,7 @@ class OperatorNode:
                     "normalized_coordinates": norm_c,
                     "text": text,
                     "clear_before_input": clear_exist,
-                    "target_text": el.get("text"),
-                    "target_bounds": el.get("bounds"),
-                    "target_resource_id": el.get("resource_id"),
-                    "target_class": el.get("class"),
-                    "target_label_source": el.get("label_source", "none"),
+                    **target_fields(el),
                 }
             )
             return actions, None
@@ -1271,6 +1207,9 @@ class OperatorNode:
             else:
                 duration = parsed_duration
 
+            # Only a coordinate gesture needs the model to say what it drags; a
+            # directional scroll targets the page, not an element.
+            described: str | None = None
             if kind == "direction":
                 x1, y1, x2, y2, smart_dur = compute_smart_swipe_coordinates(
                     direction=target,
@@ -1284,6 +1223,16 @@ class OperatorNode:
                 if duration is None:
                     duration = smart_dur
             elif kind == "coords" and isinstance(target, list) and len(target) == 4:
+                described = _described(args.get("target_description"))
+                if described is None:
+                    return (
+                        [],
+                        (
+                            f"Error: Coordinate swipe {target} requires"
+                            " 'target_description' (what is being dragged, in a few"
+                            " words). Provide it, or use a directional swipe."
+                        ),
+                    )
                 try:
                     nx1, ny1, nx2, ny2 = map(float, target)
                     x1 = int(max(0, min(width - 1, nx1 * width / 1000)))
@@ -1327,6 +1276,7 @@ class OperatorNode:
                     "normalized_start_coordinates": [nx1, ny1],
                     "normalized_end_coordinates": [nx2, ny2],
                     "duration": duration,
+                    **({"target_description": described} if described else {}),
                 }
             ], None
 

@@ -36,7 +36,10 @@ from langchain_core.messages import (
 )
 
 from artemis.agents.video_analyzer import video_analyzer as _va
-from artemis.agents.video_analyzer.reliability import classify_video_failure
+from artemis.agents.video_analyzer.reliability import (
+    SubAgentAnswerExhausted,
+    classify_video_failure,
+)
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan
 from artemis.utils.logger import get_logger
 
@@ -218,29 +221,33 @@ async def _invoke_universal_with_visual_retry(
 
 
 def _extract_submit_payload(response) -> tuple[str, str, list]:
-    """Pulls summary/analysis/timeline events from a universal model response."""
-    final_summary = "No summary provided."
-    final_analysis = "No analysis provided."
-    timeline_events = []
+    """Extract a summary, analysis, and events from the model response.
 
-    if getattr(response, "tool_calls", None):
-        for tc in response.tool_calls:
-            if tc.get("name") == "submit_answer":
-                args = tc.get("args", {})
-                final_summary = (
-                    str(args.get("summary", "")).strip().replace("\n", " ") or final_summary
-                )
-                final_analysis = (
-                    str(args.get("analysis", "")).strip().replace("\n", " ") or final_analysis
-                )
-                timeline_events = args.get("timeline_events", [])
-                break
-    elif getattr(response, "content", None):
-        text_content = str(response.content).strip()
-        final_summary = text_content[:200].replace("\n", " ")
-        final_analysis = text_content
+    Use the first submit_answer call if its summary is non-empty. Otherwise,
+    fall back to response text, using its first 200 characters as the summary
+    and dropping any events from the rejected call. Raise SubAgentAnswerExhausted
+    if neither source provides an answer.
+    """
+    for tc in getattr(response, "tool_calls", None) or []:
+        if tc.get("name") != "submit_answer":
+            continue
+        args = tc.get("args") or {}
+        final_summary = str(args.get("summary", "")).strip().replace("\n", " ")
+        if not final_summary:
+            break
+        final_analysis = (
+            str(args.get("analysis", "")).strip().replace("\n", " ") or "No analysis provided."
+        )
+        return final_summary, final_analysis, list(args.get("timeline_events") or [])
 
-    return final_summary, final_analysis, timeline_events
+    raw_content = getattr(response, "content", None)
+    text_content = str(raw_content).strip() if raw_content else ""
+    if text_content:
+        return text_content[:200].replace("\n", " "), text_content, []
+
+    raise SubAgentAnswerExhausted(
+        1, "the model neither called submit_answer with a summary nor replied with text"
+    )
 
 
 async def _persist_universal_events(
@@ -361,23 +368,9 @@ async def exec_analyze_audio_universal(
         label="Universal audio sub-agent",
         force_fallback=force_fallback,
     )
-    final_summary = "No audio summary provided."
-    final_analysis = "No audio analysis provided."
-
-    if getattr(response, "tool_calls", None):
-        for tc in response.tool_calls:
-            if tc.get("name") == "submit_answer":
-                args = tc.get("args", {})
-                final_summary = (
-                    str(args.get("summary", "")).strip().replace("\n", " ") or final_summary
-                )
-                final_analysis = (
-                    str(args.get("analysis", "")).strip().replace("\n", " ") or final_analysis
-                )
-                break
-    elif getattr(response, "content", None):
-        final_summary = str(response.content)[:200].replace("\n", " ")
-        final_analysis = str(response.content)
+    # Same resolution order as the video chunk (raises SubAgentAnswerExhausted
+    # when the model produced nothing usable); audio has no timeline events.
+    final_summary, final_analysis, _ = _extract_submit_payload(response)
 
     end_val = end_time if end_time is not None else "unknown"
     analyzer._record_blackboard_entry(

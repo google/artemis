@@ -19,6 +19,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.agents.log_analyzer.log_analyzer import LogAnalyzerNode
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
@@ -83,7 +84,7 @@ class AnalyzeLogsTool(ArtemisTool):
         st = state if state is not None else kwargs.get("state")
         logger.info(f"analyze_logs tool called with query: '{query}'")
         if ctx is None:
-            return "Error: ArtemisContext is required for LogAnalyzer."
+            return ToolFailure("Error: ArtemisContext is required for LogAnalyzer.")
         analyst = LogAnalyzerNode(ctx)
         result = await analyst.run(query, st)
         return result

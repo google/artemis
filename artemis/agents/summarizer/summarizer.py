@@ -30,8 +30,10 @@ capsule moves up to the chunk-level ``StepCapsuleLens`` in M3.
 """
 
 import json
+from pathlib import Path
 from typing import Any
 
+from artemis.agents.flash.summarizer import build_focus_context
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
@@ -91,6 +93,16 @@ class SummarizerNode:
             else:
                 exec_outcome = "unknown"
 
+        # Operator focus: its own reasoning for the step (the target it chose
+        # and the screen change it expected), the goal, the live sub-goal leaf
+        # and any user instruction injected at this step. Nothing is inferred.
+        focus = build_focus_context(
+            intent=self._operator_reasoning(record, state),
+            goal=getattr(state, "initial_goal", None),
+            subgoal=self._active_subgoal_text(),
+            injected_instruction=getattr(state, "injected_instruction", None),
+        )
+
         service = ensure_step_memory(self.ctx)
         service.dispatch(
             step_number=step_number if isinstance(step_number, int) else 0,
@@ -100,8 +112,40 @@ class SummarizerNode:
             post_img_bytes=post_bytes,
             exec_outcome=exec_outcome,
             data_engine_step_id=step_id,
+            focus=focus,
         )
         logger.info(f"Dispatched visual transition summary for step {step_number} ({step_id})")
+
+    @staticmethod
+    def _operator_reasoning(record: Any, state: State) -> str | None:
+        """The operator's raw reasoning for this step: live state first, record second."""
+        for source in (state, record):
+            text = getattr(source, "operator_raw_thinking", None) if source is not None else None
+            if isinstance(text, str) and text.strip():
+                return text
+        return None
+
+    def _active_subgoal_text(self) -> str | None:
+        """The live sub-goal ledger leaf (``milestone > leaf``) from task_plan, if any."""
+        base_dir = getattr(self.ctx.data_engine, "base_dir", None)
+        if not isinstance(base_dir, (str, Path)):
+            return None
+        try:
+            from artemis.utils.notes import get_note_file_path
+            from artemis.utils.plan_grammar import parse_plan
+
+            path = get_note_file_path(base_dir, "task_plan")
+            if not path.exists():
+                return None
+            snapshot = parse_plan(path.read_text(encoding="utf-8"))
+            leaf = snapshot.last_active()
+            if leaf is None:
+                return None
+            parent = None if leaf.is_top_level else snapshot.parent_of(leaf)
+            return f"{parent.text} > {leaf.text}" if parent is not None else leaf.text
+        except Exception as e:
+            logger.debug(f"Active sub-goal lookup for the focus block skipped: {e}", exc_info=True)
+            return None
 
     def _read_step_image(self, step_number: int | None, which: str) -> bytes | None:
         if not isinstance(step_number, int):

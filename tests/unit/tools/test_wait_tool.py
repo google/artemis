@@ -65,7 +65,7 @@ async def test_wait_direct_execution(mock_ctx):
 
         result = await wait.execute(ctx=mock_ctx, seconds=5)
         mock_sleep.assert_called_once_with(5)
-        assert result == "Successfully waited for 5 seconds."
+        assert result == "Waited 5 seconds."
 
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ async def test_wait_callable_execution(mock_ctx):
 
         result = await wait(ctx=mock_ctx, seconds=3)
         mock_sleep.assert_called_once_with(3)
-        assert result == "Successfully waited for 3 seconds."
+        assert result == "Waited 3 seconds."
 
 
 @pytest.mark.asyncio
@@ -90,7 +90,7 @@ async def test_wait_tool(mock_ctx):
 
     duration = end_time - start_time
     assert duration >= 1.9  # Allow slight timing variations
-    assert "Successfully waited for 2 seconds" in result
+    assert "Waited 2 seconds" in result
 
 
 @pytest.mark.asyncio

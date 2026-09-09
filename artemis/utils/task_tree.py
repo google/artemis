@@ -23,6 +23,23 @@ from artemis.utils.plan_grammar import parse_plan
 
 logger = logging.getLogger(__name__)
 
+#: Suffix on a rendered target label whose text is the acting model's own
+#: ``target_description`` (a coordinate target) rather than the element text
+#: observed in the UI tree (an index target). Every later reader of the history
+#: (Checker, Planner, Summarizer, incident block) sees which kind it is.
+SELF_DESCRIBED_MARKER = "(self-described)"
+
+
+def _target_label(action_obj: dict, *, fallback: str) -> str:
+    """The quoted target label, provenance-marked, or ``fallback`` when unnamed."""
+    observed = action_obj.get("target_text")
+    if observed:
+        return f"'{observed}'"
+    described = action_obj.get("target_description")
+    if described:
+        return f"'{described}' {SELF_DESCRIBED_MARKER}"
+    return fallback
+
 
 def format_action_clean(action_obj) -> str:
     if not action_obj:
@@ -49,7 +66,6 @@ def format_action_clean(action_obj) -> str:
         merged.setdefault("intent", raw_args.get("action"))
         action_obj = merged
 
-    target_text = action_obj.get("target_text") or action_obj.get("text")
     coords = action_obj.get("coordinates") or action_obj.get("target")
     app_name = (
         action_obj.get("app_name")
@@ -60,9 +76,13 @@ def format_action_clean(action_obj) -> str:
     )
     keycode = action_obj.get("keycode") or action_obj.get("key")
 
-    if act_type in ("tap", "click", "long_press"):
-        label = f"'{target_text}'" if target_text else "element"
-        if act_type == "long_press":
+    if act_type in ("tap", "click", "long_press", "long_press_on"):
+        # Legacy records carried the label under ``text``; the typed text of an
+        # input action never reaches this branch.
+        label = _target_label(action_obj, fallback="element")
+        if label == "element" and action_obj.get("text"):
+            label = f"'{action_obj['text']}'"
+        if act_type in ("long_press", "long_press_on"):
             duration = action_obj.get("duration") or action_obj.get("duration_ms")
             duration_str = f" for {duration}ms" if duration else ""
             return f"Long pressed {label} at {coords}{duration_str}"
@@ -82,10 +102,9 @@ def format_action_clean(action_obj) -> str:
             else:
                 return f"Tapped {label} at {coords}"
     elif act_type in ("input_text", "focus_and_input_text"):
-        # The field label is the resolved target's text only — the typed text
-        # is not the field's name.
-        field_text = action_obj.get("target_text")
-        label = f"'{field_text}'" if field_text else "field"
+        # The field label is the resolved target's text (or the model's own
+        # description of the field) only — the typed text is not the field's name.
+        label = _target_label(action_obj, fallback="field")
         text_val = action_obj.get("text")
         clear_exist = action_obj.get("clear_exist") or action_obj.get("clear_before_input")
         clear_str = " (without clearing)" if clear_exist is False else ""
@@ -110,7 +129,9 @@ def format_action_clean(action_obj) -> str:
             if isinstance(coords_list, list) and len(coords_list) == 4:
                 start_coords = coords_list[:2]
                 end_coords = coords_list[2:]
-        return f"Swiped from {start_coords} to {end_coords}{duration_str}"
+        dragged = _target_label(action_obj, fallback="")
+        dragged_str = f" {dragged}" if dragged else ""
+        return f"Swiped{dragged_str} from {start_coords} to {end_coords}{duration_str}"
     elif act_type == "press_key":
         return f"Pressed key '{keycode}'"
     elif act_type == "launch_app":
@@ -142,7 +163,18 @@ def format_action_clean(action_obj) -> str:
         )
         return f"Waited for {delay_val}"
     elif act_type in ("click_sequence", "tap_sequence"):
-        seq = action_obj.get("target") or action_obj.get("sequence") or []
+        seq = (
+            action_obj.get("target")
+            or action_obj.get("sequence")
+            or action_obj.get("coordinates")
+            or []
+        )
+        descriptions = action_obj.get("target_descriptions")
+        if isinstance(descriptions, (list, tuple)) and len(descriptions) == len(seq) and seq:
+            labelled = ", ".join(
+                f"'{d}' {SELF_DESCRIBED_MARKER} at {p}" for d, p in zip(descriptions, seq)
+            )
+            return f"Tapped sequence of targets: {labelled}"
         return f"Tapped sequence of targets: {seq}"
     else:
         return f"Action: {act_type} with args: {json.dumps(action_obj, ensure_ascii=False)}"
@@ -164,7 +196,7 @@ def _is_terminal_attempt_failure(attempts) -> bool:
     if not attempts:
         return False
     last = str(attempts[-1])
-    return last != "Success" and not last.startswith("Skipped")
+    return last != "Dispatched" and not last.startswith("Skipped")
 
 
 def failed_execution_error(result_obj) -> str | None:
@@ -217,11 +249,17 @@ def format_result_clean(result_obj) -> str | None:
 
     status = result_obj.get("status")
     error = failed_execution_error(result_obj)
-    if status in ("failed", "error"):
-        return f"Error: {error}" if error else "Error"
     if error:
-        return f"Error: {error}"
+        return _error_line(error)
+    if status in ("failed", "error"):
+        return "Error"
     return None
+
+
+def _error_line(error: str) -> str:
+    """One ``Error: ...`` line; executor messages already start with "Error"."""
+    text = str(error).strip()
+    return text if text.lower().startswith("error") else f"Error: {text}"
 
 
 def safe_parse_validation_result(result: Any) -> list:
@@ -315,6 +353,8 @@ def format_tool_call_clean(
             "target_text": (
                 args.get("text") or args.get("target_text") or args.get("target_text_or_desc")
             ),
+            "target_description": args.get("target_description"),
+            "target_descriptions": args.get("target_descriptions"),
             "text": args.get("text"),
             "clear_exist": (args.get("clear_exist") or args.get("clear_before_input")),
             "clear_before_input": args.get("clear_before_input"),
@@ -492,13 +532,13 @@ def _burst_member_status(result: Any, index: int) -> str:
         return ""
     exec_list = result.get("execution") or []
     if index >= len(exec_list) or not isinstance(exec_list[index], dict):
-        return " (not executed)"
+        return " (not dispatched)"
     attempts = exec_list[index].get("attempts") or []
     if not attempts:
-        return " (executed)"
+        return " (dispatched)"
     last = str(attempts[-1])
-    if last == "Success":
-        return " (executed)"
+    if last == "Dispatched":
+        return " (dispatched)"
     if last.startswith("Skipped"):
         return " (skipped)"
     return f" (FAILED: {last.strip()})"

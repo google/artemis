@@ -17,6 +17,7 @@ from adbutils import AdbClient
 from langchain_core.messages import AIMessage, ToolMessage
 from artemis.agents.diagnoser.diagnoser import Diagnoser
 from artemis.context import ArtemisContext
+from artemis.core.tool_failure import ToolFailure
 from artemis.graph.state import State
 import pytest
 
@@ -107,7 +108,7 @@ async def test_maestro_uninstall_timeout(
     mock_ui_tool = AsyncMock()
     mock_ui_tool.name = "get_ui_hierarchy"
     mock_ui_tool.args = {}
-    mock_ui_tool.ainvoke.return_value = "Error: pm list packages timed out"
+    mock_ui_tool.ainvoke.return_value = ToolFailure("Error: pm list packages timed out")
     mock_get_ui_tool.return_value = mock_ui_tool
 
     # Run agent
@@ -255,7 +256,7 @@ async def test_ui_hierarchy_dump_stall(
     mock_ui_tool = AsyncMock()
     mock_ui_tool.name = "get_ui_hierarchy"
     mock_ui_tool.args = {}
-    mock_ui_tool.ainvoke.return_value = (
+    mock_ui_tool.ainvoke.return_value = ToolFailure(
         "Error retrieving UI hierarchy: dump_hierarchy timed out after 3 seconds"
     )
     mock_get_ui_tool.return_value = mock_ui_tool

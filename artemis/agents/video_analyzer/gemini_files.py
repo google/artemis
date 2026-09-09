@@ -97,6 +97,18 @@ async def cleanup_abandoned_gemini_files(client) -> None:
         logger.warning(f"Routine cloud maintenance skipped: {e}")
 
 
+async def delete_cloud_file(
+    client, file_name: str, cloud_files_to_cleanup: set, *, timeout: float = 30.0
+) -> None:
+    """Best-effort deletion of an uploaded file; failures are logged, never raised."""
+    logger.info(f"Cleaning up cloud file {file_name}...")
+    try:
+        await asyncio.wait_for(client.aio.files.delete(name=file_name), timeout=timeout)
+        cloud_files_to_cleanup.discard(file_name)
+    except Exception as ce:
+        logger.error(f"Failed to delete cloud file {file_name}: {ce}")
+
+
 async def upload_and_poll_file(client, compressed_path: Path, cloud_files_to_cleanup: set) -> any:
     """Upload a media file to the Gemini File API and poll until it is ACTIVE."""
     logger.info(f"Uploading {compressed_path} to Gemini File API...")

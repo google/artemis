@@ -19,6 +19,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.agents.diagnoser.diagnoser import Diagnoser
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
@@ -53,7 +54,7 @@ async def _run_diagnoser_logic(
 ) -> str:
     logger.info(f"ask_diagnoser tool called with query: {query}")
     if ctx is None:
-        return "Error: ArtemisContext is required for Diagnoser."
+        return ToolFailure("Error: ArtemisContext is required for Diagnoser.")
     agent = Diagnoser(ctx)
     try:
         result = await agent.run(query, state)

@@ -158,7 +158,12 @@ def _click_response(n_actions=1):
     response = MagicMock()
     response.content = ""
     response.tool_calls = [
-        {"name": "click", "args": {"target": [50, 50]}, "id": f"call_{i}"} for i in range(n_actions)
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": f"call_{i}",
+        }
+        for i in range(n_actions)
     ]
     return response
 

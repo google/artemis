@@ -37,12 +37,16 @@ class DummyState:
         operator_native_thinking=None,
         last_execution_result=None,
         current_step_id=None,
+        initial_goal=None,
+        injected_instruction=None,
     ):
         self.structured_decisions = structured_decisions
         self.operator_raw_thinking = operator_raw_thinking
         self.operator_native_thinking = operator_native_thinking
         self.last_execution_result = last_execution_result
         self.current_step_id = current_step_id
+        self.initial_goal = initial_goal
+        self.injected_instruction = injected_instruction
 
 
 @pytest.fixture
@@ -58,6 +62,7 @@ def mock_context(tmp_path):
     post_path.write_bytes(b"POST_IMAGE")
 
     engine = Mock()
+    engine.base_dir = None  # no task_plan on disk: no sub-goal in the focus
     engine.get_step_number.return_value = 7
     engine.get_step_record.return_value = SimpleNamespace(
         action_taken=[
@@ -80,7 +85,7 @@ def mock_context(tmp_path):
 async def test_summarizer_dispatches_visual_lens(mock_context):
     """The node dispatches to the shared service instead of calling an LLM."""
     state = DummyState(
-        last_execution_result={"status": "success"},
+        last_execution_result={"status": "dispatched"},
         current_step_id="12345678-1234-5678-1234-567812345678",
     )
 
@@ -98,8 +103,9 @@ async def test_summarizer_dispatches_visual_lens(mock_context):
         },
         pre_img_bytes=b"PRE_IMAGE",
         post_img_bytes=b"POST_IMAGE",
-        exec_outcome="success",
+        exec_outcome="dispatched",
         data_engine_step_id="12345678-1234-5678-1234-567812345678",
+        focus=None,
     )
     # No direct capsule write from the node: the lens owns the versioned
     # summary write when its background job completes.
@@ -138,7 +144,7 @@ async def test_summarizer_falls_back_to_structured_decisions(mock_context):
             ' "coordinate_space": "pixel"},'
             ' {"action": "tap", "coordinates": [540, 1200], "coordinate_space": "pixel"}]'
         ),
-        last_execution_result={"status": "success"},
+        last_execution_result={"status": "dispatched"},
         current_step_id="12345678-1234-5678-1234-567812345678",
     )
 
@@ -151,6 +157,55 @@ async def test_summarizer_falls_back_to_structured_decisions(mock_context):
     assert kwargs["action_args"]["additional_actions"] == [
         {"action": "tap", "coordinates": [500, 500], "coordinate_space": "normalized"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_summarizer_passes_operator_focus(mock_context, tmp_path):
+    """The operator's reasoning, the goal, the injected instruction and the live
+    sub-goal leaf ride along as the lens's focus context; the record's
+    reasoning is the fallback when the state carries none."""
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "task_plan.md").write_text(
+        "- [/] Enable Wi-Fi\n  - [/] Tap the Wi-Fi switch so it reads On\n- [ ] Join network\n",
+        encoding="utf-8",
+    )
+    mock_context.data_engine.base_dir = str(tmp_path)
+    mock_context.data_engine.get_step_record.return_value = SimpleNamespace(
+        action_taken=[
+            {
+                "action": "tap",
+                "coordinates": [950, 984],
+                "coordinate_space": "pixel",
+                "target_description": "Wi-Fi switch",
+            }
+        ],
+        operator_raw_thinking="Recorded reasoning: the switch reads Off; tapping it should read On.",
+    )
+    state = DummyState(
+        last_execution_result={"status": "dispatched"},
+        current_step_id="12345678-1234-5678-1234-567812345678",
+        initial_goal="Turn on Wi-Fi",
+        injected_instruction="Do not join any network yet.",
+    )
+
+    await SummarizerNode(mock_context)(state)
+
+    kwargs = mock_context.step_memory.dispatch.call_args.kwargs
+    assert kwargs["action_args"]["target_description"] == "Wi-Fi switch"
+    assert kwargs["focus"] == {
+        "goal": "Turn on Wi-Fi",
+        "subgoal": "Enable Wi-Fi > Tap the Wi-Fi switch so it reads On",
+        "injected_instruction": "Do not join any network yet.",
+        "intent": "Recorded reasoning: the switch reads Off; tapping it should read On.",
+    }
+
+    # Live state reasoning outranks the record's copy.
+    mock_context.step_memory.dispatch.reset_mock()
+    state.operator_raw_thinking = "Live reasoning wins."
+    await SummarizerNode(mock_context)(state)
+    focus = mock_context.step_memory.dispatch.call_args.kwargs["focus"]
+    assert focus["intent"] == "Live reasoning wins."
 
 
 @pytest.mark.asyncio

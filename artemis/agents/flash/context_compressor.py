@@ -313,7 +313,7 @@ class ScrubEdgeCompressor:
 
         # Defensive fallback: never leave ToolMessage or HumanMessage content empty
         if not new_blocks:
-            new_blocks = [{"type": "text", "text": "Action completed." if rec["is_tool"] else ""}]
+            new_blocks = [{"type": "text", "text": "Action dispatched." if rec["is_tool"] else ""}]
 
         msg.content = new_blocks
         self._frozen.add(rec["idx"])

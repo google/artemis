@@ -75,7 +75,7 @@ async def test_launch_app_direct_execution_with_driver(mock_driver):
     """Verify direct execution with BaseDeviceDriver."""
     result = await launch_app.execute(driver=mock_driver, app_name="com.android.settings")
     mock_driver.launch_app.assert_called_once_with("com.android.settings")
-    assert "App 'com.android.settings' launched successfully." in result
+    assert result == "Launched app 'com.android.settings'."
 
 
 @pytest.mark.asyncio
@@ -96,7 +96,7 @@ async def test_launch_app_direct_execution_with_ctx(mock_ctx):
         result = await launch_app.execute(ctx=mock_ctx, app_name="My App")
         mock_find.assert_called_once_with(ctx=mock_ctx, app_name="My App")
         mock_launch.assert_called_once_with(ctx=mock_ctx, app_package="com.example.myapp")
-        assert "App 'My App' launched successfully." in result
+        assert result == "Launched app 'My App' (com.example.myapp); foreground confirmed."
 
 
 @pytest.mark.asyncio
@@ -154,14 +154,16 @@ async def test_launch_app_with_state_command(mock_ctx, mock_state):
         assert isinstance(cmd, ToolMessage)
         assert cmd.tool_call_id == "call_la_1"
         assert cmd.status == "success"
-        assert "App 'State App' launched successfully." in cmd.content
+        assert (
+            cmd.content == "Launched app 'State App' (com.example.stateapp); foreground confirmed."
+        )
 
 
 @pytest.mark.asyncio
 async def test_launch_app_callable_execution(mock_driver):
     """Verify invoking launch_app directly as a callable."""
     result = await launch_app(driver=mock_driver, app_name="com.android.chrome")
-    assert "App 'com.android.chrome' launched successfully." in result
+    assert result == "Launched app 'com.android.chrome'."
 
 
 @pytest.mark.asyncio
@@ -190,4 +192,4 @@ async def test_get_launch_app_tool_langchain_ainvoke(mock_ctx):
         ),
     ):
         result = await la_tool.ainvoke({"app_name": "Invoke App"})
-        assert "App 'Invoke App' launched successfully." in result
+        assert result == "Launched app 'Invoke App' (com.example.ainvoke); foreground confirmed."

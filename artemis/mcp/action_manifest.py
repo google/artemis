@@ -83,7 +83,7 @@ OPTIONAL_ACTIONS: frozenset[str] = frozenset(
         "manage_app",
         "wait_for_delay",
         # The four below appear in no prompt at all. `wait_for_text` corroborates the
-        # classification: it is listed in the legacy ACTION_TOOL_NAMES but has never had
+        # classification: the former legacy executor dispatched it, but it has never had
         # a ToolDeclaration, i.e. it has always been unreachable by any LLM.
         "wait_for_text",
         "open_link",

@@ -257,7 +257,7 @@ async def test_validator_burst_success_executes_every_member(
         result = await node(state)
 
     report = result["last_execution_result"]
-    assert report["status"] == "success"
+    assert report["status"] == "dispatched"
     assert report["burst"] is True
     assert report["incident"] is None
     assert result["open_incident"] is None
@@ -287,7 +287,7 @@ async def test_validator_success_closes_open_incident(mock_mcp, mock_context, te
     with patch("artemis.utils.image_diff.check_ui_change", return_value=True):
         result = await node(state)
 
-    assert result["last_execution_result"]["status"] == "success"
+    assert result["last_execution_result"]["status"] == "dispatched"
     assert result["open_incident"] is None
     # The closed record is handed over once so the Operator settles the intent.
     assert result["last_closed_incident"]["kind"] == "safety_net"
@@ -805,7 +805,7 @@ async def test_validator_pre_execution_validation_ocr_direct_to_pixel(
 
     assert "last_execution_result" in result
     report = result["last_execution_result"]
-    assert report["status"] == "success"
+    assert report["status"] == "dispatched"
 
 
 @pytest.mark.asyncio

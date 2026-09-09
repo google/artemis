@@ -26,6 +26,7 @@ from langchain_core.tools.base import InjectedToolCallId
 from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel
 
+from artemis.core.tool_failure import is_tool_failure
 from artemis.context import ArtemisContext
 from artemis.data_engine import engine as engine_mod
 from artemis.data_engine.trace import CURRENT_TRACE_ID, smart_serialize
@@ -123,8 +124,13 @@ async def invoke_tool_with_injection(
                 result = await func(**final_args)
             else:
                 result = func(**final_args)
-            execution_status = "success"
             execution_result = result
+            if is_tool_failure(result):
+                # A structural failure is traced as one; the text is the error.
+                execution_status = "failed"
+                execution_error = result
+            else:
+                execution_status = "success"
             return result
         except Exception as e:
             execution_status = "failed"

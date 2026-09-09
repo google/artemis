@@ -45,6 +45,7 @@ from artemis.config import (
 )
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandler
+from artemis.llm.google import is_google_chat_model, is_google_provider
 from artemis.llm.reliability import (
     CircuitBreaker,
     FailureCategory,
@@ -550,20 +551,10 @@ class RobustChatModelWrapper:
         processed_tools = list(tools_list) if tools_list is not None else []
 
         # Determine if the underlying model provider is Google / Gemini
-        is_google_provider = False
         if self.endpoint is not None:
-            is_google_provider = self.endpoint.provider in (
-                ModelProvider.GOOGLE,
-                ModelProvider.GEMINI,
-            )
+            google_backed = is_google_provider(self.endpoint.provider)
         else:
-            base_model_cls = getattr(self.base_model, "__class__", None)
-            base_model_name = base_model_cls.__name__ if base_model_cls else ""
-            is_google_provider = (
-                "Google" in base_model_name
-                or "Gemini" in base_model_name
-                or "VertexAI" in base_model_name
-            )
+            google_backed = is_google_chat_model(self.base_model)
 
         has_explicit_google_search = any(
             isinstance(t, dict) and "google_search" in t for t in processed_tools
@@ -572,7 +563,7 @@ class RobustChatModelWrapper:
             self.endpoint is not None and self.endpoint.enable_grounding
         ) or has_explicit_google_search
 
-        if is_google_provider:
+        if google_backed:
             if should_ground:
                 # Add native Google Search Grounding tool if not already present
                 if not has_explicit_google_search:

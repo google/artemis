@@ -153,17 +153,13 @@ class LaunchAppTool(ArtemisTool):
                         ctx=ctx, app_package=package_name
                     )
                     outcome = (
-                        f"App '{app}' launched successfully."
+                        f"Launched app '{app}' ({package_name}); foreground confirmed."
                         if success
                         else f"Failed to launch app '{app}': {error_msg}"
                     )
             elif driver is not None and hasattr(driver, "launch_app"):
                 success = await driver.launch_app(app)
-                outcome = (
-                    f"App '{app}' launched successfully."
-                    if success
-                    else f"Failed to launch app '{app}'."
-                )
+                outcome = f"Launched app '{app}'." if success else f"Failed to launch app '{app}'."
                 error_msg = None if success else "Launch failed."
             else:
                 success = False
@@ -198,6 +194,6 @@ def get_launch_app_tool(ctx: ArtemisContext) -> BaseTool:
 
 launch_app_wrapper = ToolWrapper(
     tool_fn_getter=get_launch_app_tool,
-    on_success_fn=lambda *args, **kwargs: "Success",
+    on_success_fn=lambda *args, **kwargs: "Launch dispatched",
     on_failure_fn=lambda *args, **kwargs: "Failure",
 )

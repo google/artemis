@@ -26,6 +26,7 @@ from artemis.config.constants import (
     ExplorerVersion,
 )
 from artemis.config.paths import ROOT_DIR, get_config_path
+from artemis.llm.google import VideoProcessing
 from artemis.utils.file import load_jsonc
 from artemis.utils.logger import get_logger
 
@@ -108,6 +109,30 @@ class VideoAnalyzerConfig(BaseModel):
         ge=15.0,
         le=600.0,
         description="Hard timeout for one native or universal video-model response.",
+    )
+    processing: VideoProcessing = Field(
+        default="auto",
+        description=(
+            "How Gemini sub-agents watch a clip. 'agentic' lets the model search,"
+            " scan and re-watch the clip on demand (Gemini Interactions API);"
+            " 'static' samples it at a fixed frame rate; 'auto' picks agentic on"
+            " Gemini 3.6+ Flash models and static everywhere else."
+        ),
+    )
+    agentic_chunk_size_seconds: float = Field(
+        default=600.0,
+        ge=30.0,
+        le=1800.0,
+        description=(
+            "Maximum clip length handed to one agentic sub-agent. Static mode keeps"
+            " using chunk_size_seconds."
+        ),
+    )
+    agentic_call_timeout_seconds: float = Field(
+        default=300.0,
+        ge=30.0,
+        le=1200.0,
+        description="Hard timeout for one agentic sub-agent response.",
     )
     model_config = {"extra": "allow"}
 

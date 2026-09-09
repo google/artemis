@@ -14,8 +14,10 @@
 
 from unittest.mock import AsyncMock, Mock, patch
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 from artemis.agents.diagnoser.diagnoser import Diagnoser
 from artemis.context import ArtemisContext
+from artemis.core.tool_failure import ToolFailure
 from artemis.graph.state import State
 import pytest
 
@@ -293,3 +295,40 @@ async def test_diagnoser_background_job_lifecycle(
     assert job["status"] == "completed"
     assert job["result"] == "Video shows step successfully completed."
     assert job["consumed"] is True
+
+
+# --- tool results: status is structural, never sniffed from the words -----------------
+
+
+# A helper tool reports failure structurally (``ToolFailure``); free-form text
+# that merely starts with "Error" is an ordinary answer.
+_STATUS_CASES = [
+    pytest.param(ToolFailure("Error: note 'progress' not found"), "error", id="tool_failure"),
+    pytest.param("Error 404 was typed into the search box", "success", id="plain_error_text"),
+]
+
+
+def _text_tool(name: str, result):
+    async def _run(key: str) -> str:
+        return result
+
+    return StructuredTool.from_function(coroutine=_run, name=name, description=name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result, expected_status", _STATUS_CASES)
+async def test_run_tool_message_status_is_structural(
+    result, expected_status, mock_context, mock_state
+):
+    agent = Diagnoser(mock_context)
+    tool = _text_tool("read_note", result)
+
+    messages = await agent._run_tool(
+        {"name": "read_note", "args": {"key": "progress"}, "id": "c1"}, [tool], mock_state
+    )
+
+    assert len(messages) == 1
+    assert isinstance(messages[0], ToolMessage)
+    assert messages[0].tool_call_id == "c1"
+    assert messages[0].status == expected_status
+    assert messages[0].content == str(result)

@@ -63,7 +63,7 @@ def _step(i: int, subgoal: str = "hash-a", **overrides) -> dict:
         "timestamp": SESSION_START + 10.0 * i,
         "summary": f"Visual transition of step {i}.",
         "action_taken": {"action": "tap", "target_text": f"btn{i}", "coordinates": [i, i]},
-        "last_execution_result": {"status": "success"},
+        "last_execution_result": {"status": "dispatched"},
         "operator_raw_thinking": f"thinking {i}",
         "interleaved_events": [],
         "extra_metadata": {"subgoal_hash": subgoal},
@@ -201,7 +201,7 @@ def _run_turns(ledger, chunker, start: int, upto: int, hash_for=None):
     for i in range(start, upto + 1):
         ledger.commit_staged(
             step_key=f"s{i - 1}" if i > 1 else None,
-            validator_result={"status": "success"} if i > 1 else None,
+            validator_result={"status": "dispatched"} if i > 1 else None,
         )
         rendered = ledger.render([_observation(i)])
         ledger.stage_turn(_turn(i))
@@ -226,7 +226,7 @@ def test_action_ledger_lines_carry_step_number_offset_action_and_result():
     steps = [_step(1), _step(2, last_execution_result={"status": "failed", "error": "boom"})]
     ledger_text = build_action_ledger(steps, SESSION_START)
     lines = ledger_text.splitlines()
-    assert lines[0] == "- Step 1 (T+00:10): Tapped 'btn1' at [1, 1] -> executed"
+    assert lines[0] == "- Step 1 (T+00:10): Tapped 'btn1' at [1, 1] -> dispatched"
     assert lines[1].startswith("- Step 2 (T+00:20): Tapped 'btn2' at [2, 2] -> Error: boom")
 
 
@@ -289,7 +289,7 @@ def test_action_ledger_minimal_width_keeps_step_and_time_addressability():
     minimal = build_action_ledger(steps, SESSION_START, minimal=True)
     for i in range(1, 4):
         assert f"- Step {i} (T+00:{10 * i:02d}): Tapped 'btn{i}'" in minimal
-    assert "-> executed" not in minimal
+    assert "-> dispatched" not in minimal
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +396,7 @@ def test_milestone_switch_closes_previous_segment_whole_and_gates_swap():
 
     # Capsule ready → the next render swaps: frozen ①②③ block, originals out.
     capsule.resolve("chunk:1-4", _capsule(1, 4))
-    ledger.commit_staged(step_key="s8", validator_result={"status": "success"})
+    ledger.commit_staged(step_key="s8", validator_result={"status": "dispatched"})
     rendered_after = ledger.render([_observation(9)])
     assert len(chunker.chunks) == 1
     assert chunker.awaiting_chunks == ()
@@ -517,7 +517,7 @@ def test_frozen_region_stays_byte_stable_between_swap_events():
 
     # Swap chunk 1 (Steps 1–4) once its capsule is ready.
     capsule.resolve("chunk:1-4", _capsule(1, 4))
-    ledger.commit_staged(step_key="s8", validator_result={"status": "success"})
+    ledger.commit_staged(step_key="s8", validator_result={"status": "dispatched"})
     ledger.render([_observation(9)])
     assert len(chunker.chunks) == 1
     frozen_before = _frozen_text(ledger)
@@ -537,7 +537,7 @@ def test_frozen_region_stays_byte_stable_between_swap_events():
 
     # Its capsule readies: the next render swaps and re-renders the region.
     capsule.resolve(pending.capsule_key, _capsule(5, 8))
-    ledger.commit_staged(step_key="s12", validator_result={"status": "success"})
+    ledger.commit_staged(step_key="s12", validator_result={"status": "dispatched"})
     ledger.render([_observation(13)])
     assert len(chunker.chunks) == 2
     frozen_after = _frozen_text(ledger)
@@ -572,7 +572,7 @@ def test_chunk_block_renders_three_bands_in_order():
     assert "Verified: fact-1" in block
     # ② lines carry step references; ③ is the untouched mechanical ledger.
     assert "- Steps 1–4:" in block
-    assert "- Step 1 (T+00:10): Tapped 'btn1' at [1, 1] -> executed" in block
+    assert "- Step 1 (T+00:10): Tapped 'btn1' at [1, 1] -> dispatched" in block
     assert " ago" not in block
 
 
@@ -843,7 +843,7 @@ def test_hard_threshold_renders_l3_snapshot_with_minimal_step_index():
     for chunk in chunker.chunks:
         for n in range(chunk.start_step_number, chunk.end_step_number + 1):
             assert f"- Step {n} (T+" in frozen
-    assert "-> executed" not in frozen.split("--- Step index")[1]
+    assert "-> dispatched" not in frozen.split("--- Step index")[1]
 
 
 def test_step_addressability_survives_every_compression_level():
@@ -1033,7 +1033,7 @@ async def test_flush_harvests_late_capsule_and_persists_ready_version():
     assert ledger.frozen_blocks == ()
 
     # A later render (e.g. after a process resume) swaps normally.
-    ledger.commit_staged(step_key="s8", validator_result={"status": "success"})
+    ledger.commit_staged(step_key="s8", validator_result={"status": "dispatched"})
     ledger.render([_observation(9)])
     assert chunker.chunks and chunker.chunks[0].status == "ready"
 
@@ -1069,7 +1069,7 @@ def test_failed_capsule_redispatches_and_retains_original():
     # Bounded retries exhausted → explicit failed state, chunk stays pending.
     capsule._failed.add(key)
     meter["value"] = 75_000  # pressure render = a re-dispatch occasion
-    ledger.commit_staged(step_key="s8", validator_result={"status": "success"})
+    ledger.commit_staged(step_key="s8", validator_result={"status": "dispatched"})
     ledger.render([_observation(9)])
 
     assert capsule.submitted.count(key) == 2  # re-dispatched
@@ -1088,7 +1088,7 @@ def test_hard_threshold_force_swaps_pending_chunks_into_l3():
     assert ledger.frozen_blocks == ()
 
     meter["value"] = 95_000  # ≥ 0.9 * 100k → hard
-    ledger.commit_staged(step_key="s8", validator_result={"status": "success"})
+    ledger.commit_staged(step_key="s8", validator_result={"status": "dispatched"})
     ledger.render([_observation(9)])
 
     assert chunker.awaiting_chunks == ()
@@ -1128,7 +1128,7 @@ def test_compression_announces_one_tool_line_from_dispatch_to_swap():
     assert "context_tokens" not in args
 
     capsule.resolve("chunk:1-4", _capsule(1, 4))
-    ledger.commit_staged(step_key="s8", validator_result={"status": "success"})
+    ledger.commit_staged(step_key="s8", validator_result={"status": "dispatched"})
     ledger.render([_observation(9)])
 
     done = engine.traces[-1]
@@ -1155,7 +1155,7 @@ def test_forced_swap_announces_snapshot_without_a_ratio():
     assert any(t["status"] == "running" for t in engine.traces)
 
     meter["value"] = 95_000
-    ledger.commit_staged(step_key="s8", validator_result={"status": "success"})
+    ledger.commit_staged(step_key="s8", validator_result={"status": "dispatched"})
     ledger.render([_observation(9)])  # pressure closes the open tail too, then force-swaps all
 
     running_ids = {t["trace_id"] for t in engine.traces if t["status"] == "running"}
@@ -1313,7 +1313,7 @@ def test_capsule_payload_carries_each_turn_transcript_as_the_operator_saw_it():
     for i in range(1, 7):
         ledger.commit_staged(
             step_key=f"s{i - 1}" if i > 1 else None,
-            validator_result={"status": "success"} if i > 1 else None,
+            validator_result={"status": "dispatched"} if i > 1 else None,
         )
         ledger.render([_observation(i)])
         ledger.stage_turn(_rich_turn(i) if i == 2 else _turn(i))
@@ -1329,7 +1329,7 @@ def test_capsule_payload_carries_each_turn_transcript_as_the_operator_saw_it():
     assert '[tool call] ask_explorer({"question": "price?"})' in transcript
     assert "[tool result ask_explorer]\nPrice shown: ¥39" in transcript
     assert '[tool call] click({"target": 2})' in transcript
-    assert "--- Action Execution Result" in transcript and "Status: success" in transcript
+    assert "--- Action Execution Result" in transcript and "Status: dispatched" in transcript
     assert transcript.index("Price shown") < transcript.index("click(")
     # What the scrub edge already removed from the operator's view.
     assert "Buy button" not in transcript and "IMG_2" not in transcript
@@ -1364,7 +1364,7 @@ def test_chunk_without_ledger_falls_back_to_per_step_projection():
 def test_turn_transcript_is_capped_in_place_inside_the_capsule_request():
     lens = StepCapsuleLens(model_name="test", llm=object())
     cap = StepCapsuleLens.MAX_TURN_TRANSCRIPT_CHARS
-    step = {"step_number": 4, "offset": "T+00:40", "action": "tap", "outcome": "executed"}
+    step = {"step_number": 4, "offset": "T+00:40", "action": "tap", "outcome": "dispatched"}
     payload = {
         "start_step": 4,
         "end_step": 4,
@@ -1399,7 +1399,7 @@ def test_visual_transition_line_is_skipped_when_the_transcript_already_has_it():
         "step_number": 4,
         "offset": "T+00:40",
         "action": "tap",
-        "outcome": "executed",
+        "outcome": "dispatched",
         "visual_summary": "The cart badge changed from 0 to 1.",
     }
     resolved = f"[observation]\n{HISTORY_SUMMARY_PREFIX}The cart badge changed from 0 to 1."
@@ -1479,15 +1479,15 @@ async def test_ready_capsule_releases_its_turn_transcripts():
 def test_multi_action_turn_renders_one_block_with_every_recorded_step():
     lens = StepCapsuleLens(model_name="test", llm=object())
     steps = [
-        {"step_number": n, "offset": f"T+00:{n}0", "action": f"tap btn{n}", "outcome": "executed"}
+        {"step_number": n, "offset": f"T+00:{n}0", "action": f"tap btn{n}", "outcome": "dispatched"}
         for n in (7, 8)
     ]
     payload = {"start_step": 7, "end_step": 8, "steps": steps}
     payload["turns"] = [{"steps": steps, "transcript": "[operator]\nfired two taps"}]
     text = lens.build_messages(payload)[1].content
     assert "## Steps 7–8 (T+00:70 → T+00:80)" in text
-    assert "- Step 7 (T+00:70): tap btn7 -> executed" in text
-    assert "- Step 8 (T+00:80): tap btn8 -> executed" in text
+    assert "- Step 7 (T+00:70): tap btn7 -> dispatched" in text
+    assert "- Step 8 (T+00:80): tap btn8 -> dispatched" in text
     assert "fired two taps" in text
 
 

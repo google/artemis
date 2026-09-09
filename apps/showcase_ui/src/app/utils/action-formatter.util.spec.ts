@@ -1,7 +1,11 @@
 import {
   getStepPreImageUrl,
   getStepPostImageUrl,
-  extractStepReplayFrames
+  extractStepReplayFrames,
+  getActionTargetText,
+  isActionFailed,
+  getActionErrorMessage,
+  extractActionExtraParams
 } from './action-formatter.util';
 
 describe('action-formatter.util screenshot chaining', () => {
@@ -401,5 +405,109 @@ describe('extractStepReplayFrames', () => {
     expect(frames[1].stepNumber).toBe(2);
     expect(frames[1].rawStepNumber).toBe(2);
     expect(frames[1].stepId).toBe('real-step-2');
+  });
+});
+
+describe('getActionTargetText self-described targets', () => {
+  it('uses the model\'s target_description when no observed target_text exists', () => {
+    expect(getActionTargetText({ action: 'click', coordinates: [500, 900], target_description: 'play button' }))
+      .toBe('play button');
+    expect(getActionTargetText({ name: 'long_press', args: { target: [500, 900], target_description: 'song row' } }))
+      .toBe('song row');
+  });
+
+  it('prefers observed target_text over target_description when both are present', () => {
+    expect(getActionTargetText({
+      action: 'click',
+      target_text: 'Play',
+      target_description: 'play button'
+    })).toBe('Play');
+  });
+
+  it('chains per-point target_descriptions for click_sequence with the same arrow as coordinates', () => {
+    expect(getActionTargetText({
+      action: 'click_sequence',
+      sequence: [[500, 300], [876, 360]],
+      target_descriptions: ['play button', 'close ×']
+    })).toBe('play button → close ×');
+    expect(getActionTargetText({
+      name: 'click_sequence',
+      args: { sequence: [[500, 300], [876, 360], [100, 100]], target_descriptions: ['play button', 'close ×', 'back'] }
+    })).toBe('play button → close × → back');
+  });
+
+  it('skips blank entries and falls back when click_sequence descriptions are missing or unusable', () => {
+    expect(getActionTargetText({
+      action: 'click_sequence',
+      sequence: [[500, 300], [876, 360]],
+      target_descriptions: ['play button', '', null]
+    })).toBe('play button');
+    expect(getActionTargetText({ action: 'click_sequence', sequence: [[500, 300]], target_descriptions: [] })).toBe('');
+    expect(getActionTargetText({ action: 'click_sequence', sequence: [[500, 300]], target_descriptions: 'not-an-array' })).toBe('');
+    expect(getActionTargetText({
+      action: 'click_sequence',
+      sequence: [[500, 300]],
+      target_descriptions: [null],
+      target_description: 'single fallback'
+    })).toBe('single fallback');
+  });
+});
+
+describe('isActionFailed / getActionErrorMessage with Validator attempts', () => {
+  const stepWithAttempts = (attempts: any[]) => ({
+    step_id: 'step-attempts',
+    last_execution_result: {
+      status: 'dispatched',
+      execution: [{ attempts }]
+    }
+  });
+  const action = { action: 'click', coordinates: [500, 900] };
+
+  it('treats a retry that ended in Dispatched as not failed', () => {
+    const stepData = stepWithAttempts(['Execution error: x', 'Dispatched']);
+    expect(isActionFailed(action, stepData)).toBeFalse();
+  });
+
+  it('treats a terminal non-Dispatched attempt as failed and surfaces its text', () => {
+    const stepData = stepWithAttempts(['Execution error: y']);
+    expect(isActionFailed(action, stepData)).toBeTrue();
+    expect(getActionErrorMessage(action, stepData)).toBe('y');
+  });
+
+  it('keeps a generic error prefix verbatim and reports the last failing attempt', () => {
+    const stepData = stepWithAttempts(['Pre-execution validation failed: first', 'Error: y']);
+    expect(isActionFailed(action, stepData)).toBeTrue();
+    expect(getActionErrorMessage(action, stepData)).toBe('Error: y');
+  });
+
+  it('marks replay frames as dispatched rather than success', () => {
+    const frames = extractStepReplayFrames([
+      { step_id: 's-1', step_number: 1, pre_image_name: 'img1', action_taken: action, timestamp: 100 },
+      {
+        step_id: 's-2', step_number: 2, pre_image_name: 'img2', action_taken: action, timestamp: 200,
+        last_execution_result: { execution: [{ attempts: ['Execution error: y'] }] }
+      }
+    ]);
+    expect(frames[0].status).toBe('dispatched');
+    expect(frames[1].status).toBe('failed');
+  });
+});
+
+describe('extractActionExtraParams', () => {
+  it('hides target_description and target_descriptions from the extra parameter list', () => {
+    const single = extractActionExtraParams({
+      action: 'click',
+      coordinates: [500, 900],
+      target_description: 'play button',
+      times: 2
+    });
+    expect(single.map(p => p.key)).toEqual(['Times']);
+
+    const sequence = extractActionExtraParams({
+      name: 'click_sequence',
+      args: { sequence: [[1, 2], [3, 4]], target_descriptions: ['a', 'b'], interval_ms: 50 }
+    });
+    expect(sequence.map(p => p.key)).not.toContain('Target Descriptions');
+    expect(sequence.map(p => p.key)).toContain('Interval Ms');
   });
 });
