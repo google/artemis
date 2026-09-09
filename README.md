@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/artemis-banner.png?v=6" alt="ARTEMIS Banner" width="100%" />
+  <img src="./docs/assets/artemis-banner.png?v=7" alt="ARTEMIS Banner" width="100%" />
 </p>
 
 <p align="center">
