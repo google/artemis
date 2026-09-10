@@ -32,7 +32,7 @@ try {
 } catch {}
 
 Write-Host "======================================================" -ForegroundColor Cyan
-Write-Host "   🚀 Artemis - Windows Smart Installer               " -ForegroundColor Cyan
+Write-Host "   Artemis - Windows Smart Installer                  " -ForegroundColor Cyan
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -163,12 +163,12 @@ function Install-PortablePlatformTools {
             Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
             if (Test-Path "$ptDir\adb.exe") {
                 $env:PATH = "$ptDir;$env:PATH"
-                Write-Host "   ✔ adb installed in user space." -ForegroundColor Green
+                Write-Host "   [OK] adb installed in user space." -ForegroundColor Green
                 return $true
             }
         }
     } catch {
-        Write-Host "   ⚠ Failed to install portable platform-tools: $_" -ForegroundColor DarkYellow
+        Write-Host "   [WARN] Failed to install portable platform-tools: $_" -ForegroundColor DarkYellow
     }
     return $false
 }
@@ -209,12 +209,12 @@ function Install-PortableScrcpy {
             Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
             if (Test-Path "$scrcpyDir\scrcpy.exe") {
                 $env:PATH = "$scrcpyDir;$env:PATH"
-                Write-Host "   ✔ Portable scrcpy installed in user space." -ForegroundColor Green
+                Write-Host "   [OK] Portable scrcpy installed in user space." -ForegroundColor Green
                 return $true
             }
         }
     } catch {
-        Write-Host "   ⚠ Failed to install portable scrcpy: $_" -ForegroundColor DarkYellow
+        Write-Host "   [WARN] Failed to install portable scrcpy: $_" -ForegroundColor DarkYellow
     }
     return $false
 }
@@ -283,12 +283,12 @@ function Install-PortableNode {
             Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
             if (Test-Path "$nodeDir\node.exe") {
                 $env:PATH = "$nodeDir;$env:PATH"
-                Write-Host "   ✔ Portable Node.js $nodeVer installed in user space." -ForegroundColor Green
+                Write-Host "   [OK] Portable Node.js $nodeVer installed in user space." -ForegroundColor Green
                 return $true
             }
         }
     } catch {
-        Write-Host "   ⚠ Failed to install portable Node.js: $_" -ForegroundColor DarkYellow
+        Write-Host "   [WARN] Failed to install portable Node.js: $_" -ForegroundColor DarkYellow
     }
     return $false
 }
@@ -305,7 +305,7 @@ if (-not (Test-CommandExists "ffmpeg")) { $missingTools += "ffmpeg" }
 if (-not (Test-CommandExists "scrcpy")) { $missingTools += "scrcpy" }
 
 if ($missingTools.Count -eq 0) {
-    Write-Host "   ✔ All system toolchains are already installed (ADB, FFmpeg, scrcpy)." -ForegroundColor Green
+    Write-Host "   [OK] All system toolchains are already installed (ADB, FFmpeg, scrcpy)." -ForegroundColor Green
     Start-LocalAdbServer
 } else {
     Write-Host "   ! Missing toolchains: $($missingTools -join ', ')" -ForegroundColor DarkYellow
@@ -324,15 +324,15 @@ if ($missingTools.Count -eq 0) {
     if ($useWinGet) {
         Write-Host "   Detected WinGet. Installing packages..." -ForegroundColor Cyan
         if ($missingTools -contains "adb") {
-            Write-Host "   📦 Installing Google.PlatformTools (ADB)..." -ForegroundColor Cyan
+            Write-Host "   [INFO] Installing Google.PlatformTools (ADB)..." -ForegroundColor Cyan
             winget install --id Google.PlatformTools -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
         }
         if ($missingTools -contains "ffmpeg") {
-            Write-Host "   📦 Installing Gyan.FFmpeg..." -ForegroundColor Cyan
+            Write-Host "   [INFO] Installing Gyan.FFmpeg..." -ForegroundColor Cyan
             winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
         }
         if ($missingTools -contains "scrcpy") {
-            Write-Host "   📦 Installing Genymobile.scrcpy..." -ForegroundColor Cyan
+            Write-Host "   [INFO] Installing Genymobile.scrcpy..." -ForegroundColor Cyan
             winget install --id Genymobile.scrcpy -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
         }
         Update-EnvironmentPath
@@ -368,30 +368,30 @@ if (-not (Test-CommandExists "uv")) {
 
 if (Test-CommandExists "uv") {
     $uvVer = uv --version
-    Write-Host "   ✔ uv is ready ($uvVer)" -ForegroundColor Green
+    Write-Host "   [OK] uv is ready ($uvVer)" -ForegroundColor Green
 } else {
-    Write-Host "   ✗ Failed to detect uv in PATH." -ForegroundColor Red
+    Write-Host "   [FAIL] Failed to detect uv in PATH." -ForegroundColor Red
     Exit 1
 }
 
 # 3. Setup Python Runtime & Sync Dependencies
 Write-Host "`n3. Configuring Python Runtime & Syncing Dependencies..." -ForegroundColor Yellow
-Write-Host "   📦 Running uv sync (auto-provisioning Python >=3.12 & dependencies)..." -ForegroundColor Cyan
+Write-Host "   [INFO] Running uv sync (auto-provisioning Python >=3.12 & dependencies)..." -ForegroundColor Cyan
 uv sync
-Write-Host "   ✔ Dependencies synced successfully." -ForegroundColor Green
+Write-Host "   [OK] Dependencies synced successfully." -ForegroundColor Green
 
 # 4. Check .env Configuration
 Write-Host "`n4. Checking Environment Configuration (.env)..." -ForegroundColor Yellow
 if (-not (Test-Path ".env")) {
     if (Test-Path ".env.example") {
         Copy-Item ".env.example" ".env"
-        Write-Host "   ✔ Created .env template from .env.example." -ForegroundColor Green
+        Write-Host "   [OK] Created .env template from .env.example." -ForegroundColor Green
     } else {
         New-Item -ItemType File -Path ".env" | Out-Null
-        Write-Host "   ✔ Created empty .env file." -ForegroundColor Green
+        Write-Host "   [OK] Created empty .env file." -ForegroundColor Green
     }
 } else {
-    Write-Host "   ✔ .env configuration file exists." -ForegroundColor Green
+    Write-Host "   [OK] .env configuration file exists." -ForegroundColor Green
 }
 
 # 5. Check and Build Showcase UI (Angular)
@@ -403,14 +403,14 @@ if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1))
     if (-not (Test-NodeCompatible)) {
         if (Test-CommandExists "node") {
             $curVer = (& node -v 2>$null)
-            Write-Host "   ⚡ Detected Node.js $curVer, but Angular CLI requires Node.js >= v22.22.0." -ForegroundColor Yellow
+            Write-Host "   [WARN] Detected Node.js $curVer, but Angular CLI requires Node.js >= v22.22.0." -ForegroundColor Yellow
         } else {
-            Write-Host "   ⚡ Node.js/npm not found (required for Showcase UI)." -ForegroundColor Cyan
+            Write-Host "   [WARN] Node.js/npm not found (required for Showcase UI)." -ForegroundColor Cyan
         }
 
         # 1. Try nvm if available on Windows
         if (Test-CommandExists "nvm") {
-            Write-Host "   📦 Installing Node.js 22 LTS via nvm..." -ForegroundColor Cyan
+            Write-Host "   [INFO] Installing Node.js 22 LTS via nvm..." -ForegroundColor Cyan
             & nvm install 22.23.2 | Out-Null
             & nvm use 22.23.2 | Out-Null
             Update-EnvironmentPath
@@ -431,7 +431,7 @@ if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1))
             }
 
             if ($useWinGetNode) {
-                Write-Host "   ⚡ Installing/Upgrading Node.js LTS via WinGet..." -ForegroundColor Cyan
+                Write-Host "   [INFO] Installing/Upgrading Node.js LTS via WinGet..." -ForegroundColor Cyan
                 winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
                 Update-EnvironmentPath
             }
@@ -445,40 +445,40 @@ if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1))
 
     if (Test-NodeCompatible) {
         $nodeVer = (& node -v 2>$null)
-        Write-Host "   ✔ Node.js $nodeVer is ready." -ForegroundColor Green
-        Write-Host "   🎨 Compiling Angular Showcase UI..." -ForegroundColor Cyan
+        Write-Host "   [OK] Node.js $nodeVer is ready." -ForegroundColor Green
+        Write-Host "   [INFO] Compiling Angular Showcase UI..." -ForegroundColor Cyan
         Push-Location "$RootDir\apps\showcase_ui"
         try {
             $npmExec = if (Test-CommandExists "npm.cmd") { "npm.cmd" } else { "npm" }
-            Write-Host "   📦 Installing frontend npm dependencies..." -ForegroundColor Cyan
+            Write-Host "   [INFO] Installing frontend npm dependencies..." -ForegroundColor Cyan
             & $npmExec install --no-audit --no-fund --loglevel=error
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "   ⚠ npm install returned exit code $LASTEXITCODE. Trying silent install..." -ForegroundColor DarkYellow
+                Write-Host "   [WARN] npm install returned exit code $LASTEXITCODE. Trying silent install..." -ForegroundColor DarkYellow
                 & $npmExec install --silent
             }
             $cliNodeVersion = "$RootDir\apps\showcase_ui\node_modules\@angular\cli\src\utilities\node-version.js"
             if (Test-Path $cliNodeVersion) {
                 (Get-Content $cliNodeVersion) -replace '22\.22\.3', '22.22.0' | Set-Content $cliNodeVersion
             }
-            Write-Host "   ⚙ Building Angular frontend application..." -ForegroundColor Cyan
+            Write-Host "   [INFO] Building Angular frontend application..." -ForegroundColor Cyan
             & $npmExec run build
             if (Test-Path $ShowcaseIndex) {
-                Write-Host "   ✔ Showcase UI compiled successfully." -ForegroundColor Green
+                Write-Host "   [OK] Showcase UI compiled successfully." -ForegroundColor Green
             } elseif (Test-Path $ShowcaseIndexAlt1) {
-                Write-Host "   ✔ Showcase UI compiled successfully." -ForegroundColor Green
+                Write-Host "   [OK] Showcase UI compiled successfully." -ForegroundColor Green
             } else {
-                Write-Host "   ⚠ Showcase UI build finished but index.html was not found in expected dist directory." -ForegroundColor DarkYellow
+                Write-Host "   [WARN] Showcase UI build finished but index.html was not found in expected dist directory." -ForegroundColor DarkYellow
             }
         } catch {
-            Write-Host "   ⚠ Failed to build Showcase UI: $_" -ForegroundColor DarkYellow
+            Write-Host "   [WARN] Failed to build Showcase UI: $_" -ForegroundColor DarkYellow
         } finally {
             Pop-Location
         }
     } else {
-        Write-Host "   ⚠ Could not configure compatible Node.js (>= 22.22.0). Showcase UI will show fallback notice on launch." -ForegroundColor DarkYellow
+        Write-Host "   [WARN] Could not configure compatible Node.js (>= 22.22.0). Showcase UI will show fallback notice on launch." -ForegroundColor DarkYellow
     }
 } else {
-    Write-Host "   ✔ Showcase UI build already exists." -ForegroundColor Green
+    Write-Host "   [OK] Showcase UI build already exists." -ForegroundColor Green
 }
 
 # 6. Toolchain Readiness Summary
@@ -494,27 +494,27 @@ foreach ($t in $tools) {
         $p = (Get-Command $targetName).Source
         if ($t -eq "npm" -and (Test-CommandExists "node")) {
             $nVer = (& node -v 2>$null)
-            Write-Host "   ✔ $t ($nVer) -> $p" -ForegroundColor Green
+            Write-Host "   [OK] $t ($nVer) -> $p" -ForegroundColor Green
         } else {
-            Write-Host "   ✔ $t -> $p" -ForegroundColor Green
+            Write-Host "   [OK] $t -> $p" -ForegroundColor Green
         }
     } else {
-        Write-Host "   ○ $t -> Not found in PATH (Fallbacks active)" -ForegroundColor DarkYellow
+        Write-Host "   [--] $t -> Not found in PATH (Fallbacks active)" -ForegroundColor DarkYellow
     }
 }
 
 Write-Host ""
 Write-Host "======================================================" -ForegroundColor Cyan
-Write-Host "   ✨ Artemis Environment Ready!                      " -ForegroundColor Green
+Write-Host "   Artemis Environment Ready!                         " -ForegroundColor Green
 Write-Host "======================================================" -ForegroundColor Cyan
 
 if ($Launch -or $Open) {
     Start-LocalAdbServer
-    Write-Host "🚀 Launching Showcase UI..." -ForegroundColor Green
+    Write-Host "[INFO] Launching Showcase UI..." -ForegroundColor Green
     uv run python -m artemis ui --open
 } else {
     Write-Host "To start the Showcase UI and interactive onboarding:" -ForegroundColor White
-    Write-Host "  👉 .\start.bat   (or: uv run python -m artemis ui)" -ForegroundColor Cyan
+    Write-Host "  -> .\start.bat   (or: uv run python -m artemis ui)" -ForegroundColor Cyan
     Write-Host ""
 }
 

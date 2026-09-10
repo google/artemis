@@ -204,12 +204,12 @@ function Install-PortableScrcpy {
             Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
             if (Test-Path "$scrcpyDir\scrcpy.exe") {
                 $env:PATH = "$scrcpyDir;$env:PATH"
-                Write-Host "   ✔ Portable scrcpy installed in user space." -ForegroundColor Green
+                Write-Host "   [OK] Portable scrcpy installed in user space." -ForegroundColor Green
                 return $true
             }
         }
     } catch {
-        Write-Host "   ⚠ Failed to install portable scrcpy: $_" -ForegroundColor DarkYellow
+        Write-Host "   [WARN] Failed to install portable scrcpy: $_" -ForegroundColor DarkYellow
     }
     return $false
 }
