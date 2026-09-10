@@ -17,7 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from langchain_core.messages import ToolMessage
 
 from artemis.context import ArtemisContext
-from artemis.graph.graph import wrap_note_tool, wrap_update_note_tool
+from artemis.graph.checkpoints import read_ledger
+from artemis.graph.graph import exit_settlement_node, wrap_note_tool, wrap_update_note_tool
+from artemis.graph.state import State
 import pytest
 
 ORIGINAL_PLAN = """# Test Plan
@@ -39,6 +41,7 @@ def _make_ctx(base_dir, *, disable_checker=True, disable_planner_validation=Fals
     ctx.pending_checkpoints = []
     ctx.checkpoint_tasks = {}
     ctx.pending_validated_plan = None
+    ctx.final_check_attempts = 0
     return ctx
 
 
@@ -319,3 +322,64 @@ async def test_wrap_note_tool_structural_replan_triggers_validation(tmp_path):
 
     assert "Milestone 3 (new phase)" in task_plan_path.read_text(encoding="utf-8")
     mock_validation.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_exit_settlement_final_check_timeout_formatting(tmp_path):
+    plan_content = """# Test Plan
+- [x] Milestone 1
+  - verify: Verify item 1
+"""
+    task_plan_path = _setup_plan(tmp_path, plan_content)
+    ctx = _make_ctx(tmp_path, disable_checker=False)
+    ctx.execution_setup.final_check_enabled = True
+    ctx.execution_setup.checkpoint_timeout = 180.0
+    ctx.trace_manager = MagicMock()
+    ctx.trace_manager.trace_id = "test-trace"
+    ctx.trace_manager.attempt_trace_id = MagicMock(return_value="attempt-trace")
+    ctx.client_session = None
+
+    state = State(initial_goal="test goal")
+
+    async def fake_slow_check(*args, **kwargs):
+        raise TimeoutError()
+
+    with patch("artemis.graph.graph.run_final_check", side_effect=fake_slow_check):
+        next_state = await exit_settlement_node(state, ctx)
+
+    assert next_state["exit_settlement_route"] == "end"
+    records = read_ledger(tmp_path)
+    assert len(records) > 0
+    final_record = records[-1]
+    assert "timed out after 180.0s" in final_record["evidence"]
+    assert final_record["status"] == "inconclusive"
+
+
+@pytest.mark.asyncio
+async def test_exit_settlement_final_check_generic_exception_formatting(tmp_path):
+    plan_content = """# Test Plan
+- [x] Milestone 1
+  - verify: Verify item 1
+"""
+    task_plan_path = _setup_plan(tmp_path, plan_content)
+    ctx = _make_ctx(tmp_path, disable_checker=False)
+    ctx.execution_setup.final_check_enabled = True
+    ctx.trace_manager = MagicMock()
+    ctx.trace_manager.trace_id = "test-trace"
+    ctx.trace_manager.attempt_trace_id = MagicMock(return_value="attempt-trace")
+    ctx.client_session = None
+
+    state = State(initial_goal="test goal")
+
+    async def fake_error_check(*args, **kwargs):
+        raise RuntimeError("API quota exceeded")
+
+    with patch("artemis.graph.graph.run_final_check", side_effect=fake_error_check):
+        next_state = await exit_settlement_node(state, ctx)
+
+    assert next_state["exit_settlement_route"] == "end"
+    records = read_ledger(tmp_path)
+    assert len(records) > 0
+    final_record = records[-1]
+    assert "API quota exceeded" in final_record["evidence"]
+    assert final_record["status"] == "inconclusive"
