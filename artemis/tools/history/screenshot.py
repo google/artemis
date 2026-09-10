@@ -29,6 +29,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from artemis.core.tool_failure import ToolFailure
 from artemis.utils.logger import get_logger
 from artemis.utils.visualization import overlay_action_on_screenshot
 
@@ -47,10 +48,18 @@ class ScreenshotResult:
     image_bytes: bytes | None = None
     #: True when ``which == "overlay"`` and the action was actually drawn.
     overlay_drawn: bool = False
+    #: True when the lookup could not serve the request (bad arguments, no
+    #: history, unknown step, unreadable file). A step that simply has no
+    #: screenshot of the requested kind is an answer, not an error.
+    is_error: bool = False
 
     def to_content_blocks(self) -> list[dict[str, Any]] | str:
-        """The tool's return value: content blocks with the image, or the
-        plain-text explanation when there is no image to attach."""
+        """The tool's return value: content blocks with the image, the
+        plain-text answer when there is no image to attach, or a
+        :class:`ToolFailure` (status ``error`` downstream) when the lookup
+        failed."""
+        if self.is_error:
+            return ToolFailure(self.description)
         if not self.image_bytes:
             return self.description
         encoded = base64.b64encode(self.image_bytes).decode("utf-8")
@@ -60,41 +69,43 @@ class ScreenshotResult:
         ]
 
 
+def _failure(step_number: int, which: str, description: str) -> ScreenshotResult:
+    return ScreenshotResult(step_number, which, description, is_error=True)
+
+
 def load_step_screenshot(reader: Any, step_number: Any, which: str = "pre") -> ScreenshotResult:
     """Loads (and for ``overlay`` annotates) one step screenshot from ``reader``."""
     which = str(which or "pre").lower()
     try:
         number = int(step_number)
     except (TypeError, ValueError):
-        return ScreenshotResult(
-            -1, which, f"Error: step_number must be an integer, got {step_number!r}."
-        )
+        return _failure(-1, which, f"Error: step_number must be an integer, got {step_number!r}.")
     if which not in WHICH_CHOICES:
-        return ScreenshotResult(
+        return _failure(
             number, which, f"Error: 'which' must be 'pre', 'post' or 'overlay', got '{which}'."
         )
     if reader is None:
-        return ScreenshotResult(number, which, "Error: no execution history available.")
+        return _failure(number, which, "Error: no execution history available.")
 
     source = "pre" if which == "overlay" else which
     try:
         path = reader.get_step_image_path(number, source)
     except (sqlite3.Error, OSError, ValueError) as e:
-        return ScreenshotResult(number, which, f"Error looking up step {number}: {e}")
+        return _failure(number, which, f"Error looking up step {number}: {e}")
     if path is None:
         try:
             record = reader.get_step_record(number)
         except (sqlite3.Error, ValueError):
             record = None
         if record is None:
-            return ScreenshotResult(number, which, f"Error: step {number} not found.")
+            return _failure(number, which, f"Error: step {number} not found.")
         return ScreenshotResult(
             number, which, f"No {source}-action screenshot recorded for step {number}."
         )
     try:
         image_bytes = Path(path).read_bytes()
     except OSError as e:
-        return ScreenshotResult(number, which, f"Error reading screenshot: {e}")
+        return _failure(number, which, f"Error reading screenshot: {e}")
 
     if which != "overlay":
         return ScreenshotResult(

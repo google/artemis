@@ -284,7 +284,7 @@ class VisionOCRProbe(BaseProbe):
             status=ProbeStatus.PASS,
             is_blocker=False,
             summary="Not Configured (Optional)",
-            description="OCR_API_KEY is not set. Perception operates seamlessly in pure UI XML hierarchy mode.",
+            description="OCR_API_KEY is not set. Perception uses the UI XML hierarchy without OCR.",
             metadata={"configured": False},
             actions=[
                 ProbeAction(

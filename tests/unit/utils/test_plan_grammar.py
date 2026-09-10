@@ -205,8 +205,8 @@ def test_restore_missing_check_items_keeps_additions():
 
 
 def test_render_plan_grammar_spec_conditional():
-    base = render_plan_grammar_spec(include_checks=False)
-    extended = render_plan_grammar_spec(include_checks=True)
+    base = render_plan_grammar_spec(midway=False, final=False)
+    extended = render_plan_grammar_spec(midway=True, final=True)
     # Both-gates-off output carries zero trace of the checking feature
     assert base == PLAN_GRAMMAR_SPEC
     assert "verify" not in base and "assert" not in base
@@ -214,6 +214,27 @@ def test_render_plan_grammar_spec_conditional():
     assert "- verify:" in extended and "- assert:" in extended and "@end" in extended
     # The capability boundary is declared honestly
     assert "POST-HOC" in extended.upper() or "post-hoc" in extended
+    # Compatibility shim: ``include_checks`` means "both gates".
+    assert render_plan_grammar_spec(include_checks=True) == extended
+    assert render_plan_grammar_spec(include_checks=False) == base
+
+
+def test_render_plan_grammar_spec_words_the_judgment_moment_per_gate():
+    """The grammar tells the truth about when a check line is judged: a
+    completion-time Checker with a repair loop only exists with midway checks;
+    the factory layering (final review only) judges once at task exit."""
+    midway = render_plan_grammar_spec(midway=True, final=True)
+    assert "at the moment the milestone is marked completed" in midway
+    assert "reopens the milestone for repair" in midway
+
+    final_only = render_plan_grammar_spec(midway=False, final=True)
+    assert (
+        "judged once at task exit from the recorded evidence around the milestone's"
+        " completion; there is no midway repair loop" in final_only
+    )
+    assert "at the moment the milestone is marked completed" not in final_only
+    assert "reopens the milestone" not in final_only
+    assert "- assert:" in final_only and "@end" in final_only
 
 
 def test_grammar_spec_renders_constants():
@@ -291,7 +312,10 @@ def test_apply_finding_lines_drops_entries_for_missing_subgoals():
 
 
 def test_finding_grammar_doc_is_conditional():
-    base = render_plan_grammar_spec(include_checks=False)
-    extended = render_plan_grammar_spec(include_checks=True)
+    base = render_plan_grammar_spec(midway=False, final=False)
+    midway = render_plan_grammar_spec(midway=True, final=False)
+    final_only = render_plan_grammar_spec(midway=False, final=True)
     assert "finding" not in base
-    assert "- finding:" in extended and "checker-" in extended
+    assert "- finding:" in midway and "checker-" in midway
+    # Finding lines are projected by the midway checkpoint machinery only.
+    assert "- finding:" not in final_only

@@ -82,6 +82,7 @@ def test_meter_accumulates_session_totals():
         "session_completion_tokens": 30,
         "session_cached_tokens": 250,
         "session_cache_hit_calls": 1,
+        "session_cached_ratio": 0.625,
     }
     assert meter.last_prompt_tokens == 300
 

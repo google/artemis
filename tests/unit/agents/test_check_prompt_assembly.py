@@ -13,8 +13,8 @@
 # limitations under the License.
 
 """§1.3 assembly discipline: prompts are functions of configuration x scenario.
-Both check gates off => zero context pollution; a plan carrying check lines
-gets the behavior explainer regardless of switches."""
+Both check gates off => zero context pollution; with a gate on, the check-line
+guidance lives once in the static system prompt, worded for that gate."""
 
 import json
 from pathlib import Path
@@ -23,10 +23,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from artemis.agents.operator.prompts import (
-    CheckItemsExplainerPromptComponent,
     FeedbackPromptComponent,
     PromptBuilder,
     TemplatePromptComponent,
+    render_transcript_static_system,
 )
 from artemis.agents.planner.planner import build_planner_system_blocks
 from artemis.context import ArtemisContext, ExecutionSetup
@@ -95,35 +95,47 @@ def _state(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_explainer_renders_iff_plan_has_check_lines(tmp_path):
-    component = CheckItemsExplainerPromptComponent()
+async def test_check_line_guidance_lives_in_the_static_prompt_once():
+    """The check-line guidance is a static-prompt section gated on the check
+    gates (never a per-turn observation block), worded for the active gate."""
+    off = await _render_main_template(disable_checker=True)
+    assert "*Check Lines*" not in off
+    assert "never declare a check passed" not in off
 
-    # Plan without check lines -> nothing rendered
-    builder = PromptBuilder()
-    ctx = _mock_ctx(tmp_path, plan="- [ ] G\n")
-    await component(builder, _state(), ctx)
-    assert builder.human_parts == []
+    final_only = await _render_main_template(disable_midway_checks=True, disable_final_check=False)
+    assert final_only.count("*Check Lines*") == 1
+    assert "never declare a check passed" in final_only
+    assert "restores deleted ones unless user guidance called for the change" in final_only
+    # No midway repair loop -> no repair budget to recite, and the grammar says so.
+    assert "reopens its milestone at most" not in final_only
+    assert "there is no midway repair loop" in final_only
 
-    # Plan with check lines -> explainer rendered
-    builder2 = PromptBuilder()
-    ctx2 = _mock_ctx(tmp_path, plan="- [ ] G\n  - verify: V\n")
-    await component(builder2, _state(), ctx2)
-    joined = "\n".join(p for p in builder2.human_parts if isinstance(p, str))
-    assert "check lines" in joined
-    assert "never declare a check passed yourself" in joined
-    assert "automatically restored" in joined
+    midway = await _render_main_template(disable_midway_checks=False, checkpoint_max_repairs=3)
+    assert midway.count("*Check Lines*") == 1
+    assert "reopens its milestone at most 3 times" in midway
+    assert "- finding:" in midway
+
+
+def test_transcript_static_system_recites_the_repair_budget_from_setup():
+    ctx = _mock_ctx(disable_midway_checks=False, checkpoint_max_repairs=5)
+    ctx.actuator = None
+    prompts = json.loads(OPERATOR_JSON.read_text(encoding="utf-8"))
+    text = render_transcript_static_system(prompts, ctx, _state(initial_goal="G"))
+    assert text.count("*Check Lines*") == 1
+    assert "reopens its milestone at most 5 times" in text
+
+    quiet = _mock_ctx(disable_checker=True)
+    quiet.actuator = None
+    assert "*Check Lines*" not in render_transcript_static_system(
+        prompts, quiet, _state(initial_goal="G")
+    )
 
 
 @pytest.mark.asyncio
-async def test_explainer_is_content_driven_not_switch_driven(tmp_path):
-    """A resumed old plan with check lines still gets the explanation even when
-    every check switch is off."""
-    component = CheckItemsExplainerPromptComponent()
-    builder = PromptBuilder()
-    ctx = _mock_ctx(tmp_path, plan="- [ ] G\n  - assert: A\n", disable_checker=True)
-    await component(builder, _state(), ctx)
-    joined = "\n".join(p for p in builder.human_parts if isinstance(p, str))
-    assert "check lines" in joined
+async def test_static_prompt_declares_the_user_guidance_channel_once():
+    text = await _render_main_template(disable_checker=True)
+    assert text.count("--- User Guidance ---") == 1
+    assert "outranks the task plan and its check lines" in text
 
 
 async def _render_main_template(**setup_kwargs) -> str:

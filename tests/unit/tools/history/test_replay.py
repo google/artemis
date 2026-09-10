@@ -24,10 +24,14 @@ from artemis.core.tool_failure import is_tool_failure
 from artemis.tools.history import ReplayStepsTool, replay_steps, replay_steps_text
 
 
+SESSION_START = 1000.0
+
+
 def _friendly_step(number, tool_result="The toggle is ON", **overrides):
     step = {
         "step_id": f"step_{number}",
         "step_number": number,
+        "timestamp": SESSION_START + number * 3,
         "relative_time": f"{number * 3}.0s",
         "summary": f"Step {number} summary.",
         "action_taken": {"action": "click", "target": [0.5, 0.5], "target_text": "Save"},
@@ -46,8 +50,9 @@ def _friendly_step(number, tool_result="The toggle is ON", **overrides):
     return step
 
 
-def _reader(steps):
+def _reader(steps, session_start=SESSION_START):
     reader = MagicMock()
+    reader.session_start_time = session_start
     reader.get_agent_friendly_steps_in_range.side_effect = lambda s, e: [
         st for st in steps if s <= st["step_number"] <= e
     ]
@@ -59,19 +64,38 @@ def test_replay_range_renders_every_step_in_full():
     out = replay_steps_text(reader, 3, 4)
 
     reader.get_agent_friendly_steps_in_range.assert_called_once_with(3, 4)
-    assert "- **Step 3 (Start: 9.0s)**" in out
-    assert "- **Step 4 (Start: 12.0s)**" in out
+    # Step headers carry the session clock every agent prompt uses.
+    assert "- **Step 3 (T+00:09)**" in out
+    assert "- **Step 4 (T+00:12)**" in out
+    assert "Start:" not in out
     assert "[Screen]: Step 3 summary." in out
     assert "Thinking at step 4." in out
     assert "`ask_explorer(" in out
     # Loose clamp: a ~1.8k-char tool result is replayed in full.
     assert "The toggle is OFF " * 100 in out
-    assert "[Planned Action]: Tapped 'Save' at [0.5, 0.5]" in out
+    assert "[Action]: Tapped 'Save' at [0.5, 0.5]" in out
+    assert "[Reasoning & tool calls]:" in out
+    assert "Operator" not in out
+
+
+def test_replay_header_falls_back_without_a_session_clock():
+    """No session start (or a mocked, non-numeric one) / no step timestamp:
+    the header keeps the stored relative time instead of ``T+??:??``."""
+    out = replay_steps_text(_reader([_friendly_step(2)], session_start=None), 2)
+    assert "- **Step 2 (Start: 6.0s)**" in out
+
+    reader = MagicMock()  # session_start_time is a MagicMock, not a number
+    reader.get_agent_friendly_steps_in_range.return_value = [_friendly_step(2)]
+    assert "- **Step 2 (Start: 6.0s)**" in replay_steps_text(reader, 2)
+
+    no_timestamp = _friendly_step(2)
+    del no_timestamp["timestamp"]
+    assert "- **Step 2 (Start: 6.0s)**" in replay_steps_text(_reader([no_timestamp]), 2)
 
 
 def test_replay_single_step_reversed_bounds_and_missing_step():
     reader = _reader([_friendly_step(2)])
-    assert "- **Step 2 (Start: 6.0s)**" in replay_steps_text(reader, 2)
+    assert "- **Step 2 (T+00:06)**" in replay_steps_text(reader, 2)
     reader.get_agent_friendly_steps_in_range.assert_called_once_with(2, 2)
 
     reader = _reader([_friendly_step(2), _friendly_step(3)])
@@ -149,7 +173,7 @@ def test_replay_without_history():
 async def test_tool_execute_reads_the_context_engine_and_degrades_without_one():
     reader = _reader([_friendly_step(2)])
     out = await ReplayStepsTool().execute(ctx=SimpleNamespace(data_engine=reader), start_step=2)
-    assert "- **Step 2 (Start: 6.0s)**" in out
+    assert "- **Step 2 (T+00:06)**" in out
 
     out = await replay_steps.execute(ctx=SimpleNamespace(data_engine=None), start_step=1)
     assert "no execution history" in out

@@ -429,3 +429,87 @@ async def test_emulator_manager_lifecycle():
     dismiss_res = manager.dismiss()
     assert dismiss_res["success"] is True
     assert manager.get_status().status == EmulatorLaunchStage.IDLE
+
+
+@pytest.mark.asyncio
+async def test_build_report_turns_crashing_probe_into_fail_result():
+    engine = ReadinessEngine()
+    healthy = ProbeResult(
+        id="healthy",
+        category=ProbeCategory.RUNTIME,
+        title="Healthy",
+        status=ProbeStatus.PASS,
+        is_blocker=True,
+        summary="Ready",
+        description="Ready",
+    )
+    good = Mock()
+    good.probe_id = "healthy"
+    good.category = ProbeCategory.RUNTIME
+    good.is_blocker = True
+    good.probe = AsyncMock(return_value=healthy)
+
+    bad = Mock()
+    bad.probe_id = "integration_host"
+    bad.category = ProbeCategory.RUNTIME
+    bad.is_blocker = True
+    bad.probe = AsyncMock(side_effect=PermissionError(13, "Permission denied", "/ro/traces"))
+    engine._probes = {"healthy": good, "integration_host": bad}
+
+    report = await engine._build_report()
+
+    assert report.overall_ready is False
+    assert report.blocker_count == 2
+    assert report.passed_blocker_count == 1
+    by_id = {r.id: r for r in report.probes}
+    assert by_id["healthy"].status is ProbeStatus.PASS
+    crashed = by_id["integration_host"]
+    assert crashed.status is ProbeStatus.FAIL
+    assert crashed.is_blocker is True
+    assert crashed.category is ProbeCategory.RUNTIME
+    assert crashed.summary == "Probe crashed"
+    assert "PermissionError" in crashed.description
+    assert "Permission denied" in crashed.description
+    assert crashed.metadata["exception_type"] == "PermissionError"
+
+
+@pytest.mark.asyncio
+async def test_build_report_turns_hung_probe_into_fail_result(monkeypatch):
+    """A probe that never returns (wedged ADB server) is cut off at the
+    engine's per-probe deadline and reported as a FAIL with the restart step,
+    so no surface running the report can hang."""
+    monkeypatch.setattr(ReadinessEngine, "PROBE_TIMEOUT_SECONDS", 0.05)
+    engine = ReadinessEngine()
+
+    async def never_returns():
+        await asyncio.sleep(10)
+
+    hung = Mock()
+    hung.probe_id = "android_adb"
+    hung.category = ProbeCategory.DEVICE
+    hung.is_blocker = True
+    hung.probe = never_returns
+    engine._probes = {"android_adb": hung}
+
+    report = await engine._build_report()
+
+    result = report.probes[0]
+    assert result.status is ProbeStatus.FAIL
+    assert result.summary == "Probe timed out"
+    assert result.metadata["exception_type"] == "TimeoutError"
+    assert any("adb kill-server" in a.payload for a in result.actions)
+    assert report.overall_ready is False
+
+
+@pytest.mark.asyncio
+async def test_build_report_does_not_swallow_cancellation():
+    engine = ReadinessEngine()
+    probe = Mock()
+    probe.probe_id = "cancelled"
+    probe.category = ProbeCategory.RUNTIME
+    probe.is_blocker = True
+    probe.probe = AsyncMock(side_effect=asyncio.CancelledError())
+    engine._probes = {"cancelled": probe}
+
+    with pytest.raises(asyncio.CancelledError):
+        await engine._build_report()

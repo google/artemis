@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pro-graph step summarizer node (M2: visual-transition lens dispatch).
+"""Pro step summarizer dispatching visual-transition summaries.
 
 Per the history-module redesign §5 (single step-level lens, confirmed
 2026-08-31) this node no longer generates a per-step text capsule with its own

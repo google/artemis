@@ -93,8 +93,10 @@ async def validate_api_key(
         async with httpx.AsyncClient(timeout=timeout) as client:
             if is_google_family_provider(clean_provider):
                 # Test Google Gemini via generativelanguage API
-                url = f"https://generativelanguage.googleapis.com/v1beta/models?key={clean_key}&pageSize=1"
-                resp = await client.get(url)
+                # The key travels in a header, never in the URL: httpx logs request
+                # URLs at INFO level and those logs end up in files.
+                url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1"
+                resp = await client.get(url, headers={"x-goog-api-key": clean_key})
                 if resp.status_code == 200:
                     return True, "Google Gemini API key verified successfully."
                 err_msg = _extract_error_message(resp)
@@ -102,7 +104,7 @@ async def validate_api_key(
 
             elif clean_provider in ("ocr", "vision", "google_vision"):
                 # Test Google Cloud Vision OCR API
-                url = f"https://vision.googleapis.com/v1/images:annotate?key={clean_key}"
+                url = "https://vision.googleapis.com/v1/images:annotate"
                 payload = {
                     "requests": [
                         {
@@ -112,7 +114,9 @@ async def validate_api_key(
                     ]
                 }
                 resp = await client.post(
-                    url, json=payload, headers={"Content-Type": "application/json"}
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json", "x-goog-api-key": clean_key},
                 )
                 if resp.status_code == 200:
                     return True, "Google Cloud Vision OCR API key verified successfully."

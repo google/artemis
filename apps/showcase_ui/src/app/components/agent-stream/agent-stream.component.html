@@ -1070,13 +1070,14 @@ limitations under the License.
                                 <!-- Generic Tool Calls (Text format for note tools, video analyzer, and other sub-agents) -->
                                 @if (shouldShowTool(item.data, block.data) && !isDeviceActionTool(item.data)) {
                                   <div class="step-generic-tool"
-                                    [class.is-running]="isItemRunning(item, block)"
+                                    [class.is-running]="isToolLineRunning(item, block)"
                                     [class.is-note-tool]="isNoteTool(item.data)"
                                     [class.is-video-tool]="isVideoTool(item.data)"
                                     [class.is-video-attention]="isVideoTool(item.data) && isVideoAnalysisAttention(item.data)"
+                                    [attr.title]="getCompressionPhaseTitle(item.data)"
                                     >
                                     <div class="tool-call-label">
-                                      <span class="stream-status-dot" [class.streaming]="isItemRunning(item, block)"></span>
+                                      <span class="stream-status-dot" [class.streaming]="isToolLineRunning(item, block)"></span>
                                       <div class="tool-call-text">
                                         <span>{{ isVideoTool(item.data) ? getVideoAnalysisLabel(item.data) : getToolDisplayLabel(item.data) }}{{ ((isNoteTool(item.data) && getToolKey(item.data)) || isVideoTool(item.data)) ? ':' : '' }}</span>
                                         <!-- Note Tool Pill -->

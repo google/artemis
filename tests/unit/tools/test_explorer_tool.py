@@ -288,8 +288,30 @@ def test_render_text_found_lists_indices_and_coordinates():
     text = render_text("Find buttons", outcome, registered)
     assert "Explorer located 1 candidate(s) for 'Find buttons'" in text
     assert "- [2] 'First Button' at normalized [500, 500]" in text
-    assert "target=[index]" in text
     assert "Explorer notes: Please choose carefully." in text
+
+
+def test_render_text_targeting_guidance_follows_the_callers_click_dialect():
+    """Flash / Validator / MCP ``click`` takes coordinates only; the Pro Operator
+    takes a bare integer index. Neither dialect accepts ``target=[index]``."""
+    outcome = ExplorerOutcome(candidates=[ExplorerCandidate("S1", (500, 500), "First Button")])
+    registered = [RegisteredCandidate(2, (540, 1200), (500, 500), "First Button")]
+
+    coordinate_text = render_text("Find buttons", outcome, registered, index_targets=False)
+    assert (
+        "by its normalized coordinate (target=[x, y]) with a target_description" in coordinate_text
+    )
+    assert "bare integer" not in coordinate_text
+    # The keyword defaults to the coordinate-only dialect (text entry points).
+    assert render_text("Find buttons", outcome, registered) == coordinate_text
+
+    index_text = render_text("Find buttons", outcome, registered, index_targets=True)
+    assert "by its index (target=3, a bare integer) or by its normalized coordinate" in index_text
+    assert "target=[x, y]" not in index_text
+
+    for text in (coordinate_text, index_text):
+        assert "target=[index]" not in text
+        assert "Candidates are ranked by confidence." in text
 
 
 def test_render_text_not_found_explains_and_suggests_rephrasing():
@@ -329,6 +351,9 @@ def test_render_operator_blocks_adds_the_annotated_image(tmp_path):
     assert isinstance(result, list) and len(result) == 2
     assert result[0]["type"] == "text"
     assert "Explorer located 1 candidate(s)" in result[0]["text"]
+    # The Operator's click takes a bare integer index.
+    assert "target=3, a bare integer" in result[0]["text"]
+    assert "target=[x, y]" not in result[0]["text"]
     assert result[1]["type"] == "image_url"
     assert result[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
@@ -485,6 +510,9 @@ async def test_ask_explorer_text_end_to_end():
     assert "Explorer located 2 candidate(s) for 'Find buttons'" in text
     assert "- [2] 'First Button' at normalized [500, 500]" in text
     assert "- [3] 'Second Button' at normalized [250, 750]" in text
+    # The text entry serves Flash / Validator / MCP, whose click takes coordinates only.
+    assert "target=[x, y]" in text
+    assert "bare integer" not in text
     assert "Explorer notes: Please choose carefully." in text
 
 
@@ -604,10 +632,16 @@ def test_register_candidates_reuses_an_indexed_element_that_contains_the_point()
             description="Gmail app icon",
             bounds=(200, 300, 400, 500),
             reused=True,
+            existing_text="Gmail",
         )
     ]
     assert len(state.indexed_points) == 2  # nothing appended
-    assert "already in your indexed list" in render_text("Gmail app icon", outcome, registered)
+    # The reused line names the element the way the agent's own list shows it.
+    text = render_text("Gmail app icon", outcome, registered)
+    assert (
+        "- [1] 'Gmail app icon' at normalized [310, 210] (matches your indexed element [1] 'Gmail')"
+    ) in text
+    assert "already in your indexed list" not in text
 
 
 def test_register_candidates_reuses_a_bare_center_within_the_dedup_radius_only():
@@ -622,7 +656,9 @@ def test_register_candidates_reuses_a_bare_center_within_the_dedup_radius_only()
     registered = register_candidates(ctx, state, ExplorerOutcome(candidates=[near, far]))
     assert [r.reused for r in registered] == [True, False]
     assert registered[0].index == 1
+    assert registered[0].existing_text == "Earlier candidate"
     assert registered[1].index == 2
+    assert registered[1].existing_text == ""
     assert state.indexed_points == [[500, 1000], [560, 1000]]
 
 

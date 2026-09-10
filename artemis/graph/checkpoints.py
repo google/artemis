@@ -135,6 +135,10 @@ class TestSummary(BaseModel):
     inconclusive: int = 0
     unchecked: int = 0
     failed_items: list[dict] = Field(default_factory=list)
+    #: Check lines the user retired mid-run (dropped from the plan under user
+    #: guidance): their earlier verdicts are reported here, never as failures.
+    retired: int = 0
+    retired_items: list[dict] = Field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -506,6 +510,112 @@ def _finding_registry(ctx) -> dict:
     return registry
 
 
+def _finding_items(ctx) -> dict:
+    """checkpoint_id -> ``{(kind, item_text), ...}`` of the failed verify items
+    that produced the headline currently held in :func:`_finding_registry`.
+
+    Sibling map of the registry (same lifetime, same keys) so a headline can
+    be retired when user guidance withdraws every item behind it.
+    """
+    items = getattr(ctx, "checker_finding_items", None)
+    if not isinstance(items, dict):
+        items = {}
+        try:
+            ctx.checker_finding_items = items
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return items
+
+
+def _register_finding(ctx, checkpoint_id: str, verify_failures: list) -> None:
+    _finding_registry(ctx)[checkpoint_id] = _render_finding_headline(checkpoint_id, verify_failures)
+    _finding_items(ctx)[checkpoint_id] = {
+        (str(getattr(v, "kind", "") or ""), str(getattr(v, "item_text", "") or ""))
+        for v in verify_failures
+    }
+
+
+def _clear_finding(ctx, checkpoint_id: str) -> bool:
+    """Drops a checkpoint's standing headline; True when one was registered."""
+    _finding_items(ctx).pop(checkpoint_id, None)
+    return _finding_registry(ctx).pop(checkpoint_id, None) is not None
+
+
+def _retired_checks(ctx) -> set[tuple[str, str]]:
+    retired = getattr(ctx, "guidance_retired_checks", None)
+    return retired if isinstance(retired, set) else set()
+
+
+def retire_check_items(ctx, items) -> None:
+    """Records ``(kind, text)`` check items the Operator dropped under user
+    guidance and withdraws their already-materialized findings.
+
+    Recording feeds the harvest gate (:func:`_active_verdicts`) and the run
+    outcome. Cleanup: every standing headline produced *only* by now-retired
+    items is popped and the plan's finding lines are re-projected; a headline
+    that still names a live item stays untouched.
+    """
+    incoming = {(str(kind), str(text)) for kind, text in items}
+    if not incoming:
+        return
+    retired = _retired_checks(ctx) | incoming
+    ctx.guidance_retired_checks = retired
+    registry = _finding_registry(ctx)
+    produced_by = _finding_items(ctx)
+    stale = [cid for cid in list(registry) if produced_by.get(cid) and produced_by[cid] <= retired]
+    for cid in stale:
+        _clear_finding(ctx, cid)
+        logger.info(
+            f"Checkpoint {cid}: standing finding headline withdrawn — every item"
+            " behind it was retired by user guidance."
+        )
+    if stale:
+        sync_finding_lines(ctx)
+
+
+def reinstate_check_items(ctx, items) -> None:
+    """Removes ``(kind, text)`` items from the retired set: the Operator has
+    declared them in the plan again, so their verdicts drive side effects
+    once more and the run outcome counts them normally. A no-op when none of
+    the given items is retired."""
+    retired = _retired_checks(ctx)
+    if not retired:
+        return
+    back = {(str(kind), str(text)) for kind, text in items} & retired
+    if not back:
+        return
+    ctx.guidance_retired_checks = retired - back
+    logger.info(
+        "Check line(s) retired under user guidance are declared again and"
+        f" reinstated: {sorted(back)}"
+    )
+
+
+def _active_verdicts(ctx, checkpoint, verdicts: list) -> list:
+    """The verdicts still allowed to drive side effects: those whose
+    ``(kind, item_text)`` was not retired by user guidance. Ledger recording is
+    never filtered — this gate only protects execution state."""
+    retired = _retired_checks(ctx)
+    if not retired:
+        return list(verdicts)
+    active: list = []
+    dropped: list = []
+    for v in verdicts:
+        key = (str(getattr(v, "kind", "") or ""), str(getattr(v, "item_text", "") or ""))
+        (dropped if key in retired else active).append(v)
+    if dropped:
+        logger.info(
+            f"Checkpoint {checkpoint.checkpoint_id}: {len(dropped)} verdict(s)"
+            " recorded but dropped from side effects — their check items were"
+            " retired by user guidance: "
+            + ", ".join(
+                f"[{k}] '{t}'"
+                for k, t in ((getattr(v, "kind", ""), getattr(v, "item_text", "")) for v in dropped)
+            )
+        )
+    return active
+
+
 def _render_finding_headline(checkpoint_id: str, verify_failures: list) -> str:
     first = verify_failures[0]
     evidence = str(getattr(first, "evidence", "") or "").strip()
@@ -778,16 +888,26 @@ def harvest_run(
     # Layer 3: the per-checkpoint repair log accumulates every booked attempt.
     _log_checker_note(ctx, run, verdicts)
 
+    # Guidance gate: a verdict for a check item the user retired mid-run (the
+    # Operator dropped its line under a guidance waiver) is a result for a
+    # withdrawn requirement — booked above, never a repair/halt trigger.
+    active = _active_verdicts(ctx, checkpoint, verdicts)
+    all_retired = bool(verdicts) and not active
+
     # Applicability gate for side effects: the verdict must belong to the
     # current attempt of its checkpoint AND the anchored subgoal's text must be
-    # unchanged in the current plan. Stale/mismatched verdicts are ledger-only.
-    applicable = allow_side_effects and _subgoal_still_current(ctx, checkpoint.checkpoint_id)
+    # unchanged in the current plan AND at least one verdict must still be
+    # live. Stale/mismatched/fully retired verdicts are ledger-only.
+    applicable = (
+        allow_side_effects
+        and not all_retired
+        and _subgoal_still_current(ctx, checkpoint.checkpoint_id)
+    )
     user_stopped = bool(state is not None and getattr(state, "user_stop_requested", False))
 
-    verify_failures = [v for v in verdicts if v.kind == "verify" and v.status == "failed"]
-    assert_failures = [v for v in verdicts if v.kind == "assert" and v.status == "failed"]
+    verify_failures = [v for v in active if v.kind == "verify" and v.status == "failed"]
+    assert_failures = [v for v in active if v.kind == "assert" and v.status == "failed"]
 
-    registry = _finding_registry(ctx)
     registry_changed = False
     reverted = False
 
@@ -799,9 +919,7 @@ def harvest_run(
             reverted = revert_subgoal_status(ctx, checkpoint.checkpoint_id)
             # Layer 2: register the standing plan headline for this unresolved
             # finding; the projection below renders it under the subgoal.
-            registry[checkpoint.checkpoint_id] = _render_finding_headline(
-                checkpoint.checkpoint_id, verify_failures
-            )
+            _register_finding(ctx, checkpoint.checkpoint_id, verify_failures)
             registry_changed = True
             for v in verify_failures:
                 suggestion = getattr(v, "suggestion", "") or ""
@@ -820,16 +938,18 @@ def harvest_run(
             # Quota exhausted: the run is settled for this checkpoint — the
             # standing headline is retired (the ledger and the checker note
             # keep the full record).
-            registry_changed = registry.pop(checkpoint.checkpoint_id, None) is not None
+            registry_changed = _clear_finding(ctx, checkpoint.checkpoint_id)
             logger.warning(
                 f"Checkpoint {checkpoint.checkpoint_id} exhausted its repair"
                 f" quota ({max_repairs}); verdict stays failed, no further"
                 " repair loop."
             )
-    elif not verify_failures:
+    elif not verify_failures and not all_retired:
         # A booked attempt without failed verify criteria resolves (or
-        # releases) the checkpoint: its standing headline is retired.
-        registry_changed = registry.pop(checkpoint.checkpoint_id, None) is not None
+        # releases) the checkpoint: its standing headline is retired. (A fully
+        # retired report says nothing about the checkpoint — its headline, if
+        # any, was already handled by ``retire_check_items``.)
+        registry_changed = _clear_finding(ctx, checkpoint.checkpoint_id)
 
     if registry_changed:
         sync_finding_lines(ctx)
@@ -842,11 +962,21 @@ def harvest_run(
                 "Assert failure under 'halt' policy: latching halt flag for exit settlement."
             )
 
+    # Event payload: ``verdicts`` carries every booked verdict (ledger view);
+    # ``applicable`` is False when nothing could take effect — including a
+    # report whose check items were all retired by user guidance; ``retired``
+    # lists the ``(kind, item_text)`` pairs of the verdicts dropped by that
+    # guidance gate (empty when none were).
     _event(
         "done",
         verdict_payloads(verdicts),
         applicable=bool(applicable),
         reverted=bool(reverted),
+        retired=[
+            {"kind": p["kind"], "item_text": p["item_text"]}
+            for p in verdict_payloads(verdicts)
+            if (p["kind"], p["item_text"]) in _retired_checks(ctx)
+        ],
         repairs_used=int(ctx.checkpoint_repairs.get(checkpoint.checkpoint_id, 0)),
     )
     return findings
@@ -1006,8 +1136,20 @@ def resolve_item_status(kind: str, records: list[dict]) -> str:
     return "unchecked"
 
 
-def compute_test_summary(check_items: list[CheckItem], records: list[dict]) -> TestSummary:
+def compute_test_summary(
+    check_items: list[CheckItem],
+    records: list[dict],
+    retired: set[tuple[str, str]] | None = None,
+) -> TestSummary:
+    """Folds the verdict ledger into pass/fail counts over the declared items.
+
+    ``retired`` names check lines the Operator dropped under user guidance; a
+    line that is retired and no longer declared in the plan is reported under
+    ``retired`` with its last recorded verdict, not as a pass or a failure —
+    the user withdrew that requirement.
+    """
     summary = TestSummary()
+    retired = retired or set()
     by_item: dict[tuple[str, str], list[dict]] = {}
     for r in records:
         by_item.setdefault((str(r.get("kind")), str(r.get("item_text"))), []).append(r)
@@ -1026,8 +1168,13 @@ def compute_test_summary(check_items: list[CheckItem], records: list[dict]) -> T
             seen.add(sig)
             all_items.append(sig)
 
+    declared = {(ci.kind, ci.text) for ci in check_items}
     for kind, text in all_items:
         status = resolve_item_status(kind, by_item.get((kind, text), []))
+        if (kind, text) in retired and (kind, text) not in declared:
+            summary.retired += 1
+            summary.retired_items.append({"item_text": text, "kind": kind, "last_status": status})
+            continue
         if status == "passed":
             summary.passed += 1
         elif status == "failed":
@@ -1052,6 +1199,7 @@ def compute_run_outcome(
     records: list[dict],
     *,
     verify_blocked: bool,
+    retired: set[tuple[str, str]] | None = None,
 ) -> RunOutcome:
     """Assembles the machine-readable run outcome.
 
@@ -1060,7 +1208,7 @@ def compute_run_outcome(
     completion. Assert failures never change ``task_status``: a finished task
     with failed assertions is ``completed`` with ``tests.failed > 0``.
     """
-    tests = compute_test_summary(list(snapshot.all_check_items), records)
+    tests = compute_test_summary(list(snapshot.all_check_items), records, retired=retired)
     if verify_blocked:
         task_status: Literal["completed", "partial", "blocked"] = "blocked"
     elif snapshot.all_top_level_done:

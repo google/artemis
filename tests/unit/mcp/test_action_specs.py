@@ -17,12 +17,11 @@
 Two kinds of protection:
 
 * **Fixture pins** freeze the exact schema each model surface receives (operator
-  shells, Validator/Flash declarations, the action server manifest). A schema change
-  must be a conscious act: regenerate the fixture in the same commit and say why.
-* **Bridge derivation** re-derives every cross-dialect parameter difference from the
-  generated schemas and requires it to be declared in ``ActionSpec.param_bridge``.
-  Undeclared divergence between what one agent sees and what another sees -- the
-  historical definition of drift -- fails here instead of shipping.
+  shells, Flash declarations, the action server manifest). A schema change must be a
+  conscious act: regenerate the fixture in the same commit and say why.
+* **Projection identity** checks that the Flash declaration of every shared action
+  is the operator shell's own description and parameters, so the two profiles can
+  never see different tools under one name -- the historical definition of drift.
 """
 
 import json
@@ -130,47 +129,71 @@ def test_validator_declaration_order_is_stable():
     ]
 
 
-# --- Bridge derivation: dialect differences must be declared -------------------------
+# --- Projection identity: Flash binds the operator shell, projected ------------------
 
 
-def _operator_param_names(name: str) -> list[str]:
-    schema = convert_to_openai_tool(operator_shell_tool(name))
-    return list(schema["function"]["parameters"].get("properties", {}))
+def _without_optional_noise(schema: dict) -> dict:
+    """The pydantic-generated property schema minus what only marks optionality.
+
+    ``default`` and the ``null`` alternative say "optional"; the declaration says
+    that through ``required`` alone.
+    """
+    out = {k: v for k, v in schema.items() if k not in ("anyOf", "default")}
+    if "anyOf" in schema:
+        members = [m for m in schema["anyOf"] if m.get("type") != "null"]
+        out.update(members[0] if len(members) == 1 else {"anyOf": members})
+    return out
 
 
-def _declaration_param_names(name: str) -> list[str]:
-    return list(tool_declaration(name).parameters.get("properties", {}))
-
-
-def test_param_bridge_is_exact():
-    """Every operator<->declaration parameter difference is declared, none invented."""
+def test_flash_declarations_are_the_operator_shells_projected():
+    """One definition, two bindings: for every action with an operator shell, the
+    Flash ``ToolDeclaration`` carries the shell's description, parameter names,
+    descriptions, types (index-or-coordinates unions included) and required set."""
     for spec in ACTION_SPECS.values():
-        if spec.operator is None or spec.declaration is None:
-            assert spec.param_bridge == {}, (
-                f"'{spec.name}' declares a param_bridge without both dialects."
-            )
+        if spec.operator is None:
             continue
-        operator_names = _operator_param_names(spec.name)
-        declaration_names = _declaration_param_names(spec.name)
-        assert set(spec.param_bridge) == set(operator_names), (
-            f"'{spec.name}': param_bridge keys must cover exactly the operator"
-            f" params. bridge={sorted(spec.param_bridge)} operator={operator_names}"
-        )
-        assert set(spec.param_bridge.values()) == set(declaration_names), (
-            f"'{spec.name}': param_bridge values must cover exactly the declaration"
-            f" params. bridge={sorted(spec.param_bridge.values())}"
-            f" declaration={declaration_names}"
-        )
-
-
-def test_renamed_params_are_documented():
-    """A cross-dialect rename is a deliberate difference; it must carry prose."""
-    for spec in ACTION_SPECS.values():
-        renames = {k: v for k, v in spec.param_bridge.items() if k != v}
-        if renames:
-            assert spec.differences, (
-                f"'{spec.name}' renames {renames} across dialects but documents no differences."
+        shell = convert_to_openai_tool(operator_shell_tool(spec.name))["function"]
+        declaration = tool_declaration(spec.name)
+        assert declaration.description == shell["description"], spec.name
+        shell_props = shell["parameters"]["properties"]
+        decl_props = declaration.parameters["properties"]
+        assert list(decl_props) == list(shell_props), spec.name
+        for param, schema in shell_props.items():
+            assert decl_props[param] == _without_optional_noise(schema), (
+                f"'{spec.name}.{param}' diverges between the operator shell and the"
+                " Flash declaration."
             )
+        assert declaration.parameters["required"] == shell["parameters"].get("required", []), (
+            spec.name
+        )
+
+
+def test_point_targets_accept_an_index_or_coordinates_in_both_profiles():
+    """click / long_press / input_text address an element by index or by
+    normalized coordinates; the description is required only for coordinates."""
+    for name in ("click", "long_press", "input_text"):
+        target = tool_declaration(name).parameters["properties"]["target"]
+        assert target["anyOf"] == [
+            {"type": "integer"},
+            {"type": "array", "items": {"type": "integer"}},
+        ], name
+        assert "target_description" not in tool_declaration(name).parameters["required"], name
+    assert tool_declaration("click_sequence").parameters["required"] == [
+        "sequence",
+        "target_descriptions",
+    ]
+
+
+def test_shared_descriptions_are_identical_between_profiles():
+    for name in ("swipe", "press_key", "manage_app", "wait_for_delay"):
+        assert tool_declaration(name).description == operator_shell_tool(name).description
+
+
+def test_documented_differences_concern_the_wire_only():
+    """The agent dialect is single-sourced; a spec may only document how the
+    agent dialect differs from the wire (spelling, vocabulary, resolution)."""
+    for spec in ACTION_SPECS.values():
+        assert "declaration dialect" not in spec.differences, spec.name
 
 
 # --- Manifest coverage ---------------------------------------------------------------

@@ -208,6 +208,219 @@ async def test_process_plan_write_only_queues(tmp_path):
     assert ctx.checkpoint_tasks == {}
 
 
+VERIFY_LINE = "  - verify: the alarm list shows 7:30 AM\n"
+ASSERT_LINE = "  - assert: a toast appeared\n"
+
+
+def _guidance_arrives(ctx, plan_text):
+    """What perception_node does when a non-empty user instruction lands: the
+    check lines that exist at that moment lose their machine restoration."""
+    from artemis.utils.plan_grammar import parse_plan
+
+    current = getattr(ctx, "guidance_unprotected_checks", None)
+    if not isinstance(current, set):
+        current = set()
+    ctx.guidance_unprotected_checks = current | {
+        (ci.kind, ci.text) for ci in parse_plan(plan_text).check_items
+    }
+
+
+async def _plan_write(tmp_path, ctx, before, after):
+    """One accepted task_plan write through the shared post-write pipeline;
+    returns the plan text as it stands on disk afterwards."""
+    from artemis.graph.graph import _process_plan_write
+
+    task_plan_path = _write_plan(tmp_path, after)
+    await _process_plan_write(ctx, _make_state(), task_plan_path, before, after, "ok", True)
+    return task_plan_path.read_text(encoding="utf-8")
+
+
+NEW_VERIFY_LINE = "  - verify: the build number is recorded\n"
+
+
+@pytest.mark.asyncio
+async def test_pre_guidance_check_lines_may_be_dropped_at_any_later_write(tmp_path):
+    """Without guidance a deleted check line grows back. Once user guidance has
+    arrived, the lines that existed at that moment stay editable for the rest
+    of the run: the Operator re-plans over several writes, turns later, and
+    none of them is undone."""
+    without_verify = PLAN_WITH_CHECKS.replace(VERIFY_LINE, "")
+    without_both = without_verify.replace(ASSERT_LINE, "")
+    ctx = _make_ctx(tmp_path, disable_planner_validation=True)
+    ctx.guidance_unprotected_checks = set()
+
+    # Ordinary write (no guidance): the deleted line grows back.
+    assert VERIFY_LINE in await _plan_write(tmp_path, ctx, PLAN_WITH_CHECKS, without_verify)
+
+    # Turn N: guidance arrives; the Operator only advances a milestone.
+    _guidance_arrives(ctx, PLAN_WITH_CHECKS)
+    started_next = PLAN_WITH_CHECKS.replace("- [ ] Next milestone", "- [/] Next milestone")
+    assert await _plan_write(tmp_path, ctx, PLAN_WITH_CHECKS, started_next) == started_next
+
+    # Turn N+2: the first check line goes, and stands.
+    dropped_verify = started_next.replace(VERIFY_LINE, "")
+    assert await _plan_write(tmp_path, ctx, started_next, dropped_verify) == dropped_verify
+    # Turn N+3: the second one goes too, and also stands (no single-write window).
+    dropped_both = dropped_verify.replace(ASSERT_LINE, "")
+    assert await _plan_write(tmp_path, ctx, dropped_verify, dropped_both) == dropped_both
+
+
+@pytest.mark.asyncio
+async def test_check_lines_added_after_guidance_stay_protected(tmp_path):
+    """A check line the Operator adds after the instruction is a new standard:
+    deleting it later is restored, while the pre-guidance line still may go."""
+    ctx = _make_ctx(tmp_path, disable_planner_validation=True)
+    ctx.guidance_unprotected_checks = set()
+    _guidance_arrives(ctx, PLAN_WITH_CHECKS)
+
+    with_new = PLAN_WITH_CHECKS.replace(ASSERT_LINE, ASSERT_LINE + NEW_VERIFY_LINE)
+    assert await _plan_write(tmp_path, ctx, PLAN_WITH_CHECKS, with_new) == with_new
+
+    dropped_new = with_new.replace(NEW_VERIFY_LINE, "")
+    on_disk = await _plan_write(tmp_path, ctx, with_new, dropped_new)
+    assert NEW_VERIFY_LINE in on_disk  # restored: it postdates the guidance
+
+    dropped_old = with_new.replace(VERIFY_LINE, "")
+    on_disk = await _plan_write(tmp_path, ctx, with_new, dropped_old)
+    assert VERIFY_LINE not in on_disk  # stands: it predates the guidance
+    assert NEW_VERIFY_LINE in on_disk
+
+
+@pytest.mark.asyncio
+async def test_second_guidance_waives_the_lines_that_exist_by_then(tmp_path):
+    ctx = _make_ctx(tmp_path, disable_planner_validation=True)
+    ctx.guidance_unprotected_checks = set()
+    _guidance_arrives(ctx, PLAN_WITH_CHECKS)
+    with_new = PLAN_WITH_CHECKS.replace(ASSERT_LINE, ASSERT_LINE + NEW_VERIFY_LINE)
+    assert await _plan_write(tmp_path, ctx, PLAN_WITH_CHECKS, with_new) == with_new
+    dropped_new = with_new.replace(NEW_VERIFY_LINE, "")
+    assert NEW_VERIFY_LINE in await _plan_write(tmp_path, ctx, with_new, dropped_new)
+
+    _guidance_arrives(ctx, with_new)  # the new line exists now: it is waived too
+    assert NEW_VERIFY_LINE not in await _plan_write(tmp_path, ctx, with_new, dropped_new)
+
+
+@pytest.mark.asyncio
+async def test_mixed_write_restores_only_the_protected_lines(tmp_path):
+    """One write drops a pre-guidance line and a post-guidance line: only the
+    protected one is merged back."""
+    ctx = _make_ctx(tmp_path, disable_planner_validation=True)
+    ctx.guidance_unprotected_checks = set()
+    _guidance_arrives(ctx, PLAN_WITH_CHECKS)
+    with_new = PLAN_WITH_CHECKS.replace(ASSERT_LINE, ASSERT_LINE + NEW_VERIFY_LINE)
+    assert await _plan_write(tmp_path, ctx, PLAN_WITH_CHECKS, with_new) == with_new
+
+    dropped_both = with_new.replace(VERIFY_LINE, "").replace(NEW_VERIFY_LINE, "")
+    on_disk = await _plan_write(tmp_path, ctx, with_new, dropped_both)
+    assert VERIFY_LINE not in on_disk
+    assert NEW_VERIFY_LINE in on_disk
+
+
+@pytest.mark.asyncio
+async def test_guided_drop_records_the_retired_lines_and_the_outcome_excludes_them(tmp_path):
+    """A line dropped under guidance is remembered as retired; a verdict the
+    ledger recorded for it earlier is reported as retired, not as a failure,
+    while a line still declared keeps its verdict."""
+    from artemis.graph.checkpoints import compute_test_summary
+    from artemis.utils.plan_grammar import parse_plan
+
+    ctx = _make_ctx(tmp_path, disable_planner_validation=True)
+    ctx.guidance_unprotected_checks = set()
+    ctx.guidance_retired_checks = set()
+    _guidance_arrives(ctx, PLAN_WITH_CHECKS)
+    without_verify = PLAN_WITH_CHECKS.replace(VERIFY_LINE, "")
+    assert await _plan_write(tmp_path, ctx, PLAN_WITH_CHECKS, without_verify) == without_verify
+    assert ctx.guidance_retired_checks == {("verify", "the alarm list shows 7:30 AM")}
+
+    records = [
+        {"kind": "verify", "item_text": "the alarm list shows 7:30 AM", "status": "failed"},
+        {"kind": "assert", "item_text": "a toast appeared", "status": "passed"},
+    ]
+    summary = compute_test_summary(
+        list(parse_plan(without_verify).all_check_items),
+        records,
+        retired=ctx.guidance_retired_checks,
+    )
+    assert (summary.passed, summary.failed, summary.retired) == (1, 0, 1)
+    assert summary.retired_items == [
+        {"item_text": "the alarm list shows 7:30 AM", "kind": "verify", "last_status": "failed"}
+    ]
+    # A retired line that is declared again (the Operator re-added it) counts normally.
+    summary = compute_test_summary(
+        list(parse_plan(PLAN_WITH_CHECKS).all_check_items),
+        records,
+        retired=ctx.guidance_retired_checks,
+    )
+    assert (summary.passed, summary.failed, summary.retired) == (1, 1, 0)
+
+
+REWORDED_MILESTONE = PLAN_WITH_CHECKS.replace(f"- [x] {GOAL_TEXT}", "- [x] Create the 7:30 alarm")
+
+
+@pytest.mark.asyncio
+async def test_rewording_a_milestone_keeps_its_check_lines_in_place(tmp_path):
+    """The check lines under a reworded milestone change signature (parent
+    hash) but stay declared: they are neither duplicated as task-level @end
+    orphans nor, under guidance, retired."""
+    ctx = _make_ctx(tmp_path, disable_planner_validation=True)
+    ctx.guidance_unprotected_checks = set()
+    ctx.guidance_retired_checks = set()
+
+    # No guidance: nothing to restore, the plan stands as written.
+    on_disk = await _plan_write(tmp_path, ctx, PLAN_WITH_CHECKS, REWORDED_MILESTONE)
+    assert on_disk == REWORDED_MILESTONE
+    assert "@end" not in on_disk
+
+    # Guidance armed: the same edit retires nothing.
+    _guidance_arrives(ctx, PLAN_WITH_CHECKS)
+    on_disk = await _plan_write(tmp_path, ctx, PLAN_WITH_CHECKS, REWORDED_MILESTONE)
+    assert on_disk == REWORDED_MILESTONE
+    assert ctx.guidance_retired_checks == set()
+
+
+@pytest.mark.asyncio
+async def test_redeclaring_a_retired_line_reinstates_it(tmp_path):
+    """Dropped under guidance, then added back: the harvest gate must see the
+    line as live again, matching what compute_test_summary reports."""
+    from artemis.graph.checkpoints import reinstate_check_items
+
+    ctx = _make_ctx(tmp_path, disable_planner_validation=True)
+    ctx.guidance_unprotected_checks = set()
+    ctx.guidance_retired_checks = set()
+    _guidance_arrives(ctx, PLAN_WITH_CHECKS)
+    without_verify = PLAN_WITH_CHECKS.replace(VERIFY_LINE, "")
+    await _plan_write(tmp_path, ctx, PLAN_WITH_CHECKS, without_verify)
+    assert ctx.guidance_retired_checks == {RETIRED_VERIFY}
+
+    await _plan_write(tmp_path, ctx, without_verify, PLAN_WITH_CHECKS)
+    assert ctx.guidance_retired_checks == set()
+
+    # Direct helper: unrelated items leave the set untouched.
+    ctx.guidance_retired_checks = {RETIRED_VERIFY}
+    reinstate_check_items(ctx, [RETIRED_ASSERT])
+    assert ctx.guidance_retired_checks == {RETIRED_VERIFY}
+
+
+@pytest.mark.asyncio
+async def test_rejected_plan_write_leaves_the_waiver_untouched(tmp_path):
+    from langchain_core.messages import ToolMessage
+
+    from artemis.graph.graph import _process_plan_write
+
+    ctx = _make_ctx(tmp_path, disable_planner_validation=True)
+    ctx.guidance_unprotected_checks = set()
+    _guidance_arrives(ctx, PLAN_WITH_CHECKS)
+    waived = set(ctx.guidance_unprotected_checks)
+    reworded = PLAN_WITH_CHECKS.replace("- [ ] Next milestone", "- [ ] The next milestone")
+    task_plan_path = _write_plan(tmp_path, reworded)
+    result = await _process_plan_write(
+        ctx, _make_state(), task_plan_path, PLAN_WITH_CHECKS, reworded, "ok", False
+    )
+    assert isinstance(result, ToolMessage)
+    assert task_plan_path.read_text(encoding="utf-8") == PLAN_WITH_CHECKS
+    assert ctx.guidance_unprotected_checks == waived
+
+
 # --- §8.1 / §8.10: spawn after record_step; record_step unconditional ----------------
 
 
@@ -513,6 +726,146 @@ async def test_assert_fail_halt_policy_latches_halt(tmp_path):
 
     harvest_run(ctx, _make_state(), run, allow_side_effects=True)
     assert ctx.assert_halt is True
+
+
+# --- Retired check items: late verdicts are ledger-only ------------------------------
+
+
+RETIRED_VERIFY = ("verify", "the alarm list shows 7:30 AM")
+RETIRED_ASSERT = ("assert", "a toast appeared")
+
+
+def _last_done_event(ctx):
+    calls = [
+        c for c in ctx.data_engine._publish.call_args_list if c.args[1].get("status") == "done"
+    ]
+    return calls[-1].args[1]
+
+
+@pytest.mark.asyncio
+async def test_late_failing_verify_for_retired_line_is_ledger_only(tmp_path):
+    """The user retired the verify line but kept the milestone: a late failing
+    verdict for it neither reopens the subgoal nor produces findings/headline,
+    yet the ledger still books it and the done event reports it as retired."""
+    plan_path = _write_plan(tmp_path, PLAN_WITH_CHECKS.replace(VERIFY_LINE, ""))
+    ctx = _make_ctx(tmp_path)
+    ctx.guidance_retired_checks = {RETIRED_VERIFY}
+    run = _done_run(ctx, CheckReport(verdicts=[_verdict("verify", "failed")]))
+
+    findings = harvest_run(ctx, _make_state(), run, allow_side_effects=True)
+
+    assert findings == []
+    assert f"- [x] {GOAL_TEXT}" in plan_path.read_text(encoding="utf-8")
+    assert "- finding:" not in plan_path.read_text(encoding="utf-8")
+    assert ctx.checkpoint_repairs == {}
+    assert getattr(ctx, "checker_findings", {}) == {}
+    records = read_ledger(tmp_path)
+    assert [(r["kind"], r["status"]) for r in records] == [("verify", "failed")]
+    event = _last_done_event(ctx)
+    assert event["applicable"] is False
+    assert event["reverted"] is False
+    assert event["retired"] == [{"kind": "verify", "item_text": RETIRED_VERIFY[1]}]
+    assert [v["status"] for v in event["verdicts"]] == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_failed_assert_for_retired_line_never_latches_halt(tmp_path):
+    _write_plan(tmp_path, PLAN_WITH_CHECKS.replace(ASSERT_LINE, ""))
+    ctx = _make_ctx(tmp_path, assert_failure_policy="halt")
+    ctx.guidance_retired_checks = {RETIRED_ASSERT}
+    run = _done_run(ctx, CheckReport(verdicts=[_verdict("assert", "failed")]))
+
+    harvest_run(ctx, _make_state(), run, allow_side_effects=True)
+
+    assert ctx.assert_halt is False
+    assert read_ledger(tmp_path)[0]["status"] == "failed"  # still booked
+    assert _last_done_event(ctx)["applicable"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_retired_sibling_verdict_still_takes_effect(tmp_path):
+    """Same report: the retired verify is dropped, the live assert still halts
+    and the live verify sibling still repairs."""
+    plan_path = _write_plan(tmp_path, PLAN_WITH_CHECKS.replace(VERIFY_LINE, ""))
+    ctx = _make_ctx(tmp_path, assert_failure_policy="halt")
+    ctx.guidance_retired_checks = {RETIRED_VERIFY}
+    run = _done_run(
+        ctx,
+        CheckReport(verdicts=[_verdict("verify", "failed"), _verdict("assert", "failed")]),
+    )
+
+    findings = harvest_run(ctx, _make_state(), run, allow_side_effects=True)
+
+    assert findings == []  # the retired verify produces no repair finding
+    assert f"- [x] {GOAL_TEXT}" in plan_path.read_text(encoding="utf-8")
+    assert ctx.assert_halt is True  # the live assert sibling still counts
+    event = _last_done_event(ctx)
+    assert event["applicable"] is True
+    assert event["retired"] == [{"kind": "verify", "item_text": RETIRED_VERIFY[1]}]
+
+    # And a live verify sibling next to a retired one still drives the repair,
+    # with the headline naming only the live criterion.
+    live_line = "  - verify: the alarm is enabled\n"
+    plan_path = _write_plan(tmp_path, PLAN_WITH_CHECKS.replace(VERIFY_LINE, live_line))
+    ctx = _make_ctx(tmp_path)
+    ctx.guidance_retired_checks = {RETIRED_VERIFY}
+    run = _done_run(
+        ctx,
+        CheckReport(
+            verdicts=[
+                _verdict("verify", "failed"),
+                _verdict("verify", "failed", text="the alarm is enabled", evidence="toggle off"),
+            ]
+        ),
+    )
+    findings = harvest_run(ctx, _make_state(), run, allow_side_effects=True)
+    content = plan_path.read_text(encoding="utf-8")
+    assert f"- [/] {GOAL_TEXT}" in content
+    assert "- finding: verify failed — 'the alarm is enabled'" in content
+    assert RETIRED_VERIFY[1] not in " ".join(findings)
+    assert any("the alarm is enabled" in f for f in findings)
+    assert ctx.checker_finding_items[GOAL_KEY] == {("verify", "the alarm is enabled")}
+
+
+@pytest.mark.asyncio
+async def test_retiring_an_item_withdraws_its_registered_headline(tmp_path):
+    """A headline registered by an earlier failing attempt disappears from the
+    plan when the user guidance retires the item that produced it; a headline
+    that still names a live item stays."""
+    from artemis.graph.checkpoints import retire_check_items
+
+    plan_path = _write_plan(tmp_path)
+    ctx = _make_ctx(tmp_path)
+    run = _done_run(ctx, CheckReport(verdicts=[_verdict("verify", "failed")]))
+    harvest_run(ctx, _make_state(), run, allow_side_effects=True)
+    assert "- finding: verify failed" in plan_path.read_text(encoding="utf-8")
+
+    retire_check_items(ctx, [RETIRED_ASSERT])  # unrelated item: headline stays
+    assert "- finding: verify failed" in plan_path.read_text(encoding="utf-8")
+    assert ctx.guidance_retired_checks == {RETIRED_ASSERT}
+
+    retire_check_items(ctx, [RETIRED_VERIFY])
+    assert "- finding:" not in plan_path.read_text(encoding="utf-8")
+    assert ctx.checker_findings == {}
+    assert ctx.checker_finding_items == {}
+    assert ctx.guidance_retired_checks == {RETIRED_ASSERT, RETIRED_VERIFY}
+
+    # The plan-write path reaches the same helper: dropping a waived line
+    # after a headline was registered removes the headline on that write.
+    plan_path = _write_plan(tmp_path)
+    ctx = _make_ctx(tmp_path, disable_planner_validation=True)
+    ctx.guidance_unprotected_checks = set()
+    ctx.guidance_retired_checks = set()
+    run = _done_run(ctx, CheckReport(verdicts=[_verdict("verify", "failed")]))
+    harvest_run(ctx, _make_state(), run, allow_side_effects=True)
+    with_finding = plan_path.read_text(encoding="utf-8")
+    assert "- finding: verify failed" in with_finding
+    _guidance_arrives(ctx, with_finding)
+    without_verify = with_finding.replace(VERIFY_LINE, "")
+    on_disk = await _plan_write(tmp_path, ctx, with_finding, without_verify)
+    assert VERIFY_LINE not in on_disk
+    assert "- finding:" not in on_disk
+    assert ctx.guidance_retired_checks == {RETIRED_VERIFY}
 
 
 @pytest.mark.asyncio

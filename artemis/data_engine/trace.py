@@ -14,6 +14,7 @@
 
 import base64
 from collections.abc import Callable
+import contextlib
 import functools
 import hashlib
 import inspect
@@ -175,6 +176,20 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
     def on_tool_error(self, error: Any, *, run_id: uuid.UUID, **kwargs: Any) -> Any:
         pass
 
+    @staticmethod
+    def _detached_lens() -> bool:
+        """True inside ``detached_trace('lens:...')``: a background lens call
+        (visual summary, segment capsule) that belongs to no agent step."""
+        node_name = CURRENT_NODE_NAME.get() or ""
+        return CURRENT_TRACE_ID.get() is None and node_name.startswith("lens:")
+
+    def _current_step_id(self):
+        """The step a trace attaches to: the engine's current step, or None for
+        a detached lens call (its reply must never read as that step's work)."""
+        if self._detached_lens():
+            return None
+        return self.ctx.data_engine.current_step_id
+
     def on_llm_start(
         self,
         serialized: dict[str, Any],
@@ -200,7 +215,7 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
                 trace_id=run_id,
                 parent_trace_id=self._resolve_parent_id(parent_run_id, kwargs),
                 status="running",
-                step_id=self.ctx.data_engine.current_step_id,
+                step_id=self._current_step_id(),
             )
 
     def on_chat_model_start(
@@ -233,7 +248,7 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
                 trace_id=run_id,
                 parent_trace_id=self._resolve_parent_id(parent_run_id, kwargs),
                 status="running",
-                step_id=self.ctx.data_engine.current_step_id,
+                step_id=self._current_step_id(),
             )
 
     def _safe_uuid5(self, parent_id, name: str) -> uuid.UUID:
@@ -253,6 +268,11 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
     ) -> Any:
         """Run when LLM ends running."""
         if self.ctx.data_engine:
+            # A background lens call (see ``detached_trace``) belongs to no step:
+            # its reply is a compression product, never an agent's reasoning, so
+            # it is neither attached to the current step nor recorded as thinking.
+            detached = self._detached_lens()
+            step_id = self._current_step_id()
             generations = getattr(response, "generations", [])
             flat_generations = []
             if generations:
@@ -308,7 +328,7 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
                 parent_trace_id=self._resolve_parent_id(parent_run_id),
                 status="success",
                 duration=duration,
-                step_id=self.ctx.data_engine.current_step_id,
+                step_id=step_id,
             )
 
             native_thoughts = []
@@ -327,6 +347,8 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
                 elif gen_item.get("text") and str(gen_item.get("text")).strip():
                     raw_thoughts.append(str(gen_item.get("text")).strip())
 
+            if detached:
+                native_thoughts, raw_thoughts = [], []
             if native_thoughts:
                 self.ctx.data_engine.record_trace(
                     type="thinking",
@@ -335,7 +357,7 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
                     trace_id=self._safe_uuid5(run_id, "thinking"),
                     parent_trace_id=run_id,
                     status="success",
-                    step_id=self.ctx.data_engine.current_step_id,
+                    step_id=step_id,
                 )
             if raw_thoughts:
                 self.ctx.data_engine.record_trace(
@@ -345,7 +367,7 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
                     trace_id=self._safe_uuid5(run_id, "raw_thinking"),
                     parent_trace_id=run_id,
                     status="success",
-                    step_id=self.ctx.data_engine.current_step_id,
+                    step_id=step_id,
                 )
 
     def on_llm_error(
@@ -379,7 +401,7 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
                 parent_trace_id=self._resolve_parent_id(parent_run_id),
                 status="failed",
                 duration=duration,
-                step_id=self.ctx.data_engine.current_step_id,
+                step_id=self._current_step_id(),
             )
 
     def _serialize_message(self, msg: BaseMessage) -> dict[str, Any]:
@@ -664,6 +686,36 @@ class TraceSpan:
                 parent_trace_id=self.parent_id,
                 step_id=step_id,
             )
+
+
+@contextlib.contextmanager
+def detached_trace(node_name: str | None = None):
+    """Run a block outside the caller's trace span.
+
+    Background work (the step-memory lenses: visual-transition summaries,
+    segment capsules) is dispatched while an agent's step span is current, and
+    an ``asyncio`` task inherits that context. Every model call made inside
+    the block would then hang off the agent's span: the callback handler
+    records its reply as a ``thinking``/``raw_thinking`` child of that span, so
+    ``replay_steps``/``search_history`` later show a capsule JSON as the
+    operator's own reasoning, and the stream deltas surface under the
+    operator's timeline entry.
+
+    Inside the block :data:`CURRENT_TRACE_ID` is cleared (the block's traces
+    have no parent span and can never be attributed to the caller's step) and
+    :data:`CURRENT_NODE_NAME` is replaced by ``node_name`` (when given), so
+    usage metering labels the calls after the background job rather than the
+    agent that happened to dispatch it. Both are restored on exit, exceptions
+    included. Only the current task's context is touched.
+    """
+    token = CURRENT_TRACE_ID.set(None)
+    token_name = CURRENT_NODE_NAME.set(node_name) if node_name is not None else None
+    try:
+        yield
+    finally:
+        CURRENT_TRACE_ID.reset(token)
+        if token_name is not None:
+            CURRENT_NODE_NAME.reset(token_name)
 
 
 def trace_langchain_tool(tool: BaseTool, ctx: ArtemisContext) -> BaseTool:

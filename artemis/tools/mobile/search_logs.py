@@ -29,6 +29,29 @@ from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+#: How many line ranges a merged block's header lists before it is cut.
+_MAX_HEADER_RANGES = 8
+
+
+def _compress_line_numbers(indices: list[int]) -> str:
+    """Renders sorted line numbers as ranges: ``6``, ``69-79``, ``699-798``.
+
+    Consecutive runs collapse into ``start-end``; at most
+    ``_MAX_HEADER_RANGES`` ranges are listed, the rest replaced by ``...``.
+    """
+    runs: list[str] = []
+    start = prev = indices[0]
+    for idx in indices[1:]:
+        if idx == prev + 1:
+            prev = idx
+            continue
+        runs.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = idx
+    runs.append(str(start) if start == prev else f"{start}-{prev}")
+    if len(runs) > _MAX_HEADER_RANGES:
+        return ", ".join(runs[:_MAX_HEADER_RANGES]) + ", ..."
+    return ", ".join(runs)
+
 
 # pylint: disable=too-many-branches,too-many-locals,too-many-statements
 def search_and_merge_logs(
@@ -99,7 +122,7 @@ def search_and_merge_logs(
             truncated = True
             break
 
-        match_str = ", ".join(map(str, match_indices))
+        match_str = _compress_line_numbers(match_indices)
         matches.append(f"--- Match at line(s) {match_str} ---")
         for idx in range(start, end):
             line_content = log_lines[idx]

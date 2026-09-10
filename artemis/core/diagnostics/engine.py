@@ -15,6 +15,7 @@
 """System Readiness & Diagnostic Orchestration Engine."""
 
 import asyncio
+import os
 import subprocess
 import time
 from typing import Any
@@ -33,6 +34,7 @@ from artemis.core.diagnostics.probes.runtime_probe import (
 from artemis.core.diagnostics.probes.toolchain_probe import ToolchainProbe
 from artemis.core.diagnostics.schema import (
     DeviceInfo,
+    ProbeAction,
     ProbeCategory,
     ProbeResult,
     ProbeStatus,
@@ -49,6 +51,13 @@ class ReadinessEngine:
     """Central orchestration engine executing modular readiness probes."""
 
     _REPORT_CACHE_TTL_SECONDS = 2.0
+
+    #: Deadline for one probe inside a report. The ADB probe shells out to
+    #: ``adb`` without a deadline of its own, and a wedged ADB server would
+    #: otherwise hang every surface that runs the report (``artemis doctor``,
+    #: the console wizard, ``mobile_diagnose``). A probe that overruns is
+    #: reported as a FAIL with the recovery steps instead.
+    PROBE_TIMEOUT_SECONDS = 30.0
 
     def __init__(self):
         self._probes: dict[str, BaseProbe] = {}
@@ -178,11 +187,22 @@ class ReadinessEngine:
             if categories is None or probe.category in categories
         ]
 
-        # Concurrently execute probes
-        results: list[ProbeResult] = await asyncio.gather(
-            *[probe.probe() for probe in target_probes],
-            return_exceptions=False,
+        # Concurrently execute probes. A probe that raises must not take the
+        # whole report down with it: it becomes a structured FAIL so the
+        # remaining probes still reach the user and the verdict stays honest.
+        outcomes = await asyncio.gather(
+            *[
+                asyncio.wait_for(probe.probe(), timeout=self.PROBE_TIMEOUT_SECONDS)
+                for probe in target_probes
+            ],
+            return_exceptions=True,
         )
+        results: list[ProbeResult] = [
+            outcome
+            if isinstance(outcome, ProbeResult)
+            else self._crashed_probe_result(probe, outcome)
+            for probe, outcome in zip(target_probes, outcomes, strict=True)
+        ]
 
         blockers = [r for r in results if r.is_blocker]
         passed_blockers = [r for r in blockers if r.status == ProbeStatus.PASS]
@@ -209,6 +229,62 @@ class ReadinessEngine:
             active_device=active_device,
             os_type=platform.os_type.value,
             timestamp=time.time(),
+        )
+
+    @staticmethod
+    def _crashed_probe_result(probe: BaseProbe, exc: object) -> ProbeResult:
+        """Turn an exception escaping ``probe.probe()`` into a FAIL result.
+
+        Cancellation and other non-``Exception`` errors are re-raised: they are
+        not a diagnosis of the host, they are the event loop shutting us down.
+        """
+        if isinstance(exc, BaseException) and not isinstance(exc, Exception):
+            raise exc
+        if isinstance(exc, TimeoutError):
+            logger.warning(
+                f"[ReadinessEngine] Probe '{probe.probe_id}' did not finish within"
+                f" {ReadinessEngine.PROBE_TIMEOUT_SECONDS:.0f}s; reporting it as FAIL."
+            )
+            return ProbeResult(
+                id=probe.probe_id,
+                category=probe.category,
+                title=probe.probe_id.replace("_", " ").title(),
+                status=ProbeStatus.FAIL,
+                is_blocker=probe.is_blocker,
+                summary="Probe timed out",
+                description=(
+                    f"The '{probe.probe_id}' check did not finish within"
+                    f" {ReadinessEngine.PROBE_TIMEOUT_SECONDS:.0f}s. A hung ADB server is the"
+                    " usual cause: restart it and run the diagnosis again."
+                ),
+                actions=[
+                    ProbeAction(
+                        action_type="command",
+                        label="Restart ADB",
+                        payload="adb kill-server && adb start-server",
+                    ),
+                ],
+                metadata={
+                    "exception_type": "TimeoutError",
+                    "timeout_seconds": ReadinessEngine.PROBE_TIMEOUT_SECONDS,
+                },
+            )
+        logger.warning(
+            f"[ReadinessEngine] Probe '{probe.probe_id}' crashed; reporting it as FAIL: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return ProbeResult(
+            id=probe.probe_id,
+            category=probe.category,
+            title=probe.probe_id.replace("_", " ").title(),
+            status=ProbeStatus.FAIL,
+            is_blocker=probe.is_blocker,
+            summary="Probe crashed",
+            description=(
+                f"The '{probe.probe_id}' check raised {type(exc).__name__}: {exc}. "
+                "This is a diagnostics bug or a host permission problem, not a device fault."
+            ),
+            metadata={"exception_type": type(exc).__name__, "exception": str(exc)},
         )
 
     async def heal_adb_keys(self, force: bool = False) -> dict[str, Any]:

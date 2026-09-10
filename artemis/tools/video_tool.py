@@ -63,7 +63,7 @@ class VideoAnalyzerArgs(BaseModel):
 
 OPERATOR_VIDEO_ANALYZER_DOCSTRING = (
     "[VIDEO] Use this tool to analyze any specific time range of the video"
-    " recording. This tool delegates to a powerful video-analyzing subagent"
+    " recording. This tool delegates to a video analysis subagent"
     " with full access to the continuous screen recording of your entire"
     " execution session.\n\n"
     "- This tool overcomes your limitation of only receiving discrete"

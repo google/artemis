@@ -77,6 +77,11 @@ async def test_ask_explorer_runs_the_pipeline_for_the_executor_agent():
     assert result.status == "success"
     assert "Explorer located 1 candidate(s) for 'blue Send button'" in result.text_summary
     assert "[1] 'Send' at normalized [500, 500]" in result.text_summary
+    # This executor's click resolves an index against the element list the
+    # candidates just joined, so the guidance teaches the index syntax (Pro
+    # parity) next to the coordinates.
+    assert "target=3, a bare integer" in result.text_summary
+    assert "normalized coordinate" in result.text_summary
     # Candidates were registered on the state for index-based actions.
     assert state.indexed_points == [[540, 1200]]
     assert state.indexed_elements[0]["index"] == 1

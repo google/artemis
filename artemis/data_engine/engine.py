@@ -666,6 +666,13 @@ class DataEngine:
         if session and session.end_time is not None and session.status not in ("running", "paused"):
             logger.debug(f"Session end already published for {session_id}; skipping duplicate")
             return
+        # Session-level LLM usage line (cache-hit ratios per source), best-effort.
+        try:
+            from artemis.services.token_meter import log_session_summary
+
+            log_session_summary(session_id)
+        except Exception as e:
+            logger.debug(f"Session usage summary skipped: {e}")
         if session:
             session.end_time = end_time
             session.status = status
@@ -877,7 +884,7 @@ class DataEngine:
         if pre_image_name and post_image_name and pre_image_name == post_image_name:
             post_image_name = None
 
-        # M5: persist the foreground app for the recall search surface (the
+        # Persist the foreground app for the recall search surface (the
         # parameter was historically accepted but never stored). The explicit
         # parameter wins; otherwise it is derived best-effort from the UI
         # tree's package attributes — a pure string scan, no device call.
@@ -889,7 +896,7 @@ class DataEngine:
         except (AttributeError, TypeError, ValueError):
             pass
 
-        # M4: stamp perceptual hashes for the local screen-similarity hint
+        # Stamp perceptual hashes for the local screen-similarity hint
         # (pure PIL dHash; best-effort, computed synchronously to keep the
         # record immutable once handed to the background writer).
         try:

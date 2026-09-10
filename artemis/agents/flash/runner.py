@@ -22,10 +22,19 @@ the prompt is built every turn from a session :class:`TranscriptLedger` —
 a byte-stable system prefix, the committed earlier turns (append-only; old UI
 lists stripped at depth 1, screenshots resolved to visual summaries at depth
 K, long spans chunk-compressed), and a fresh tail carrying the current
-observation under a ``# CURRENT OBSERVATION [T+mm:ss]`` header. Each
-committed turn ends with an ``--- Action Execution Result (T+mm:ss) ---``
-message, so every timestamp the model sees is a session-relative offset — the
-same clock the video analyzer uses for the session recording.
+observation under a ``# CURRENT OBSERVATION [T+mm:ss]`` header. Actions run
+synchronously and their tool messages already carry the outcome; only a turn
+whose action failed ends with an ``--- Action Execution Result (T+mm:ss) ---``
+message (it carries the error). Every timestamp the model sees is a
+session-relative offset — the same clock the video analyzer uses for the
+session recording.
+
+Per-turn notices on the tail (the reasoning reminder after a silent turn, the
+no-tool-call nudge, the final-turn warning, the user-guidance wrapper) are
+marked ephemeral: the ledger's scrub edge deletes them once the message leaves
+the recent window, so they never reach the frozen history or a chunk capsule.
+The verbatim body of a user instruction is the exception: it stays in the
+active window until its turn is chunked, whose user lines then carry it on.
 """
 
 import asyncio
@@ -45,9 +54,12 @@ from langchain_core.messages import (
 )
 
 from artemis.agents.flash.summarizer import VisualStepSummarizer, build_focus_context
+from artemis.agents.operator.prompts import REASONING_REMINDER, UserGuidance, render_user_guidance
 from artemis.agents.validator.tool_declarations import (
     ASK_EXPLORER_TOOL,
     CLICK_SEQUENCE_TOOL,
+    LIST_NOTES_TOOL,
+    READ_NOTE_TOOL,
     REPORT_TASK_STATUS_TOOL,
     VALIDATOR_TOOLS_DECLARATION,
     capture_screenshot_and_parse_ui,
@@ -66,7 +78,8 @@ from artemis.graph.perception import _check_injected_instruction_file
 from artemis.graph.state import State
 from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.mcp.action_executor import McpActionExecutor
-from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger
+from artemis.mcp.observation import observe
+from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger, mark_ephemeral
 from artemis.services.llm import (
     RobustChatModelWrapper,
     acomplete,
@@ -84,12 +97,6 @@ from artemis.utils.coordinates import (
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-#: Reminder carried by the first observation only (the system prompt states the rule).
-_REASONING_FIRST_REMINDER = (
-    "CRITICAL RULE: In every single turn, you MUST FIRST output a natural"
-    " language reasoning/explanation paragraph BEFORE invoking any tool call."
-)
 
 _NO_TOOL_CALL_NOTICE = (
     "You did not call any tools last turn. Please make progress by calling an"
@@ -116,17 +123,17 @@ class _TurnRecord:
     def result(self) -> dict | None:
         """The turn's execution result in the validator-report shape.
 
-        ``None`` when no device action ran (helper-only turns have no result
-        message, as in Pro).
+        ``None`` unless an action failed: Flash executes synchronously and each
+        action's tool message already carries its outcome, so a result message
+        would only repeat it. A failure is worth its own message because it
+        carries the error the turn ended on.
         """
-        if not self.actions:
-            return None
         for name, status, text in self.actions:
             if status != "success":
                 # Executor messages name the action themselves ("Error
                 # executing click: ..."); prefix only the ones that don't.
                 return {"status": "failed", "error": text if name in text else f"{name}: {text}"}
-        return {"status": "dispatched"}
+        return None
 
 
 class FlashRunner:
@@ -164,7 +171,7 @@ class FlashRunner:
             if self.step_summarizer_cfg.enabled
             else None
         )
-        # Publish the service on the composition root (ctx.step_memory, M2) so
+        # Publish the service on the composition root (ctx.step_memory) so
         # any co-resident consumer shares this run's summary runtime.
         if self.summarizer is not None and getattr(ctx, "step_memory", None) is None:
             try:
@@ -187,7 +194,13 @@ class FlashRunner:
         return getattr(setup, "video_recording_tools_enabled", False) is True
 
     def _get_tools(self) -> list:
-        tools = list(VALIDATOR_TOOLS_DECLARATION)
+        # Flash has no tool that writes notes and its prompt never teaches
+        # them, so the Validator set's note readers are left out here.
+        tools = [
+            t
+            for t in VALIDATOR_TOOLS_DECLARATION
+            if t is not READ_NOTE_TOOL and t is not LIST_NOTES_TOOL
+        ]
         tools.insert(1, CLICK_SEQUENCE_TOOL)
         tools.append(ASK_EXPLORER_TOOL)
         # Helper tools shared with the Pro operator: the history tools are
@@ -235,6 +248,9 @@ class FlashRunner:
             image_scrub_depth=getattr(cfg, "image_scrub_depth", 3),
             pending_grace_steps=getattr(cfg, "pending_grace_steps", 3),
             xml_scrub_depth=getattr(cfg, "xml_scrub_depth", 1),
+            image_scrub_depth_relaxed=getattr(cfg, "image_scrub_depth_relaxed", None),
+            context_budget_tokens=getattr(cfg, "context_budget_tokens", None),
+            start_ratio=getattr(cfg, "start_ratio", None),
             session_start=session_start if isinstance(session_start, (int, float)) else None,
         )
         if engine is not None:
@@ -286,14 +302,19 @@ class FlashRunner:
     # Per-turn helpers (observe / think)
     # ------------------------------------------------------------------
 
-    async def _read_injected_instruction(self) -> tuple[str | None, str | None]:
-        """Consumes this turn's injected instruction: ``(instruction, notice)``.
+    async def _read_injected_instruction(
+        self, offset_label: str | None = None
+    ) -> tuple[str | None, UserGuidance | None]:
+        """Consumes this turn's injected instruction: ``(instruction, guidance)``.
 
         ``instruction`` is the user's text verbatim — what the step record,
         the chunk ledger and the visual-transition lens receive (the same
-        shape Pro stamps). ``notice`` wraps it with the operator-facing
-        directive and rides only on the observation tail. Both are None
-        when nothing was injected.
+        shape Pro stamps). ``guidance`` is the shared user-guidance pair
+        (:func:`render_user_guidance`, the Pro rendering without a plan to
+        edit): the ephemeral ``--- User Guidance ---`` wrapper and the
+        persistent verbatim body, both riding on the observation tail.
+        ``offset_label`` stamps the body with the session offset. Both are
+        None when nothing was injected.
         """
         if not (self.ctx.data_engine and self.ctx.data_engine.base_dir):
             return None, None
@@ -308,18 +329,13 @@ class FlashRunner:
         if not (injected_payload and injected_payload.get("instruction")):
             return None, None
         instruction = str(injected_payload["instruction"])
-        notice = (
-            "[REAL-TIME INJECTED INSTRUCTION from user]:"
-            f" {instruction}\nYou MUST immediately"
-            " follow this instruction and adjust your plan/actions."
+        guidance = render_user_guidance(
+            instruction,
+            release_loop=bool(injected_payload.get("release_loop")),
+            has_plan=False,
+            offset_label=offset_label,
         )
-        if injected_payload.get("release_loop"):
-            notice += (
-                "\nThe user has explicitly authorized stopping any"
-                " ongoing monitoring loop; you may now wrap up and"
-                " complete the task."
-            )
-        return instruction, notice
+        return instruction, guidance
 
     def _build_tail(
         self,
@@ -328,19 +344,28 @@ class FlashRunner:
         img_bytes,
         xml_list,
         *,
-        injected: str | None = None,
+        injected: UserGuidance | None = None,
         notices: list[str] | None = None,
         is_final: bool = False,
+        previous_turn_silent: bool = False,
     ) -> HumanMessage:
         """Builds this turn's observation tail (Pro observation shape).
 
         Header, screenshot and UI list carry the same markers as the Pro
-        operator's tail so the ledger's scrub edge treats both alike.
+        operator's tail so the ledger's scrub edge treats both alike. The
+        objective is stated once, in the system prompt; the tail never repeats
+        it. Every per-turn notice (nudges, the user-guidance wrapper, the
+        final-turn warning, the reasoning reminder after a silent turn) is
+        marked ephemeral so it leaves the transcript with the recent window.
+        The verbatim body of an injected instruction is the one exception: it
+        is a regular block, so a standing instruction stays in the active
+        window until the turn is chunked (the chunk's user lines carry it on).
         """
-        blocks: list[dict] = []
-        if turns == 1:
-            blocks.append({"type": "text", "text": f"Your objective is: {self.goal}"})
-        blocks.append({"type": "text", "text": f"# CURRENT OBSERVATION [{ledger.elapsed_label()}]"})
+        # ``turns`` is kept for call-site symmetry: the tail has the same shape
+        # on every turn.
+        blocks: list[dict] = [
+            {"type": "text", "text": f"# CURRENT OBSERVATION [{ledger.elapsed_label()}]"}
+        ]
         if img_bytes:
             img_b64 = base64.b64encode(img_bytes).decode("utf-8")
             blocks.append({"type": "text", "text": "--- Current Screenshot ---"})
@@ -349,15 +374,26 @@ class FlashRunner:
             )
         if xml_list:
             blocks.append({"type": "text", "text": f"{PRO_UI_LIST_MARKER}\n{xml_list}"})
-        for notice in notices or []:
-            blocks.append({"type": "text", "text": notice})
+        ephemeral: list[int] = []
+        # (text, ephemeral) in tail order.
+        per_turn: list[tuple[str, bool]] = [(text, True) for text in (notices or [])]
         if injected:
-            blocks.append({"type": "text", "text": injected})
+            # The wrapper is per-turn; the verbatim body right after it is a
+            # regular block that stays until the turn is chunked.
+            per_turn.append((injected.wrapper, True))
+            per_turn.append((injected.body, False))
         if is_final:
-            blocks.append({"type": "text", "text": _FINAL_TURN_WARNING})
-        if turns == 1:
-            blocks.append({"type": "text", "text": _REASONING_FIRST_REMINDER})
-        return HumanMessage(content=blocks)
+            per_turn.append((_FINAL_TURN_WARNING, True))
+        if previous_turn_silent:
+            per_turn.append((REASONING_REMINDER, True))
+        for text, is_ephemeral in per_turn:
+            if is_ephemeral:
+                ephemeral.append(len(blocks))
+            blocks.append({"type": "text", "text": text})
+        tail = HumanMessage(content=blocks)
+        if ephemeral:
+            mark_ephemeral(tail, ephemeral)
+        return tail
 
     def _extract_response_text(self, response) -> str:
         """Extracts the natural-language thought text from the model response."""
@@ -367,6 +403,22 @@ class FlashRunner:
                 b.get("text", "") for b in response.content if isinstance(b, dict) and "text" in b
             )
         return raw_text
+
+    def _extract_response_thinking(self, response) -> str:
+        """Extracts the model's native thinking blocks (thought summaries), if any.
+
+        Providers running with ``include_thoughts`` return them as ``thinking``
+        content blocks next to the ``text`` blocks; they are recorded on the step
+        as ``operator_native_thinking`` and never fed back as reply text.
+        """
+        if not isinstance(response.content, list):
+            return ""
+        parts = [
+            str(b.get("thinking") or "")
+            for b in response.content
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        return "\n".join(p for p in parts if p.strip())
 
     def _token_usage_from_response(self, response) -> dict | None:
         """Extracts token usage metadata from the model response, if present."""
@@ -435,12 +487,20 @@ class FlashRunner:
             "total_tokens": max(1, prompt_tokens + completion_tokens),
         }
 
-    def _resolve_token_usage(self, response, messages: list[BaseMessage], raw_text: str) -> dict:
-        """Extracts token usage from response metadata, estimating as fallback."""
+    def _resolve_token_usage(
+        self, response, messages: list[BaseMessage], raw_text: str
+    ) -> tuple[dict, bool]:
+        """Token usage for the call and whether the provider measured it.
+
+        Falls back to an estimate when the response carries no usage
+        metadata; the flag lets the caller keep an estimate out of the
+        ledger's chars-per-token calibration (an estimate is itself derived
+        from character counts, so calibrating on it would be circular).
+        """
         step_token_usage = self._token_usage_from_response(response)
-        if not step_token_usage or step_token_usage.get("total_tokens", 0) <= 0:
-            step_token_usage = self._estimate_token_usage(messages, raw_text)
-        return step_token_usage
+        if step_token_usage and step_token_usage.get("total_tokens", 0) > 0:
+            return step_token_usage, True
+        return self._estimate_token_usage(messages, raw_text), False
 
     def _record_llm_trace(self, step_token_usage: dict, raw_text: str) -> None:
         """Records the llm_call trace for this turn in the DataEngine."""
@@ -490,6 +550,7 @@ class FlashRunner:
         pre_screenshot_bytes,
         xml_list,
         messages: list[BaseMessage],
+        native_text: str | None = None,
     ) -> dict:
         """Records the final step, acknowledges the tool call, and flushes."""
         final_report = args
@@ -502,6 +563,7 @@ class FlashRunner:
                     ui_tree=xml_list,
                     action_taken={"action": "report_task_status", "args": args},
                     operator_raw_thinking=raw_text,
+                    operator_native_thinking=native_text or None,
                     last_execution_result={"result": "Task completed with final report."},
                     extra_metadata={"token_usage": step_token_usage},
                 )
@@ -519,25 +581,56 @@ class FlashRunner:
             await self.summarizer.flush()
         return final_report
 
-    async def _capture_post_screenshot(self, exec_result, name: str, action_names):
-        """Returns the post-action screenshot, capturing a fallback if needed."""
+    async def _capture_post_screenshot(
+        self, exec_result, name: str, action_names, state: State | None = None
+    ):
+        """Returns the post-action screenshot, capturing a fallback if needed.
+
+        When a device action produced no observation (a failed action, an
+        unknown tool, ...) the screen is observed through the very same
+        pipeline the executor's success path uses (:func:`observe`), so the
+        next observation tail carries the indexed minimal UI list and
+        ``state`` gets the same refreshed screenshot path and indexed
+        elements. Nothing is captured for non-action tools.
+        """
         post_img_bytes = exec_result.screenshot_bytes
-        if not post_img_bytes and name in action_names:
-            try:
-                controller = UnifiedMobileController(self.ctx)
-                screen_data = await controller.get_screen_data()
-                post_img_bytes = base64.b64decode(screen_data.base64)
-                if not exec_result.ui_elements_text:
-                    exec_result.ui_elements_text = screen_data.elements
-            except Exception as shot_err:
-                logger.warning(f"Failed to capture fallback screenshot in FlashRunner: {shot_err}")
+        if post_img_bytes or name not in action_names:
+            return post_img_bytes
+        try:
+            obs, screenshot_bytes = await observe(self.ctx, self.controller, settle_ms=0)
+        except Exception as shot_err:
+            logger.warning(f"Failed to capture fallback screenshot in FlashRunner: {shot_err}")
+            return post_img_bytes
+        if not obs.ok:
+            logger.warning(f"Failed to capture fallback screenshot in FlashRunner: {obs.message}")
+            return post_img_bytes
+        post_img_bytes = screenshot_bytes
+        if not exec_result.ui_elements_text:
+            exec_result.ui_elements_text = obs.elements_text
+        if not exec_result.screenshot_path and obs.screenshot_path:
+            exec_result.screenshot_path = obs.screenshot_path
+        if state is not None:
+            if obs.hierarchy_ok:
+                state.indexed_points = [el["center"] for el in obs.elements]
+                state.indexed_elements = obs.elements
+            if obs.screenshot_path:
+                state.latest_screenshot = obs.screenshot_path
         return post_img_bytes
 
-    def _extract_normalized_coordinates(self, name: str, args: dict):
-        """Extracts and enriches coordinate metadata for the recorded action."""
+    def _extract_normalized_coordinates(self, name: str, args: dict, resolved=None):
+        """Extracts and enriches coordinate metadata for the recorded action.
+
+        ``resolved`` is the normalized point the executor sent a point action
+        to; it is the coordinate of record when the model addressed an element
+        by index (the arguments then carry no point at all).
+        """
         norm_coords = None
         norm_start = None
         norm_end = None
+        if name in ("click", "tap", "long_press", "input_text") and (
+            isinstance(resolved, (list, tuple)) and len(resolved) == 2
+        ):
+            return [int(resolved[0]), int(resolved[1])], None, None
         if name == "swipe":
             kind, target_val, _ = parse_swipe_parameters(args)
             if kind == "coords" and isinstance(target_val, list) and len(target_val) == 4:
@@ -567,6 +660,40 @@ class FlashRunner:
                     norm_coords = [int(float(nums[0])), int(float(nums[1]))]
         return norm_coords, norm_start, norm_end
 
+    def _build_action_record(self, name: str, args: dict, exec_result) -> dict:
+        """The action as the step record and the visual lens see it.
+
+        Flash records the model's own 0–1000 coordinates verbatim (an index
+        target records the point the executor resolved it to); the explicit
+        space marker keeps every later normalization pass (agent-friendly
+        steps, MCP inspector) a no-op on this record. The tool arguments ride
+        along under ``args``, and the target semantics the executor validated
+        (observed element fields for an index, the model's own
+        ``target_description`` for a point) land top level in the shape Pro
+        records.
+        """
+        metadata = getattr(exec_result, "metadata", None) or {}
+        resolved = metadata.get("target_coordinates")
+        norm_coords, norm_start, norm_end = self._extract_normalized_coordinates(
+            name, args, resolved=resolved
+        )
+        given = args.get("target") or args.get("coordinates") or args.get("sequence")
+        if isinstance(given, (int, float)) and not isinstance(given, bool):
+            given = None  # An element index is not a coordinate.
+        action_dict = {
+            "action": name,
+            "coordinates": given or norm_coords,
+            COORDINATE_SPACE_KEY: COORDINATE_SPACE_NORMALIZED,
+            "args": args,
+        }
+        if norm_coords:
+            action_dict["normalized_coordinates"] = norm_coords
+        if norm_start and norm_end:
+            action_dict["normalized_start_coordinates"] = norm_start
+            action_dict["normalized_end_coordinates"] = norm_end
+        action_dict.update(metadata.get("target_semantics") or {})
+        return action_dict
+
     def _record_action_step(
         self,
         name: str,
@@ -578,6 +705,8 @@ class FlashRunner:
         xml_list,
         post_img_bytes,
         injected: str | None = None,
+        native_text: str | None = None,
+        action_dict: dict | None = None,
     ):
         """Records telemetry / step in DataEngine; returns the step id or None."""
         recorded_step_id = None
@@ -585,31 +714,8 @@ class FlashRunner:
             if self.ctx.data_engine.current_step_id is None:
                 self.ctx.data_engine.allocate_step_id()
 
-            norm_coords, norm_start, norm_end = self._extract_normalized_coordinates(name, args)
-
-            # Flash records the model's own 0–1000 coordinates verbatim; the
-            # explicit space marker keeps every later normalization pass
-            # (agent-friendly steps, MCP inspector) a no-op on this record.
-            action_dict = {
-                "action": name,
-                "coordinates": (
-                    args.get("target")
-                    or args.get("coordinates")
-                    or args.get("sequence")
-                    or norm_coords
-                ),
-                COORDINATE_SPACE_KEY: COORDINATE_SPACE_NORMALIZED,
-                "args": args,
-            }
-            if norm_coords:
-                action_dict["normalized_coordinates"] = norm_coords
-            if norm_start and norm_end:
-                action_dict["normalized_start_coordinates"] = norm_start
-                action_dict["normalized_end_coordinates"] = norm_end
-
-            # The model's own statement of what it aimed at (target_description),
-            # validated and shaped by the executor into the fields Pro records.
-            action_dict.update((exec_result.metadata or {}).get("target_semantics") or {})
+            if action_dict is None:
+                action_dict = self._build_action_record(name, args, exec_result)
 
             succeeded = exec_result.status == "success"
             last_execution_result = {
@@ -631,6 +737,7 @@ class FlashRunner:
                 ui_tree=(exec_result.ui_elements_text or xml_list),
                 action_taken=action_dict,
                 operator_raw_thinking=raw_text,
+                operator_native_thinking=native_text or None,
                 last_execution_result=last_execution_result,
                 extra_metadata=extra_metadata,
             )
@@ -664,21 +771,35 @@ class FlashRunner:
         action_sequence: int,
         turn: _TurnRecord,
         injected: str | None = None,
+        native_text: str | None = None,
+        index_elements: list[dict] | None = None,
     ):
         """Executes one tool call, records it, and updates loop state.
 
         The tool message carries the outcome text only; the post-action
         screenshot and UI list become the next turn's observation tail.
-        Returns the (possibly updated) pre_screenshot_bytes, xml_list, and
-        action_sequence for the next iteration.
+        ``index_elements`` is the turn's element snapshot index targets
+        resolve against (see :meth:`_process_tool_calls`); ``None`` resolves
+        against the state's current list. Returns the (possibly updated)
+        pre_screenshot_bytes, xml_list, and action_sequence for the next
+        iteration.
         """
         # Dynamic dispatch set: manifest device actions plus any backend
         # extension tools, so extension steps are recorded like actions.
         action_names = self.executor.action_tool_names
         try:
-            exec_result = await self.executor.execute(name, args, tc_id, state)
+            exec_result = await self.executor.execute(
+                name, args, tc_id, state, index_elements=index_elements
+            )
 
-            post_img_bytes = await self._capture_post_screenshot(exec_result, name, action_names)
+            post_img_bytes = await self._capture_post_screenshot(
+                exec_result, name, action_names, state
+            )
+
+            # One record shape for the DataEngine step and the visual lens.
+            action_dict = (
+                self._build_action_record(name, args, exec_result) if name in action_names else None
+            )
 
             # Record telemetry / step in DataEngine
             recorded_step_id = None
@@ -693,6 +814,8 @@ class FlashRunner:
                     xml_list,
                     post_img_bytes,
                     injected=injected,
+                    native_text=native_text,
+                    action_dict=action_dict,
                 )
 
             if name in action_names:
@@ -705,7 +828,9 @@ class FlashRunner:
                 self.summarizer.dispatch(
                     step_number=action_sequence,
                     action_name=name,
-                    action_args=args,
+                    # The recorded action minus its verb: the same shape the Pro
+                    # summarizer hands the lens, so the phrase renders alike.
+                    action_args={k: v for k, v in action_dict.items() if k != "action"},
                     pre_img_bytes=pre_screenshot_bytes,
                     post_img_bytes=post_img_bytes,
                     exec_outcome=exec_result.text_summary,
@@ -780,12 +905,33 @@ class FlashRunner:
         action_sequence: int,
         turn: _TurnRecord,
         injected: str | None = None,
+        native_text: str | None = None,
     ):
         """Dispatches the turn's tool calls.
+
+        Every index target of the turn resolves against the element list the
+        model decided on: the list of the observation this turn was built
+        from, snapshotted here before the first action. Each action still
+        refreshes ``state.indexed_elements`` (that refreshed list is what the
+        next observation shows), so without the snapshot ``click(5)`` after
+        ``click(3)`` would be resolved against the screen after the first
+        click.
+
+        The snapshot is the very list object the observation left on the
+        state (not a copy), and observations replace the state's list rather
+        than mutating it, so ``ask_explorer`` candidates registered before
+        any action land in the snapshot by construction. When a helper tool
+        appends candidates after an action has already replaced the state's
+        list, the explorer numbered them against that replaced list, so the
+        snapshot is re-taken from it: indices the explorer just handed out
+        resolve correctly, at the cost of the pre-action numbering (mixing
+        the two in one turn is the model's error, not a supported case).
 
         Returns (final_report, pre_screenshot_bytes, xml_list, action_sequence);
         final_report is non-None only when 'report_task_status' was called.
         """
+        action_names = self.executor.action_tool_names
+        index_elements = self._turn_index_snapshot(state)
         for tc in tool_calls:
             name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
             args = tc.get("args") or {}
@@ -802,9 +948,12 @@ class FlashRunner:
                     pre_screenshot_bytes,
                     xml_list,
                     messages,
+                    native_text=native_text,
                 )
                 return final_report, pre_screenshot_bytes, xml_list, action_sequence
 
+            elements_before = getattr(state, "indexed_elements", None)
+            before_len = len(elements_before) if isinstance(elements_before, list) else 0
             pre_screenshot_bytes, xml_list, action_sequence = await self._execute_and_record_action(
                 name,
                 args,
@@ -818,8 +967,45 @@ class FlashRunner:
                 action_sequence,
                 turn,
                 injected=injected,
+                native_text=native_text,
+                index_elements=index_elements,
             )
+            if name not in action_names:
+                index_elements = self._extend_index_snapshot(state, index_elements, before_len)
         return None, pre_screenshot_bytes, xml_list, action_sequence
+
+    @staticmethod
+    def _turn_index_snapshot(state: State) -> list[dict]:
+        """The element list this turn's index targets resolve against.
+
+        The state's list object itself, so in-place appends (explorer
+        candidates) before any action join the snapshot; an empty list is
+        installed on the state when there is none, for the same reason.
+        """
+        elements = getattr(state, "indexed_elements", None)
+        if not isinstance(elements, list):
+            elements = []
+            try:
+                state.indexed_elements = elements
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return elements
+
+    @staticmethod
+    def _extend_index_snapshot(state: State, snapshot: list[dict], before_len: int) -> list[dict]:
+        """Re-takes the snapshot after a helper tool appended candidates to a
+        list that is no longer the snapshot (an action replaced it first).
+
+        Appends into the snapshot itself need nothing: the explorer numbered
+        them against the snapshot. Only growth of a different list object
+        moves the snapshot, since that is the list the new numbers refer to.
+        """
+        current = getattr(state, "indexed_elements", None)
+        if not isinstance(current, list) or current is snapshot:
+            return snapshot
+        if len(current) > before_len:
+            return current
+        return snapshot
 
     async def _prepare_conversation(self, state: State, tools_declaration: list):
         """Installs the static prefix and captures the initial device state."""
@@ -883,8 +1069,10 @@ class FlashRunner:
             previous_turn = None
 
             # Check for real-time injected instructions: the verbatim text
-            # is stamped on the step, the wrapped notice goes to the tail.
-            injected, injected_notice = await self._read_injected_instruction()
+            # is stamped on the step, the guidance pair goes to the tail.
+            injected, injected_guidance = await self._read_injected_instruction(
+                ledger.elapsed_label()
+            )
 
             # Tool restriction on the final turn (bounded loops only)
             is_final = limit is not None and turns == limit
@@ -893,9 +1081,12 @@ class FlashRunner:
                 turns,
                 current_pre_screenshot_bytes,
                 current_xml_list,
-                injected=injected_notice,
+                injected=injected_guidance,
                 notices=pending_notices,
                 is_final=is_final,
+                # The ledger judged the turn it just committed: a bare tool
+                # call (or thinking only) earns a one-line reminder, no bounce.
+                previous_turn_silent=bool(getattr(ledger, "last_turn_silent", False)),
             )
             pending_notices = []
 
@@ -913,9 +1104,20 @@ class FlashRunner:
 
             # Extract thought and tool calls
             raw_text = self._extract_response_text(response)
+            native_text = self._extract_response_thinking(response)
 
             # Extract token usage metadata from response
-            step_token_usage = self._resolve_token_usage(response, messages, raw_text)
+            step_token_usage, measured = self._resolve_token_usage(response, messages, raw_text)
+            # The ledger's compaction thresholds read the runner's own prompt
+            # size, never the session-wide meter (which any agent overwrites).
+            # The prompt as sent (``messages`` minus the just-appended reply)
+            # rides along so the ledger can calibrate its chars-per-token
+            # ratio — only from a provider measurement, never from the
+            # estimate (same as the Pro operator).
+            ledger.record_prompt_tokens(
+                step_token_usage.get("prompt_tokens"),
+                messages=messages[:-1] if measured else None,
+            )
 
             self._record_llm_trace(step_token_usage, raw_text)
 
@@ -952,6 +1154,7 @@ class FlashRunner:
                 action_sequence,
                 turn,
                 injected=injected,
+                native_text=native_text,
             )
             ledger.stage_turn(messages[turn_base:])
             previous_turn = turn

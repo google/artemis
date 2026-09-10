@@ -569,8 +569,9 @@ async def test_raw_lens_call_meters_llm_usage_without_touching_context_base(mock
 @pytest.mark.asyncio
 async def test_focus_block_and_provenance_marked_action_phrase_reach_the_lens(mock_context):
     """The lens input opens with the action as every history reader sees it
-    (self-described target marked), the verbatim arguments, the outcome, and
-    the operator focus block; the system prompt teaches how to use it."""
+    (self-described target marked), the outcome, and the operator focus
+    block; the phrase already carries every argument, so no verbatim
+    argument line repeats them. The system prompt teaches how to use it."""
     summarizer = VisualStepSummarizer(mock_context)
     captured: list = []
 
@@ -609,9 +610,9 @@ async def test_focus_block_and_provenance_marked_action_phrase_reach_the_lens(mo
     assert "Absence is a fact" in system_text
     assert lead_text.startswith(
         "Step 3 Physical Action: Tapped 'Wi-Fi toggle' (self-described) at [880, 410]\n"
+        "Controller Outcome: Tapped at [880, 410] (normalized)."
     )
-    assert "Action arguments (verbatim): click({'target': [880, 410]" in lead_text
-    assert "Controller Outcome: Tapped at [880, 410] (normalized)." in lead_text
+    assert "Action arguments (verbatim)" not in lead_text
     assert FOCUS_BLOCK_HEADER in lead_text
     assert "Task goal: Turn on Wi-Fi" in lead_text
     assert "Active sub-goal: Enable Wi-Fi > Tap the Wi-Fi switch" in lead_text
@@ -686,6 +687,102 @@ async def test_single_frame_focus_label_forbids_describing_the_outcome(mock_cont
     assert "what screen change it expected" not in lead_text
     # The focus text is released once the summary landed, like the frames.
     assert summarizer.get_job_payload(2)["focus"] is None
+
+
+def test_action_phrase_action_name_wins_over_an_action_argument():
+    """``manage_app``'s own ``action="launch"`` argument is the intent the
+    renderer reads, never the verb: the phrase is ``Launched app 'X'`` for
+    the Flash record shape, the Pro record shape and a raw argument dict."""
+    flash_record = {
+        "coordinates": None,
+        "coordinate_space": "normalized",
+        "args": {"action": "launch", "app_name": "Settings"},
+    }
+    assert VisualStepSummarizer._action_phrase("manage_app", flash_record) == (
+        "Launched app 'Settings'"
+    )
+    pro_record = {"intent": "stop", "app_name": "com.android.settings"}
+    assert VisualStepSummarizer._action_phrase("manage_app", pro_record) == (
+        "Stopped app 'com.android.settings'"
+    )
+    raw = {"action": "launch", "app_name": "Settings"}
+    assert VisualStepSummarizer._action_phrase("manage_app", raw) == "Launched app 'Settings'"
+    assert "Action: launch" not in VisualStepSummarizer._action_phrase("manage_app", raw)
+
+    # The Flash record shape renders every other action through the same path.
+    key = {"coordinates": None, "args": {"key": "BACK"}}
+    assert VisualStepSummarizer._action_phrase("press_key", key) == "Pressed key 'BACK'"
+    swipe = {
+        "coordinates": [600, 700, 600, 300],
+        "normalized_start_coordinates": [600, 700],
+        "normalized_end_coordinates": [600, 300],
+        "args": {"direction": "up"},
+    }
+    assert VisualStepSummarizer._action_phrase("swipe", swipe) == (
+        "Swiped up (from [600, 700] to [600, 300])"
+    )
+    index_click = {
+        "coordinates": [500, 520],
+        "normalized_coordinates": [500, 520],
+        "target_text": "Wi-Fi",
+        "args": {"target": 3},
+    }
+    assert VisualStepSummarizer._action_phrase("click", index_click) == (
+        "Tapped 'Wi-Fi' at [500, 520]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_verbatim_argument_line_appears_only_when_the_phrase_folds_arguments(
+    mock_context,
+):
+    """``Launched app 'Settings'`` carries its arguments: no verbatim line. An
+    index target (``target=3``) is folded into the resolved point, so the
+    verbatim line keeps the index the model actually named."""
+    summarizer = VisualStepSummarizer(mock_context)
+    captured: list = []
+
+    async def mock_ainvoke(messages):
+        captured.append(messages)
+        return AIMessage(content="In this step, I acted and the screen showed the result.")
+
+    summarizer._llm = Mock()
+    summarizer._llm.ainvoke = AsyncMock(side_effect=mock_ainvoke)
+
+    summarizer.dispatch(
+        step_number=1,
+        action_name="manage_app",
+        action_args={"coordinates": None, "args": {"action": "launch", "app_name": "Settings"}},
+        pre_img_bytes=b"pre",
+        post_img_bytes=b"post",
+        exec_outcome="Launched app 'Settings' (com.android.settings); foreground confirmed.",
+    )
+    summarizer.dispatch(
+        step_number=2,
+        action_name="click",
+        action_args={
+            "coordinates": [500, 520],
+            "normalized_coordinates": [500, 520],
+            "target_text": "Wi-Fi",
+            "args": {"target": 3},
+        },
+        pre_img_bytes=b"pre",
+        post_img_bytes=b"post",
+        exec_outcome="Tapped at [500, 520] (normalized).",
+    )
+    await summarizer.flush()
+
+    lead_by_step = {}
+    for messages in captured:
+        text = messages[1].content[0]["text"]
+        lead_by_step[text.split(" ")[1]] = text
+    launch = lead_by_step["1"]
+    assert launch.startswith("Step 1 Physical Action: Launched app 'Settings'\nController Outcome:")
+    assert "Action arguments (verbatim)" not in launch
+    assert "Action: launch" not in launch
+    click = lead_by_step["2"]
+    assert click.startswith("Step 2 Physical Action: Tapped 'Wi-Fi' at [500, 520]\n")
+    assert "Action arguments (verbatim): click({'target': 3})" in click
 
 
 def test_action_phrase_renders_flash_swipe_points_and_bursts():

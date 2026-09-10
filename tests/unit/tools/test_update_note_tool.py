@@ -74,7 +74,7 @@ async def test_update_note_direct_execution_success(mock_ctx, tmp_path):
         target="- [ ] Step 1",
         replacement="- [x] Step 1",
     )
-    assert result == "Successfully updated note 'plan'."
+    assert result == "Updated note 'plan'."
 
     note_path = Path(tmp_path) / "notes" / "plan.md"
     assert note_path.read_text(encoding="utf-8") == "- [x] Step 1\n- [ ] Step 2"
@@ -95,7 +95,7 @@ async def test_update_note_with_warning(mock_ctx, tmp_path):
             target="Step 1",
             replacement="Step 1 Done",
         )
-        assert "Successfully updated note 'fuzzy_plan'." in result
+        assert "Updated note 'fuzzy_plan'." in result
         assert "WARNING: Fuzzy match applied" in result
 
 
@@ -110,7 +110,7 @@ async def test_update_note_callable_execution(mock_ctx, tmp_path):
         target="- [ ] Task 2",
         replacement="- [x] Task 2",
     )
-    assert result == "Successfully updated note 'callable_plan'."
+    assert result == "Updated note 'callable_plan'."
 
     note_path = Path(tmp_path) / "notes" / "callable_plan.md"
     assert note_path.read_text(encoding="utf-8") == "- [ ] Task 1\n- [x] Task 2"
@@ -134,7 +134,7 @@ async def test_update_note_with_state_tool_message(mock_ctx, tmp_path):
 
     assert isinstance(result, ToolMessage)
     assert result.tool_call_id == "call_update_999"
-    assert result.content == "Successfully updated note 'state_plan'."
+    assert result.content == "Updated note 'state_plan'."
     assert result.status == "success"
 
     note_path = Path(tmp_path) / "notes" / "state_plan.md"
@@ -168,7 +168,7 @@ async def test_get_update_note_tool_langchain_ainvoke(mock_ctx, tmp_path):
             "replacement": "delta",
         }
     )
-    assert result == "Successfully updated note 'lc_plan'."
+    assert result == "Updated note 'lc_plan'."
 
     note_path = Path(tmp_path) / "notes" / "lc_plan.md"
     assert note_path.read_text(encoding="utf-8") == "alpha delta gamma"
@@ -189,7 +189,7 @@ async def test_get_update_note_tool_pure(mock_ctx, tmp_path):
             "replacement": "Artemis",
         }
     )
-    assert result == "Successfully updated note 'pure_plan'."
+    assert result == "Updated note 'pure_plan'."
 
     note_path = Path(tmp_path) / "notes" / "pure_plan.md"
     assert note_path.read_text(encoding="utf-8") == "hello Artemis"

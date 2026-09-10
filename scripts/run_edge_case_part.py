@@ -284,9 +284,7 @@ async def run_part_4():
     print_status_snapshot("Part 4 Running (Mixed Queueing)")
 
     await asyncio.gather(t4a, t4b, t4c)
-    print(
-        "🎉 Part 4 Success: Cross-device concurrency and single-device queueing work together seamlessly!\n"
-    )
+    print("Part 4 passed: cross-device concurrency and single-device queueing.\n")
 
 
 async def main():

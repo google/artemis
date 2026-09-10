@@ -17,33 +17,42 @@
 Covers: the ``video_analyzer`` availability gate (same as the Pro graph) and
 its prompt segment, the unbounded-by-default turn limit, the Pro-shaped
 observation tail (``# CURRENT OBSERVATION [T+mm:ss]`` header, screenshot,
-``--- Visible UI Elements ---`` list), and the end-to-end loop: committed
-turns carry text-only tool messages plus an ``--- Action Execution Result
-(T+mm:ss) ---`` message, every recorded step of a multi-action turn is
-registered on the committed turn, the final-turn tool restriction only
-applies to bounded loops, and a no-tool-call turn is nudged, not terminated.
+``--- Visible UI Elements ---`` list, ephemeral per-turn notices, the
+reasoning reminder after a silent turn), and the end-to-end loop: committed
+turns carry text-only tool messages and no execution-result message unless
+an action failed, every recorded step of a multi-action turn is registered
+on the committed turn, the final-turn tool restriction only applies to
+bounded loops, and a no-tool-call turn is nudged, not terminated.
 """
 
 import base64
 import re
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from artemis.agents.flash.runner import FlashRunner, _TurnRecord
+from artemis.agents.flash.runner import _FINAL_TURN_WARNING, FlashRunner, _TurnRecord
+from artemis.agents.operator.prompts import (
+    REASONING_REMINDER,
+    USER_GUIDANCE_MARKER,
+    UserGuidance,
+    render_user_guidance,
+    render_user_instruction,
+)
 from artemis.agents.validator.tool_declarations import ToolExecutionResult
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.memory.transcript import (
+    EPHEMERAL_BLOCKS_KEY,
     EXECUTION_RESULT_MARKER,
     PRO_UI_LIST_MARKER,
     TranscriptLedger,
 )
 
 OBSERVATION_HEADER_RE = re.compile(r"^# CURRENT OBSERVATION \[T\+\d{2,}:\d{2}\]$")
-RESULT_RE = re.compile(
-    rf"^{re.escape(EXECUTION_RESULT_MARKER)} \(T\+\d{{2,}}:\d{{2}}\) ---\nStatus: dispatched$"
+FAILED_RESULT_RE = re.compile(
+    rf"^{re.escape(EXECUTION_RESULT_MARKER)} \(T\+\d{{2,}}:\d{{2}}\) ---\nStatus: failed\n"
 )
 
 
@@ -173,29 +182,137 @@ def test_turn_limit_semantics(mock_context):
 
 
 def test_observation_tail_has_pro_shape(mock_context):
+    """The objective lives in the system prompt only; the tail opens with the
+    observation header on turn 1 exactly as on every later turn, and carries
+    no reminder unless the previous turn was silent."""
     with patch("artemis.controllers.unified_controller.get_driver"):
         runner = FlashRunner(mock_context, goal="Open Settings")
         ledger = TranscriptLedger()
 
         tail = runner._build_tail(ledger, 1, b"IMG", "[1] Settings")
         texts = [b["text"] for b in tail.content if b["type"] == "text"]
-        assert texts[0] == "Your objective is: Open Settings"
-        assert OBSERVATION_HEADER_RE.match(texts[1])
-        assert texts[2] == "--- Current Screenshot ---"
-        assert texts[3] == f"{PRO_UI_LIST_MARKER}\n[1] Settings"
+        assert OBSERVATION_HEADER_RE.match(texts[0])
+        assert texts[1] == "--- Current Screenshot ---"
+        assert texts[2] == f"{PRO_UI_LIST_MARKER}\n[1] Settings"
+        assert len(texts) == 3
         assert sum(1 for b in tail.content if b["type"] == "image_url") == 1
+        joined = "".join(texts)
+        assert "Open Settings" not in joined and "objective" not in joined.lower()
+        assert "CRITICAL RULE" not in joined and REASONING_REMINDER not in joined
+        assert EPHEMERAL_BLOCKS_KEY not in tail.additional_kwargs
 
         later = runner._build_tail(
-            ledger, 5, None, None, injected="[INJECTED] stop", notices=["nudge"], is_final=True
+            ledger,
+            5,
+            None,
+            None,
+            injected=UserGuidance(body='User instruction: "stop"', wrapper="[INJECTED]"),
+            notices=["nudge"],
+            is_final=True,
         )
         texts = [b["text"] for b in later.content]
         assert OBSERVATION_HEADER_RE.match(texts[0])
-        assert "Your objective is" not in "".join(texts)
+        assert "objective" not in "".join(texts).lower()
         assert texts[1:] == [
             "nudge",
-            "[INJECTED] stop",
-            "[WARNING] This is your final turn; only 'report_task_status' is available.",
+            "[INJECTED]",
+            'User instruction: "stop"',
+            _FINAL_TURN_WARNING,
         ]
+
+
+def test_per_turn_notices_are_marked_ephemeral(mock_context):
+    """Nudges, the user-guidance wrapper, the final-turn warning and the
+    reasoning reminder are only meaningful for the turn they were built for:
+    every one of them is flagged ephemeral (by block index) so the scrub edge
+    drops them before the message freezes; the observation blocks never are."""
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="Open Settings")
+    ledger = TranscriptLedger()
+    guidance = render_user_guidance("stop", release_loop=False, has_plan=False)
+
+    tail = runner._build_tail(
+        ledger,
+        3,
+        b"IMG",
+        "[1] Settings",
+        notices=["nudge"],
+        injected=guidance,
+        is_final=True,
+        previous_turn_silent=True,
+    )
+    texts = [b.get("text") for b in tail.content]
+    # header, screenshot label, image, UI list, then the per-turn notices with
+    # the persistent instruction body right after its wrapper
+    assert texts[4:] == [
+        "nudge",
+        guidance.wrapper,
+        guidance.body,
+        _FINAL_TURN_WARNING,
+        REASONING_REMINDER,
+    ]
+    assert tail.additional_kwargs[EPHEMERAL_BLOCKS_KEY] == [4, 5, 7, 8]
+
+
+def test_injected_instruction_body_outlives_its_wrapper(mock_context):
+    """Defect: a standing instruction ("don't send messages from now on")
+    vanished after one turn because the whole guidance block was ephemeral.
+    Now the wrapper is ephemeral and the verbatim body is a regular block, so
+    it stays in the active window until the turn is chunked."""
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    ledger = TranscriptLedger()
+    guidance = render_user_guidance(
+        "don't send messages from now on", has_plan=False, offset_label="T+01:05"
+    )
+
+    tail = runner._build_tail(ledger, 2, b"IMG", "[1] Send", injected=guidance)
+    texts = [b.get("text") for b in tail.content]
+    wrapper_index = texts.index(guidance.wrapper)
+    body_index = texts.index(guidance.body)
+    ephemeral = tail.additional_kwargs[EPHEMERAL_BLOCKS_KEY]
+    assert wrapper_index in ephemeral
+    assert body_index not in ephemeral
+    assert body_index == wrapper_index + 1
+    assert guidance.body == 'User instruction (T+01:05): "don\'t send messages from now on"'
+    assert guidance.body == render_user_instruction(
+        "don't send messages from now on", offset_label="T+01:05"
+    )
+    # The wrapper frames the quoted line but no longer carries the words.
+    assert guidance.wrapper.startswith(USER_GUIDANCE_MARKER)
+    assert "don't send messages" not in guidance.wrapper
+
+    # Scrub edge parity: once the turn has left the live position (a newer
+    # committed observation exists) the wrapper is gone and the body is
+    # still in the committed turn.
+    ledger.stage_turn([tail, AIMessage(content="ok")])
+    ledger.commit_staged(step_key="s1")
+    ledger.stage_turn([runner._build_tail(ledger, 3, b"IMG", "[1] Send"), AIMessage(content="ok")])
+    ledger.commit_staged(step_key="s2")
+    rendered = ledger.render([runner._build_tail(ledger, 4, b"IMG", "[1] Send")])
+    committed = next(
+        m
+        for m in rendered
+        if isinstance(m, HumanMessage) and guidance.body in [b.get("text") for b in m.content]
+    )
+    committed_texts = [b.get("text", "") for b in committed.content if isinstance(b, dict)]
+    assert guidance.wrapper not in committed_texts
+    assert not any(t.startswith(USER_GUIDANCE_MARKER) for t in committed_texts)
+
+
+def test_reasoning_reminder_follows_a_silent_turn_only(mock_context):
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    ledger = TranscriptLedger()
+
+    quiet = runner._build_tail(ledger, 2, None, "[1] x", previous_turn_silent=False)
+    assert REASONING_REMINDER not in [b["text"] for b in quiet.content]
+
+    reminded = runner._build_tail(ledger, 2, None, "[1] x", previous_turn_silent=True)
+    texts = [b["text"] for b in reminded.content]
+    assert texts[-1] == REASONING_REMINDER
+    assert texts.count(REASONING_REMINDER) == 1
+    assert reminded.additional_kwargs[EPHEMERAL_BLOCKS_KEY] == [len(texts) - 1]
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +326,9 @@ async def test_injected_instruction_splits_verbatim_text_from_operator_notice(
     mock_context, tmp_path
 ):
     """The user's words are what the step record, the chunk ledger and the
-    visual lens receive (Pro parity); the 'You MUST immediately ...' directive
-    is operator-facing and rides on the observation tail alone."""
+    visual lens receive (Pro parity); the shared ``--- User Guidance ---``
+    block (the Pro rendering, without a plan to edit) rides on the
+    observation tail alone."""
     import json
 
     (tmp_path / "injected_instruction.json").write_text(
@@ -225,11 +343,15 @@ async def test_injected_instruction_splits_verbatim_text_from_operator_notice(
         instruction, notice = await runner._read_injected_instruction()
 
     assert instruction == "Skip the popup and log in"
-    assert notice.startswith(
-        "[REAL-TIME INJECTED INSTRUCTION from user]: Skip the popup and log in"
+    assert notice == render_user_guidance(
+        "Skip the popup and log in", release_loop=True, has_plan=False
     )
-    assert "You MUST immediately follow this instruction" in notice
-    assert "authorized stopping any ongoing monitoring loop" in notice
+    assert notice.wrapper.startswith(USER_GUIDANCE_MARKER)
+    assert notice.body == 'User instruction: "Skip the popup and log in"'
+    assert "outranks your current milestones" in notice.wrapper
+    assert "task plan" not in notice.wrapper
+    assert "authorized stopping any ongoing monitoring loop" in notice.wrapper
+    assert "REAL-TIME INJECTED" not in notice.wrapper and "You MUST" not in notice.wrapper
     assert not (tmp_path / "injected_instruction.json").exists()
 
     with patch("artemis.controllers.unified_controller.get_driver"):
@@ -267,7 +389,7 @@ def _make_runner(mock_context, responses, max_turns=None):
 
     runner._invoke_model = AsyncMock(side_effect=_invoke)
     runner.executor.execute = AsyncMock(
-        side_effect=lambda name, args, tc_id, state: _exec_result(
+        side_effect=lambda name, args, tc_id, state, **_: _exec_result(
             tc_id, name, f"IMG-{tc_id}".encode()
         )
     )
@@ -289,9 +411,10 @@ _INITIAL_OBSERVATION = ("shot0.png", b"IMG0", "[1] Settings")
 @pytest.mark.asyncio
 async def test_run_builds_prompt_from_ledger_with_session_offsets(mock_context):
     """Turn 2 must see: the static system prefix, the committed turn 1 (its
-    tail, the AI message, text-only tool messages and an execution-result
-    message with a ``T+`` offset) and a fresh observation tail carrying the
-    last action's post screenshot — the Pro transcript shape, with no cap."""
+    tail, the AI message, text-only tool messages that already carry each
+    action's outcome — no execution-result message repeats them) and a fresh
+    observation tail carrying the last action's post screenshot — the Pro
+    transcript shape, with no cap."""
     responses = [
         AIMessage(
             content="I will tap then wait.",
@@ -327,31 +450,144 @@ async def test_run_builds_prompt_from_ledger_with_session_offsets(mock_context):
     tail1 = turn2_messages[1]
     assert isinstance(tail1, HumanMessage)
     tail1_texts = [b["text"] for b in tail1.content if b["type"] == "text"]
-    assert tail1_texts[0] == "Your objective is: Open Settings"
-    assert OBSERVATION_HEADER_RE.match(tail1_texts[1])
+    assert OBSERVATION_HEADER_RE.match(tail1_texts[0])
+    assert "objective" not in "".join(tail1_texts).lower()
+    assert "Open Settings" in turn2_messages[0].content  # stated once, in the prefix
 
     assert isinstance(turn2_messages[2], AIMessage)
     tool_msgs = [m for m in turn2_messages if isinstance(m, ToolMessage)]
     assert [m.content for m in tool_msgs] == ["click executed", "wait_for_delay executed"]
 
-    result_msg = turn2_messages[5]
-    assert isinstance(result_msg, HumanMessage)
-    assert RESULT_RE.match(result_msg.content[0]["text"])
+    # Every action succeeded: the tool messages are the outcome, nothing repeats them.
+    assert not any(
+        isinstance(m, HumanMessage)
+        and any(EXECUTION_RESULT_MARKER in b.get("text", "") for b in m.content)
+        for m in turn2_messages
+    )
 
-    tail2 = turn2_messages[6]
+    tail2 = turn2_messages[5]
     tail2_texts = [b["text"] for b in tail2.content if b["type"] == "text"]
     assert OBSERVATION_HEADER_RE.match(tail2_texts[0])
-    assert "Your objective is" not in "".join(tail2_texts)
+    assert "objective" not in "".join(tail2_texts).lower()
     images = [b for b in tail2.content if b["type"] == "image_url"]
     assert len(images) == 1
     assert images[0]["image_url"]["url"].endswith(base64.b64encode(b"IMG-tc2").decode())
     assert tail2_texts[1] == "--- Current Screenshot ---"
     assert tail2_texts[2] == f"{PRO_UI_LIST_MARKER}\n[1] next"
-    assert len(turn2_messages) == 7
+    assert len(turn2_messages) == 6
 
     # Both actions of the multi-action turn were registered on the committed turn.
     ledger = mock_context.transcript_ledger
     assert ledger.unchunked_turns()[0]["step_keys"] == ["tc1", "tc2"]
+
+
+@pytest.mark.asyncio
+async def test_run_failed_action_turn_ends_with_the_error_result(mock_context):
+    """A failed action is the one case worth a result message: it carries the
+    error the turn ended on, after the tool message."""
+    responses = [
+        AIMessage(
+            content="Tapping.",
+            tool_calls=[{"name": "click", "args": {"target": 99}, "id": "tc1"}],
+        ),
+        _report(),
+    ]
+    with (
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch(
+            "artemis.agents.flash.runner.capture_screenshot_and_parse_ui",
+            AsyncMock(return_value=_INITIAL_OBSERVATION),
+        ),
+    ):
+        runner = _make_runner(mock_context, responses, max_turns=0)
+        runner.executor.execute = AsyncMock(
+            return_value=ToolExecutionResult(
+                tool_call_id="tc1",
+                tool_name="click",
+                status="error",
+                text_summary="Error during click: Invalid target index 99.",
+            )
+        )
+        runner._capture_post_screenshot = AsyncMock(return_value=None)
+        await runner.run(State(initial_goal="Open Settings"))
+
+    turn2_messages = runner.calls[1]["messages"]
+    result_msgs = [
+        m
+        for m in turn2_messages
+        if isinstance(m, HumanMessage)
+        and any(EXECUTION_RESULT_MARKER in b.get("text", "") for b in m.content)
+    ]
+    assert len(result_msgs) == 1
+    text = result_msgs[0].content[0]["text"]
+    assert FAILED_RESULT_RE.match(text)
+    assert "Invalid target index 99" in text
+    assert isinstance(turn2_messages[turn2_messages.index(result_msgs[0]) - 1], ToolMessage)
+
+
+@pytest.mark.asyncio
+async def test_run_reminds_after_a_silent_turn_without_a_bounce(mock_context):
+    """The ledger judges the committed turn (sibling logic, authoritative
+    here); the runner only reads ``last_turn_silent`` when it builds the
+    next tail: one reminder block, marked ephemeral, one model call per turn."""
+    responses = [
+        AIMessage(
+            content="",  # bare tool call, no visible reasoning
+            tool_calls=[
+                {"name": "click", "args": {"target": 1}, "id": "tc1"},
+            ],
+        ),
+        _report(),
+    ]
+    with (
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch(
+            "artemis.agents.flash.runner.capture_screenshot_and_parse_ui",
+            AsyncMock(return_value=_INITIAL_OBSERVATION),
+        ),
+        patch.object(TranscriptLedger, "last_turn_silent", new_callable=PropertyMock) as silent,
+    ):
+        silent.side_effect = lambda: silent.call_count > 1  # turn 1: False, later: True
+        runner = _make_runner(mock_context, responses, max_turns=0)
+        await runner.run(State(initial_goal="Open Settings"))
+
+    assert runner._invoke_model.await_count == 2
+    tail1 = runner.calls[0]["messages"][-1]
+    assert REASONING_REMINDER not in [b.get("text") for b in tail1.content]
+    tail2 = runner.calls[1]["messages"][-1]
+    texts = [b.get("text") for b in tail2.content]
+    assert texts.count(REASONING_REMINDER) == 1
+    assert tail2.additional_kwargs[EPHEMERAL_BLOCKS_KEY] == [texts.index(REASONING_REMINDER)]
+
+
+@pytest.mark.asyncio
+async def test_run_calibrates_the_ledger_only_from_measured_usage(mock_context):
+    """A provider-reported prompt size calibrates the chars-per-token ratio
+    with the sent messages; an estimated size (no usage metadata) records the
+    base but never calibrates — the estimate is itself derived from character
+    counts, so calibrating on it would be circular."""
+    measured = AIMessage(
+        content="Tapping.",
+        tool_calls=[{"name": "click", "args": {"target": 1}, "id": "tc1"}],
+        usage_metadata={"input_tokens": 1200, "output_tokens": 5, "total_tokens": 1205},
+    )
+    responses = [measured, _report()]
+    with (
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch(
+            "artemis.agents.flash.runner.capture_screenshot_and_parse_ui",
+            AsyncMock(return_value=_INITIAL_OBSERVATION),
+        ),
+        patch.object(TranscriptLedger, "record_prompt_tokens") as record,
+    ):
+        runner = _make_runner(mock_context, responses, max_turns=0)
+        await runner.run(State(initial_goal="Open Settings"))
+
+    assert record.call_count == 2
+    first_call, second_call = record.call_args_list
+    assert first_call.args[0] == 1200 and first_call.kwargs["messages"] is not None
+    # The report turn carries no usage metadata: estimated, recorded, not calibrated.
+    assert second_call.args[0] >= 1 and second_call.kwargs["messages"] is None
 
 
 @pytest.mark.asyncio
@@ -411,11 +647,14 @@ def test_turn_record_result_is_none_for_helper_only_turns():
     assert _TurnRecord().result() is None
 
 
-def test_turn_record_result_is_dispatched_when_every_action_was_accepted():
+def test_turn_record_result_is_none_when_every_action_succeeded():
+    """The tool messages already say ``Swiped up.``; a ``Status: dispatched``
+    line after them would only duplicate the outcome (and put two human
+    messages back to back)."""
     record = _TurnRecord(
         actions=[("click", "success", "Tapped at [500, 500]"), ("swipe", "success", "Swiped up.")]
     )
-    assert record.result() == {"status": "dispatched"}
+    assert record.result() is None
 
 
 def test_turn_record_failed_result_keeps_an_executor_message_that_names_the_action():

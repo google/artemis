@@ -353,7 +353,7 @@ $text-light: #94a3b8;
     flex-direction: column;
     gap: 18px;
 
-    /* Hero Section (Modern Linear / Claude Style) */
+    /* Hero section */
     .hero-section {
       text-align: center;
       padding: 16px 0 6px;
@@ -3819,7 +3819,7 @@ $text-light: #94a3b8;
         }
       }
 
-      /* Unified Sculptured Composer (Linear / Claude / ChatGPT Grade) */
+      /* Task composer */
       .composer-card {
         background: rgba(255, 255, 255, 0.88);
         backdrop-filter: blur(16px) saturate(190%);

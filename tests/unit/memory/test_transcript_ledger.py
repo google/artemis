@@ -15,12 +15,12 @@
 """Unit tests for the Pro session transcript ledger (history redesign §3.2, M2).
 
 Covers the four-region discipline: S-region byte stability across turns, the
-append-only active region, depth-1 stripping of old UI lists and plan
-recitations, the depth-K screenshot scrub in the Pro message shape (grace /
-placeholder / freeze — the M1 race regressions re-run against HumanMessage
-observations keyed by step id), ``T+mm:ss`` session-offset timestamps, the
-tool-call/response pairing invariant, and the cold-start restored-history
-block.
+append-only active region, the single depth-K scrub edge in the Pro message
+shape (UI list / plan recitation strip, ephemeral-block deletion and the
+in-place screenshot swap in one pass; grace / placeholder / freeze — the M1
+race regressions re-run against HumanMessage observations keyed by step id),
+``T+mm:ss`` session-offset timestamps, the tool-call/response pairing
+invariant, the cold-start restored-history block, and the silent-turn flag.
 """
 
 import json
@@ -153,19 +153,30 @@ def test_validator_result_skipped_for_actionless_turn():
     assert not any(EXECUTION_RESULT_MARKER in str(m.content) for m in ledger.active_messages)
 
 
-def test_old_turn_recitation_and_ui_list_stripped_at_depth_1():
-    ledger = TranscriptLedger(step_memory=_service())
+def test_recitation_and_ui_list_stripped_at_the_text_edge_and_screenshot_at_k():
+    """Two edges (text at depth 1, screenshot at K=3): the plan recitation and
+    UI list leave as soon as a newer observation exists, the screenshot stays
+    until depth K and is then resolved in place; only the live tail ever
+    carries an indexed element list."""
+    ledger = TranscriptLedger(step_memory=_service(), image_scrub_depth=3)
     _play_turn(ledger, 1)
     rendered = _play_turn(ledger, 2, prev_key="step-1")
+    obs1 = ledger.active_messages[0]
+    # Turn 1 is now depth 2: text edge passed, screenshot kept.
+    assert PLAN_RECITATION_MARKER not in str(obs1.content)
+    assert PRO_UI_LIST_MARKER not in str(obs1.content)
+    assert _has_image(obs1)
+    original_obs1 = _fingerprint(obs1)
 
-    committed_obs = ledger.active_messages[0]
-    committed_text = str(committed_obs.content)
-    # Depth-1 scrub: the previous turn's plan recitation and UI list are gone.
-    assert PLAN_RECITATION_MARKER not in committed_text
-    assert PRO_UI_LIST_MARKER not in committed_text
-    # Its screenshot is still inside the K-depth active window.
-    assert _has_image(committed_obs)
-    # The live tail keeps both.
+    rendered = _play_turn(ledger, 3, prev_key="step-2")
+    # Turn 1 reached depth 3: the screenshot is resolved.
+    assert not _has_image(obs1)
+    assert _fingerprint(obs1) != original_obs1
+    # Turn 2 (depth 2): text edge passed, screenshot still there; the live tail keeps both.
+    obs2 = next(m for m in ledger.active_messages if "OBSERVATION [T+00:02]" in str(m.content))
+    assert PLAN_RECITATION_MARKER not in str(obs2.content)
+    assert PRO_UI_LIST_MARKER not in str(obs2.content)
+    assert _has_image(obs2)
     tail_text = str(rendered[-1].content)
     assert PLAN_RECITATION_MARKER in tail_text
     assert PRO_UI_LIST_MARKER in tail_text
@@ -182,10 +193,16 @@ def test_depth_k_image_resolved_to_ready_visual_summary():
 
     first_obs = ledger.active_messages[0]
     assert not _has_image(first_obs)
-    assert {
-        "type": "text",
-        "text": "--- Historical Visual Transition ---\nObjective visual transition 1.",
-    } in first_obs.content
+    # (i) The summary sits where the image was, the label above it is gone,
+    # recitation and UI list are stripped: exactly two blocks remain.
+    assert first_obs.content == [
+        {"type": "text", "text": "# CURRENT OBSERVATION [T+00:01]"},
+        {
+            "type": "text",
+            "text": "--- Historical Visual Transition ---\nObjective visual transition 1.",
+        },
+    ]
+    assert "--- Current Screenshot ---" not in str(first_obs.content)
 
 
 def test_pending_grace_then_placeholder_never_backfilled():
@@ -418,3 +435,300 @@ def test_ledger_turn_transcript_reflects_the_scrubbed_active_region():
     assert "--- Action Execution Result (T+00:00) ---\nStatus: dispatched" in text
     assert "Status: failed" in ledger.turn_transcript(second)
     assert "thought 2" not in text  # a turn transcript never leaks into another turn
+
+
+# ---------------------------------------------------------------------------
+# Occupancy-driven screenshot depth
+# ---------------------------------------------------------------------------
+
+
+def _image_turns(ledger) -> list[int]:
+    """1-based turn numbers whose observation still carries its screenshot."""
+    return [
+        i + 1
+        for i, msg in enumerate(
+            m for m in ledger.active_messages if "OBSERVATION" in str(m.content)
+        )
+        if _has_image(msg)
+    ]
+
+
+def _banded_ledger(**kwargs) -> TranscriptLedger:
+    return TranscriptLedger(
+        step_memory=_service(),
+        image_scrub_depth=3,
+        image_scrub_depth_relaxed=6,
+        context_budget_tokens=100_000,
+        start_ratio=0.35,
+        **kwargs,
+    )
+
+
+def test_relaxed_depth_below_start_gate_keeps_more_screenshots():
+    """Below the start gate the scrub edge sits at the relaxed depth. Depth K
+    scrubs the K-th most recent screenshot with the live tail at depth 1, so
+    K=6 keeps four historical screenshots in view (K=3 keeps one). An unknown
+    occupancy counts as below the gate."""
+    ledger = _banded_ledger()
+    assert ledger.occupancy is None
+    assert ledger.effective_image_scrub_depth == 6
+    for i in range(1, 10):
+        _play_turn(ledger, i, prev_key=f"step-{i - 1}" if i > 1 else None)
+    # At the render of turn 9 its observation is the live tail (depth 1);
+    # committed turns 8..5 are depths 2..5 and turn 4 (depth 6) is scrubbed.
+    ledger.record_prompt_tokens(20_000)  # 20% < 35%
+    assert ledger.effective_image_scrub_depth == 6
+    assert _image_turns(ledger) == [5, 6, 7, 8]
+
+    tight = TranscriptLedger(step_memory=_service(), image_scrub_depth=3)
+    for i in range(1, 10):
+        _play_turn(tight, i, prev_key=f"step-{i - 1}" if i > 1 else None)
+    assert _image_turns(tight) == [8]
+
+
+def test_crossing_the_start_gate_tightens_once_and_relaxing_never_backfills():
+    ledger = _banded_ledger()
+    for i in range(1, 10):
+        _play_turn(ledger, i, prev_key=f"step-{i - 1}" if i > 1 else None)
+    assert _image_turns(ledger) == [5, 6, 7, 8]
+
+    # Past the gate: the next render scrubs the extra depths in one pass
+    # (turns 5–8 were depths 3–6 at that render; only turn 9 at depth 2 stays).
+    ledger.record_prompt_tokens(40_000)  # 40% >= 35%
+    assert ledger.effective_image_scrub_depth == 3
+    _play_turn(ledger, 10, prev_key="step-9")
+    assert _image_turns(ledger) == [9]
+
+    # Back under the gate: nothing is restored; new turns accumulate again
+    # until four historical screenshots are in view.
+    ledger.record_prompt_tokens(20_000)
+    assert ledger.effective_image_scrub_depth == 6
+    _play_turn(ledger, 11, prev_key="step-10")
+    assert _image_turns(ledger) == [9, 10]
+    _play_turn(ledger, 12, prev_key="step-11")
+    assert _image_turns(ledger) == [9, 10, 11]
+    _play_turn(ledger, 13, prev_key="step-12")
+    assert _image_turns(ledger) == [9, 10, 11, 12]
+    _play_turn(ledger, 14, prev_key="step-13")  # turn 9 reaches depth 6
+    assert _image_turns(ledger) == [10, 11, 12, 13]
+
+
+def test_no_band_configuration_keeps_the_fixed_depth():
+    ledger = TranscriptLedger(step_memory=_service(), image_scrub_depth=3)
+    ledger.record_prompt_tokens(1)
+    assert ledger.effective_image_scrub_depth == 3
+    relaxed_only = TranscriptLedger(
+        step_memory=_service(), image_scrub_depth=3, image_scrub_depth_relaxed=6
+    )
+    assert relaxed_only.effective_image_scrub_depth == 3  # no gate → never relaxed
+
+
+def test_scrub_edge_runs_before_the_chunker_at_render():
+    """The chunker sees the active window after the scrub edge advanced, so a
+    chunk closing over turns older than the floor never captures a live
+    screenshot in its source transcript."""
+    ledger = _banded_ledger()
+    seen: list[list[int]] = []
+
+    class Probe:
+        def on_render(self, led):
+            seen.append(_image_turns(led))
+
+    ledger.attach_chunker(Probe())
+    for i in range(1, 9):
+        _play_turn(ledger, i, prev_key=f"step-{i - 1}" if i > 1 else None)
+    # At the render of turn 8 the scrub edge (depth 6) had already resolved
+    # turn 3 (depth 6); the probe saw turns 4–7 with images, never turn 3.
+    assert seen[-1] == [4, 5, 6, 7]
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral blocks and stable repeated renders
+# ---------------------------------------------------------------------------
+
+
+def _ready_service(n: int) -> StepMemoryService:
+    service = _service()
+    for i in range(1, n + 1):
+        service._step_inputs[f"step-{i}"] = {"step_number": i}
+        service._summaries[f"step-{i}"] = f"Visual transition {i}."
+    return service
+
+
+def test_ephemeral_blocks_vanish_at_the_text_edge_and_not_before():
+    """(ii) Per-turn notices marked through ``mark_ephemeral`` stay only while
+    the observation is the live tail; they are deleted at the text edge
+    together with the strip, before the screenshot is resolved at K."""
+    from artemis.memory.transcript import EPHEMERAL_BLOCKS_KEY, mark_ephemeral
+
+    ledger = TranscriptLedger(step_memory=_ready_service(6), image_scrub_depth=3)
+
+    def turn_with_notice(i: int) -> list:
+        turn = _turn(i)
+        obs = turn[0]
+        obs.content = [
+            obs.content[0],
+            {"type": "text", "text": f"[Reminder for turn {i}: state your reasoning]"},
+            *obs.content[1:],
+            {"type": "text", "text": f"[User guidance for turn {i}]"},
+        ]
+        mark_ephemeral(obs, [1, len(obs.content) - 1])
+        return turn
+
+    ledger.commit_staged()
+    ledger.render([turn_with_notice(1)[0]])
+    ledger.stage_turn(turn_with_notice(1))
+    for i in range(2, 4):
+        ledger.commit_staged(step_key=f"step-{i - 1}")
+        ledger.render([_observation(i)])
+        ledger.stage_turn(turn_with_notice(i))
+
+    obs1 = ledger.active_messages[0]
+    # At the render of turn 3, turn 1 is depth 3 (K): rewritten and frozen.
+    assert obs1.content == [
+        {"type": "text", "text": "# CURRENT OBSERVATION [T+00:01]"},
+        {"type": "text", "text": "--- Historical Visual Transition ---\nVisual transition 1."},
+    ]
+    assert EPHEMERAL_BLOCKS_KEY not in obs1.additional_kwargs
+    # Turn 2 is depth 2: past the text edge, its notices are gone while the
+    # screenshot is still there; the consumed indices are cleared.
+    obs2 = next(m for m in ledger.active_messages if "OBSERVATION [T+00:02]" in str(m.content))
+    assert "[Reminder for turn 2: state your reasoning]" not in str(obs2.content)
+    assert "[User guidance for turn 2]" not in str(obs2.content)
+    assert _has_image(obs2)
+    assert EPHEMERAL_BLOCKS_KEY not in obs2.additional_kwargs
+
+
+def test_rendering_past_the_edge_is_byte_identical_and_prefix_stable():
+    """(iii) A render with nothing new is byte-identical to the previous one,
+    and across turns exactly one message — the observation reaching depth K —
+    differs from the previous render's prefix, so the request prefix before
+    it is what the provider's prompt cache already holds."""
+    ledger = TranscriptLedger(step_memory=_ready_service(12), image_scrub_depth=3)
+    ledger.set_static_prefix([SystemMessage(content="STATIC")])
+
+    def snapshot(rendered: list) -> list[str]:
+        return [_fingerprint(m) for m in rendered[:-1]]  # everything but the live tail
+
+    previous: list[str] = []
+    for i in range(1, 11):
+        rendered = _play_turn(
+            ledger,
+            i,
+            prev_key=f"step-{i - 1}" if i > 1 else None,
+            prev_result={"status": "dispatched"} if i > 1 else None,
+        )
+        current = snapshot(rendered)
+        changed = [idx for idx, fp in enumerate(previous) if current[idx] != fp]
+        if i >= 3:
+            # The live tail is depth 1 and committed turn i-1 depth 2, so the
+            # turn reaching depth 3 is i-2; its observation heads its span.
+            expected = next(
+                idx
+                for idx, m in enumerate(rendered[:-1])
+                if f"OBSERVATION [T+00:0{(i - 2) % 10}]" in str(m.content)
+            )
+            assert changed == [expected], (i, changed)
+        else:
+            assert changed == [], (i, changed)
+        previous = current
+
+    # Same state, rendered again: byte-identical, including the tail.
+    tail = [_observation(11)]
+    again = [_fingerprint(m) for m in ledger.render(tail)]
+    assert again == [_fingerprint(m) for m in ledger.render(tail)]
+    assert again[:-1] == previous
+
+
+# ---------------------------------------------------------------------------
+# Silent-turn flag
+# ---------------------------------------------------------------------------
+
+
+def _commit(messages: list) -> TranscriptLedger:
+    ledger = TranscriptLedger(step_memory=_service())
+    ledger.stage_turn(messages)
+    ledger.commit_staged(step_key="s1")
+    return ledger
+
+
+def test_last_turn_silent_when_ai_messages_show_no_text():
+    click = [{"name": "click", "args": {"target": 1}, "id": "c1", "type": "tool_call"}]
+    assert _commit([_observation(1), AIMessage(content="", tool_calls=click)]).last_turn_silent
+    assert _commit([_observation(1), AIMessage(content="   \n", tool_calls=click)]).last_turn_silent
+    assert _commit(
+        [
+            _observation(1),
+            AIMessage(content=[{"type": "thinking", "thinking": "hidden"}], tool_calls=click),
+        ]
+    ).last_turn_silent
+    assert _commit(
+        [
+            _observation(1),
+            AIMessage(content=[{"type": "text", "text": "  "}], tool_calls=click),
+            ToolMessage(tool_call_id="c1", content="Action Recorded"),
+            AIMessage(content=[], tool_calls=click),
+        ]
+    ).last_turn_silent
+
+
+def test_last_turn_not_silent_with_visible_text_or_without_ai_message():
+    click = [{"name": "click", "args": {"target": 1}, "id": "c1", "type": "tool_call"}]
+    assert not _commit(
+        [_observation(1), AIMessage(content="I tap it.", tool_calls=click)]
+    ).last_turn_silent
+    assert not _commit(
+        [
+            _observation(1),
+            AIMessage(
+                content=[{"type": "thinking", "thinking": "x"}, {"type": "text", "text": "Tap."}],
+                tool_calls=click,
+            ),
+        ]
+    ).last_turn_silent
+    # One silent call followed by a spoken one: the turn spoke.
+    assert not _commit(
+        [
+            _observation(1),
+            AIMessage(content="", tool_calls=click),
+            ToolMessage(tool_call_id="c1", content="ok"),
+            AIMessage(content="Now the real move.", tool_calls=click),
+        ]
+    ).last_turn_silent
+    # No AI message at all is not a silent turn.
+    assert not _commit([_observation(1)]).last_turn_silent
+    # A tool result with empty text does not count as an AI message.
+    assert not _commit(
+        [_observation(1), ToolMessage(tool_call_id="c1", content="")]
+    ).last_turn_silent
+
+
+def test_last_turn_silent_tracks_each_commit():
+    ledger = TranscriptLedger(step_memory=_service())
+    click = [{"name": "click", "args": {}, "id": "c1", "type": "tool_call"}]
+    assert ledger.last_turn_silent is False
+    ledger.stage_turn([_observation(1), AIMessage(content="", tool_calls=click)])
+    ledger.commit_staged(step_key="s1")
+    assert ledger.last_turn_silent is True
+    ledger.stage_turn([_observation(2), AIMessage(content="spoken", tool_calls=click)])
+    ledger.commit_staged(step_key="s2")
+    assert ledger.last_turn_silent is False
+
+
+def test_last_turn_silent_recognises_streamed_ai_message_chunks():
+    """Streamed replies are AIMessageChunk (type "AIMessageChunk"), not "ai"."""
+    from langchain_core.messages import AIMessageChunk, HumanMessage
+
+    from artemis.memory.transcript import TranscriptLedger, render_turn_transcript
+
+    ledger = TranscriptLedger()
+    ledger.stage_turn([HumanMessage(content="obs"), AIMessageChunk(content=[])])
+    ledger.commit_staged(step_key=None, validator_result=None)
+    assert ledger.last_turn_silent is True
+
+    ledger.stage_turn([HumanMessage(content="obs"), AIMessageChunk(content="I see the list.")])
+    ledger.commit_staged(step_key=None, validator_result=None)
+    assert ledger.last_turn_silent is False
+
+    rendered = render_turn_transcript([AIMessageChunk(content="I see the list.")])
+    assert rendered.startswith("[operator]")

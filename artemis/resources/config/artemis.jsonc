@@ -192,7 +192,7 @@
     // ==========================================================================
     // 🌐 4.3 Shared Capabilities & Global Overrides
     // ==========================================================================
-    // 🧠 Unified Step-Memory Runtime (history-module redesign v3, M0–M5)
+    // Shared step memory and history compression
     // Transcript ledger + layered compression for the Pro operator.
     "memory": {
       // Background summarization runtime (visual/capsule lenses)
@@ -204,15 +204,33 @@
       "transcript": {
         // ROLLBACK SWITCH: set false to restore the legacy per-turn 2-message
         // prompt path byte-for-byte (L2/L3 chunk compression rides this same
-        // flag). Default on since M5 (2026-09-01) per the on-device A/B:
-        // turn latency −77% P50, cache-hit calls 43%→88%, output tokens −74%.
+        // flag). See services/token_meter.py for measured session token usage
+        // and cache-hit ratios.
         "enabled": true,
         "context_budget_tokens": 80000,
+        // Below start_ratio of the operator's own measured prompt size, closed
+        // segments only prepare their summary; the original turns are kept in
+        // context and replaced once occupancy reaches this ratio. Measurements
+        // come from the operator; other agents' calls do not affect this gate.
+        "start_ratio": 0.35,
         "soft_ratio": 0.7,
         "hard_ratio": 0.9,
         "min_active_steps": 5,
+        // Screenshot edge: 6 while the operator's measured context is below
+        // start_ratio (nothing is being replaced yet), 3 from there up. A
+        // screenshot reaching the edge is replaced in place by its visual
+        // summary (the 'Current Screenshot' label leaves with it) and never
+        // restored; the depth only decides how long new ones stay.
         "image_scrub_depth": 3,
+        "image_scrub_depth_relaxed": 6,
         "pending_grace_steps": 3,
+        // Text edge: once a newer observation exists (depth 1) the UI element
+        // list, the plan recitation and the per-turn ephemeral blocks
+        // (reminders, hints, guidance wrappers) leave the older observation.
+        // User instruction bodies remain in history. The text edge stays
+        // shallow on purpose: only the live observation carries an indexed
+        // element list, so a stale [n] index can never be picked up as a
+        // target.
         "xml_scrub_depth": 1,
         // Local historical-state hint (no model call); distance calibrated
         // 2026-09-01 from 460 dHash-stamped on-device steps (same screen <=4,
@@ -223,6 +241,10 @@
       // Segment (L2) chunk compression: three-band chunks, era folding
       "chunking": {
         "max_steps": 12,
+        // Size/pressure closes wait until at least this many turns are
+        // eligible, so heavy turns do not become one-step chunks (one capsule
+        // call each); milestone closes are exempt, the hard line waives it.
+        "min_steps": 3,
         "target_source_tokens": 2000,
         "model": "gemini-3.8-flash",
         "max_chunks": 8

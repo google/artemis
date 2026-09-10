@@ -460,8 +460,20 @@ class MemoryTranscriptConfig(BaseModel):
         default=3,
         ge=1,
         description=(
-            "Depth K of the screenshot scrub edge: the K-th most recent"
-            " historical screenshot is replaced by its visual summary."
+            "Depth K of the screenshot scrub edge from the start gate up: the"
+            " K-th most recent screenshot (the live one counts as depth 1) is"
+            " replaced by its visual summary."
+        ),
+    )
+    image_scrub_depth_relaxed: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "Screenshot scrub depth while the operator's measured context is"
+            " below budget*start_ratio (nothing is being replaced yet, so"
+            " more raw screenshots stay in view). Must be >= image_scrub_depth;"
+            " set equal to it to disable the occupancy-driven depth. A change"
+            " of depth never rewrites an already-scrubbed message."
         ),
     )
     pending_grace_steps: int = Field(
@@ -473,13 +485,17 @@ class MemoryTranscriptConfig(BaseModel):
             " image is replaced by a placeholder referencing the DataEngine step."
         ),
     )
-    xml_scrub_depth: int = Field(
+    xml_scrub_depth: int | None = Field(
         default=1,
         ge=1,
         description=(
-            "How many of the most recent observations keep their UI Element"
-            " list; older lists are stripped (depth 1 matches the legacy"
-            " prune_history_xml semantics)."
+            "Text edge of the scrub: once a message is deeper than this many"
+            " image-bearing observations (1 = as soon as a newer observation"
+            " exists) its UI element list, plan recitation and per-turn"
+            " ephemeral blocks are removed. Kept shallow on purpose: only the"
+            " live observation carries an indexed element list, so a stale"
+            " [n] index can never be picked up as a target. Screenshots follow"
+            " image_scrub_depth / image_scrub_depth_relaxed."
         ),
     )
     context_budget_tokens: int = Field(
@@ -491,14 +507,27 @@ class MemoryTranscriptConfig(BaseModel):
             " ratios below are applied against this budget."
         ),
     )
+    start_ratio: float = Field(
+        default=0.35,
+        ge=0.0,
+        lt=1.0,
+        description=(
+            "Start gate: below budget*start_ratio of the operator's measured"
+            " prompt size, closed segments only prepare their capsule in the"
+            " background — the original turns stay in the transcript. Ready"
+            " chunks replace their turns once the measured context reaches"
+            " this ratio (the hard threshold overrides it). 0 restores"
+            " swap-as-soon-as-ready."
+        ),
+    )
     soft_ratio: float = Field(
         default=0.7,
         gt=0.0,
         lt=1.0,
         description=(
-            "Soft threshold: when the last measured prompt size reaches"
-            " budget*soft_ratio, the oldest open segment is chunk-compressed"
-            " (L2)."
+            "Soft threshold: when the operator's last measured prompt size"
+            " reaches budget*soft_ratio, the oldest open segment is"
+            " chunk-compressed (L2)."
         ),
     )
     hard_ratio: float = Field(
@@ -506,9 +535,13 @@ class MemoryTranscriptConfig(BaseModel):
         gt=0.0,
         le=1.0,
         description=(
-            "Hard threshold: when the last measured prompt size reaches"
-            " budget*hard_ratio, the frozen region collapses to the L3 session"
-            " snapshot (chunk headers merged; per-step index retained)."
+            "Hard threshold: when the operator's last measured prompt size"
+            " reaches budget*hard_ratio, ready chunks swap as L2 blocks first;"
+            " only if that would not bring the estimated context back under the"
+            " line does everything closed force-swap (pending chunks included)"
+            " and the whole frozen region fold into a recall-only era — L3: the"
+            " period paragraph with the per-step index. The fold is permanent;"
+            " later L2 chunks are appended after it."
         ),
     )
     min_active_steps: int = Field(
@@ -544,6 +577,23 @@ class MemoryTranscriptConfig(BaseModel):
         ),
     )
     model_config = {"extra": "allow"}
+
+    @model_validator(mode="after")
+    def _ratios_are_ordered(self) -> "MemoryTranscriptConfig":
+        """The three thresholds form a ladder against the same budget."""
+        if not (0.0 <= self.start_ratio <= self.soft_ratio <= self.hard_ratio <= 1.0):
+            raise ValueError(
+                "memory.transcript ratios must satisfy"
+                " 0 <= start_ratio <= soft_ratio <= hard_ratio <= 1"
+                f" (got start_ratio={self.start_ratio}, soft_ratio={self.soft_ratio},"
+                f" hard_ratio={self.hard_ratio})."
+            )
+        if self.image_scrub_depth_relaxed < self.image_scrub_depth:
+            raise ValueError(
+                "memory.transcript.image_scrub_depth_relaxed must be >= image_scrub_depth"
+                f" (got {self.image_scrub_depth_relaxed} < {self.image_scrub_depth})."
+            )
+        return self
 
 
 class MemoryRecallConfig(BaseModel):
@@ -620,8 +670,21 @@ class MemoryChunkingConfig(BaseModel):
         default=2000,
         ge=128,
         description=(
-            "Size-threshold trigger: estimated source tokens (char/4 over the"
-            " open segment's transcript text) that force a chunk compression."
+            "Size-threshold trigger: estimated source tokens (transcript"
+            " characters through the session-calibrated ratio, 4 chars/token"
+            " by default) over the open segment's eligible portion that force"
+            " a chunk compression."
+        ),
+    )
+    min_steps: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Minimum turns in a chunk closed by the size or pressure trigger:"
+            " below this the eligible turns keep accumulating instead of"
+            " becoming one-step chunks (each chunk costs a capsule call)."
+            " Milestone closes are exempt (a complete segment is a unit) and"
+            " the hard threshold waives it (emergency)."
         ),
     )
     model: str = Field(
@@ -646,6 +709,16 @@ class MemoryChunkingConfig(BaseModel):
             " behavior."
         ),
     )
+
+    @model_validator(mode="after")
+    def _min_steps_within_cap(self) -> "MemoryChunkingConfig":
+        if self.min_steps > self.max_steps:
+            raise ValueError(
+                "memory.chunking.min_steps must not exceed max_steps"
+                f" (got min_steps={self.min_steps}, max_steps={self.max_steps})."
+            )
+        return self
+
     model_config = {"extra": "allow"}
 
 

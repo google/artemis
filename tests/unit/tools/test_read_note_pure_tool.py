@@ -60,7 +60,7 @@ async def test_read_note_pure_direct_execution_success(mock_ctx, tmp_path):
     save_note_content(tmp_path, "sample_pure", "line 1\nline 2\nline 3")
 
     result = await read_note_pure.execute(ctx=mock_ctx, key="sample_pure")
-    assert "Successfully read note 'sample_pure'." in result
+    assert "Note 'sample_pure' (" in result
     assert "line 1\nline 2\nline 3" in result
 
 
@@ -75,7 +75,7 @@ async def test_read_note_pure_slice(mock_ctx, tmp_path):
         start_line=2,
         end_line=3,
     )
-    assert "Successfully read note 'slice_pure' (lines 2 to 3)." in result
+    assert "Note 'slice_pure' (lines 2 to 3):" in result
     assert "line 1" not in result
     assert "line 2\nline 3" in result
     assert "line 4" not in result
@@ -87,7 +87,7 @@ async def test_read_note_pure_callable_execution(mock_ctx, tmp_path):
     save_note_content(tmp_path, "callable_pure", "hello from pure callable")
 
     result = await read_note_pure(ctx=mock_ctx, key="callable_pure")
-    assert "Successfully read note 'callable_pure'." in result
+    assert "Note 'callable_pure' (" in result
     assert "hello from pure callable" in result
 
 
@@ -118,5 +118,5 @@ async def test_get_read_note_tool_pure_langchain_ainvoke(mock_ctx, tmp_path):
     assert pure_tool.name == "read_note"
 
     result = await pure_tool.ainvoke({"key": "pure_export"})
-    assert "Successfully read note 'pure_export'." in result
+    assert "Note 'pure_export' (" in result
     assert "exported pure note" in result

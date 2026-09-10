@@ -14,13 +14,18 @@
 
 """Unit tests for Universal FlashRunner."""
 
-from unittest.mock import Mock, patch
+import base64
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
 
 from artemis.agents.explorer.constants import ASK_EXPLORER_DESCRIPTION
 from artemis.agents.flash.runner import FlashRunner
-from artemis.agents.validator.tool_declarations import ASK_EXPLORER_TOOL
+from artemis.agents.validator.tool_declarations import (
+    ASK_EXPLORER_TOOL,
+    ToolExecutionResult,
+)
 from artemis.context import ArtemisContext
 
 
@@ -57,6 +62,138 @@ def test_flash_runner_tools_initialization(mock_context):
         assert "report_task_status" in tool_names
         # Validator's report_failure_analysis should NOT be in FlashRunner
         assert "report_failure_analysis" not in tool_names
+        # Flash has no note-writing tool and its prompt never teaches notes:
+        # the Validator set's note readers are not bound.
+        assert "read_note" not in tool_names
+        assert "list_notes" not in tool_names
+        assert tool_names[:2] == ["click", "click_sequence"]
+
+
+# --- Post-action screenshot fallback (failed action / unknown tool) ----------------
+
+
+def _screen(elements):
+    return SimpleNamespace(
+        base64=base64.b64encode(b"POST-IMG").decode("ascii"),
+        elements=elements,
+        width=1080,
+        height=2400,
+    )
+
+
+def _failed_click(tc_id="tc1"):
+    return ToolExecutionResult(
+        tool_call_id=tc_id,
+        tool_name="click",
+        status="error",
+        text_summary="Error during click: Invalid target format: 3",
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_observation_renders_the_indexed_ui_list(mock_context, tmp_path):
+    """After an action that produced no observation, the fallback capture must
+    hand the next tail the same indexed minimal list the success path builds
+    (never the raw element dict repr) and refresh the state like it."""
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    runner.controller = Mock()
+    runner.controller.get_screen_data = AsyncMock(
+        return_value=_screen(
+            [
+                {
+                    "text": "Settings",
+                    "content-desc": "",
+                    "bounds": "[40,120][1040,270]",
+                    "class": "android.widget.TextView",
+                    "resource-id": "android:id/title",
+                }
+            ]
+        )
+    )
+    state = Mock()
+    state.latest_screenshot = "old.jpg"
+    exec_result = _failed_click()
+
+    with patch("artemis.mcp.observation.get_temp_dir", return_value=tmp_path):
+        post = await runner._capture_post_screenshot(
+            exec_result, "click", frozenset({"click"}), state
+        )
+
+    assert post == b"POST-IMG"
+    assert isinstance(exec_result.ui_elements_text, str)
+    assert exec_result.ui_elements_text == "[1] Text: 'Settings' | Bounds: [37,50][962,112]"
+    assert "{'text'" not in exec_result.ui_elements_text
+    # State refreshed exactly as the executor's success path does.
+    assert state.indexed_elements[0]["index"] == 1
+    assert state.indexed_elements[0]["text"] == "Settings"
+    assert state.indexed_points == [state.indexed_elements[0]["center"]]
+    assert state.latest_screenshot != "old.jpg"
+    assert state.latest_screenshot.startswith(str(tmp_path))
+    assert exec_result.screenshot_path == state.latest_screenshot
+
+
+@pytest.mark.asyncio
+async def test_fallback_observation_is_skipped_for_non_action_tools(mock_context):
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    runner.controller = Mock()
+    runner.controller.get_screen_data = AsyncMock(return_value=_screen([]))
+    state = Mock()
+    exec_result = ToolExecutionResult(
+        tool_call_id="tc", tool_name="ask_explorer", status="success", text_summary="found"
+    )
+
+    post = await runner._capture_post_screenshot(
+        exec_result, "ask_explorer", frozenset({"click"}), state
+    )
+
+    assert post is None
+    assert exec_result.ui_elements_text is None
+    runner.controller.get_screen_data.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fallback_observation_keeps_the_executors_ui_list(mock_context, tmp_path):
+    """An action that reported a UI list but no screenshot keeps its own list."""
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    runner.controller = Mock()
+    runner.controller.get_screen_data = AsyncMock(
+        return_value=_screen([{"text": "Other", "bounds": "[0,0][100,100]"}])
+    )
+    exec_result = ToolExecutionResult(
+        tool_call_id="tc",
+        tool_name="click",
+        status="success",
+        text_summary="click executed",
+        ui_elements_text="[1] Text: 'Mine' | Bounds: [0,0][10,10]",
+    )
+
+    with patch("artemis.mcp.observation.get_temp_dir", return_value=tmp_path):
+        post = await runner._capture_post_screenshot(
+            exec_result, "click", frozenset({"click"}), None
+        )
+
+    assert post == b"POST-IMG"
+    assert exec_result.ui_elements_text == "[1] Text: 'Mine' | Bounds: [0,0][10,10]"
+
+
+@pytest.mark.asyncio
+async def test_fallback_observation_failure_is_contained(mock_context):
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    runner.controller = Mock()
+    runner.controller.get_screen_data = AsyncMock(side_effect=RuntimeError("adb gone"))
+    state = Mock()
+    state.latest_screenshot = "old.jpg"
+    exec_result = _failed_click()
+
+    post = await runner._capture_post_screenshot(exec_result, "click", frozenset({"click"}), state)
+
+    assert post is None
+    assert exec_result.ui_elements_text is None
+    assert state.latest_screenshot == "old.jpg"
 
 
 def test_flash_runner_executor_follows_the_flash_explorer_tier(mock_context):
@@ -202,10 +339,12 @@ def test_flash_records_render_in_the_ledger_with_their_arguments(mock_context):
     typed = _record(runner, "input_text", {"target": [500, 600], "text": "hello"})
     assert format_actions_clean(typed) == "Inputted 'hello' into field at [500, 600]"
 
+    # A directional swipe names the direction first; the recorded canonical
+    # path is the parenthesised detail.
     swipe_dir = _record(runner, "swipe", {"direction": "up"})
-    assert format_actions_clean(swipe_dir) == "Swiped up"
+    assert format_actions_clean(swipe_dir) == "Swiped up (from [600, 700] to [600, 300])"
     swipe_fa = _record(runner, "swipe", {"action": "down"})
-    assert format_actions_clean(swipe_fa) == "Swiped down"
+    assert format_actions_clean(swipe_fa) == "Swiped down (from [600, 300] to [600, 700])"
     swipe_coords = _record(runner, "swipe", {"coordinates": [556, 289, 556, 124]})
     assert format_actions_clean(swipe_coords) == "Swiped from [556, 289] to [556, 124]"
 
@@ -246,3 +385,174 @@ def test_flash_records_the_executors_target_semantics(mock_context):
     bare = _record(runner, "click", {"target": [320, 399]}, metadata={"target_semantics": {}})
     assert "target_description" not in bare
     assert "target_text" not in bare
+
+
+def test_flash_records_an_index_target_as_the_resolved_point_with_observed_semantics(
+    mock_context,
+):
+    """An element index is not a coordinate: the record carries the normalized
+    point the executor resolved it to, plus the element's observed fields in
+    the shape Pro records (never a self-described label)."""
+    from artemis.utils.task_tree import format_actions_clean
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+
+    click = _record(
+        runner,
+        "click",
+        {"target": 3},
+        metadata={
+            "target_coordinates": [500, 520],
+            "target_semantics": {
+                "target_text": "Wi-Fi",
+                "target_bounds": [37, 480, 962, 560],
+                "target_resource_id": "android:id/title",
+                "target_class": "android.widget.TextView",
+            },
+        },
+    )
+    assert click["coordinates"] == [500, 520]
+    assert click["normalized_coordinates"] == [500, 520]
+    assert click["target_text"] == "Wi-Fi"
+    assert click["target_bounds"] == [37, 480, 962, 560]
+    assert "target_description" not in click
+    assert click["args"] == {"target": 3}  # the tool call itself, verbatim
+    assert format_actions_clean(click) == "Tapped 'Wi-Fi' at [500, 520]"
+
+    typed = _record(
+        runner,
+        "input_text",
+        {"target": 2, "text": "hello"},
+        metadata={"target_coordinates": [500, 300], "target_semantics": {"target_text": "Search"}},
+    )
+    assert typed["coordinates"] == [500, 300]
+    assert format_actions_clean(typed) == "Inputted 'hello' into 'Search' at [500, 300]"
+
+
+@pytest.mark.asyncio
+async def test_visual_lens_receives_the_recorded_action_shape(mock_context):
+    """The lens gets the recorded action minus its verb (what the Pro
+    summarizer hands it), so ``manage_app``'s own ``action`` argument can no
+    longer overwrite the action name in the rendered phrase."""
+    from artemis.agents.flash.runner import _TurnRecord
+    from artemis.agents.flash.summarizer import VisualStepSummarizer
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    runner.summarizer = Mock()
+    runner.executor.execute = AsyncMock(
+        return_value=ToolExecutionResult(
+            tool_call_id="tc",
+            tool_name="manage_app",
+            status="success",
+            text_summary="Launched app 'Settings' (com.android.settings); foreground confirmed.",
+            screenshot_bytes=b"post",
+            metadata={"target_semantics": {}, "target_coordinates": None},
+        )
+    )
+    args = {"action": "launch", "app_name": "Settings"}
+
+    await runner._execute_and_record_action(
+        "manage_app", args, "tc", Mock(), [], "thought", {}, b"pre", "xml", 0, _TurnRecord()
+    )
+
+    runner.summarizer.dispatch.assert_called_once()
+    kwargs = runner.summarizer.dispatch.call_args.kwargs
+    assert kwargs["action_name"] == "manage_app"
+    assert "action" not in kwargs["action_args"]
+    assert kwargs["action_args"]["args"] == args
+    assert VisualStepSummarizer._action_phrase("manage_app", kwargs["action_args"]) == (
+        "Launched app 'Settings'"
+    )
+
+
+# --- Native thinking (thought summaries) reach the step record ----------------------
+
+
+def _thinking_response(content):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(content=content, tool_calls=[])
+
+
+def test_extract_response_thinking_reads_only_thinking_blocks(mock_context):
+    """``include_thoughts`` replies carry ``thinking`` blocks next to ``text``
+    blocks; only the former are native thinking, and plain-string replies
+    carry none."""
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+
+    blocks = [
+        {"type": "thinking", "thinking": "**Verifying**\n\nMaps is open."},
+        {"type": "text", "text": "Tapping the search bar."},
+        {"type": "thinking", "thinking": "  "},
+    ]
+    assert runner._extract_response_thinking(_thinking_response(blocks)) == (
+        "**Verifying**\n\nMaps is open."
+    )
+    assert runner._extract_response_text(_thinking_response(blocks)) == "Tapping the search bar."
+    assert runner._extract_response_thinking(_thinking_response("plain reply")) == ""
+    assert (
+        runner._extract_response_thinking(_thinking_response([{"type": "text", "text": "t"}])) == ""
+    )
+
+
+def test_record_action_step_persists_native_thinking(mock_context):
+    from types import SimpleNamespace
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    runner.ctx.data_engine = Mock()
+    runner.ctx.data_engine.current_step_id = None
+    runner.ctx.data_engine.record_step.return_value = "step-1"
+    exec_result = SimpleNamespace(
+        status="success", text_summary="click executed", metadata={}, ui_elements_text="ui"
+    )
+
+    runner._record_action_step(
+        "click",
+        {"target": [1, 2]},
+        exec_result,
+        "thought",
+        {},
+        b"pre",
+        ["xml"],
+        b"post",
+        native_text="native summary",
+    )
+    kwargs = runner.ctx.data_engine.record_step.call_args.kwargs
+    assert kwargs["operator_raw_thinking"] == "thought"
+    assert kwargs["operator_native_thinking"] == "native summary"
+
+    runner._record_action_step(
+        "click", {"target": [1, 2]}, exec_result, "thought", {}, b"pre", ["xml"], b"post"
+    )
+    assert runner.ctx.data_engine.record_step.call_args.kwargs["operator_native_thinking"] is None
+
+
+@pytest.mark.asyncio
+async def test_final_report_persists_native_thinking(mock_context):
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+    runner.ctx.data_engine = Mock()
+    runner.ctx.data_engine.current_step_id = None
+    runner.summarizer = None
+    messages = []
+
+    report = await runner._finalize_task_report(
+        "report_task_status",
+        {"status": "completed"},
+        "tc",
+        "final text",
+        {},
+        b"pre",
+        ["xml"],
+        messages,
+        native_text="native summary",
+    )
+    assert report == {"status": "completed"}
+    kwargs = runner.ctx.data_engine.record_step.call_args.kwargs
+    assert kwargs["operator_raw_thinking"] == "final text"
+    assert kwargs["operator_native_thinking"] == "native summary"
+    assert isinstance(messages[-1], ToolMessage)

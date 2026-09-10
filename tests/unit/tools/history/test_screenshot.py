@@ -21,7 +21,9 @@ from unittest.mock import MagicMock
 import pytest
 from PIL import Image
 
+from artemis.core.tool_failure import is_tool_failure
 from artemis.tools.history import get_step_screenshot, load_step_screenshot
+from artemis.tools.tool_wrapper import tool_result_messages
 
 
 def _jpeg_file(tmp_path, name="pre.jpg", color="white"):
@@ -78,21 +80,70 @@ def test_overlay_falls_back_to_plain_pre_without_action(tmp_path):
     assert "plain screenshot" in shot.description
 
 
-def test_missing_file_and_missing_step_return_plain_text():
+def test_missing_file_is_an_answer_but_missing_step_is_a_failure():
     shot = load_step_screenshot(_reader(pre=None, post=None), 3, "post")
     assert shot.image_bytes is None
-    assert shot.to_content_blocks() == "No post-action screenshot recorded for step 3."
+    assert shot.is_error is False
+    out = shot.to_content_blocks()
+    assert out == "No post-action screenshot recorded for step 3."
+    assert not is_tool_failure(out)
 
     shot = load_step_screenshot(_reader(pre=None, record=False), 9, "pre")
-    assert shot.to_content_blocks() == "Error: step 9 not found."
+    assert shot.is_error is True
+    out = shot.to_content_blocks()
+    assert out == "Error: step 9 not found."
+    assert is_tool_failure(out)
 
 
 def test_invalid_variant_and_step_number_are_rejected():
     shot = load_step_screenshot(_reader(), 1, "bogus")
     assert shot.image_bytes is None
+    assert shot.is_error is True
     assert "'pre', 'post' or 'overlay'" in shot.description
-    assert "must be an integer" in load_step_screenshot(_reader(), "one").description
-    assert "no execution history" in load_step_screenshot(None, 1).description
+    assert is_tool_failure(shot.to_content_blocks())
+
+    shot = load_step_screenshot(_reader(), "one")
+    assert "must be an integer" in shot.description and shot.is_error is True
+    shot = load_step_screenshot(None, 1)
+    assert "no execution history" in shot.description and shot.is_error is True
+
+
+def test_unreadable_file_and_reader_errors_are_failures(tmp_path):
+    shot = load_step_screenshot(_reader(pre=tmp_path / "missing.jpg"), 2, "pre")
+    assert shot.is_error is True
+    assert "Error reading screenshot" in shot.description
+
+    reader = _reader()
+    reader.get_step_image_path.side_effect = ValueError("corrupt row")
+    shot = load_step_screenshot(reader, 2, "pre")
+    assert shot.is_error is True
+    assert "Error looking up step 2: corrupt row" in shot.description
+
+
+@pytest.mark.asyncio
+async def test_error_answers_reach_the_model_with_status_error():
+    """The executor loops derive the ToolMessage status from ``is_tool_failure``:
+    an unknown step arrives as status=error, a recorded-but-absent screenshot
+    as a normal answer."""
+    ctx = SimpleNamespace(data_engine=_reader(pre=None, record=False))
+    out = await get_step_screenshot.execute(ctx=ctx, step_number=999, which="pre")
+    assert out == "Error: step 999 not found."
+    assert is_tool_failure(out)
+    status = "error" if is_tool_failure(out) else "success"
+    (msg,) = tool_result_messages("tc-1", out, name="get_step_screenshot", status=status)
+    assert msg.status == "error"
+    assert msg.content == "Error: step 999 not found."
+
+    ctx = SimpleNamespace(data_engine=_reader(pre=None, post=None))
+    out = await get_step_screenshot.execute(ctx=ctx, step_number=3, which="post")
+    assert not is_tool_failure(out)
+    (msg,) = tool_result_messages(
+        "tc-2",
+        out,
+        name="get_step_screenshot",
+        status="error" if is_tool_failure(out) else "success",
+    )
+    assert msg.status == "success"
 
 
 @pytest.mark.asyncio

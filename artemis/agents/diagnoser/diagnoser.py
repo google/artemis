@@ -356,9 +356,10 @@ class Diagnoser:
         if submit_tool:
             submit_tool.invoke(args)
 
-        outcome = f"Analysis: {analysis} | Actionable Steps: "
-        for step in steps:
-            outcome += f"{step} "
+        outcome = f"Analysis: {analysis}"
+        if steps:
+            numbered = "\n".join(f"{i}. {step}" for i, step in enumerate(steps, start=1))
+            outcome += f"\nActionable steps:\n{numbered}"
         return outcome
 
     def _max_iteration_outcome(self, response, outcome: str) -> str:

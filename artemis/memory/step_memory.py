@@ -20,12 +20,13 @@ with alias resolution (tool_call_id / legacy ordinals), and status queries.
 
 What a summary *contains* (the lens semantics) lives in subclasses — the
 service only guarantees how jobs are scheduled, retried, keyed, and drained.
-Both Flash and (from M2 on) Pro profiles share this runtime.
+Flash and Pro profiles share this runtime.
 """
 
 import asyncio
 from typing import Any
 
+from artemis.data_engine.trace import detached_trace
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -67,11 +68,19 @@ class StepMemoryService:
        where available; tool_call_ids (and legacy ordinals) remain queryable
        through an alias map so message-level consumers need no migration.
     5. Bounded concurrency: at most ``max_concurrency`` attempts run at once.
+    6. Detached tracing: every job runs inside
+       :func:`~artemis.data_engine.trace.detached_trace`, so a lens's model
+       calls never attach to the trace span (the operator's step) that was
+       current when the job was submitted — no lens needs to know.
 
     Subclasses implement :meth:`_attempt` (one summarization attempt for a
     payload) and may override :meth:`_on_status` to persist pending/failed
     status transitions.
     """
+
+    #: Trace node label of a lens-less subclass's jobs (``lens:<name>``); a
+    #: configured :class:`StepLens` contributes its own ``name`` instead.
+    lens_name: str | None = None
 
     def __init__(
         self,
@@ -131,7 +140,25 @@ class StepMemoryService:
     # Scheduling core
     # ------------------------------------------------------------------
 
+    @property
+    def trace_node_name(self) -> str:
+        """Node label the job's traces and usage records carry (``lens:<name>``)."""
+        name = getattr(self._lens, "name", None) or self.lens_name or type(self).__name__.lower()
+        return f"lens:{name}"
+
     async def _run_until_ready(self, key: JobKey) -> None:
+        """Run one job to completion, detached from the submitter's trace span.
+
+        The task was created while the submitting agent's step span was
+        current and inherits that context; the whole job — every attempt,
+        retry sleeps included — runs under :func:`detached_trace` so nothing
+        a lens records (model calls, their thinking/raw_thinking children,
+        stream deltas, usage) can be attributed to the submitter's step.
+        """
+        with detached_trace(self.trace_node_name):
+            await self._run_attempts(key)
+
+    async def _run_attempts(self, key: JobKey) -> None:
         """Retry one job independently, bounded by the configured retry limit.
 
         Attempts at most ``1 + retry_limit`` times; on exhaustion the job

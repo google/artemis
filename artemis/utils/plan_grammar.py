@@ -314,18 +314,23 @@ def render_check_line(item: CheckItem, indent: int = 2) -> str:
     return f"{prefix}- {item.kind}{suffix}: {item.text}"
 
 
-def restore_missing_check_items(content_before: str, content_after: str) -> str | None:
+def restore_missing_check_items(
+    content_before: str,
+    content_after: str,
+    items: list[CheckItem] | None = None,
+) -> str | None:
     """Deterministic guard: merge check lines deleted/rewritten by a plan write
     back into the new content.
 
     Returns the merged plan text, or ``None`` when nothing is missing. Lines
     whose parent subgoal still exists are re-anchored directly under it; lines
     whose parent subgoal was removed are converted to task-level ``@end`` items
-    appended at the end of the plan.
+    appended at the end of the plan. ``items`` restricts the merge to the given
+    missing items (the caller may waive some of them).
     """
     before = parse_plan(content_before)
     after = parse_plan(content_after)
-    missing = missing_check_items(before, after)
+    missing = missing_check_items(before, after) if items is None else list(items)
     if not missing:
         return None
 
@@ -438,23 +443,68 @@ Every checklist line MUST match `<indent>- [<status>] <text>`:
 - `{CONTINUOUS_LOOP_TAG}` tags an UNBOUNDED continuous-monitoring milestone: it must stay `[{STATUS_ACTIVE}]` and can never be marked `[{STATUS_DONE}]`, deleted, or untagged by you — the system mechanically rejects such edits. Only an explicit external stop signal injected by the user unlocks its completion; that signal is an external interruption delivered by the system, never something inferred from the screen or the plan.
 - The task terminates only when every top-level milestone is `[{STATUS_DONE}]`."""
 
-_CHECK_GRAMMAR_EXTENSION = """### Check Line Grammar (declared verification standards)
-A top-level milestone may carry indented check lines, and the plan may end with task-level check lines at zero indentation:
-- `  - verify: <expected state>` — an acceptance criterion for its parent milestone. It is judged by an independent Checker at the moment the milestone is marked completed; a failed verify triggers a repair loop.
-- `  - assert: <expected observation>` — a test assertion. It is judged by the independent Checker and a failure is recorded verbatim as a legitimate test result; assertions are NEVER repaired, worked around, or satisfied by constructing state.
-- `- verify@end: ...` / `- assert@end: ...` — the `@end` suffix defers judgment to task exit, using the final device state. Items without `@end` are judged with the evidence available when their anchored milestone completes.
-- Capability boundary (declare honestly, never promise more): all checks are POST-HOC audits over recorded evidence. They detect and record violations after the fact; they CANNOT block an action from happening, so "B must not run before A is confirmed" ordering rules are verified retroactively, not enforced. Transient prompts that were never captured in the execution history cannot be recovered — prefer expressing expectations as persistently probeable state.
-- `  - finding: ...` — a SYSTEM-authored standing headline pinned under a milestone whose verify criterion failed. You never author these lines: the system re-renders them on every plan write (deleting one only makes it reappear) and removes them automatically once the verify passes again or its repair budget is exhausted. Each finding names a `checker-...` note holding the full details and repair log — read it with `read_note`; note keys with the `checker-` prefix are reserved for the system and are read-only for you."""
+_CHECK_GRAMMAR_HEADER = """### Check Line Grammar (declared verification standards)
+A top-level milestone may carry indented check lines, and the plan may end with task-level check lines at zero indentation:"""
+
+#: Judgment-moment wording of the check lines, keyed by the midway gate.
+_VERIFY_JUDGED_MIDWAY = (
+    "It is judged by an independent Checker at the moment the milestone is marked"
+    " completed; a failed verify reopens the milestone for repair."
+)
+_VERIFY_JUDGED_AT_EXIT = (
+    "It is judged once at task exit from the recorded evidence around the"
+    " milestone's completion; there is no midway repair loop."
+)
+_ASSERT_JUDGED_MIDWAY = (
+    "It is judged by the independent Checker when its milestone completes (at task exit for `@end`)"
+)
+_ASSERT_JUDGED_AT_EXIT = "It is judged once at task exit from the recorded evidence"
+
+_CHECK_GRAMMAR_COMMON = """- `- verify@end: ...` / `- assert@end: ...` — the `@end` suffix defers judgment to task exit, using the final device state. Items without `@end` are judged from the evidence recorded around their anchored milestone's completion.
+- Capability boundary (declare honestly, never promise more): all checks are POST-HOC audits over recorded evidence. They detect and record violations after the fact; they CANNOT block an action from happening, so "B must not run before A is confirmed" ordering rules are verified retroactively, not enforced. Transient prompts that were never captured in the execution history cannot be recovered — prefer expressing expectations as persistently probeable state."""
+
+_FINDING_GRAMMAR = """- `  - finding: ...` — a SYSTEM-authored standing headline pinned under a milestone whose verify criterion failed. You never author these lines: the system re-renders them on every plan write (deleting one only makes it reappear) and removes them automatically once the verify passes again or its repair budget is exhausted. Each finding names a `checker-...` note holding the full details and repair log — read it with `read_note`; note keys with the `checker-` prefix are reserved for the system and are read-only for you."""
 
 
-def render_plan_grammar_spec(include_checks: bool) -> str:
+def _render_check_grammar(*, midway: bool, final: bool) -> str:
+    """The check-line grammar worded for the active gates.
+
+    Midway on: verify lines are judged at milestone completion and can reopen
+    the milestone; finding lines exist. Midway off (final only): every line is
+    judged once at task exit, and no repair loop or finding line exists, so
+    neither is taught.
+    """
+    verify_when = _VERIFY_JUDGED_MIDWAY if midway else _VERIFY_JUDGED_AT_EXIT
+    assert_when = _ASSERT_JUDGED_MIDWAY if midway else _ASSERT_JUDGED_AT_EXIT
+    lines = [
+        _CHECK_GRAMMAR_HEADER,
+        "- `  - verify: <expected state>` — an acceptance criterion for its parent"
+        f" milestone. {verify_when}",
+        f"- `  - assert: <expected observation>` — a test assertion. {assert_when} and a"
+        " failure is recorded verbatim as a legitimate test result; assertions are"
+        " NEVER repaired, worked around, or satisfied by constructing state.",
+        _CHECK_GRAMMAR_COMMON,
+    ]
+    if midway:
+        lines.append(_FINDING_GRAMMAR)
+    return "\n".join(lines)
+
+
+def render_plan_grammar_spec(
+    include_checks: bool | None = None, *, midway: bool = False, final: bool = False
+) -> str:
     """Renders the grammar spec taught to agents.
 
-    ``include_checks=False`` (both check gates disabled) returns exactly the
-    base grammar — zero context pollution from the checking feature.
+    ``midway`` / ``final`` are the two check gates
+    (``ExecutionSetup.midway_checks_enabled`` / ``final_check_enabled``); the
+    check-line grammar is worded for whichever is active. Both off returns
+    exactly the base grammar — zero context pollution from the checking
+    feature. ``include_checks`` is a compatibility shim meaning "both gates".
     """
-    if include_checks:
-        return _PLAN_GRAMMAR_BASE + "\n\n" + _CHECK_GRAMMAR_EXTENSION
+    if include_checks is not None:
+        midway = final = bool(include_checks)
+    if midway or final:
+        return _PLAN_GRAMMAR_BASE + "\n\n" + _render_check_grammar(midway=midway, final=final)
     return _PLAN_GRAMMAR_BASE
 
 

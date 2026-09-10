@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SummarizerNode tests (M2: visual-transition lens dispatch).
+"""Tests for SummarizerNode visual-transition dispatch.
 
 Per the history redesign §5 the Pro SummarizerNode no longer runs its own LLM
 call to produce a text capsule: it dispatches the step to the shared

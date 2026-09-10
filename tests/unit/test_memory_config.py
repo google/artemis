@@ -14,6 +14,8 @@
 
 """Unit tests for the agent.memory configuration block (M1/M2)."""
 
+import pytest
+
 from artemis.config import AgentGlobalConfig
 
 
@@ -24,12 +26,39 @@ def test_memory_defaults():
     assert cfg.memory.runtime.max_concurrency == 2
     assert cfg.memory.runtime.retry_limit == 3
     assert cfg.memory.runtime.flush_timeout_s == 30.0
-    # M5 (2026-09-01): the transcript path ships ON by default; explicit
-    # false is the byte-for-byte rollback switch (see the flip test below).
+    # Transcript history is enabled by default; false selects the legacy path.
     assert cfg.memory.transcript.enabled is True
     assert cfg.memory.transcript.image_scrub_depth == 3
     assert cfg.memory.transcript.pending_grace_steps == 3
+    # Text cleanup runs independently of the screenshot depth.
     assert cfg.memory.transcript.xml_scrub_depth == 1
+    # Ready chunks replace their turns only once the
+    # operator's measured context reaches budget*start_ratio.
+    assert cfg.memory.chunking.min_steps == 3
+    assert cfg.memory.transcript.image_scrub_depth_relaxed == 6
+    assert cfg.memory.transcript.start_ratio == 0.35
+    assert cfg.memory.transcript.soft_ratio == 0.7
+    assert cfg.memory.transcript.hard_ratio == 0.9
+
+
+def test_transcript_ratio_ladder_is_validated():
+    """start <= soft <= hard, all within [0, 1]: the defaults pass, a
+    crossed pair is rejected with a clear message."""
+    import pydantic
+
+    from artemis.config.agent import MemoryTranscriptConfig
+
+    MemoryTranscriptConfig()
+    MemoryTranscriptConfig(start_ratio=0.0, soft_ratio=0.5, hard_ratio=0.5)
+
+    with pytest.raises(pydantic.ValidationError, match="start_ratio <= soft_ratio"):
+        MemoryTranscriptConfig(start_ratio=0.8, soft_ratio=0.7)
+    with pytest.raises(pydantic.ValidationError, match="soft_ratio <= hard_ratio"):
+        MemoryTranscriptConfig(soft_ratio=0.95, hard_ratio=0.9)
+    with pytest.raises(pydantic.ValidationError):
+        AgentGlobalConfig.model_validate(
+            {"memory": {"transcript": {"start_ratio": 0.9, "soft_ratio": 0.7}}}
+        )
 
 
 def test_memory_transcript_flag_explicit_disable_is_rollback_switch():
@@ -57,7 +86,38 @@ def test_memory_explicit_values():
     assert cfg.memory.runtime.flush_timeout_s == 10.0
     assert cfg.memory.transcript.image_scrub_depth == 5
     assert cfg.memory.transcript.pending_grace_steps == 1
+    # Legacy key: still accepted (back-compat), value retained as given.
     assert cfg.memory.transcript.xml_scrub_depth == 2
+
+
+def test_xml_scrub_depth_positions_the_text_edge():
+    """The text edge is separate from the screenshot edge: with K=3 and
+    xml_scrub_depth=1 the observation at depth 2 has already lost its UI
+    list while it still carries its screenshot."""
+    from langchain_core.messages import HumanMessage
+
+    from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger
+
+    cfg = AgentGlobalConfig.model_validate({"memory": {"transcript": {"xml_scrub_depth": 1}}})
+    ledger = TranscriptLedger(
+        image_scrub_depth=3, xml_scrub_depth=cfg.memory.transcript.xml_scrub_depth
+    )
+
+    def obs(i):
+        return HumanMessage(
+            content=[
+                {"type": "text", "text": f"obs {i}"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{i}"}},
+                {"type": "text", "text": f"{PRO_UI_LIST_MARKER}\n[{i}] item"},
+            ]
+        )
+
+    ledger.stage_turn([obs(1)])
+    ledger.commit_staged(step_key="s1")
+    ledger.render([obs(2)])
+    committed = ledger.active_messages[0]
+    assert PRO_UI_LIST_MARKER not in str(committed.content)
+    assert any(isinstance(b, dict) and b.get("type") == "image_url" for b in committed.content)
 
 
 def test_legacy_step_summarizer_retry_limit_seeds_memory_runtime():
@@ -103,7 +163,7 @@ def test_recall_and_similarity_defaults():
 
 
 def test_chunking_era_cap_follows_max_chunks_by_default():
-    """M5: max_eras is an independent key; None (default) follows max_chunks."""
+    """max_eras is an independent key; None (default) follows max_chunks."""
     cfg = AgentGlobalConfig()
     assert cfg.memory.chunking.max_chunks == 8
     assert cfg.memory.chunking.max_eras is None
@@ -133,3 +193,25 @@ def test_recall_and_policies_overridable():
     assert cfg.memory.replay.max_tokens == 4000
     assert cfg.memory.transcript.similarity_hint is False
     assert cfg.memory.policies == {"planner": {"last_n_detailed": 3}}
+
+
+def test_memory_chunking_min_steps_must_not_exceed_max_steps():
+    import pytest
+    from pydantic import ValidationError
+
+    AgentGlobalConfig.model_validate({"memory": {"chunking": {"min_steps": 4, "max_steps": 4}}})
+    with pytest.raises(ValidationError):
+        AgentGlobalConfig.model_validate({"memory": {"chunking": {"min_steps": 5, "max_steps": 4}}})
+
+
+def test_memory_transcript_relaxed_image_depth_must_not_be_shallower():
+    import pytest
+    from pydantic import ValidationError
+
+    AgentGlobalConfig.model_validate(
+        {"memory": {"transcript": {"image_scrub_depth": 3, "image_scrub_depth_relaxed": 3}}}
+    )
+    with pytest.raises(ValidationError):
+        AgentGlobalConfig.model_validate(
+            {"memory": {"transcript": {"image_scrub_depth": 4, "image_scrub_depth_relaxed": 3}}}
+        )

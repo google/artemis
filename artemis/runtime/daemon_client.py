@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from http.client import HTTPException
 import os
 from pathlib import Path
 import subprocess
@@ -60,6 +61,31 @@ def is_daemon_running(
                 return response.status in (200, 301, 302, 404)
         except Exception:
             return False
+
+
+def is_artemis_daemon(
+    host: str = DEFAULT_DAEMON_HOST,
+    port: int = DEFAULT_DAEMON_PORT,
+    timeout: float = 0.5,
+) -> bool:
+    """Identity probe: is the process on ``host:port`` the Artemis daemon?
+
+    :func:`is_daemon_running` is a liveness probe that accepts any HTTP
+    listener (a dev server on port 8000 answers ``200`` on ``/``). Diagnostics
+    need to tell the daemon apart from a port squatter, so this asks the
+    daemon's lightweight ``/api/system/server-status`` route and requires the
+    JSON shape only Artemis serves.
+    """
+    url = f"http://{host}:{port}/api/system/server-status"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Artemis-Daemon-Probe"})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status != 200:
+                return False
+            payload = json.loads(response.read().decode("utf-8", errors="replace") or "null")
+    except (OSError, ValueError, HTTPException):
+        return False
+    return isinstance(payload, dict) and "current_pid" in payload and "port" in payload
 
 
 def daemon_log_path(port: int = DEFAULT_DAEMON_PORT) -> Path:

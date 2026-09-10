@@ -161,11 +161,13 @@ def _make(
     *,
     min_active: int = 2,
     max_steps: int = 12,
+    min_steps: int = 3,
     target_tokens: int = 10**9,
     max_chunks: int = 8,
     max_eras: int | None = None,
     meter=None,
     auto_capsule: bool = False,
+    start_ratio: float = 0.35,
 ):
     ledger = TranscriptLedger(step_memory=StepMemoryService(ctx=None))
     engine = FakeEngine(steps)
@@ -174,6 +176,7 @@ def _make(
         engine=engine,
         chunking_config=SimpleNamespace(
             max_steps=max_steps,
+            min_steps=min_steps,
             target_source_tokens=target_tokens,
             model="test-model",
             max_chunks=max_chunks,
@@ -181,12 +184,15 @@ def _make(
         ),
         transcript_config=SimpleNamespace(
             context_budget_tokens=100_000,
+            start_ratio=start_ratio,
             soft_ratio=0.7,
             hard_ratio=0.9,
             min_active_steps=min_active,
         ),
         capsule_service=capsule,
-        meter_getter=meter or (lambda: None),
+        # No meter: the base comes from the ledger's operator-recorded prompt
+        # size (None until recorded), exactly like production wiring.
+        meter_getter=meter,
         goal="TEST GOAL",
     )
     ledger.attach_chunker(chunker)
@@ -267,7 +273,7 @@ def test_action_ledger_renders_incident_and_burst_on_the_step_line():
     assert lines[0].startswith(
         "- Step 3 (T+00:30): Fast-action burst (2 actions, unvetted):"
         " Tapped 'player' at [5, 6] -> Tapped 'Skip' at [7, 8] -> Error: Execution failed"
-        " (general, consecutive failure #1) on burst action 2/2 `Tapped 'Skip' at [7, 8]`:"
+        " (general, consecutive failure #1) on burst action 2/2 `tap 'Skip' at [7, 8]`:"
         " Error: rejected"
     )
     assert "FA:" not in text
@@ -654,7 +660,7 @@ def test_checkpoint_annotation_ignores_unmatched_subgoal():
 
 
 # ---------------------------------------------------------------------------
-# Era merging + recall-only overflow + L3 snapshot
+# Era merging + recall-only overflow + L3 fold
 # ---------------------------------------------------------------------------
 
 
@@ -809,7 +815,7 @@ def test_period_paragraph_degrades_to_milestone_list_when_all_band1_missing():
 
 
 def test_independent_max_eras_cap_decouples_from_max_chunks():
-    """M5: ``chunking.max_eras`` caps eras independently; None follows
+    """``chunking.max_eras`` caps eras independently; None follows
     ``max_chunks`` (the pre-M5 equal-value behavior, asserted by the
     overflow test above)."""
     # A generous era cap keeps every folded era's ledger despite max_chunks=2.
@@ -822,42 +828,56 @@ def test_independent_max_eras_cap_decouples_from_max_chunks():
     assert [e for e in tight.eras if e.recall_only]
 
 
-def test_hard_threshold_renders_l3_snapshot_with_minimal_step_index():
+def _folded_steps(chunker) -> list[int]:
+    return [
+        n
+        for era in chunker.eras
+        if era.recall_only
+        for c in era.chunks
+        for n in range(c.start_step_number, c.end_step_number + 1)
+    ]
+
+
+def test_hard_threshold_folds_frozen_region_into_recall_only_era_with_step_index():
+    """L3 is a recall-only era: the period paragraph (① fields mechanically
+    merged) plus the per-step minimal index of every folded chunk — step,
+    session offset and action phrase, results only via search_history."""
     steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 13)]
     meter = {"value": None}
     ledger, chunker, _, capsule = _make(steps, min_active=2, meter=lambda: meter["value"])
     _run_turns(ledger, chunker, 1, 8, _hashes(4))
     capsule.resolve("chunk:1-4", _capsule(1, 4))
 
-    meter["value"] = 95_000  # ≥ 0.9 * 100k → L3
+    meter["value"] = 95_000  # ≥ 0.9 * 100k → hard; the tiny turns cannot save 5k
     _run_turns(ledger, chunker, 9, 12, lambda i: "hash-c")
 
+    assert chunker.chunks == ()
+    assert chunker.eras and all(era.recall_only for era in chunker.eras)
     frozen = _frozen_text(ledger)
-    assert "[Session snapshot" in frozen
-    assert "Overall goal: TEST GOAL" in frozen
-    assert "Verified facts: fact-1" in frozen
-    assert "Device/app state: Settings page open" in frozen
-    # The minimal per-step index survives: step + time + action phrase for
-    # every chunked step (steps 1–4 and the second event's chunk).
-    assert "--- Step index (minimal width, per chunk) ---" in frozen
-    for chunk in chunker.chunks:
-        for n in range(chunk.start_step_number, chunk.end_step_number + 1):
-            assert f"- Step {n} (T+" in frozen
-    assert "-> dispatched" not in frozen.split("--- Step index")[1]
+    assert "[Chunk" not in frozen
+    assert "[Era 1 | Steps 1–" in frozen
+    # The period paragraph carries the merged ① knowledge.
+    assert "Working toward the login milestone." in frozen
+    assert "Verified: fact-1" in frozen
+    assert "(Step-level ledger via search_history for steps" in frozen
+    # The minimal per-step index survives for every folded step.
+    folded = _folded_steps(chunker)
+    assert folded
+    for n in folded:
+        assert f"- Step {n} (T+" in frozen
+    assert "-> dispatched" not in frozen  # minimal width: no results
 
 
 def test_step_addressability_survives_every_compression_level():
-    """Hard invariant (§8, revised by §10 decision 5 final review): after L2
-    chunks, era merges, and L3, every compressed step's number and
-    session-offset time are directly readable; the extreme period-paragraph
-    layer alone degrades to *period* addressability — step range and start/end
-    offsets must be present in the header."""
+    """After L2 chunks, era merges, and recall-only periods,
+    every compressed step's number and session-offset time stay directly
+    readable — the recall-only layer keeps the per-step minimal index — and
+    the period header pins the step range and start/end offsets."""
     ledger, chunker, _, _ = _many_chunks(6, max_chunks=3)
     frozen = _frozen_text(ledger)
     covered_steps = [
         n
         for era in chunker.eras
-        if not era.recall_only
         for c in era.chunks
         for n in range(c.start_step_number, c.end_step_number + 1)
     ] + [n for c in chunker.chunks for n in range(c.start_step_number, c.end_step_number + 1)]
@@ -865,8 +885,9 @@ def test_step_addressability_survives_every_compression_level():
     for n in covered_steps:
         assert f"- Step {n} (T+" in frozen, f"step {n} lost its addressable line"
 
-    # Extreme layer: recall-only eras stay *period*-addressable — the header
-    # regex pins step range and T+..→T+.. start/end offsets in place.
+    # Extreme layer: recall-only eras stay period-addressable — the header
+    # regex pins step range and T+..→T+.. start/end offsets in place — and
+    # every member step keeps its index line.
     overflow_ledger, overflow_chunker, _, _ = _many_chunks(14, max_chunks=2)
     overflow_frozen = _frozen_text(overflow_ledger)
     recall_eras = [e for e in overflow_chunker.eras if e.recall_only]
@@ -879,6 +900,8 @@ def test_step_addressability_survives_every_compression_level():
         assert re.search(pattern, overflow_frozen), (
             f"era {era.ordinal} lost its period-addressable header"
         )
+    for n in _folded_steps(overflow_chunker):
+        assert f"- Step {n} (T+" in overflow_frozen, f"folded step {n} lost its index line"
 
 
 @pytest.mark.asyncio
@@ -1077,9 +1100,11 @@ def test_failed_capsule_redispatches_and_retains_original():
     assert ledger.frozen_blocks == ()  # original text retained
 
 
-def test_hard_threshold_force_swaps_pending_chunks_into_l3():
-    """Emergency path: only the hard threshold may swap pending chunks — the
-    frozen region becomes the L3 snapshot and ③'s minimal index survives."""
+def test_hard_threshold_force_swaps_pending_chunks_into_recall_only_era():
+    """Emergency path: only the hard threshold may swap pending chunks — they
+    fold straight into a recall-only era (no chunk block ever), the period
+    paragraph degrades to the milestone/step-range list, and ③'s minimal
+    index survives for every folded step."""
     steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 9)]
     meter = {"value": None}
     ledger, chunker, _, _ = _make(steps, min_active=2, meter=lambda: meter["value"])
@@ -1092,14 +1117,702 @@ def test_hard_threshold_force_swaps_pending_chunks_into_l3():
     ledger.render([_observation(9)])
 
     assert chunker.awaiting_chunks == ()
-    assert len(chunker.chunks) >= 1
-    assert all(c.status == "pending" for c in chunker.chunks)
+    assert chunker.chunks == ()
+    assert len(chunker.eras) == 1 and chunker.eras[0].recall_only
+    assert all(c.status == "pending" for c in chunker.eras[0].chunks)
     frozen = _frozen_text(ledger)
-    assert "[Session snapshot" in frozen
-    for chunk in chunker.chunks:
-        for n in range(chunk.start_step_number, chunk.end_step_number + 1):
-            assert f"- Step {n} (T+" in frozen
+    assert "[Chunk" not in frozen and CHUNK_PENDING_NOTE not in frozen
+    assert "[Era 1 | Steps 1–" in frozen
+    assert "Milestones: segment (Steps 1–4)" in frozen  # no band ① anywhere
+    folded = _folded_steps(chunker)
+    assert folded
+    for n in folded:
+        assert f"- Step {n} (T+" in frozen
     assert len(ledger.unchunked_turns()) < 8  # turns actually consumed
+
+
+# ---------------------------------------------------------------------------
+# Minimum chunk length for size / pressure closes
+# ---------------------------------------------------------------------------
+
+
+def test_pressure_close_waits_for_min_steps_instead_of_one_turn_chunks():
+    """Soft pressure with a single open segment: eligible turns age past the
+    floor one per render; they accumulate to min_steps before closing, so the
+    session does not spawn a one-turn chunk (one capsule call) per render."""
+    steps = [_step(i) for i in range(1, 12)]
+    ledger, chunker, _, _ = _make(steps, min_active=2, min_steps=3, meter=lambda: 75_000)
+    _run_turns(ledger, chunker, 1, 5)  # eligible = 2 at the step-5 render
+    assert chunker.awaiting_chunks == ()
+    _run_turns(ledger, chunker, 6, 6)  # eligible = 3 → one 3-turn chunk
+    assert [c.capsule_key for c in chunker.awaiting_chunks] == ["chunk:1-3"]
+    assert chunker.awaiting_chunks[0].trigger == "pressure"
+    _run_turns(ledger, chunker, 7, 8)  # eligible beyond the claim: 1, then 2
+    assert [c.capsule_key for c in chunker.awaiting_chunks] == ["chunk:1-3"]
+    _run_turns(ledger, chunker, 9, 9)
+    assert [c.capsule_key for c in chunker.awaiting_chunks] == ["chunk:1-3", "chunk:4-6"]
+
+
+def test_size_trigger_waits_for_min_steps_even_when_one_turn_exceeds_the_tokens():
+    steps = [_step(i) for i in range(1, 9)]
+    ledger, chunker, _, _ = _make(steps, min_active=2, min_steps=3, target_tokens=10)
+    _run_turns(ledger, chunker, 1, 4)  # eligible = 1, already over the token target
+    assert chunker.awaiting_chunks == ()
+    _run_turns(ledger, chunker, 5, 6)  # eligible = 3
+    assert [c.capsule_key for c in chunker.awaiting_chunks] == ["chunk:1-3"]
+    assert chunker.awaiting_chunks[0].trigger == "size"
+
+
+def test_milestone_close_is_exempt_from_min_steps():
+    steps = [_step(i, "hash-a" if i <= 1 else "hash-b") for i in range(1, 8)]
+    ledger, chunker, _, _ = _make(steps, min_active=2, min_steps=3)
+    _run_turns(ledger, chunker, 1, 4, _hashes(1))  # the 1-step segment aged past the floor
+    assert [c.capsule_key for c in chunker.awaiting_chunks] == ["chunk:1-1"]
+    assert chunker.awaiting_chunks[0].trigger == "milestone"
+
+
+def test_hard_threshold_waives_min_steps():
+    steps = [_step(i) for i in range(1, 8)]
+    meter = {"value": 75_000}
+    ledger, chunker, _, _ = _make(steps, min_active=2, min_steps=3, meter=lambda: meter["value"])
+    _run_turns(ledger, chunker, 1, 4)  # eligible = 1 under soft only: held back
+    assert chunker.awaiting_chunks == ()
+    meter["value"] = 95_000
+    _run_turns(ledger, chunker, 5, 5)  # eligible = 2 < 3, but hard: closes (and folds)
+    assert len(chunker.eras) == 1 and chunker.eras[0].recall_only
+    assert chunker.eras[0].chunks[0].capsule_key == "chunk:1-2"
+
+
+# ---------------------------------------------------------------------------
+# Start gate (swap held below budget*start_ratio) and the context base
+# ---------------------------------------------------------------------------
+
+
+def test_start_gate_holds_ready_chunk_below_start_ratio_then_swaps():
+    """A closed segment prepares its capsule, but the original turns are
+    replaced only once the operator's measured context reaches
+    budget*start_ratio; until then the ready chunk waits in the queue."""
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 11)]
+    meter = {"value": 20_000}  # < 0.35 * 100k
+    ledger, chunker, engine, _ = _make(
+        steps, min_active=2, meter=lambda: meter["value"], auto_capsule=True
+    )
+    _run_turns(ledger, chunker, 1, 8, _hashes(4))
+
+    # Milestone closed steps 1–4 and the capsule is ready, yet nothing swapped.
+    assert [c.status for c in chunker.awaiting_chunks] == ["ready"]
+    assert chunker.chunks == ()
+    assert ledger.frozen_blocks == ()
+    assert len(ledger.unchunked_turns()) == 7
+    # The timeline line stays running with a 'held' note carrying the gate.
+    held = [
+        t for t in engine.traces if t["status"] == "running" and t["payload"]["args"].get("note")
+    ]
+    assert len(held) == 1
+    args = held[0]["payload"]["args"]
+    assert args["note"] == "held"
+    assert (args["context_tokens"], args["context_budget"], args["swap_at_tokens"]) == (
+        20_000,
+        100_000,
+        35_000,
+    )
+
+    # Same render cadence, context now past the gate → the ready prefix swaps.
+    meter["value"] = 40_000
+    _run_turns(ledger, chunker, 9, 9, _hashes(4))
+    assert len(chunker.chunks) == 1
+    assert chunker.chunks[0].start_step_number == 1
+    assert chunker.awaiting_chunks == ()
+    assert ledger.frozen_blocks != ()
+    done = engine.traces[-1]
+    assert done["status"] == "success"
+    assert done["payload"]["args"]["context_tokens"] == 40_000 - (
+        chunker.chunks[0].source_chars // 4
+    ) + (chunker.chunks[0].summary_chars // 4)
+
+
+def test_leading_stampless_turn_joins_the_next_segment_instead_of_pinning_the_queue():
+    """A turn with no recorded step (a reply without a tool call) that lands
+    right after a chunk boundary must not close as a stampless one-turn
+    segment: such a chunk has no step records (``None``) and used to sit at
+    the head of the awaiting queue, so no L2 swap ever happened and the hard
+    line jumped straight to the fold. It joins the following segment."""
+    steps = [_step(i) for i in range(1, 13)]
+    meter = {"value": 50_000}  # above the start gate
+    ledger, chunker, _, capsule = _make(steps, min_active=2, meter=lambda: meter["value"])
+    ledger.stage_turn([_observation(0), AIMessage(content="no tool call this turn")])
+    _run_turns(ledger, chunker, 1, 7, _hashes(4))  # commits turn 0 without a step key
+
+    assert [c.capsule_key for c in chunker.awaiting_chunks] == ["chunk:1-4"]
+    assert all(entry["chunk"] is not None for entry in chunker._awaiting)
+    capsule.resolve("chunk:1-4", _capsule(1, 4))
+    _run_turns(ledger, chunker, 8, 8, _hashes(4))
+
+    assert [c.capsule_key for c in chunker.chunks] == ["chunk:1-4"]
+    assert chunker.awaiting_chunks == ()
+    assert "[Chunk 1 | Steps 1–4" in _frozen_text(ledger)
+    assert "no tool call this turn" not in _rendered_text(ledger.render([_observation(9)]))
+
+
+def test_partition_folds_leading_unstamped_turns_into_the_first_segment():
+    ledger, chunker, _, _ = _make([_step(i) for i in range(1, 6)])
+    chunker.on_step_stamped("s2", "a")
+    chunker.on_step_stamped("s3", "a")
+    chunker.on_step_stamped("s4", "b")
+    turns = [
+        {"step_key": None},
+        {"step_key": "s1"},
+        {"step_key": "s2"},
+        {"step_key": "s3"},
+        {"step_key": "s4"},
+        {"step_key": None},
+    ]
+    segments = chunker._partition(turns)
+    assert [(h, [t["step_key"] for t in ts]) for h, ts in segments] == [
+        ("a", [None, "s1", "s2", "s3"]),
+        ("b", ["s4", None]),
+    ]
+    # All unstamped: one stampless segment, never split.
+    assert chunker._partition([{"step_key": None}, {"step_key": None}]) == [
+        (None, [{"step_key": None}, {"step_key": None}])
+    ]
+
+
+def test_start_gate_zero_restores_swap_on_ready():
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 9)]
+    ledger, chunker, _, _ = _make(
+        steps, min_active=2, meter=lambda: 1_000, auto_capsule=True, start_ratio=0.0
+    )
+    _run_turns(ledger, chunker, 1, 8, _hashes(4))
+    assert len(chunker.chunks) == 1
+    assert chunker.awaiting_chunks == ()
+
+
+def test_start_gate_unknown_base_falls_through_to_swap_on_ready():
+    """No measured operator call (meter None, nothing recorded on the ledger):
+    the gate cannot decide and the legacy swap-on-ready behavior stands."""
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 9)]
+    ledger, chunker, _, _ = _make(steps, min_active=2, auto_capsule=True)
+    assert ledger.last_prompt_tokens is None
+    _run_turns(ledger, chunker, 1, 8, _hashes(4))
+    assert len(chunker.chunks) == 1
+
+
+def _big_turn(i: int, chars: int = 4000) -> list:
+    tool_call = {"name": "click", "args": {"target": i}, "id": f"tc{i}", "type": "tool_call"}
+    return [
+        _observation(i),
+        AIMessage(content=f"thinking {i} " + "x" * chars, tool_calls=[tool_call]),
+        ToolMessage(tool_call_id=f"tc{i}", content="Action Recorded"),
+    ]
+
+
+def _run_big_turns(ledger, chunker, start: int, upto: int, hash_for):
+    for i in range(start, upto + 1):
+        ledger.commit_staged(
+            step_key=f"s{i - 1}" if i > 1 else None,
+            validator_result={"status": "dispatched"} if i > 1 else None,
+        )
+        ledger.render([_observation(i)])
+        ledger.stage_turn(_big_turn(i))
+        chunker.on_step_stamped(f"s{i}", hash_for(i))
+
+
+def test_hard_threshold_swaps_ready_prefix_as_l2_when_that_is_enough():
+    """Hard ladder rung 1: with a ready prefix whose L2 swap brings the
+    estimated context back under the hard line, the swap is an ordinary L2
+    event — no fold, and the younger pending segment stays awaiting."""
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 13)]
+    meter = {"value": None}
+    ledger, chunker, engine, capsule = _make(steps, min_active=2, meter=lambda: meter["value"])
+    # Steps 1–4 (hash-a) close at the switch; steps 5–8 (hash-b) close at the
+    # next switch. Turns are ~1k tokens each so the L2 swap is worth ~4k.
+    _run_big_turns(ledger, chunker, 1, 10, lambda i: "a" if i <= 4 else ("b" if i <= 8 else "c"))
+    keys = [c.capsule_key for c in chunker.awaiting_chunks]
+    assert keys[0] == "chunk:1-4"
+    capsule.resolve("chunk:1-4", _capsule(1, 4))  # ready; chunk:5-8 stays pending
+
+    meter["value"] = 92_000  # ≥ 0.9 * 100k; minus ~4k of turns → under the line
+    _run_big_turns(ledger, chunker, 11, 11, lambda i: "c")
+
+    assert [c.capsule_key for c in chunker.chunks] == ["chunk:1-4"]
+    assert [c.capsule_key for c in chunker.awaiting_chunks] == ["chunk:5-8"]
+    frozen = _frozen_text(ledger)
+    assert "[Era" not in frozen  # nothing folded
+    assert "[Chunk 1" in frozen
+    done = engine.traces[-1]
+    assert done["status"] == "success"
+    assert "forced" not in done["payload"]["args"]
+    assert done["payload"]["args"]["context_tokens"] < 90_000
+
+
+def test_hard_threshold_escalates_to_fold_when_l2_swap_is_not_enough():
+    """Hard ladder rung 2: the ready prefix's L2 swap would not bring the
+    context under the line → everything closed force-swaps, pending included,
+    and the whole frozen region folds into one recall-only era whose index
+    lists every folded step — the pending chunk's steps too."""
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 13)]
+    meter = {"value": None}
+    ledger, chunker, engine, capsule = _make(steps, min_active=2, meter=lambda: meter["value"])
+    _run_turns(ledger, chunker, 1, 10, lambda i: "a" if i <= 4 else ("b" if i <= 8 else "c"))
+    capsule.resolve("chunk:1-4", _capsule(1, 4))
+
+    meter["value"] = 99_000  # tiny test turns cannot shave 9k tokens
+    _run_turns(ledger, chunker, 11, 11, lambda i: "c")
+
+    assert chunker.chunks == ()
+    assert chunker.awaiting_chunks == ()
+    assert len(chunker.eras) == 1 and chunker.eras[0].recall_only
+    era = chunker.eras[0]
+    assert [c.capsule_key for c in era.chunks] == ["chunk:1-4", "chunk:5-8"]
+    assert [c.status for c in era.chunks] == ["ready", "pending"]
+    frozen = _frozen_text(ledger)
+    assert "[Chunk" not in frozen
+    assert "[Era 1 | Steps 1–8" in frozen
+    # The ready chunk's ① feeds the paragraph; the pending one falls back to
+    # its step range — and both keep every step's index line.
+    assert "Working toward the login milestone." in frozen
+    assert "steps 5–8" in frozen
+    for n in range(1, 9):
+        assert f"- Step {n} (T+" in frozen, f"folded step {n} lost its index line"
+    # Trace wording: only the chunk without a summary is a forced fold.
+    done = {
+        t["payload"]["args"]["start_step"]: t for t in engine.traces if t["status"] == "success"
+    }
+    assert "forced" not in done[1]["payload"]["args"]
+    assert "folded into the period summary" in done[1]["payload"]["result"]
+    assert done[5]["payload"]["args"]["forced"] is True
+    assert done[5]["payload"]["result"] == (
+        "Context budget reached before the summary was ready;"
+        " 4 turns folded into the period summary."
+    )
+
+
+def test_hard_fold_is_monotonic_later_l2_swaps_append_after_the_folded_era():
+    """After a hard fold, a later non-hard L2 swap appends a new chunk block
+    while the folded steps stay inside the recall-only era — the fold never
+    flips back to full chunk blocks."""
+    steps = [_step(i) for i in range(1, 17)]
+    hash_for = lambda i: "a" if i <= 4 else ("b" if i <= 8 else ("c" if i <= 12 else "d"))  # noqa: E731
+    meter = {"value": None}
+    ledger, chunker, _, capsule = _make(steps, min_active=2, meter=lambda: meter["value"])
+    _run_turns(ledger, chunker, 1, 10, hash_for)
+    capsule.resolve("chunk:1-4", _capsule(1, 4))
+    meter["value"] = 99_000
+    _run_turns(ledger, chunker, 11, 11, hash_for)  # hard: folds 1–4 and 5–8
+    assert chunker.chunks == () and len(chunker.eras) == 1
+    folded_block = _frozen_text(ledger)
+
+    # Pressure gone (above the start gate, below soft): the next milestone
+    # switch closes 9–12; once ready it swaps as an ordinary L2 chunk.
+    meter["value"] = 50_000
+    _run_turns(ledger, chunker, 12, 15, hash_for)
+    pending = [c for c in chunker.awaiting_chunks if c.status == "pending"]
+    assert [c.capsule_key for c in pending] == ["chunk:9-12"]
+    capsule.resolve("chunk:9-12", _capsule(9, 12))
+    _run_turns(ledger, chunker, 16, 16, hash_for)
+
+    assert [c.capsule_key for c in chunker.chunks] == ["chunk:9-12"]
+    assert len(chunker.eras) == 1 and chunker.eras[0].recall_only
+    frozen = _frozen_text(ledger)
+    assert frozen.startswith(folded_block)  # the folded era is byte-identical
+    assert "[Chunk 3 | Steps 9–12" in frozen
+    assert "[Chunk 1" not in frozen and "[Chunk 2" not in frozen
+    assert frozen.index("[Era 1") < frozen.index("[Chunk 3")
+    for n in range(1, 9):
+        assert f"- Step {n} (T+" in frozen
+
+
+def test_hard_threshold_with_nothing_awaiting_folds_frozen_region_once():
+    """Hard ladder last resort: the active window is already down to the
+    sliding-window floor (nothing eligible to close, nothing awaiting), yet
+    the prompt sits at the hard line — the existing L2 frozen region folds
+    into a recall-only era without consuming turns, and repeated hard renders
+    leave the frozen blocks byte-identical."""
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 13)]
+    meter = {"value": 50_000}
+    ledger, chunker, _, _ = _make(
+        steps, min_active=2, meter=lambda: meter["value"], auto_capsule=True
+    )
+    _run_turns(ledger, chunker, 1, 7, _hashes(4))
+    # Chunk 1–4 swapped as L2 at the step-7 render; s5..s6 remain = the floor.
+    assert [c.capsule_key for c in chunker.chunks] == ["chunk:1-4"]
+    assert chunker.awaiting_chunks == ()
+    assert "[Chunk 1" in _frozen_text(ledger)
+    assert len(ledger.unchunked_turns()) == 2
+
+    meter["value"] = 95_000
+    ledger.render([_observation(8)])  # hard render, nothing eligible
+    frozen = _frozen_text(ledger)
+    assert "[Chunk 1" not in frozen and "[Era 1 | Steps 1–4" in frozen
+    assert chunker.chunks == () and chunker.eras[0].recall_only
+    for n in range(1, 5):
+        assert f"- Step {n} (T+" in frozen
+    assert len(ledger.unchunked_turns()) == 2  # no turns consumed
+    folded_blocks = ledger.frozen_blocks
+    ledger.render([_observation(8)])
+    ledger.render([_observation(8)])
+    assert ledger.frozen_blocks == folded_blocks  # byte-stable across hard renders
+    assert _frozen_text(ledger) == frozen
+
+
+def test_hard_threshold_overrides_start_gate():
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 9)]
+    ledger, chunker, _, _ = _make(
+        steps, min_active=2, meter=lambda: 95_000, auto_capsule=True, start_ratio=0.99
+    )
+    _run_turns(ledger, chunker, 1, 8, _hashes(4))
+    assert chunker.awaiting_chunks == ()
+    assert chunker.eras and all(era.recall_only for era in chunker.eras)
+    assert "[Era 1 | Steps 1–" in _frozen_text(ledger)
+
+
+def test_context_base_reads_the_ledger_operator_measurement_not_the_session_meter():
+    """Production wiring: no meter_getter; the base is what the operator
+    recorded on its own ledger. A session-wide meter reading from another
+    agent's call (the 2026-09-08 trace: a 2.7k lite call right after the
+    operator's 19.9k prompt) must not leak in."""
+    from artemis.services.token_meter import get_meter
+
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 11)]
+    ledger, chunker, _, _ = _make(steps, min_active=2, auto_capsule=True)
+    # Some other agent's small call lands on the session meter.
+    get_meter("session-1").record({"prompt_tokens": 2_700, "completion_tokens": 10})
+    # The operator's own measured prompt is well below the gate.
+    ledger.record_prompt_tokens(20_000)
+    assert chunker._context_base_tokens(ledger) == 20_000
+    _run_turns(ledger, chunker, 1, 8, _hashes(4))
+    assert chunker.chunks == ()  # held: 20k < 35k
+    assert [c.status for c in chunker.awaiting_chunks] == ["ready"]
+
+    # Operator prompt grows past the gate → swap at the next render.
+    ledger.record_prompt_tokens(36_000)
+    _run_turns(ledger, chunker, 9, 9, _hashes(4))
+    assert len(chunker.chunks) == 1
+
+
+def test_ledger_record_prompt_tokens_ignores_missing_or_non_positive():
+    ledger = TranscriptLedger(step_memory=StepMemoryService(ctx=None))
+    ledger.record_prompt_tokens(None)
+    ledger.record_prompt_tokens(0)
+    ledger.record_prompt_tokens("x")
+    assert ledger.last_prompt_tokens is None
+    ledger.record_prompt_tokens(1234)
+    ledger.record_prompt_tokens(None)
+    assert ledger.last_prompt_tokens == 1234
+
+
+def test_held_note_is_fresh_after_a_retry():
+    """A chunk whose capsule failed, was re-dispatched (``retrying`` note) and
+    then readied while the start gate still holds it gets a fresh ``held``
+    note: the re-dispatch resets the once-per-chunk held marker."""
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 14)]
+    meter = {"value": 20_000}  # < 0.35 * 100k: the gate holds ready chunks
+    ledger, chunker, engine, capsule = _make(steps, min_active=2, meter=lambda: meter["value"])
+    _run_turns(ledger, chunker, 1, 8, _hashes(4))
+    entry = chunker._awaiting[0]
+    key = entry["chunk"].capsule_key
+    entry["held_announced"] = True  # a stale marker must not survive a retry
+
+    capsule._failed.add(key)
+    # The hash-b segment (5–8) ages past the floor at the step-11 render and
+    # closes whole: a trigger render, which is a re-dispatch occasion.
+    _run_turns(ledger, chunker, 9, 11, lambda i: "hash-c")
+    assert capsule.submitted.count(key) == 2
+    assert entry["held_announced"] is False
+    notes = [t["payload"]["args"].get("note") for t in engine.traces if t["status"] == "running"]
+    assert notes[-1] == "retrying"
+
+    capsule.resolve(key, _capsule(1, 4))
+    _run_turns(ledger, chunker, 12, 12, lambda i: "hash-c")
+    assert chunker.chunks == ()  # still held below the gate
+    held = [
+        t
+        for t in engine.traces
+        if t["status"] == "running"
+        and t["payload"]["args"].get("note") == "held"
+        and t["payload"]["args"]["start_step"] == 1
+    ]
+    assert len(held) == 1
+    assert engine.traces.index(held[0]) > max(
+        i for i, t in enumerate(engine.traces) if t["payload"]["args"].get("note") == "retrying"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Provider-less prompt estimate + session-calibrated chars→tokens ratio
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_prompt_tokens_counts_text_images_and_tool_call_args():
+    from artemis.memory.transcript import (
+        IMAGE_BLOCK_TOKENS,
+        estimate_prompt_tokens,
+        measure_prompt_content,
+    )
+
+    messages = [
+        HumanMessage(content="a" * 400),
+        HumanMessage(
+            content=[
+                {"type": "text", "text": "b" * 80},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,IMG"}},
+                {"type": "image", "source": {"data": "IMG2"}},
+                {"type": "thinking", "thinking": "c" * 20},
+            ]
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "click", "args": {"x": 1}, "id": "tc1", "type": "tool_call"}],
+        ),
+    ]
+    text_chars, image_count = measure_prompt_content(messages)
+    other_block = len(str({"type": "thinking", "thinking": "c" * 20}))
+    assert image_count == 2
+    assert text_chars == 400 + 80 + other_block + len('{"x": 1}')
+    assert estimate_prompt_tokens(messages) == text_chars // 4 + 2 * IMAGE_BLOCK_TOKENS
+    assert estimate_prompt_tokens([]) == 1  # never zero: an unknown base stays gated
+
+
+def _measured_prompt(text_chars: int, image_count: int = 0, char: str = "a"):
+    """One HumanMessage in the shape ``measure_prompt_content`` reads: a text
+    block of ``text_chars`` characters and ``image_count`` image blocks."""
+    blocks = [{"type": "text", "text": char * text_chars}]
+    blocks += [
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+        for _ in range(image_count)
+    ]
+    return [HumanMessage(content=blocks)]
+
+
+def test_ledger_calibrates_chars_per_token_from_measured_prompts():
+    """The first measured sample of a session goes through the whole-prompt
+    fallback: ``text_chars / (prompt_tokens - images * IMAGE_BLOCK_TOKENS)``,
+    clamped to [1.0, 6.0]."""
+
+    def fresh():
+        return TranscriptLedger(step_memory=StepMemoryService(ctx=None))
+
+    ledger = fresh()
+    assert ledger.chars_per_token == 4.0
+    assert ledger.chars_to_tokens(1000) == 1000 // 4
+
+    # English-like prose at ~4 chars/token: the ratio is unchanged.
+    ledger.record_prompt_tokens(1000, messages=[HumanMessage(content="a" * 4000)])
+    assert ledger.chars_per_token == pytest.approx(4.0)
+    assert ledger.chars_to_tokens(1000) == 250
+
+    # CJK-heavy prompt measured at ~1 token per char: the ratio drops to 1.
+    ledger = fresh()
+    ledger.record_prompt_tokens(4000, messages=[HumanMessage(content="中" * 4000)])
+    assert ledger.chars_per_token == pytest.approx(1.0)
+    assert ledger.chars_to_tokens(1000) == 1000
+
+    # Images are subtracted at their flat cost before dividing.
+    ledger = fresh()
+    ledger.record_prompt_tokens(1000 + 2 * 258, messages=_measured_prompt(4000, 2))
+    assert ledger.chars_per_token == pytest.approx(4.0)
+
+    # Clamp bounds: [1.0, 6.0].
+    ledger = fresh()
+    ledger.record_prompt_tokens(10_000, messages=[HumanMessage(content="x" * 100)])
+    assert ledger.chars_per_token == 1.0
+    ledger = fresh()
+    ledger.record_prompt_tokens(10, messages=[HumanMessage(content="x" * 10_000)])
+    assert ledger.chars_per_token == 6.0
+
+    # Without messages only the base is recorded; the ratio is kept.
+    ledger.record_prompt_tokens(777)
+    assert ledger.last_prompt_tokens == 777 and ledger.chars_per_token == 6.0
+
+
+def test_ledger_first_sample_uses_the_whole_prompt_fallback():
+    """Before any usable difference exists the whole-prompt quotient is the
+    only information available, so the first sample still applies it."""
+    ledger = TranscriptLedger(step_memory=StepMemoryService(ctx=None))
+    ledger.record_prompt_tokens(5000 + 3 * 258, messages=_measured_prompt(10_000, 3))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+    assert ledger.last_prompt_tokens == 5000 + 3 * 258
+
+
+def test_ledger_differential_calibration_cancels_constant_overhead():
+    """Two same-image-count samples: the ratio is dchars/dtokens, and a large
+    constant term in prompt_tokens (tool schemas, image tiling; 9000 tokens
+    here) that the whole-prompt fallback mis-charges to the text cancels."""
+    ledger = TranscriptLedger(step_memory=StepMemoryService(ctx=None))
+    overhead = 9000
+    ledger.record_prompt_tokens(overhead + 4000, messages=_measured_prompt(10_000, 2))
+    fallback = 10_000 / (overhead + 4000 - 2 * 258)
+    assert fallback < 1.0  # the fallback mis-reads ~0.8 and clamps to 1.0
+    assert ledger.chars_per_token == 1.0
+
+    # +10000 chars, +4000 tokens, same two images: 2.5 exactly.
+    ledger.record_prompt_tokens(overhead + 8000, messages=_measured_prompt(20_000, 2))
+    assert ledger.chars_per_token == pytest.approx(2.5)
+
+
+def test_ledger_image_count_change_replaces_reference_without_updating():
+    ledger = TranscriptLedger(step_memory=StepMemoryService(ctx=None))
+    ledger.record_prompt_tokens(4000, messages=_measured_prompt(10_000, 2))
+    # First usable pair (+10000 chars / +5000 tokens): pooled ratio 2.0.
+    ledger.record_prompt_tokens(9000, messages=_measured_prompt(20_000, 2))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+
+    # Different image count: no ratio update, but it becomes the reference.
+    ledger.record_prompt_tokens(14_000, messages=_measured_prompt(30_000, 3))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+
+    # The next 3-image sample differences against the 3-image reference
+    # (+6000 chars / +2000 tokens), not against the 2-image one: pooled
+    # (10000 + 6000) / (5000 + 2000).
+    ledger.record_prompt_tokens(16_000, messages=_measured_prompt(36_000, 3))
+    assert ledger.chars_per_token == pytest.approx(16_000 / 7000)
+
+
+def test_ledger_small_moves_hold_the_reference_until_they_accumulate():
+    """A sample that moved less than the delta floor (in either direction)
+    neither updates the ratio nor replaces the reference: the movement keeps
+    accumulating against the held reference until it is measurable."""
+    from artemis.memory.transcript import MIN_CALIBRATION_DELTA_CHARS
+
+    ledger = TranscriptLedger(step_memory=StepMemoryService(ctx=None))
+    ledger.record_prompt_tokens(2500, messages=_measured_prompt(10_000, 1))
+    ledger.record_prompt_tokens(7500, messages=_measured_prompt(20_000, 1))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+
+    # Below the floor: no update, even though this pair's own quotient (1.0)
+    # would differ wildly from the current ratio.
+    small = MIN_CALIBRATION_DELTA_CHARS - 1
+    ledger.record_prompt_tokens(7500 + small, messages=_measured_prompt(20_000 + small, 1))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+    # A slight shrink in characters with a few more tokens (turn jitter) is
+    # held the same way rather than resetting the baseline.
+    ledger.record_prompt_tokens(7500 + small + 100, messages=_measured_prompt(20_000 + 100, 1))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+
+    # Reaching the floor differences against the HELD 20000-char / 7500-token
+    # reference (+2000 chars / +2000 tokens), not the previous small sample:
+    # pooled (10000 + 2000) / (5000 + 2000). Consecutive differencing would
+    # have seen only +1900 chars here and never calibrated.
+    ledger.record_prompt_tokens(
+        9500, messages=_measured_prompt(20_000 + MIN_CALIBRATION_DELTA_CHARS, 1)
+    )
+    assert ledger.chars_per_token == pytest.approx(12_000 / 7000)
+
+
+def test_ledger_token_shrink_resets_the_reference():
+    """When the measured prompt shrinks in tokens (a compaction or scrub
+    landed) the sample becomes a fresh baseline without touching the pooled
+    ratio; text that grows at zero token cost is unusable and also resets."""
+    ledger = TranscriptLedger(step_memory=StepMemoryService(ctx=None))
+    ledger.record_prompt_tokens(2500, messages=_measured_prompt(10_000, 1))
+    ledger.record_prompt_tokens(7500, messages=_measured_prompt(20_000, 1))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+
+    # Compaction: fewer tokens. Ratio untouched, baseline moves here.
+    ledger.record_prompt_tokens(6000, messages=_measured_prompt(15_000, 1))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+    # +2000 chars / +500 tokens against the new baseline: pooled 12000 / 5500.
+    ledger.record_prompt_tokens(6500, messages=_measured_prompt(17_000, 1))
+    assert ledger.chars_per_token == pytest.approx(12_000 / 5500)
+
+    # Grew past the floor at zero token cost: not a measurement; new baseline.
+    ledger.record_prompt_tokens(6500, messages=_measured_prompt(19_000, 1))
+    assert ledger.chars_per_token == pytest.approx(12_000 / 5500)
+    ledger.record_prompt_tokens(7500, messages=_measured_prompt(21_000, 1))
+    assert ledger.chars_per_token == pytest.approx(14_000 / 6500)
+
+
+def test_ledger_pools_deltas_rather_than_taking_the_last_pair():
+    ledger = TranscriptLedger(step_memory=StepMemoryService(ctx=None))
+    ledger.record_prompt_tokens(10_000, messages=_measured_prompt(10_000, 1))
+    # Pair 1: +10000 chars / +5000 tokens (2.0).
+    ledger.record_prompt_tokens(15_000, messages=_measured_prompt(20_000, 1))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+    # Pair 2: +2000 chars / +2000 tokens (1.0). Pooled: 12000 / 7000.
+    ledger.record_prompt_tokens(17_000, messages=_measured_prompt(22_000, 1))
+    assert ledger.chars_per_token == pytest.approx(12_000 / 7000)
+    assert ledger.chars_per_token != pytest.approx(1.0)
+
+    # A non-positive/None value neither disturbs the pooled ratio nor the
+    # remembered reference: the next sample still differences against the
+    # 22000-char one (+4000 / +1000 -> pooled 16000 / 8000).
+    ledger.record_prompt_tokens(None, messages=_measured_prompt(50_000, 1))
+    ledger.record_prompt_tokens(0, messages=_measured_prompt(50_000, 1))
+    assert ledger.chars_per_token == pytest.approx(12_000 / 7000)
+    ledger.record_prompt_tokens(18_000, messages=_measured_prompt(26_000, 1))
+    assert ledger.chars_per_token == pytest.approx(2.0)
+
+
+def test_ledger_calibration_regression_on_real_operator_trace():
+    """Thirteen consecutive Gemini Operator prompts from a real 2026-09 run
+    (session 28377d06, five full-size 1080x2424 screenshots on every call,
+    tool schemas bound). Differencing against a held reference pools three
+    measurable spans; the per-turn moves in between (a few hundred chars,
+    some slightly negative with a few hundred more tokens) are held, not
+    dropped. The whole-prompt quotient for the last call reads 1.62
+    chars/token; the tail's own rate is denser, so the old estimator would
+    have UNDER-counted the tail and fired the size trigger late here."""
+    from artemis.memory.transcript import IMAGE_BLOCK_TOKENS
+
+    samples = [  # (text_chars, images, prompt_tokens) straight from the trace store
+        (33262, 5, 20392),
+        (33954, 5, 21231),  # +692 chars: held
+        (36094, 5, 22853),  # +2832 chars / +2461 tokens vs 33262: pooled
+        (36918, 5, 23332),  # held
+        (37519, 5, 23511),  # held
+        (38437, 5, 24345),  # +2343 / +1492 vs 36094: pooled
+        (38917, 5, 24741),  # held
+        (39332, 5, 25650),  # held
+        (42111, 5, 26248),  # +3674 / +1903 vs 38437: pooled
+        (43153, 5, 26910),  # held
+        (43023, 5, 27605),  # chars down, tokens up (turn jitter): held
+        (43027, 5, 27869),  # held
+        (43638, 5, 28176),  # held
+    ]
+    ledger = TranscriptLedger(step_memory=StepMemoryService(ctx=None))
+    for chars, images, tokens in samples:
+        ledger.record_prompt_tokens(tokens, messages=_measured_prompt(chars, images))
+
+    pooled = (2832 + 2343 + 3674) / (2461 + 1492 + 1903)
+    assert ledger.chars_per_token == pytest.approx(pooled)
+    assert ledger.chars_per_token == pytest.approx(1.51, abs=0.01)
+
+    chars, images, tokens = samples[-1]
+    naive = chars / (tokens - images * IMAGE_BLOCK_TOKENS)
+    assert naive == pytest.approx(1.62, abs=0.01)
+    assert ledger.chars_per_token != pytest.approx(naive, abs=0.05)
+    assert ledger.last_prompt_tokens == tokens
+
+
+def test_calibrated_ratio_scales_the_size_trigger():
+    """At a calibrated 1 char/token the size trigger closes a segment at about
+    a quarter of the characters it needed at the default 4 chars/token."""
+    steps = [_step(i) for i in range(1, 6)]
+
+    def eligible_chars(ledger):
+        turns = ledger.unchunked_turns()
+        return ledger.turn_text_chars(turns[: len(turns) - 2])  # min_active=2
+
+    # Default ratio: the eligible text (two ~4k-char turns once turn 5 is
+    # staged) is worth ~chars/4 tokens, under the 5k target → nothing closes.
+    ledger, chunker, _, _ = _make(
+        steps, min_active=2, min_steps=2, max_steps=100, target_tokens=5000
+    )
+    ledger.record_prompt_tokens(1000, messages=[HumanMessage(content="a" * 4000)])
+    _run_big_turns(ledger, chunker, 1, 5, lambda i: "hash-a")
+    chars = eligible_chars(ledger)
+    assert chars // 4 < 5000 <= chars
+    assert chunker.awaiting_chunks == ()
+
+    # Calibrated to 1 char/token: the same text is worth ~chars tokens → closes.
+    ledger, chunker, _, _ = _make(
+        steps, min_active=2, min_steps=2, max_steps=100, target_tokens=5000
+    )
+    ledger.record_prompt_tokens(4000, messages=[HumanMessage(content="中" * 4000)])
+    assert ledger.chars_per_token == pytest.approx(1.0)
+    _run_big_turns(ledger, chunker, 1, 5, lambda i: "hash-a")
+    assert [c.trigger for c in chunker.awaiting_chunks] == ["size"]
 
 
 # ---------------------------------------------------------------------------
@@ -1146,8 +1859,8 @@ def test_compression_announces_one_tool_line_from_dispatch_to_swap():
     assert "forced" not in done_args
 
 
-def test_forced_swap_announces_snapshot_without_a_ratio():
-    """Forced swaps report estimated context usage without a summary size."""
+def test_forced_swap_announces_fold_without_a_ratio():
+    """Forced folds report estimated context usage without a summary size."""
     steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 9)]
     meter = {"value": None}
     ledger, chunker, engine, _ = _make(steps, min_active=2, meter=lambda: meter["value"])
@@ -1164,11 +1877,69 @@ def test_forced_swap_announces_snapshot_without_a_ratio():
     for trace in done:
         assert trace["payload"]["args"]["forced"] is True
         assert trace["payload"]["args"]["summary_tokens"] is None
+        assert "folded into the period summary" in trace["payload"]["result"]
     last_args = done[-1]["payload"]["args"]
     assert last_args["context_budget"] == 100_000
     assert 0 < last_args["context_tokens"] < 95_000
     # The prompt-size figure appears once per swap event, on the last line.
     assert all("context_tokens" not in t["payload"]["args"] for t in done[:-1])
+
+
+def test_compression_trace_carries_a_plain_language_phase_on_every_path():
+    """``args.phase`` says what the compression is doing without touching the
+    trace status the rest of the UI keys on: summarizing (segment closed,
+    capsule generating — also while retrying), ready (capsule on hand but the
+    start gate holds the swap), applied (compressed block replaced the raw
+    turns), failed (capsule generation gave up, full record kept)."""
+    from artemis.memory.chunking import COMPRESSION_PHASES
+
+    assert COMPRESSION_PHASES == ("summarizing", "ready", "applied", "failed")
+
+    steps = [_step(i, "hash-a" if i <= 4 else "hash-b") for i in range(1, 15)]
+    meter = {"value": 20_000}  # < 0.35 * 100k: the start gate holds ready chunks
+    ledger, chunker, engine, capsule = _make(steps, min_active=2, meter=lambda: meter["value"])
+    _run_turns(ledger, chunker, 1, 8, _hashes(4))
+    chunk = chunker.awaiting_chunks[0]
+    key = chunk.capsule_key
+
+    def mine():
+        return [
+            (t["status"], t["payload"]["args"]["phase"])
+            for t in engine.traces
+            if t["trace_id"] == chunk.trace_id
+        ]
+
+    # Segment closed, capsule dispatched → summarizing.
+    assert mine() == [("running", "summarizing")]
+
+    # Capsule generation exhausted → failed phase on the same trace.
+    chunker._on_capsule_failed(key)
+    assert mine()[-1] == ("failed", "failed")
+
+    # Re-dispatch at the next trigger render → summarizing again (note: retrying).
+    capsule._failed.add(key)
+    _run_turns(ledger, chunker, 9, 11, lambda i: "hash-c")
+    assert capsule.submitted.count(key) == 2
+    assert mine()[-1] == ("running", "summarizing")
+    retrying = [t for t in engine.traces if t["trace_id"] == chunk.trace_id][-1]
+    assert retrying["payload"]["args"]["note"] == "retrying"
+
+    # Capsule ready while the start gate holds → ready phase, status still running.
+    capsule.resolve(key, _capsule(1, 4))
+    _run_turns(ledger, chunker, 12, 12, lambda i: "hash-c")
+    assert chunker.chunks == ()
+    assert mine()[-1] == ("running", "ready")
+    held = [t for t in engine.traces if t["trace_id"] == chunk.trace_id][-1]
+    assert held["payload"]["args"]["note"] == "held"
+
+    # Context past the gate → the swap applies the summary.
+    meter["value"] = 40_000
+    _run_turns(ledger, chunker, 13, 13, lambda i: "hash-c")
+    assert [c.start_step_number for c in chunker.chunks] == [1]
+    assert mine()[-1] == ("success", "applied")
+
+    # Every announcement on every trace carries a known phase.
+    assert all(t["payload"]["args"]["phase"] in COMPRESSION_PHASES for t in engine.traces)
 
 
 # ---------------------------------------------------------------------------

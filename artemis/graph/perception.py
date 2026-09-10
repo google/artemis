@@ -92,6 +92,29 @@ def _check_injected_instruction_file(base_dir: str) -> dict | None:
     return None
 
 
+def _unprotect_current_check_lines(ctx: ArtemisContext) -> None:
+    """Record the plan's current check lines as editable under user guidance."""
+    from artemis.utils.notes import get_note_file_path
+    from artemis.utils.plan_grammar import parse_plan
+
+    unprotected = getattr(ctx, "guidance_unprotected_checks", None)
+    if not isinstance(unprotected, set):
+        unprotected = set()
+    try:
+        plan_path = get_note_file_path(ctx.data_engine.base_dir, "task_plan")
+        text = plan_path.read_text(encoding="utf-8") if plan_path.exists() else ""
+    except Exception as e:
+        logger.warning(f"Could not read task_plan for the guidance check-line waiver: {e}")
+        text = ""
+    added = {(ci.kind, ci.text) for ci in parse_plan(text).check_items}
+    unprotected |= added
+    ctx.guidance_unprotected_checks = unprotected
+    logger.info(
+        f"User guidance received: {len(added)} declared check line(s) may now be edited"
+        " by the Operator."
+    )
+
+
 async def perception_node(state: State, ctx: ArtemisContext) -> dict:
     """Perception node (fast path): captures screenshot, extracts XML hierarchy, and performs OCR.
 
@@ -114,6 +137,14 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
         if injected_payload:
             injected_instruction = injected_payload.get("instruction")
             user_stop_requested = bool(injected_payload.get("release_loop"))
+            if isinstance(injected_instruction, str) and injected_instruction.strip():
+                # User guidance outranks the plan's declared standards: every
+                # check line that exists right now loses its machine
+                # restoration for the rest of the run (kept on the run context,
+                # not the per-turn State), so the Operator can drop or reword
+                # it in whichever later write it gets to it. Lines added after
+                # this moment stay protected until the next instruction.
+                _unprotect_current_check_lines(ctx)
 
     controller = UnifiedMobileController(ctx)
 

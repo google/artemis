@@ -255,8 +255,24 @@ async def test_run_command_kill(mock_exec, mock_ctx):
             "TaskId": task_id,
         }
     )
-    assert f"Task {task_id} successfully terminated" in kill_res
+    assert f"Terminated task {task_id}" in kill_res
+    assert "successfully" not in kill_res
     assert task_id not in registry.background
+
+    # Refusals (unknown or already-finished task) are reported structurally.
+    from artemis.core.tool_failure import is_tool_failure
+
+    again = await manage_task.ainvoke({"Action": "kill", "TaskId": task_id})
+    assert is_tool_failure(again)
+    assert f"Task {task_id} is not active or already finished." in str(again)
+
+    missing = await manage_task.ainvoke({"Action": "status", "TaskId": "task_nope"})
+    assert is_tool_failure(missing)
+    assert "Error: Task task_nope not found." in str(missing)
+
+    no_input = await manage_task.ainvoke({"Action": "send_input", "TaskId": task_id, "Input": "y"})
+    assert is_tool_failure(no_input)
+    assert f"Task {task_id} is not active." in str(no_input)
 
 
 @pytest.mark.asyncio
@@ -305,8 +321,8 @@ async def test_run_short_command_timeout(mock_exec, mock_ctx):
 @pytest.mark.asyncio
 @patch("asyncio.create_subprocess_exec")
 async def test_run_command_sync_long_output(mock_exec, mock_ctx):
-    # Generate long output (> 500 lines)
-    long_output = "\n".join(f"Output line {i}" for i in range(1, 600))
+    # Generate long output (> 50000 chars): the trigger is size, not line count.
+    long_output = "\n".join(f"Output line {i} {'x' * 90}" for i in range(1, 600))
     mock_process = MockProcess(
         output_bytes=long_output.encode() + b"\n===EXIT_CODE===0\n===ENV_START===\n",
         exit_code=0,
@@ -326,9 +342,36 @@ async def test_run_command_sync_long_output(mock_exec, mock_ctx):
     assert "ADB command completed with exit code 0." in result
     assert "has been truncated" in result
     assert "Output line 599" in result
-    assert "Output line 1" not in result  # since it was truncated to last 200 lines
-    assert "analyze_task_output" in result
+    assert "Output line 1 " not in result  # since it was truncated to last 200 lines
     assert "TaskId: task_sync_" in result
+    task_id = result.split("TaskId: ")[1].split(".")[0]
+    assert f"use analyze_task_output with TaskId {task_id}" in result
+
+
+@pytest.mark.asyncio
+@patch("asyncio.create_subprocess_exec")
+async def test_run_command_many_short_lines_is_shown_inline(mock_exec, mock_ctx):
+    """1000 short lines (~4 KB) are not 'long': the whole output stays inline."""
+    output = "\n".join(str(i) for i in range(1, 1001))
+    mock_exec.return_value = MockProcess(output_bytes=output.encode(), exit_code=0)
+
+    run_command = get_run_adb_command_tool(mock_ctx)
+    result = await run_command.ainvoke({"CommandLine": "seq 1 1000", "WaitMsBeforeAsync": 500})
+
+    assert "has been truncated" not in result
+    assert "\n1\n2\n" in result
+    assert result.endswith("\n1000")
+
+
+@pytest.mark.asyncio
+@patch("asyncio.create_subprocess_exec")
+async def test_run_command_empty_output_is_labelled(mock_exec, mock_ctx):
+    mock_exec.return_value = MockProcess(output_bytes=b"", exit_code=0)
+
+    run_command = get_run_adb_command_tool(mock_ctx)
+    result = await run_command.ainvoke({"CommandLine": "true", "WaitMsBeforeAsync": 500})
+
+    assert result == "ADB command completed with exit code 0.\nOutput:\n(empty output)"
 
 
 @pytest.mark.asyncio
@@ -704,7 +747,7 @@ def test_registry_is_per_context_and_notifications_do_not_leak():
 @pytest.mark.asyncio
 @patch("asyncio.create_subprocess_exec")
 async def test_sync_long_output_is_not_reannounced(mock_exec, mock_ctx):
-    long_output = "\n".join(f"line {i}" for i in range(600))
+    long_output = "\n".join(f"line {i} {'x' * 90}" for i in range(600))
     mock_exec.return_value = MockProcess(output_bytes=long_output.encode(), exit_code=0)
     run_command = get_run_adb_command_tool(mock_ctx)
     registry = get_adb_task_registry(mock_ctx)

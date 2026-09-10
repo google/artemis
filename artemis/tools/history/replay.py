@@ -15,9 +15,9 @@
 """replay_steps: full replay of a step range, exactly as the executing agent saw it.
 
 Each step is rendered with :func:`~artemis.utils.task_tree.render_step_replay`
-(``[Screen]`` description, reasoning, every non-internal tool call with name /
-arguments / result, the planned action, safety-net interception and the
-execution result). Two loose bounds keep one tool result finite (config
+(``T+mm:ss`` step header, ``[Screen]`` description, reasoning, every
+non-internal tool call with name / arguments / result, the executed action,
+safety-net interception and the execution result). Two loose bounds keep one tool result finite (config
 ``agent.memory.replay``): at most ``max_steps`` steps per call, and a
 ``max_tokens`` budget applied by dropping *whole trailing steps* — a replayed
 step is never cut mid-sentence. Screenshots are deliberately not part of the
@@ -79,6 +79,10 @@ def replay_steps_text(
         return ToolFailure(f"Error: no recorded steps in range {start}–{end}.")
 
     budget_tokens = max(1, int(max_tokens or DEFAULT_MAX_TOKENS))
+    # Step headers carry the session clock (``T+mm:ss``) every agent prompt
+    # and search_history use; without a session start they fall back to the
+    # stored relative time.
+    session_start = getattr(reader, "session_start_time", None)
     rendered: list[str] = []
     shown: list[dict] = []
     used = 0
@@ -88,7 +92,7 @@ def replay_steps_text(
             dropped += 1
             continue
         try:
-            text = render_step_replay(step)
+            text = render_step_replay(step, session_start=session_start)
         except Exception as e:
             return ToolFailure(f"Error rendering steps {start}–{end}: {e}")
         cost = _estimate_tokens(text) + 1

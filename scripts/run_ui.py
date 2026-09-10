@@ -17,7 +17,7 @@
 
 Fastest and simplest way to launch the Artemis Web UI across all platforms:
 - Automatically detects if the UI is already running and opens the browser directly.
-- Uses uv or existing virtualenv seamlessly.
+- Uses uv or an existing virtualenv.
 - Zero-configuration one-click start.
 """
 

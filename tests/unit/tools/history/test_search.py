@@ -346,6 +346,101 @@ def test_availability_requires_engine_and_config():
     assert search_history_available(SimpleNamespace(data_engine=object())) is True
 
 
+def test_excerpts_never_show_raw_json(engine):
+    """The raw action / result JSON only scores; the ``Match:`` excerpt is the
+    ledger action phrase plus the result's status/error words."""
+    engine.record_step(
+        summary="Started playback.",
+        action_taken={
+            "action": "click",
+            "coordinates": [500, 520],
+            "coordinate_space": "normalized",
+            "target_description": "Wi-Fi jsonneedle row",
+            "args": {"target": [500, 520], "target_description": "Wi-Fi jsonneedle row"},
+        },
+        last_execution_result={"status": "failed", "error": "Error: tap rejected"},
+    )
+    _flush(engine)
+
+    out = search_history_text(engine, query="jsonneedle", recall_config=_cfg())
+    match = next(line for line in out.splitlines() if line.strip().startswith("Match:"))
+    assert "Tapped 'Wi-Fi jsonneedle row' (self-described) at [500, 520]" in match
+    assert "status failed" in match
+    assert "Error: tap rejected" in match
+    for token in ('{"action"', '"coordinates"', '"coordinate_space"', '"args"', "{", "}"):
+        assert token not in match, match
+
+
+def test_raw_only_fields_still_score(engine):
+    """A hit that only exists in the raw record (a resource id / package name
+    under ``args``) is still found; its excerpt is the readable action line."""
+    engine.record_step(
+        summary="Opened the drawer.",
+        action_taken={
+            "action": "click",
+            "coordinates": [10, 20],
+            "coordinate_space": "normalized",
+            "args": {"target": [10, 20], "resource_id": "com.example:id/rawonlyneedle"},
+        },
+        last_execution_result={"status": "dispatched"},
+    )
+    _flush(engine)
+    out = search_history_text(engine, query="rawonlyneedle", recall_config=_cfg())
+    assert "[Step 4 " in out
+    assert "Match: Tapped element at [10, 20] | status dispatched" in out
+    assert '"resource_id"' not in out
+
+
+def test_summary_hit_is_not_repeated_in_the_match_line(engine):
+    out = search_history_text(engine, query="promo popup", recall_config=_cfg())
+    block = out[out.index("[Step 3 ") :]
+    assert "Screen: A promo popup appeared and was dismissed." in block
+    # The summary heads the result once; the Match line (if any) shows the
+    # other readable fields, never the summary again.
+    assert block.count("A promo popup appeared") == 1
+
+
+def test_screen_hits_render_readable_values_not_ui_tree_json(tmp_path):
+    engine = _make_engine(tmp_path)
+    engine.record_step(
+        pre_screenshot_bytes=_jpeg("red"),
+        summary="On the network settings screen.",
+        action_taken={"action": "click", "target_text": "Network"},
+        ui_tree=[
+            {
+                "text": "",
+                "content-desc": "Navigate up",
+                "resource-id": "com.android.settings:id/toolbar_up",
+                "bounds": "[0,0][100,100]",
+                "class": "android.widget.ImageButton",
+                "clickable": "true",
+                "package": "com.android.settings",
+            },
+            {
+                "text": "Wi-Fi treeneedle",
+                "content-desc": "",
+                "resource-id": "android:id/title",
+                "bounds": "[40,560][600,640]",
+                "class": "android.widget.TextView",
+                "clickable": "false",
+                "children": [{"text": "Connected", "bounds": "[40,640][600,700]"}],
+            },
+        ],
+        ocr_result=[{"text": "Bluetooth ocrword", "bounds": [0, 0, 10, 10]}],
+    )
+    _flush(engine)
+
+    out = search_history_text(engine, query="treeneedle", recall_config=_cfg())
+    match = next(line for line in out.splitlines() if line.strip().startswith("Match:"))
+    assert "Wi-Fi treeneedle" in match
+    assert "Navigate up | com.android.settings:id/toolbar_up | Wi-Fi treeneedle" in match
+    assert "android:id/title | Connected | Bluetooth ocrword" in match
+    for token in ('"bounds"', '"class"', '"clickable"', "{", "}"):
+        assert token not in match, match
+    # Bounds / class names still score (they stay in the raw haystack).
+    assert "[Step 1 " in search_history_text(engine, query="ImageButton", recall_config=_cfg())
+
+
 def test_action_matches_keep_target_provenance(engine):
     """The action haystack is the shared ledger rendering, so an excerpt shows a
     self-described coordinate target with its marker and an observed index

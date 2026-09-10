@@ -21,49 +21,46 @@ the declarations drifted apart (``click.target`` took an element index in one pl
 and only coordinates in another). This module is now the single place all three are
 *defined*; the historical sites import their surface from here, generated.
 
-An action has up to three dialects, and the differences between them are **deliberate
-and declared**, not accidental:
+An action has one agent-facing dialect and one wire dialect:
 
-* ``operator`` -- the LangChain shell tools the Operator binds. The Operator receives
-  an indexed "Visible UI Elements" list and its prompt teaches index-first targeting,
-  so target parameters accept ``int`` element indices as well as normalized
-  coordinates. The shells are declaration-only ("Action Recorded"): the Operator's
-  translate step lowers them into structured decisions.
-* ``declaration`` -- the JSON ``ToolDeclaration`` bound by the Validator's
-  FlashRunner. These agents act on coordinates directly (the
-  element list they see carries coordinates), so target parameters are coordinate
-  pairs and the wording teaches the act-then-observe loop ("The screen after X will
-  be returned automatically").
+* ``operator`` -- the agent dialect. Both profiles receive the same indexed
+  "Visible UI Elements" list, so target parameters accept ``int`` element indices
+  as well as normalized coordinates. The Pro Operator binds it as a LangChain shell
+  (declaration-only, "Action Recorded": the Operator's translate step lowers the
+  call into structured decisions); the FlashRunner binds the very same description
+  and parameters projected onto a JSON ``ToolDeclaration`` (:func:`tool_declaration`),
+  and ``McpActionExecutor`` resolves an index against the current element list.
+  One definition, two bindings: the two profiles can no longer drift apart.
+* ``declaration`` -- a JSON-only agent dialect, used solely for actions that have
+  no operator shell (``click_sequence`` is declared to Flash alone).
 * ``wire`` -- what the action MCP server serves, mirroring the actuator protocol
   one-to-one: normalized coordinates, millisecond durations, no addressing sugar.
-  The client-side executor (``McpActionExecutor``) lowers the
-  agent dialects onto it.
+  The client-side executor (``McpActionExecutor``) lowers the agent dialect onto it.
 
-A coordinate target names nothing by itself, so both agent dialects pair it with
+A coordinate target names nothing by itself, so the agent dialect pairs it with
 ``target_description`` (``target_descriptions`` for a ``click_sequence``): the
 model's own statement of what it is aiming at. It is required whenever the target
-is a coordinate (always, in the declaration dialect), recorded verbatim on the
-action, and never sent to the wire. An element index needs none -- its text,
-bounds and id are read from the indexed list -- and the recorded fields stay
-separate (``target_text``/``target_bounds``/... for observed elements,
-``target_description`` for described coordinates) so no reader can mistake the
-model's belief for an observation.
+is a coordinate, recorded verbatim on the action, and never sent to the wire. An
+element index needs none -- its text, bounds and id are read from the indexed
+list -- and the recorded fields stay separate (``target_text``/``target_bounds``/...
+for observed elements, ``target_description`` for described coordinates) so no
+reader can mistake the model's belief for an observation.
 
-Each ``ActionSpec.param_bridge`` maps operator parameter names onto declaration
-parameter names, so every rename (``duration`` -> ``duration_ms``, ``gesture`` ->
-``action``) is written down exactly once. ``tests/unit/mcp/test_action_specs.py``
-re-derives the bridge from the generated schemas, so an undeclared divergence --
-today's definition of drift -- fails CI instead of shipping.
+``tests/unit/mcp/test_action_specs.py`` pins the generated schema of every model
+surface and checks that the Flash declaration of each shared action is exactly the
+operator shell's schema, so a divergence between what one profile sees and what the
+other sees -- the historical definition of drift -- fails CI instead of shipping.
 
 The classification of actions (required/optional/internal) stays in
 ``action_manifest``; this module holds their schemas and teaching text.
 """
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cache
 import inspect
-from typing import Annotated, Any, Literal
+import types
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from langchain_core.tools import StructuredTool
 from mcp.types import CallToolResult
@@ -105,7 +102,11 @@ class ParamSpec:
 
 @dataclass(frozen=True)
 class OperatorDialect:
-    """The Operator's LangChain shell: index-capable targets, declaration-only body."""
+    """The agent dialect: index-capable targets, one wording for both profiles.
+
+    Bound by the Pro Operator as a declaration-only LangChain shell and by the
+    FlashRunner as the JSON projection of the same parameters.
+    """
 
     description: str
     params: tuple[ParamSpec, ...]
@@ -113,7 +114,7 @@ class OperatorDialect:
 
 @dataclass(frozen=True)
 class DeclarationDialect:
-    """The Validator/Flash JSON declaration, wording preserved."""
+    """A JSON-only agent dialect, for actions without an operator shell."""
 
     description: str
     parameters: dict[str, Any]
@@ -139,55 +140,41 @@ class ActionSpec:
 
     Attributes:
         name: The canonical tool name every dialect shares.
-        operator: Operator shell dialect, or ``None`` when the Operator does not bind
-            this action.
-        declaration: Validator/Flash dialect, or ``None`` when no JSON declaration
-            exists (an action can be wire-only, reachable through executors but never
-            declared to a model directly).
+        operator: The agent dialect (Operator shell and, projected, the Flash
+            declaration), or ``None`` when neither profile binds this action as a
+            shell.
+        declaration: A JSON-only agent dialect for actions without an operator
+            shell, or ``None`` (an action can be wire-only, reachable through
+            executors but never declared to a model directly).
         wire: Action-server dialect; ``None`` only for purely virtual actions.
-        param_bridge: operator param name -> declaration param name, for every
-            operator param, when both dialects exist. Identical names map to
-            themselves; renames are the deliberate dialect differences.
-        differences: Human-readable record of every deliberate cross-dialect
-            divergence (semantics, not just spelling). Empty means the dialects
-            align modulo the documented dialect philosophy above.
+        differences: Human-readable record of every deliberate divergence between
+            the agent dialect and the wire (semantics, not just spelling). Empty
+            means the dialects align modulo the documented dialect philosophy above.
     """
 
     name: str
     operator: OperatorDialect | None = None
     declaration: DeclarationDialect | None = None
     wire: WireDialect | None = None
-    param_bridge: dict[str, str] = field(default_factory=dict)
     differences: str = ""
 
 
 # --- Shared type aliases -------------------------------------------------------------
 
-#: Operator-dialect target: element index into the indexed UI list, or a normalized
-#: [x, y] pair. Only the Operator sees this union; see the module docstring.
+#: Agent-dialect target: element index into the indexed UI list, or a normalized
+#: [x, y] pair.
 IndexOrCoords = int | list[int]
 
 Direction = Literal["up", "down", "left", "right"]
 
-_COORD_PAIR_JSON = {
-    "type": "array",
-    "items": {"type": "integer"},
-}
-
-#: Operator-dialect wording for the description that a coordinate target must carry.
-#: An element index already names its element (its text, id and bounds are recorded
-#: from the indexed list); a bare coordinate names nothing, so the model states what
-#: it is aiming at and that statement is recorded as ``target_description``.
-_OPERATOR_TARGET_DESCRIPTION = (
+#: Wording for the description that a coordinate target must carry. An element
+#: index already names its element (its text, id and bounds are recorded from the
+#: indexed list); a bare coordinate names nothing, so the model states what it is
+#: aiming at and that statement is recorded as ``target_description``.
+_TARGET_DESCRIPTION = (
     "What the target is, in a few words (e.g. 'play button', 'search input',"
     " 'video body'). REQUIRED when target is a coordinate pair; ignored for an"
     " element index."
-)
-
-#: Declaration-dialect wording (coordinates-only dialect: always required).
-_DECLARATION_TARGET_DESCRIPTION = (
-    "What the target is, in a few words (e.g. 'play button', 'search input',"
-    " 'video body'). Required: a coordinate names nothing by itself."
 )
 
 
@@ -274,7 +261,7 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ParamSpec(
                     "target_description",
                     str | None,
-                    _OPERATOR_TARGET_DESCRIPTION,
+                    _TARGET_DESCRIPTION,
                     required=False,
                     default=None,
                 ),
@@ -296,39 +283,6 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ),
             ),
         ),
-        declaration=DeclarationDialect(
-            description=(
-                "[ACTION] Tap/click on the target coordinate on the screen. The screen"
-                " after click will be returned automatically. For buttons, checkboxes,"
-                " tabs, icons, items in a list, tap ON the element. For text fields /"
-                " search bars / input boxes, tap INSIDE the input box to focus it."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Normalized coordinates [x, y] in 0-1000 scale.",
-                    },
-                    "target_description": {
-                        "type": "string",
-                        "description": _DECLARATION_TARGET_DESCRIPTION,
-                    },
-                    "times": {
-                        "type": "integer",
-                        "description": (
-                            "Number of taps to perform (default 1). Set to 2 for double click."
-                        ),
-                    },
-                    "delay_ms": {
-                        "type": "integer",
-                        "description": "Delay between taps in milliseconds (default 100).",
-                    },
-                },
-                "required": ["target", "target_description"],
-            },
-        ),
         wire=WireDialect(
             description="Tap at a 0-1000 normalized [x, y] coordinate.",
             params=(
@@ -338,17 +292,11 @@ _SPECS: tuple[ActionSpec, ...] = (
             ),
             bind=_wire_click,
         ),
-        param_bridge={
-            "target": "target",
-            "target_description": "target_description",
-            "times": "times",
-            "delay_ms": "delay_ms",
-        },
         differences=(
-            "target: operator accepts an element index or a coordinate pair; the"
-            " declaration and wire dialects take coordinates only."
-            " target_description: recorded, never sent to the wire; the operator"
-            " requires it only for coordinate targets, the declaration always."
+            "target: the agent dialect accepts an element index or a coordinate pair"
+            " (an index is resolved client-side against the indexed element list); the"
+            " wire takes coordinates only. target_description: recorded, never sent"
+            " to the wire; required only for coordinate targets."
         ),
     ),
     ActionSpec(
@@ -407,6 +355,9 @@ _SPECS: tuple[ActionSpec, ...] = (
             " burst instead); sequence entries are normalized coordinate pairs in both"
             " dialects (an element index is refused, never resolved client-side)."
             " target_descriptions is recorded per entry and never sent to the wire."
+            " Unlike click, a burst is not resolved against the element list: its"
+            " whole point is to outrun a transient UI, and the list was captured"
+            " before the trigger tap."
         ),
     ),
     ActionSpec(
@@ -427,7 +378,7 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ParamSpec(
                     "target_description",
                     str | None,
-                    _OPERATOR_TARGET_DESCRIPTION,
+                    _TARGET_DESCRIPTION,
                     required=False,
                     default=None,
                 ),
@@ -440,31 +391,6 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ),
             ),
         ),
-        declaration=DeclarationDialect(
-            description=(
-                "[ACTION] Long press on a target coordinate on the screen. The screen"
-                " after long pressing will be returned automatically."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Normalized coordinates [x, y] in 0-1000 scale.",
-                    },
-                    "target_description": {
-                        "type": "string",
-                        "description": _DECLARATION_TARGET_DESCRIPTION,
-                    },
-                    "duration_ms": {
-                        "type": "integer",
-                        "description": "Duration of press in milliseconds (default 1000ms).",
-                    },
-                },
-                "required": ["target", "target_description"],
-            },
-        ),
         wire=WireDialect(
             description="Long-press at a 0-1000 normalized [x, y] coordinate.",
             params=(
@@ -473,19 +399,13 @@ _SPECS: tuple[ActionSpec, ...] = (
             ),
             bind=_wire_long_press,
         ),
-        param_bridge={
-            "target": "target",
-            "target_description": "target_description",
-            "duration": "duration_ms",
-        },
         differences=(
-            "target: operator accepts an element index or a coordinate pair."
-            " target_description: recorded, never sent to the wire; the operator"
-            " requires it only for coordinate targets, the declaration always."
-            " duration: the operator spells the duration parameter `duration` (its"
-            " structured decisions and recorded traces carry that key); the"
-            " declaration and wire dialects spell it `duration_ms`. Executors accept"
-            " both spellings."
+            "target: the agent dialect accepts an element index or a coordinate pair;"
+            " the wire takes coordinates only. target_description: recorded, never"
+            " sent to the wire; required only for coordinate targets."
+            " duration: the agent dialect spells the duration parameter `duration`"
+            " (structured decisions and recorded traces carry that key); the wire"
+            " spells it `duration_ms`. Executors accept both spellings."
         ),
     ),
     ActionSpec(
@@ -512,7 +432,7 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ParamSpec(
                     "target_description",
                     str | None,
-                    _OPERATOR_TARGET_DESCRIPTION,
+                    _TARGET_DESCRIPTION,
                     required=False,
                     default=None,
                 ),
@@ -527,39 +447,6 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ),
             ),
         ),
-        declaration=DeclarationDialect(
-            description=(
-                "[ACTION] Type text into an input field on the screen. The screen after"
-                " typing will be returned automatically. Automatically taps inside the"
-                " input box at target [x, y] to focus before typing."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "Text to type into the focused input field.",
-                    },
-                    "target": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Coordinates [x, y] of the input box in 0-1000 scale.",
-                    },
-                    "target_description": {
-                        "type": "string",
-                        "description": _DECLARATION_TARGET_DESCRIPTION,
-                    },
-                    "clear_exist": {
-                        "type": "boolean",
-                        "description": (
-                            "Whether to clear existing text in the input box before typing"
-                            " (default True)."
-                        ),
-                    },
-                },
-                "required": ["text", "target", "target_description"],
-            },
-        ),
         wire=WireDialect(
             description=("Type text, optionally focusing a 0-1000 normalized [x, y] target first."),
             params=(
@@ -569,18 +456,11 @@ _SPECS: tuple[ActionSpec, ...] = (
             ),
             bind=_wire_input_text,
         ),
-        param_bridge={
-            "target": "target",
-            "target_description": "target_description",
-            "text": "text",
-            "clear_exist": "clear_exist",
-        },
         differences=(
-            "target: operator accepts an element index or a coordinate pair, and"
-            " requires a target; the wire dialect allows omitting the target to type"
-            " into the already-focused field. target_description: recorded, never"
-            " sent to the wire; the operator requires it only for coordinate targets,"
-            " the declaration always."
+            "target: the agent dialect accepts an element index or a coordinate pair,"
+            " and requires a target; the wire allows omitting the target to type into"
+            " the already-focused field. target_description: recorded, never sent to"
+            " the wire; required only for coordinate targets."
         ),
     ),
     ActionSpec(
@@ -662,70 +542,6 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ),
             ),
         ),
-        declaration=DeclarationDialect(
-            description=(
-                "[ACTION] Perform a swipe, drag, or slider-adjustment gesture on the screen. The screen and UI hierarchy after swipe will be returned automatically.\n\n"
-                "• Directional Scrolling ('direction' or 'action'): Recommended for general browsing and standard page scrolling in most scenarios. Automatically computes safe swipe vectors and adaptive duration, retains a ~40% visual overlap anchor for zero-omission traversal, and prevents inertial flings. Supports scoping to a sub-container via 'target'. If it fails on certain custom layouts, fall back to specifying exact coordinates ('start' and 'end') directly.\n"
-                "• Precise Coordinate Gestures ('start', 'end' or coordinates list): Best for local, fine-grained interactions such as adjusting sliders/SeekBars (e.g., volume, brightness, progress bars), drag-and-drop / list reordering, or as a reliable fallback when directional scrolling fails on specific containers. Always drag slightly PAST the target position to overcome touch slop and reliably trigger the update. When setting a slider to Maximum (100%) or Minimum (0%), swipe fully to the extreme boundary."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "direction": {
-                        "type": "string",
-                        "enum": ["up", "down", "left", "right"],
-                        "description": (
-                            "Direction for scrolling and swiping: 'up' (drags bottom-to-top, scrolling down to reveal content below),"
-                            " 'down' (drags top-to-bottom, scrolling up to reveal content above),"
-                            " 'left' (drags right-to-left, scrolling right),"
-                            " 'right' (drags left-to-right, scrolling left)."
-                        ),
-                    },
-                    "start": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": (
-                            "Start normalized coordinates [start_x, start_y] in 0-1000 scale."
-                        ),
-                    },
-                    "end": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": (
-                            "End normalized coordinates [end_x, end_y] in 0-1000 scale."
-                        ),
-                    },
-                    "target": {
-                        "description": (
-                            "Optional target element index (e.g. 2) or container bounds"
-                            " [left, top, right, bottom] to scope the directional swipe within."
-                        ),
-                    },
-                    "action": {
-                        "description": (
-                            "Backward-compatible swipe gesture: smart direction string ('up', 'down', 'left', 'right')"
-                            " OR precise custom coordinates [start_x, start_y, end_x, end_y] in 0-1000 scale."
-                        ),
-                    },
-                    "target_description": {
-                        "type": "string",
-                        "description": (
-                            "What is being dragged, in a few words (e.g. 'brightness slider"
-                            " knob'). Required for coordinate gestures ('start'/'end' or a"
-                            " coordinates list); ignored for directional scrolling."
-                        ),
-                    },
-                    "duration": {
-                        "type": "integer",
-                        "description": (
-                            "Optional swipe/drag duration in milliseconds (default 800). For drag-and-drop,"
-                            " list reordering, or sliding/adjusting sliders (e.g., volume, brightness, SeekBars),"
-                            " set duration >= 1000 (e.g. 1500). If omitted for directional swipe, duration is computed automatically."
-                        ),
-                    },
-                },
-            },
-        ),
         wire=WireDialect(
             description="Swipe between two 0-1000 normalized [x, y] points.",
             params=(
@@ -735,23 +551,12 @@ _SPECS: tuple[ActionSpec, ...] = (
             ),
             bind=_wire_swipe,
         ),
-        param_bridge={
-            "direction": "direction",
-            "start": "start",
-            "end": "end",
-            "target": "target",
-            "gesture": "action",
-            "target_description": "target_description",
-            "duration": "duration",
-        },
         differences=(
-            "target_description: recorded, never sent to the wire; required by both"
-            " agent dialects for coordinate gestures only."
-            " gesture/action: the legacy combined direction-or-coordinates parameter is"
-            " spelled `gesture` in the operator dialect and `action` in the"
-            " declaration dialect (`action` collides with the operator's structured"
-            " decision verb field). Smart directional swipes exist only in the agent"
-            " dialects; the wire takes a resolved start/end pair, and direction"
+            "target_description: recorded, never sent to the wire; required for"
+            " coordinate gestures only. gesture: the legacy combined"
+            " direction-or-coordinates parameter (executors also accept the older"
+            " `action` spelling). Smart directional swipes exist only in the agent"
+            " dialect; the wire takes a resolved start/end pair, and direction"
             " resolution happens client-side against the live UI tree."
         ),
     ),
@@ -770,24 +575,6 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ),
             ),
         ),
-        declaration=DeclarationDialect(
-            description=(
-                "[ACTION] Press a physical or virtual system button. The screen after"
-                " pressing will be returned automatically."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": (
-                            "Standard Android system button name (ENTER, BACK, HOME, APP_SWITCH)."
-                        ),
-                    }
-                },
-                "required": ["key"],
-            },
-        ),
         wire=WireDialect(
             description=(
                 "Press a device key (home, back, enter, delete, tab, search, menu, app_switch)."
@@ -795,13 +582,11 @@ _SPECS: tuple[ActionSpec, ...] = (
             params=(ParamSpec("key", str),),
             bind=_wire_press_key,
         ),
-        param_bridge={"key": "key"},
         differences=(
-            "key vocabulary: the operator dialect is a closed uppercase enum (its"
-            " translate step emits Android KEYCODE_* names); the declaration dialect"
-            " is an open string taught the same uppercase names; the wire takes the"
-            " actuator's bare lowercase key words. `to_canonical_call` and the"
-            " executors normalize between them."
+            "key vocabulary: the agent dialect is a closed uppercase enum (the"
+            " Operator's translate step emits Android KEYCODE_* names); the wire"
+            " takes the actuator's bare lowercase key words. `to_canonical_call` and"
+            " the executors normalize between them."
         ),
     ),
     ActionSpec(
@@ -817,26 +602,6 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ),
             ),
         ),
-        declaration=DeclarationDialect(
-            description=(
-                "[ACTION] Launch or force stop a specified application. The screen"
-                " after launch/stop will be returned automatically."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "The action type ('launch' or 'stop').",
-                    },
-                    "app_name": {
-                        "type": "string",
-                        "description": "Display name or package name of the application.",
-                    },
-                },
-                "required": ["action", "app_name"],
-            },
-        ),
         wire=WireDialect(
             description="Launch or stop an app by human-readable name or package.",
             params=(
@@ -845,7 +610,6 @@ _SPECS: tuple[ActionSpec, ...] = (
             ),
             bind=_wire_manage_app,
         ),
-        param_bridge={"action": "action", "app_name": "app_name"},
     ),
     ActionSpec(
         name="wait_for_delay",
@@ -867,32 +631,11 @@ _SPECS: tuple[ActionSpec, ...] = (
                 ),
             ),
         ),
-        declaration=DeclarationDialect(
-            description=(
-                "[ACTION] Pause execution and wait for a specified duration in milliseconds."
-                " The screen after pause will be returned automatically."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "time_in_ms": {
-                        "type": "integer",
-                        "description": (
-                            "The exact duration to pause in milliseconds (e.g., 2000 for 2s,"
-                            " 60000 for 1 min, 180000 for 3 mins, 300000 for 5 mins)."
-                            " Convert any required waiting duration into milliseconds."
-                        ),
-                    }
-                },
-                "required": ["time_in_ms"],
-            },
-        ),
         wire=WireDialect(
             description="Wait for a fixed number of milliseconds.",
             params=(ParamSpec("time_in_ms", int),),
             bind=_wire_wait_for_delay,
         ),
-        param_bridge={"time_in_ms": "time_in_ms"},
     ),
     ActionSpec(
         name="wait_for_text",
@@ -1007,16 +750,73 @@ def operator_shell_tool(name: str) -> StructuredTool:
     )
 
 
+_SCALAR_JSON: dict[Any, dict[str, str]] = {
+    bool: {"type": "boolean"},
+    int: {"type": "integer"},
+    float: {"type": "number"},
+    str: {"type": "string"},
+}
+
+
+def _json_schema(annotation: Any) -> dict[str, Any]:
+    """Projects one Python-typed parameter annotation onto JSON schema.
+
+    ``None`` members of a union only make the parameter optional (its
+    ``required`` flag says so); they never appear in the projected schema, so
+    the declaration carries no ``null`` alternatives or ``default`` noise.
+    """
+    origin = get_origin(annotation)
+    if origin in (Union, types.UnionType):
+        members = [a for a in get_args(annotation) if a is not type(None)]
+        schemas = [_json_schema(m) for m in members]
+        return schemas[0] if len(schemas) == 1 else {"anyOf": schemas}
+    if origin is Literal:
+        return {"type": "string", "enum": list(get_args(annotation))}
+    if origin is list:
+        (item,) = get_args(annotation) or (str,)
+        return {"type": "array", "items": _json_schema(item)}
+    try:
+        return dict(_SCALAR_JSON[annotation])
+    except KeyError:
+        raise TypeError(f"No JSON projection for parameter annotation {annotation!r}.") from None
+
+
+def _projected_parameters(dialect: OperatorDialect) -> dict[str, Any]:
+    """The operator shell's parameters as a JSON-schema ``parameters`` object."""
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for p in dialect.params:
+        schema = _json_schema(p.annotation)
+        if p.description:
+            schema["description"] = p.description
+        properties[p.name] = schema
+        if p.required:
+            required.append(p.name)
+    return {"type": "object", "properties": properties, "required": required}
+
+
+@cache
 def tool_declaration(name: str) -> ToolDeclaration:
-    """Builds the Validator/Flash ``ToolDeclaration`` for one action."""
-    dialect = ACTION_SPECS[name].declaration
-    if dialect is None:
-        raise ValueError(f"Action '{name}' has no declaration dialect.")
-    return ToolDeclaration(
-        name=name,
-        description=dialect.description,
-        parameters=dialect.parameters,
-    )
+    """Builds the Flash ``ToolDeclaration`` for one action.
+
+    A shared action is the operator shell projected onto JSON (same description,
+    same parameters, same targeting semantics); a JSON-only action uses its own
+    ``DeclarationDialect``.
+    """
+    spec = ACTION_SPECS[name]
+    if spec.declaration is not None:
+        return ToolDeclaration(
+            name=name,
+            description=spec.declaration.description,
+            parameters=spec.declaration.parameters,
+        )
+    if spec.operator is not None:
+        return ToolDeclaration(
+            name=name,
+            description=spec.operator.description,
+            parameters=_projected_parameters(spec.operator),
+        )
+    raise ValueError(f"Action '{name}' has no agent dialect to declare.")
 
 
 def wire_dialects() -> tuple[ActionSpec, ...]:

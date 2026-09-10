@@ -70,7 +70,7 @@ def _escape_for_adb_text(s: str) -> str:
 
 
 class AndroidAdbDriver(BaseDeviceDriver):
-    """Production-grade Android Device Driver powered by ADB and UIAutomator2."""
+    """Android device driver using ADB and UIAutomator2."""
 
     def __init__(
         self,

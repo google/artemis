@@ -221,6 +221,18 @@ class ArtemisContext(BaseModel):
     """Plan content currently under async planner validation; becomes the new
     baseline when the validator approves it."""
 
+    guidance_unprotected_checks: set[tuple[str, str]] = Field(default_factory=set)
+    """``(kind, text)`` of every check line that existed in the task plan when a
+    mid-run user instruction arrived. User guidance outranks the plan's declared
+    standards, so these lines lose their machine restoration for the rest of the
+    run (the Operator may drop or reword them at any later write); check lines
+    added afterwards stay protected until the next instruction."""
+    guidance_retired_checks: set[tuple[str, str]] = Field(default_factory=set)
+    """``(kind, text)`` of the check lines the Operator actually dropped under
+    that waiver. A verdict recorded for such a line before it was retired is a
+    result for a requirement the user withdrew: the run outcome reports it as
+    retired instead of counting it as a pass or failure."""
+
     _genai_client: Any | None = PrivateAttr(default=None)
     _video_blackboard: Any | None = PrivateAttr(default=None)
     _video_circuit_breaker: Any | None = PrivateAttr(default=None)

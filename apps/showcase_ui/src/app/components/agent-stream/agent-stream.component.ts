@@ -172,6 +172,9 @@ import {
   getUniqueGenericTools,
   getToolKey,
   getToolDisplayLabel,
+  isCompressionTool,
+  isCompressionWaiting,
+  getCompressionPhaseLabel,
   getToolIcon,
   getToolTitle,
   getToolTargetText,
@@ -1463,6 +1466,20 @@ export class AgentStreamComponent implements AfterViewInit {
 
   public getToolDisplayLabel(tool: any): string {
     return getToolDisplayLabel(tool, this.isFirstSaveNoteForKey(tool));
+  }
+
+  /** Short plain-language phase for a compress_history line (hover title). */
+  public getCompressionPhaseTitle(tool: any): string | null {
+    return isCompressionTool(tool) ? getCompressionPhaseLabel(tool) : null;
+  }
+
+  /**
+   * A generic tool line pulses only while work is in flight. A compression
+   * whose summary is ready but held back by the context gate is waiting, not
+   * running, even though its trace status is still `running`.
+   */
+  public isToolLineRunning(item: any, block: any): boolean {
+    return this.isItemRunning(item, block) && !isCompressionWaiting(item?.data);
   }
 
   public isNoteTool(tool: any): boolean {

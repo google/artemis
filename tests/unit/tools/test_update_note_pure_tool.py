@@ -66,7 +66,7 @@ async def test_update_note_pure_direct_execution_success(mock_ctx, tmp_path):
         target="Step 1: Pending",
         replacement="Step 1: Completed",
     )
-    assert result == "Successfully updated note 'plan'."
+    assert result == "Updated note 'plan'."
 
     note_path = Path(tmp_path) / "notes" / "plan.md"
     assert note_path.read_text(encoding="utf-8") == "Step 1: Completed\nStep 2: Done"
@@ -87,7 +87,7 @@ async def test_update_note_pure_with_warning(mock_ctx, tmp_path):
             target="target string",
             replacement="New String",
         )
-        assert "Successfully updated note 'fuzzy_note'." in result
+        assert "Updated note 'fuzzy_note'." in result
         assert "WARNING: Fuzzy match applied" in result
 
 
@@ -102,7 +102,7 @@ async def test_update_note_pure_callable_execution(mock_ctx, tmp_path):
         target="beta",
         replacement="gamma",
     )
-    assert result == "Successfully updated note 'callable_plan'."
+    assert result == "Updated note 'callable_plan'."
 
     note_path = Path(tmp_path) / "notes" / "callable_plan.md"
     assert note_path.read_text(encoding="utf-8") == "alpha gamma"
@@ -135,7 +135,7 @@ async def test_get_update_note_tool_pure_langchain_ainvoke(mock_ctx, tmp_path):
             "replacement": "updated",
         }
     )
-    assert result == "Successfully updated note 'export_plan'."
+    assert result == "Updated note 'export_plan'."
 
     note_path = Path(tmp_path) / "notes" / "export_plan.md"
     assert note_path.read_text(encoding="utf-8") == "updated value"

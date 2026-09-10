@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""History compression into segment chunks, eras, and a session snapshot.
+"""History compression into segment chunks, eras, and recall-only periods.
 
 Each chunk keeps three bands: synopsis and effects, interval summaries, and a
 per-step action ledger. Capsule generation reads the operator's turn transcripts
@@ -20,12 +20,18 @@ alongside the recorded step facts. Milestone changes, segment size, and token
 limits determine chunk boundaries.
 
 Original messages remain in context until their capsule is ready. Failed capsule
-jobs retain their source text for retry. Only the hard token limit forces pending
-chunks into the session snapshot. Older chunks fold into eras and then period
-summaries; full step records remain available through the history tools.
+jobs retain their source text for retry. At the hard token limit, ready chunks
+swap as ordinary L2 blocks first; only when that cannot bring the context back
+under the line does everything closed force-swap (pending chunks included) and
+the whole frozen region fold into a recall-only era — L3: the period paragraph
+plus the per-step minimal index (step number, session offset, action phrase).
+The fold is monotonic: later L2 swaps append new chunk blocks after the folded
+eras and never restore the folded chunks. Older chunks also fold into eras and
+then recall-only periods by count overflow; full step records remain available
+through the history tools.
 
 Checkpoint annotations persist independently of capsule generation. Frozen
-context is rebuilt only when a capsule or snapshot replaces the source turns.
+context is rebuilt only when a compression event replaces or folds turns.
 """
 
 import asyncio
@@ -60,6 +66,29 @@ _NOTE_TOOLS = ("save_note", "update_note", "append_note")
 
 # Reuse one tool trace per chunk across running, success, and failed states.
 COMPRESSION_TRACE_NAME = "compress_history"
+
+#: Plain-language phases carried in the trace payload (``args.phase``) so the
+#: timeline can say what the compression is *doing* independently of the
+#: trace ``status`` (running/success/failed), which other code keys on.
+#:   summarizing — the segment closed and its capsule is generating (running)
+#:   ready       — the capsule is on hand but the start gate holds the swap (running)
+#:   applied     — the compressed block replaced the raw turns (success)
+#:   failed      — capsule generation gave up; the full record is kept (failed)
+COMPRESSION_PHASE_SUMMARIZING = "summarizing"
+COMPRESSION_PHASE_READY = "ready"
+COMPRESSION_PHASE_APPLIED = "applied"
+COMPRESSION_PHASE_FAILED = "failed"
+COMPRESSION_PHASES = (
+    COMPRESSION_PHASE_SUMMARIZING,
+    COMPRESSION_PHASE_READY,
+    COMPRESSION_PHASE_APPLIED,
+    COMPRESSION_PHASE_FAILED,
+)
+_STATUS_TO_PHASE = {
+    "running": COMPRESSION_PHASE_SUMMARIZING,
+    "success": COMPRESSION_PHASE_APPLIED,
+    "failed": COMPRESSION_PHASE_FAILED,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +190,7 @@ def extract_note_writes(step: dict) -> list[dict[str, str]]:
 
 
 def validate_interval_coverage(intervals: Any, start_step: int, end_step: int) -> bool:
-    """Band ② hard constraint: the interval union covers [start, end] seamlessly."""
+    """Band ② hard constraint: the interval union covers [start, end] without gaps or overlaps."""
     if not isinstance(intervals, list) or not intervals:
         return False
     expected = start_step
@@ -289,7 +318,7 @@ class StepCapsuleLens(StepLens):
                 " keys doing/did/effect/entry_state/exit_state/verified_facts/"
                 "unresolved/failed_paths/important_entities/intervals. Never use"
                 " verdict words (successfully, completed, failed, ...); intervals"
-                " must cover the step range seamlessly. Return only JSON."
+                " must cover the full step range without gaps or overlaps. Return only JSON."
             )
 
     def _get_llm(self):
@@ -396,8 +425,9 @@ class StepCapsuleLens(StepLens):
     def _cap_transcript(cls, transcript: str) -> str:
         """Cap one turn transcript in place, keeping its head and its tail.
 
-        The tail is kept intact because the validator result message closes
-        every turn and outranks everything above it (fact priority); the cut
+        The tail is kept intact because the turn's last messages (the final
+        action's tool result, or the failure result message that closes a
+        failed turn) outrank everything above them (fact priority); the cut
         lands in the middle and is announced with its size.
         """
         cap = cls.MAX_TURN_TRANSCRIPT_CHARS
@@ -475,8 +505,9 @@ class StepCapsuleLens(StepLens):
     async def _invoke(self, llm: Any, messages: list[BaseMessage], model_label: str):
         response = await asyncio.wait_for(llm.ainvoke(messages), timeout=90.0)
         # Raw-model bypass metering (gateway-wrapped models meter themselves);
-        # capsule prompts are small and must not clobber the session's
-        # last_prompt_tokens (the compaction thresholds' live context base).
+        # capsule prompts are small and are kept out of the session meter's
+        # last_prompt_tokens (the compaction base itself is operator-owned on
+        # the transcript ledger and never reads the session meter).
         try:
             from artemis.services.llm import RobustChatModelWrapper
             from artemis.services.token_meter import record_llm_usage
@@ -588,7 +619,8 @@ class ChunkState:
     trace_id: Any = None
     trace_step_id: Any = None
     announced_at: float | None = None
-    # Measure source at close and summary at swap; estimate tokens as chars // 4.
+    # Measure source at close and summary at swap; tokens are derived through
+    # the ledger's calibrated chars-per-token ratio (chars // 4 by default).
     # Forced swaps without a capsule leave summary_chars unset.
     source_chars: int = 0
     summary_chars: int | None = None
@@ -762,8 +794,13 @@ def render_era_period_paragraph(era: EraState) -> str:
 def render_era_block(era: EraState) -> str:
     """Era block: ① merged headers, ② degraded to titles, ③ per-chunk ledgers.
 
-    A recall-only era includes the step range and session offsets for video
-    alignment, a synopsis, recall guidance, and preserved user instructions.
+    A recall-only era (L3) includes the step range and session offsets for
+    video alignment, a synopsis, recall guidance, and the per-step minimal
+    index of every member chunk (step number, session offset, action phrase
+    — results only via search_history). Pending chunks contribute their
+    index too. User-injected instruction lines are never evicted: they sit
+    inside the index at their step, or are appended when a chunk carries no
+    index text.
     """
     if era.recall_only:
         lines = [
@@ -774,9 +811,12 @@ def render_era_block(era: EraState) -> str:
             ),
             RECALL_GUIDANCE_TEMPLATE.format(start=era.start_step_number, end=era.end_step_number),
         ]
-        # Never-evict: user-injected instruction lines survive even recall-only.
         for chunk in era.chunks:
-            lines.extend(chunk.user_lines)
+            if chunk.minimal_index:
+                lines.append(chunk.minimal_index)
+        rendered = "\n".join(lines)
+        for chunk in era.chunks:
+            lines.extend(line for line in chunk.user_lines if line not in rendered)
         return "\n".join(lines)
 
     merged = merge_structured_fields([c.band1 for c in era.chunks if c.band1])
@@ -816,48 +856,6 @@ def render_era_block(era: EraState) -> str:
     return "\n".join(parts)
 
 
-def render_l3_snapshot(
-    eras: list[EraState],
-    chunks: list[ChunkState],
-    *,
-    goal: str | None,
-    plan_text: str | None,
-) -> str:
-    """L3 emergency snapshot: merged knowledge plane + minimal per-step index.
-
-    The chunk headers are mechanically set-merged (no summary-of-summary); the
-    per-step skeleton survives at minimal width so step-level time perception
-    never breaks.
-    """
-    all_chunks = [c for era in eras for c in era.chunks] + list(chunks)
-    merged = merge_structured_fields([c.band1 for c in all_chunks if c.band1])
-    exit_state = ""
-    for chunk in reversed(all_chunks):
-        if chunk.band1:
-            exit_state = chunk.band1.get("exit_state") or ""
-            break
-
-    start = all_chunks[0].start_step_number if all_chunks else 0
-    end = all_chunks[-1].end_step_number if all_chunks else 0
-    parts = [
-        f"[Session snapshot | Steps {start}–{end} | hard-threshold fallback]",
-        f"Overall goal: {goal or '-'}",
-        "Plan state:",
-        (plan_text or "-").rstrip(),
-        f"Verified facts: {'; '.join(merged['verified_facts']) or '-'}",
-        f"Unresolved: {'; '.join(merged['unresolved']) or '-'}",
-        f"Failed paths: {'; '.join(merged['failed_paths']) or '-'}",
-        f"Important entities: {'; '.join(merged['important_entities']) or '-'}",
-        f"Device/app state: {exit_state or '-'}",
-        "",
-        "--- Step index (minimal width, per chunk) ---",
-    ]
-    for chunk in all_chunks:
-        parts.append(f"[{chunk.step_range_label}]")
-        parts.append(chunk.minimal_index)
-    return "\n".join(parts)
-
-
 # ---------------------------------------------------------------------------
 # HistoryChunkManager — triggers, compression events, F-region rendering
 # ---------------------------------------------------------------------------
@@ -885,10 +883,13 @@ class HistoryChunkManager:
     ):
         self._engine = engine
         self._ctx = ctx
+        # Accepted for the callers' wiring; the frozen region no longer
+        # recites the goal (the prompt carries it elsewhere).
         self._goal = goal
 
         cc = chunking_config
         self._max_steps = int(getattr(cc, "max_steps", 12) or 12)
+        self._min_steps = max(1, min(self._max_steps, int(getattr(cc, "min_steps", 3) or 3)))
         self._target_source_tokens = int(getattr(cc, "target_source_tokens", 2000) or 2000)
         self._model_name = getattr(cc, "model", None) or "gemini-3.8-flash"
         self._max_chunks = int(getattr(cc, "max_chunks", 8) or 8)
@@ -897,6 +898,8 @@ class HistoryChunkManager:
 
         tc = transcript_config
         self._budget = int(getattr(tc, "context_budget_tokens", 80000) or 80000)
+        start_ratio = getattr(tc, "start_ratio", None)
+        self._start_ratio = float(0.35 if start_ratio is None else start_ratio)
         self._soft_ratio = float(getattr(tc, "soft_ratio", 0.7) or 0.7)
         self._hard_ratio = float(getattr(tc, "hard_ratio", 0.9) or 0.9)
         self._min_active_steps = int(getattr(tc, "min_active_steps", 5) or 5)
@@ -916,7 +919,7 @@ class HistoryChunkManager:
         # whose original turns still live in the transcript until their
         # capsule header is ready (ready-gated swap). An entry's ``chunk`` is
         # None when the segment had no step records — it can then only leave
-        # the queue through the hard-threshold emergency swap.
+        # the queue through the hard-threshold force-swap.
         self._chunks: list[ChunkState] = []
         self._eras: list[EraState] = []
         self._awaiting: list[dict[str, Any]] = []
@@ -1065,11 +1068,11 @@ class HistoryChunkManager:
             logger.error(f"History chunk compression event failed: {e}")
 
     def _on_render_inner(self, ledger) -> None:
-        base_tokens = self._context_base_tokens()
+        base_tokens = self._context_base_tokens(ledger)
         soft = base_tokens is not None and base_tokens >= self._budget * self._soft_ratio
         hard = base_tokens is not None and base_tokens >= self._budget * self._hard_ratio
 
-        closed_any = self._close_new_segments(ledger, soft)
+        closed_any = self._close_new_segments(ledger, soft, hard)
         if closed_any or soft or hard:
             # Failure rung of the degradation ladder: exhausted capsules are
             # re-dispatched (the lens retries a fallback model per attempt);
@@ -1079,12 +1082,20 @@ class HistoryChunkManager:
         self._harvest_capsules()
         self._swap_ready_segments(ledger, hard=hard, base_tokens=base_tokens)
 
-    def _close_new_segments(self, ledger, soft: bool) -> bool:
+    def _close_new_segments(self, ledger, soft: bool, hard: bool = False) -> bool:
         """Trigger evaluation: close due segments and dispatch their capsules.
 
         Closing NEVER freezes turns (ready-gated swap): the segment's original
         messages stay live in the transcript; a closed segment joins the
         ``_awaiting`` queue until its capsule header is ready.
+
+        Minimum chunk length: the size and pressure triggers only close once
+        at least ``min_steps`` eligible turns have accumulated in the open
+        segment — turns age past the sliding-window floor one per render, so
+        without it a heavy session closes a one-turn chunk (one capsule call)
+        every render. A milestone close is exempt (a complete segment is a
+        unit, however short) and the hard threshold waives it (emergency:
+        whatever is eligible closes so the swap has material).
         """
         turns = ledger.unchunked_turns()
         if len(turns) <= self._min_active_steps:
@@ -1128,17 +1139,19 @@ class HistoryChunkManager:
         if tail_segment is not None:
             tail_portion = tail_segment[1][: max(0, remaining_eligible - consumed_prefix)]
 
+        long_enough = hard or len(tail_portion) >= self._min_steps
+
         size_event = False
-        if tail_segment is not None and tail_portion:
+        if tail_segment is not None and tail_portion and long_enough:
             tail_chars = ledger.turn_text_chars(tail_portion)
             size_event = (
                 len(tail_segment[1]) >= self._max_steps
-                or (tail_chars // 4) >= self._target_source_tokens
+                or self._chars_to_tokens(tail_chars, ledger) >= self._target_source_tokens
             )
 
         if size_event:
             selected.append((tail_segment[0], tail_portion, "size"))
-        elif not milestone_event and soft and tail_portion:
+        elif not milestone_event and soft and tail_portion and long_enough:
             # Soft threshold with nothing else due: close the oldest open
             # segment's eligible portion (bounded by the chunk size cap).
             selected.append((tail_segment[0], tail_portion[: self._max_steps], "pressure"))
@@ -1176,6 +1189,10 @@ class HistoryChunkManager:
                     " retained until a capsule lands."
                 )
                 self._capsule_service.submit(key, payload)
+                # A fresh attempt: if the chunk readies again while the start
+                # gate still holds it, the timeline gets a fresh ``held`` note
+                # instead of staying on ``retrying``.
+                entry["held_announced"] = False
                 self._announce(chunk, "running", note="retrying")
             except Exception as e:
                 logger.error(f"Capsule re-dispatch for {key} failed: {e}")
@@ -1185,41 +1202,91 @@ class HistoryChunkManager:
 
         Swaps consume the transcript's oldest unchunked turns, so only a
         contiguous READY prefix may swap — an older pending segment keeps its
-        (and every younger segment's) original text live. The hard threshold
-        is the sole exception: everything closed force-swaps, pending chunks
-        included, and the frozen region renders as the L3 snapshot.
+        (and every younger segment's) original text live.
+
+        Start gate: closing a segment (milestone/size triggers) only *prepares*
+        its capsule in the background; the original text is replaced only once
+        the operator's measured context has reached ``budget * start_ratio``.
+        Below that the ready chunks are held in the awaiting queue, so at low
+        occupancy the model keeps reading the full transcript while capsules
+        are already on hand for when pressure arrives. An unknown base (no
+        measured operator call yet, or a provider without usage metadata)
+        cannot gate and falls through to swap-on-ready.
+
+        Hard threshold ladder (L2 first, L3 last): at ``budget * hard_ratio``
+        the ready prefix swaps as ordinary L2 chunk blocks when the estimated
+        context after that swap drops back under the hard line (rung 1). Only
+        when no ready prefix exists, or the L2 swap would still leave the
+        context at or above the line, does everything closed force-swap —
+        pending chunks included — and the whole frozen region fold into a
+        recall-only era (rung 2: L3 = period paragraph + per-step minimal
+        index). With nothing awaiting at all, the last resort is folding the
+        existing frozen region the same way without consuming turns (rung 3).
+        The fold is a monotonic state change: later L2 swaps append new chunk
+        blocks after the folded eras and never restore the folded chunks;
+        repeated hard renders with nothing left to fold leave the frozen
+        blocks byte-identical.
 
         ``base_tokens`` is the prompt size before the swap, used to estimate
         the remaining context on the last swapped chunk's trace.
         """
+        hard_line = self._budget * self._hard_ratio
         if not self._awaiting:
+            if hard and self._collapse_frozen_region():
+                ledger.freeze_turns(0, self._render_frozen_blocks())
+                logger.info(
+                    "History compression: hard threshold with nothing awaiting;"
+                    " frozen region folded into the recall-only period."
+                )
             return
+
+        # An entry without a chunk (turns with no step records: nothing to
+        # summarize, nothing to render) is consumable at once — it must not
+        # pin the queue, or no L2 swap ever happens and the hard line jumps
+        # straight to the fold.
+        ready_prefix: list[dict[str, Any]] = []
+        for entry in self._awaiting:
+            chunk = entry["chunk"]
+            if chunk is not None and chunk.status != "ready":
+                break
+            ready_prefix.append(entry)
+
         swap: list[dict[str, Any]] = []
+        fold = False
         if hard:
-            swap, self._awaiting = self._awaiting, []
+            estimate = self._estimate_context_after(base_tokens, ready_prefix, ledger)
+            if ready_prefix and estimate is not None and estimate < hard_line:
+                swap = ready_prefix  # rung 1: L2 is enough
+            else:
+                swap = list(self._awaiting)  # rung 2: force everything, fold
+                fold = True
+        elif base_tokens is not None and base_tokens < self._budget * self._start_ratio:
+            self._announce_held(base_tokens, ledger)
+            return
         else:
-            while self._awaiting:
-                chunk = self._awaiting[0]["chunk"]
-                if chunk is None or chunk.status != "ready":
-                    break
-                swap.append(self._awaiting.pop(0))
+            swap = ready_prefix
         if not swap:
             return
+        self._awaiting = self._awaiting[len(swap) :]
 
         for entry in swap:
             if entry["chunk"] is not None:
                 self._chunks.append(entry["chunk"])
-        self._fold_eras()
-        blocks = self._render_frozen_blocks(hard=hard)
+        if fold:
+            self._collapse_frozen_region()
+        else:
+            self._fold_eras()
+        blocks = self._render_frozen_blocks()
         consumed = sum(len(e["turns"]) for e in swap)
         ledger.freeze_turns(consumed, blocks)
         logger.info(
             f"History compression swap: froze {consumed} turns"
             f" ({len(self._chunks)} chunks, {len(self._eras)} eras,"
-            f" {len(self._awaiting)} still awaiting, hard={hard})."
+            f" {len(self._awaiting)} still awaiting, hard={hard}, folded={fold})."
         )
-        # Pending chunks contribute only their minimal index to the L3 snapshot.
-        # Include that size in the context estimate, without a compression ratio.
+        # A folded chunk contributes only its minimal index (its ① fields are
+        # merged into the period paragraph); a pending chunk has no summary
+        # size to report, so its trace carries no compression ratio.
         swapped = [e for e in swap if e["chunk"] is not None]
         source_tokens_total = 0
         replacement_tokens_total = 0
@@ -1227,12 +1294,12 @@ class HistoryChunkManager:
             chunk = entry["chunk"]
             if chunk.status == "ready":
                 chunk.summary_chars = len(render_chunk_block(chunk))
-                replacement_chars = chunk.summary_chars
             else:
                 chunk.summary_chars = None
-                replacement_chars = len(chunk.minimal_index or "")
-            source_tokens_total += chunk.source_chars // 4
-            replacement_tokens_total += replacement_chars // 4
+            source_tokens_total += self._chars_to_tokens(chunk.source_chars, ledger)
+            replacement_tokens_total += self._chars_to_tokens(
+                self._replacement_chars(chunk, folded=fold), ledger
+            )
         context_tokens: int | None = None
         if base_tokens is not None:
             context_tokens = max(
@@ -1242,19 +1309,26 @@ class HistoryChunkManager:
         for index, entry in enumerate(swapped):
             chunk = entry["chunk"]
             turns = len(entry["turns"])
-            forced = hard and chunk.status != "ready"
-            if not forced:
-                result = f"Replaced {turns} turn{'s' if turns != 1 else ''} with the summary."
-            else:
+            plural = "s" if turns != 1 else ""
+            forced = fold and chunk.status != "ready"
+            if forced:
                 result = (
                     "Context budget reached before the summary was ready;"
-                    f" replaced {turns} turn{'s' if turns != 1 else ''} with a brief"
-                    " snapshot."
+                    f" {turns} turn{plural} folded into the period summary."
                 )
+            elif fold:
+                result = (
+                    f"Replaced {turns} turn{plural} with the summary, folded into"
+                    " the period summary (context budget reached)."
+                )
+            else:
+                result = f"Replaced {turns} turn{plural} with the summary."
             extra: dict[str, Any] = {
-                "source_tokens": chunk.source_chars // 4,
+                "source_tokens": self._chars_to_tokens(chunk.source_chars, ledger),
                 "summary_tokens": (
-                    chunk.summary_chars // 4 if chunk.summary_chars is not None else None
+                    self._chars_to_tokens(chunk.summary_chars, ledger)
+                    if chunk.summary_chars is not None
+                    else None
                 ),
             }
             # Show the context estimate once per swap, on its last trace.
@@ -1264,21 +1338,119 @@ class HistoryChunkManager:
                 extra["context_estimated"] = True
             self._announce(chunk, "success", result=result, forced=forced, extra=extra)
 
+    def _collapse_frozen_region(self) -> bool:
+        """Fold the whole frozen region into recall-only eras (hard-threshold
+        L3). Every existing era becomes recall-only and the loose chunks fold
+        into one new recall-only era (a later fold appends another era, so
+        ordinals and step order stay monotonic). Returns whether anything
+        changed — False means the region is already fully folded, so the
+        caller can leave the frozen blocks untouched (byte-stable)."""
+        changed = False
+        for era in self._eras:
+            if not era.recall_only:
+                era.recall_only = True
+                changed = True
+        if self._chunks:
+            self._era_counter += 1
+            self._eras.append(
+                EraState(ordinal=self._era_counter, chunks=self._chunks, recall_only=True)
+            )
+            self._chunks = []
+            changed = True
+        return changed
+
+    @staticmethod
+    def _chars_to_tokens(chars: int, ledger: Any = None) -> int:
+        """Characters → tokens through the ledger's session-calibrated ratio
+        (:meth:`TranscriptLedger.chars_to_tokens`); ``chars // 4`` without a
+        ledger. Identical to ``// 4`` at the default ratio."""
+        convert = getattr(ledger, "chars_to_tokens", None)
+        if callable(convert):
+            try:
+                return int(convert(chars))
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        return max(0, int(chars)) // 4
+
+    @staticmethod
+    def _replacement_chars(chunk: ChunkState, *, folded: bool = False) -> int:
+        """Characters a swapped chunk contributes in place of its turns: the
+        full block when ready and rendered as a chunk block, only the minimal
+        index when still pending or folded into a recall-only era."""
+        if chunk.status == "ready" and not folded:
+            return len(render_chunk_block(chunk))
+        return len(chunk.minimal_index or "")
+
+    def _estimate_context_after(
+        self, base_tokens: int | None, entries: list[dict[str, Any]], ledger: Any = None
+    ) -> int | None:
+        """Estimated prompt size after swapping ``entries`` as L2 blocks."""
+        if base_tokens is None:
+            return None
+        delta = 0
+        for entry in entries:
+            chunk = entry["chunk"]
+            if chunk is None:
+                continue
+            delta += self._chars_to_tokens(
+                self._replacement_chars(chunk), ledger
+            ) - self._chars_to_tokens(chunk.source_chars, ledger)
+        return max(0, int(base_tokens) + delta)
+
+    def _announce_held(self, base_tokens: int, ledger: Any = None) -> None:
+        """Once per chunk: its capsule is ready but the start gate holds the
+        original text live. The timeline line stays ``running`` with a
+        ``held`` note so the UI can say the summary is ready and waiting."""
+        threshold = int(self._budget * self._start_ratio)
+        for entry in self._awaiting:
+            chunk = entry["chunk"]
+            if chunk is None or chunk.status != "ready" or entry.get("held_announced"):
+                continue
+            entry["held_announced"] = True
+            self._announce(
+                chunk,
+                "running",
+                phase=COMPRESSION_PHASE_READY,
+                note="held",
+                extra={
+                    "summary_tokens": self._chars_to_tokens(len(render_chunk_block(chunk)), ledger),
+                    "context_tokens": int(base_tokens),
+                    "context_budget": self._budget,
+                    "swap_at_tokens": threshold,
+                },
+            )
+
     def _partition(self, eligible: list[dict]) -> list[tuple[str | None, list[dict]]]:
-        """Split eligible turns into consecutive same-hash segments."""
+        """Split eligible turns into consecutive same-hash segments.
+
+        A turn without a stamp (no recorded step — a reply without a tool
+        call, a helper-only turn — or a step not stamped yet) joins the
+        running segment. Leading unstamped turns have no running segment to
+        join: they are held and become the head of the first stamped segment
+        instead of forming a stampless segment of their own, which would
+        close as a chunk with no step records (``_create_chunk`` returns
+        ``None`` for it) and sit at the head of the awaiting queue.
+        """
         segments: list[tuple[str | None, list[dict]]] = []
         current_hash: str | None = None
         current: list[dict] = []
+        started = False
         for turn in eligible:
             key = turn.get("step_key")
             stamped = self._step_hashes.get(str(key)) if key is not None else None
+            if stamped is None and not started:
+                current.append(turn)  # leading unstamped turns wait for a segment
+                continue
             if stamped is None:
                 stamped = current_hash  # unknown stamps join the running segment
-            if current and stamped == current_hash:
+            if not started:
+                started = True
+                current_hash = stamped
+                current.append(turn)
+            elif stamped == current_hash:
                 current.append(turn)
             else:
-                if current:
-                    segments.append((current_hash, current))
+                segments.append((current_hash, current))
                 current_hash = stamped
                 current = [turn]
         if current:
@@ -1290,21 +1462,26 @@ class HistoryChunkManager:
             seg_turns[i : i + self._max_steps] for i in range(0, len(seg_turns), self._max_steps)
         ]
 
-    def _context_base_tokens(self) -> int | None:
+    def _context_base_tokens(self, ledger=None) -> int | None:
+        """The live context base for the start/soft/hard thresholds.
+
+        An injected ``meter_getter`` wins (tests / custom wiring); otherwise
+        the base is the owning operator's last measured prompt size recorded
+        on the ledger (:meth:`TranscriptLedger.record_prompt_tokens`). The
+        session-wide token meter is deliberately NOT consulted: its
+        ``last_prompt_tokens`` is overwritten by whichever agent called last
+        (Planner, Validator, Checker, sub-agents, lenses), so it does not
+        describe the operator's context at all.
+        """
         if self._meter_getter is not None:
             try:
                 return self._meter_getter()
             except Exception:
                 return None
         try:
-            from artemis.services.token_meter import get_meter
-
-            session_id = getattr(self._engine, "current_session_id", None)
-            if not session_id:
-                return None
-            last = get_meter(session_id).last_prompt_tokens
-            return last or None
-        except Exception:
+            last = getattr(ledger, "last_prompt_tokens", None)
+            return int(last) if last else None
+        except (TypeError, ValueError):
             return None
 
     # ------------------------------------------------------------------
@@ -1395,7 +1572,11 @@ class HistoryChunkManager:
                 chunk.source_chars = int(ledger.turn_text_chars(slice_turns))
             except Exception as e:
                 logger.debug(f"Chunk source size unavailable for {chunk.capsule_key}: {e}")
-        self._announce(chunk, "running", extra={"source_tokens": chunk.source_chars // 4})
+        self._announce(
+            chunk,
+            "running",
+            extra={"source_tokens": self._chars_to_tokens(chunk.source_chars, ledger)},
+        )
         return chunk
 
     def _announce(
@@ -1408,19 +1589,29 @@ class HistoryChunkManager:
         note: str | None = None,
         forced: bool = False,
         extra: dict[str, Any] | None = None,
+        phase: str | None = None,
     ) -> None:
-        """Update the chunk's timeline trace without interrupting compression."""
+        """Update the chunk's timeline trace without interrupting compression.
+
+        ``phase`` is the machine-readable plain-language phase written to
+        ``args.phase`` (one of ``COMPRESSION_PHASES``). It defaults from the
+        trace ``status`` — running → summarizing, success → applied,
+        failed → failed — and the held path passes ``ready`` explicitly.
+        """
         if chunk.trace_id is None:
             return
         engine = self._engine
         if engine is None or not hasattr(engine, "record_trace"):
             return
+        if phase is None:
+            phase = _STATUS_TO_PHASE.get(status, COMPRESSION_PHASE_SUMMARIZING)
         args: dict[str, Any] = {
             "start_step": chunk.start_step_number,
             "end_step": chunk.end_step_number,
             "steps": len(chunk.source_step_ids),
             "milestone": chunk.milestone_label,
             "trigger": chunk.trigger,
+            "phase": phase,
         }
         if note:
             args["note"] = note
@@ -1450,9 +1641,15 @@ class HistoryChunkManager:
             logger.debug(f"Compression announcement skipped for {chunk.capsule_key}: {e}")
 
     def _on_capsule_failed(self, key: JobKey) -> None:
-        """Mark the trace failed; keep the chunk pending for a later retry."""
-        for chunk in self._all_chunks():
-            if chunk.status != "pending" or chunk.capsule_key != key:
+        """Mark the trace failed; keep the chunk pending for a later retry.
+
+        Only a chunk still awaiting can be retried (:meth:`_redispatch_failed_capsules`
+        walks the awaiting queue); a pending chunk that was already force-swapped
+        keeps its swap trace, since no retry follows for it.
+        """
+        for entry in self._awaiting:
+            chunk = entry["chunk"]
+            if chunk is None or chunk.status != "pending" or chunk.capsule_key != key:
                 continue
             self._announce(
                 chunk,
@@ -1584,31 +1781,28 @@ class HistoryChunkManager:
     # ------------------------------------------------------------------
 
     def _fold_eras(self) -> None:
+        """Count overflow: the oldest loose chunks merge into an era; the
+        oldest ledger-bearing eras beyond ``max_eras`` become recall-only
+        (eras already folded by a hard event do not count against the cap)."""
         overflow = len(self._chunks) - self._max_chunks
         if overflow > 0:
             folded, self._chunks = self._chunks[:overflow], self._chunks[overflow:]
             self._era_counter += 1
             self._eras.append(EraState(ordinal=self._era_counter, chunks=folded))
-        era_overflow = len(self._eras) - self._max_eras
+        with_ledger = [era for era in self._eras if not era.recall_only]
+        era_overflow = len(with_ledger) - self._max_eras
         if era_overflow > 0:
-            for era in self._eras[:era_overflow]:
-                if not era.recall_only:
-                    era.recall_only = True
-                    logger.info(
-                        f"Era {era.ordinal} overflowed to the recall-only period"
-                        f" paragraph (Steps {era.start_step_number}–"
-                        f"{era.end_step_number})."
-                    )
+            for era in with_ledger[:era_overflow]:
+                era.recall_only = True
+                logger.info(
+                    f"Era {era.ordinal} overflowed to the recall-only period"
+                    f" paragraph (Steps {era.start_step_number}–"
+                    f"{era.end_step_number})."
+                )
 
-    def _render_frozen_blocks(self, *, hard: bool) -> list[BaseMessage]:
-        if not self._chunks and not self._eras:
-            return []
-        if hard:
-            plan_text = self._read_plan_text()
-            text = render_l3_snapshot(
-                self._eras, self._chunks, goal=self._goal, plan_text=plan_text
-            )
-            return [HumanMessage(content=[{"type": "text", "text": text}])]
+    def _render_frozen_blocks(self) -> list[BaseMessage]:
+        """Frozen region, oldest first: era blocks (recall-only or merged),
+        then the loose chunk blocks."""
         blocks: list[BaseMessage] = []
         for era in self._eras:
             blocks.append(HumanMessage(content=[{"type": "text", "text": render_era_block(era)}]))
@@ -1617,18 +1811,6 @@ class HistoryChunkManager:
                 HumanMessage(content=[{"type": "text", "text": render_chunk_block(chunk)}])
             )
         return blocks
-
-    def _read_plan_text(self) -> str | None:
-        try:
-            from artemis.utils.notes import get_note_file_path
-
-            base_dir = getattr(self._engine, "base_dir", None)
-            if not base_dir:
-                return None
-            path = get_note_file_path(base_dir, "task_plan")
-            return path.read_text(encoding="utf-8") if path.exists() else None
-        except Exception:
-            return None
 
     # ------------------------------------------------------------------
     # Draining

@@ -71,6 +71,9 @@ DEFERRING_TOOLS = {
     "ask_explorer",
 }
 
+# Bare key names press_key accepts (case-insensitive, optional KEYCODE_ prefix).
+SUPPORTED_PRESS_KEYS = ("ENTER", "BACK", "HOME", "APP_SWITCH")
+
 from artemis.agents.operator.prompts import (
     OPERATOR_MAX_TOOL_ITERATIONS,
     PromptBuilder,
@@ -82,9 +85,9 @@ from artemis.agents.operator.prompts import (
     HistoricalStateHintPromptComponent,
     FeedbackPromptComponent,
     ExecutionIncidentPromptComponent,
-    CheckItemsExplainerPromptComponent,
     BackgroundTasksPromptComponent,
     render_plan_ledger_bounce,
+    ReasoningReminderPromptComponent,
     unwritten_action_streak,
     ToolLimitWarningPromptComponent,
     InjectedInstructionPromptComponent,
@@ -137,6 +140,24 @@ class OperatorNode:
         self._transcript_turn_base: int | None = None
         self._turn_plan_baseline: str | None = None
         self._turn_ledger_streak: int = 0
+        # Whether the previous turn's replies carried no visible reasoning text;
+        # the next observation tail then carries a one-line reminder (no extra
+        # model call). Legacy-path fallback only: with a transcript ledger the
+        # ledger's own ``last_turn_silent`` is authoritative.
+        self._previous_turn_silent: bool = False
+
+    def _previous_turn_was_silent(self) -> bool:
+        """Whether the previous turn carried no visible reasoning text.
+
+        The transcript ledger judges its committed turns itself; the local flag
+        only serves the legacy path, which has no ledger.
+        """
+        from artemis.memory import TranscriptLedger
+
+        ledger = getattr(self.ctx, "transcript_ledger", None)
+        if isinstance(ledger, TranscriptLedger):
+            return bool(ledger.last_turn_silent)
+        return self._previous_turn_silent
 
     def _available_device_actions(self) -> frozenset[str]:
         """Device actions the installed actuator backend provides.
@@ -225,7 +246,6 @@ class OperatorNode:
                     TemplatePromptComponent(),
                     {"template_name": "main_template"},
                 ),
-                (CheckItemsExplainerPromptComponent(), {}),
                 (ExecutionIncidentPromptComponent(), {}),
                 (ObservationPromptComponent(), {}),
                 (ScreenshotSimilarityPromptComponent(), {}),
@@ -233,10 +253,14 @@ class OperatorNode:
                 (InjectedInstructionPromptComponent(), {}),
                 (BackgroundTasksPromptComponent(), {}),
                 (FeedbackPromptComponent(), {}),
+                (ReasoningReminderPromptComponent(), {}),
                 (ToolLimitWarningPromptComponent(), {}),
             ]
         else:
-            components = [(c, {}) for c in components] + [(ToolLimitWarningPromptComponent(), {})]
+            components = [(c, {}) for c in components] + [
+                (ReasoningReminderPromptComponent(), {}),
+                (ToolLimitWarningPromptComponent(), {}),
+            ]
 
         # Active and finished tasks are now passed as arguments
         active_tasks = active_background_tasks or []
@@ -252,6 +276,7 @@ class OperatorNode:
                 "current_step_num": current_step_num,
                 "active_background_tasks": active_tasks,
                 "newly_finished_tasks": newly_finished,
+                "previous_turn_silent": self._previous_turn_was_silent(),
                 "steps": steps,
             }
             kwargs_to_pass.update(extra_kwargs)
@@ -280,6 +305,9 @@ class OperatorNode:
             image_scrub_depth=getattr(cfg, "image_scrub_depth", 3),
             pending_grace_steps=getattr(cfg, "pending_grace_steps", 3),
             xml_scrub_depth=getattr(cfg, "xml_scrub_depth", 1),
+            image_scrub_depth_relaxed=getattr(cfg, "image_scrub_depth_relaxed", None),
+            context_budget_tokens=getattr(cfg, "context_budget_tokens", None),
+            start_ratio=getattr(cfg, "start_ratio", None),
             session_start=session_start if isinstance(session_start, (int, float)) else None,
         )
         # L2/L3 chunk compression (M3) rides the same flag; without a
@@ -337,6 +365,8 @@ class OperatorNode:
         """
         from langchain_core.messages import HumanMessage
 
+        from artemis.memory.transcript import mark_ephemeral
+
         ledger = self._ensure_transcript_ledger(state)
 
         # 1. S region: rendered exactly once per session.
@@ -387,7 +417,6 @@ class OperatorNode:
         builder.add_human_content(f"# CURRENT OBSERVATION [{ledger.elapsed_label()}]")
         components = [
             (PlanRecitationPromptComponent(), {}),
-            (CheckItemsExplainerPromptComponent(), {}),
             (ExecutionIncidentPromptComponent(), {}),
             (ObservationPromptComponent(), {}),
             (ScreenshotSimilarityPromptComponent(), {}),
@@ -395,6 +424,7 @@ class OperatorNode:
             (InjectedInstructionPromptComponent(), {}),
             (BackgroundTasksPromptComponent(), {}),
             (FeedbackPromptComponent(), {}),
+            (ReasoningReminderPromptComponent(), {}),
             (ToolLimitWarningPromptComponent(), {}),
         ]
         for component, extra_kwargs in components:
@@ -407,6 +437,7 @@ class OperatorNode:
                 "active_background_tasks": active_background_tasks or [],
                 "newly_finished_tasks": newly_finished_tasks or [],
                 "steps": steps,
+                "previous_turn_silent": self._previous_turn_was_silent(),
             }
             kwargs_to_pass.update(extra_kwargs)
             await component(builder, state, self.ctx, **kwargs_to_pass)
@@ -418,6 +449,10 @@ class OperatorNode:
             else:
                 tail_content.append(part)
         tail = HumanMessage(content=tail_content)
+        # Per-turn notices (reminders, hints, guidance, incident blocks) are
+        # deleted by the scrub edge once the turn leaves the recent window.
+        if builder.ephemeral_indices:
+            mark_ephemeral(tail, builder.ephemeral_indices)
 
         messages = ledger.render([tail])
         self._transcript_turn_base = len(messages) - 1
@@ -471,12 +506,27 @@ class OperatorNode:
             response = await invoke_llm_with_timeout_message(acomplete(bound_llm, current_messages))
 
             usage = usage_from_message(response)
+            # The ledger's compaction thresholds read the operator's own
+            # prompt size, never the session-wide meter (which the
+            # Planner/Checker/sub-agent calls overwrite). The messages ride
+            # along so the ledger can calibrate its chars-per-token ratio.
+            transcript_ledger = getattr(self.ctx, "transcript_ledger", None)
             if usage is not None:
                 logger.info(
                     f"LLM usage: prompt_tokens={usage['prompt_tokens']}"
                     f" (cached={usage['cached_tokens']}),"
                     f" completion_tokens={usage['completion_tokens']}"
                 )
+                if hasattr(transcript_ledger, "record_prompt_tokens"):
+                    transcript_ledger.record_prompt_tokens(
+                        usage.get("prompt_tokens"), messages=current_messages
+                    )
+            elif hasattr(transcript_ledger, "record_prompt_tokens"):
+                # No usage metadata from the provider: record an estimate so
+                # the start gate and thresholds still see a context base.
+                from artemis.memory.transcript import estimate_prompt_tokens
+
+                transcript_ledger.record_prompt_tokens(estimate_prompt_tokens(current_messages))
 
             if response.content:
                 if isinstance(response.content, str):
@@ -638,18 +688,22 @@ class OperatorNode:
                             "Scratchpad/helper tool call failed. Deferring"
                             f" screen actions: {other_tool_failure_msg}"
                         )
-                        for tc in action_calls:
+                        # Every rejected call needs its own ToolMessage, but the
+                        # full explanation travels once; the rest point at it.
+                        for idx, tc in enumerate(action_calls):
                             tool_outputs.append(
                                 ToolMessage(
                                     tool_call_id=tc["id"],
+                                    name=normalize_name(tc["name"]),
                                     content=(
-                                        "This screen action was rejected"
-                                        " because an accompanying tool call"
-                                        " failed. Error:"
-                                        f" {other_tool_failure_msg}. Currently,"
-                                        " no screen actions have been"
-                                        " executed. Please correct the error"
-                                        " and try again."
+                                        "Not executed: this screen action was"
+                                        " rejected because an accompanying tool"
+                                        f" call failed. Error: {other_tool_failure_msg}."
+                                        " No screen action ran this turn. Correct"
+                                        " the error, then re-issue the action."
+                                        if idx == 0
+                                        else "Not executed: see the accompanying"
+                                        " tool-call error above."
                                     ),
                                     status="error",
                                 )
@@ -667,25 +721,23 @@ class OperatorNode:
                             " Deferring terminal actions."
                         )
 
-                        for tc in action_calls:
+                        for idx, tc in enumerate(action_calls):
                             tool_outputs.append(
                                 ToolMessage(
                                     tool_call_id=tc["id"],
+                                    name=normalize_name(tc["name"]),
                                     content=(
-                                        "Your pre-decision tools have been"
-                                        " successfully processed. However, the"
-                                        " screen action you attempted to"
-                                        " execute was rejected because you are"
-                                        " not allowed to simultaneously"
-                                        " use result-dependent pre-decision"
-                                        " tools and execute physical actions in"
-                                        " the same turn."
-                                        " Currently, no screen actions have"
-                                        " been executed. Please review your"
-                                        " updated context and re-output your"
-                                        " intended screen action."
+                                        "Not executed: this screen action was"
+                                        " deferred because the same turn also"
+                                        " called a result-dependent pre-decision"
+                                        " tool. No screen action ran this turn."
+                                        " Read the tool results above, then"
+                                        " re-issue the action."
+                                        if idx == 0
+                                        else "Not executed: deferred for the same"
+                                        " reason as the screen action above."
                                     ),
-                                    status="success",
+                                    status="error",
                                 )
                             )
 
@@ -713,24 +765,36 @@ class OperatorNode:
                     logger.info(f"Plan ledger gate: bouncing action. {bounce}")
                     for tc in action_calls:
                         tool_outputs.append(
-                            ToolMessage(tool_call_id=tc["id"], content=bounce, status="error")
+                            ToolMessage(
+                                tool_call_id=tc["id"],
+                                name=normalize_name(tc["name"]),
+                                content=bounce,
+                                status="error",
+                            )
                         )
                     action_calls_to_translate = []
                 elif len(action_calls) > burst_cap:
                     # A multi-action turn is a fast-action burst that the Validator
                     # fires without the safety net; cap its length before it runs.
                     validation_errors = True
-                    for tc in action_calls:
+                    burst_error = (
+                        f"Error: {len(action_calls)} Turn-Ending Actions in one"
+                        " turn exceed the fast-action burst limit of"
+                        f" {burst_cap}. Nothing was executed. Re-issue at most"
+                        f" {burst_cap} actions (a burst is for sub-second"
+                        " sequences on transient UI, not for batching normal"
+                        " steps), or a single vetted action."
+                    )
+                    # One ToolMessage per rejected call, full text only on the first.
+                    for idx, tc in enumerate(action_calls):
                         tool_outputs.append(
                             ToolMessage(
                                 tool_call_id=tc["id"],
+                                name=normalize_name(tc["name"]),
                                 content=(
-                                    f"Error: {len(action_calls)} Turn-Ending Actions in one"
-                                    " turn exceed the fast-action burst limit of"
-                                    f" {burst_cap}. Nothing was executed. Re-issue at most"
-                                    f" {burst_cap} actions (a burst is for sub-second"
-                                    " sequences on transient UI, not for batching normal"
-                                    " steps), or a single vetted action."
+                                    burst_error
+                                    if idx == 0
+                                    else "Not executed: see the burst-limit error above."
                                 ),
                                 status="error",
                             )
@@ -750,6 +814,7 @@ class OperatorNode:
                         tool_outputs.append(
                             ToolMessage(
                                 tool_call_id=tc["id"],
+                                name=normalize_name(tc["name"]),
                                 content=error,
                                 status="error",
                             )
@@ -759,6 +824,7 @@ class OperatorNode:
                         tool_outputs.append(
                             ToolMessage(
                                 tool_call_id=tc["id"],
+                                name=normalize_name(tc["name"]),
                                 content="Action Recorded",
                                 status="success",
                             )
@@ -896,6 +962,7 @@ class OperatorNode:
             new_subagent_calls=new_subagent_calls,
             state=state,
         )
+        self._previous_turn_silent = not (raw_thinking and raw_thinking.strip())
 
         # 8b. Transcript path: hold this turn's messages (observation tail +
         # tool-loop products) for commit at the next build, when the turn's
@@ -1276,6 +1343,10 @@ class OperatorNode:
                     "normalized_start_coordinates": [nx1, ny1],
                     "normalized_end_coordinates": [nx2, ny2],
                     "duration": duration,
+                    # A directional scroll keeps the direction the agent issued so
+                    # history and replays render "Swiped up (...)" rather than a
+                    # bare coordinate path.
+                    **({"direction": str(target)} if kind == "direction" else {}),
                     **({"target_description": described} if described else {}),
                 }
             ], None
@@ -1290,9 +1361,15 @@ class OperatorNode:
                     f"Error: 'key' must be a string, got {type(key).__name__}.",
                 )
 
-            normalized_key = key[8:] if key.startswith("KEYCODE_") else key
-            if normalized_key not in ["ENTER", "BACK", "HOME", "APP_SWITCH"]:
-                return [], f"Error: Unsupported key '{key}'."
+            normalized_key = key.strip().upper()
+            if normalized_key.startswith("KEYCODE_"):
+                normalized_key = normalized_key[len("KEYCODE_") :]
+            if normalized_key not in SUPPORTED_PRESS_KEYS:
+                return (
+                    [],
+                    f"Error: Unsupported key '{key}'. Supported keys:"
+                    f" {', '.join(SUPPORTED_PRESS_KEYS)}.",
+                )
             return [{"action": "press_key", "keycode": f"KEYCODE_{normalized_key}"}], None
 
         elif tool_name == "manage_app":

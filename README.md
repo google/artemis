@@ -33,17 +33,17 @@
 
 ## Key Highlights
 
-* **Cross-App Automation & Autonomous AI Assistant**: Operates not just as a robust testing framework, but as an autonomous agent capable of handling complex cross-app workflows and daily tasks via natural language;
-* **Zero-Maintenance Test Automation**: Built upon a "Dynamic-First, Coordinate-Fallback" multimodal locating engine, eliminating fragile XPath/ID selector maintenance and remaining resilient to UI redesigns, system updates, and resolution drift;
-* **One-Click Bug Repro & Logcat Diagnostics in IDE**: Native **Model Context Protocol (MCP)** integration allows **Antigravity, Claude Code, and Windsurf** to drive physical test devices via natural language, automatically capturing crash stacks from **Logcat** and keyframe screenshots;
-* **Ultra-Fast Execution (3–5s per Step)**: Pioneered an **Optimistic Asynchronous Pipeline** that completely decouples UI interaction from heavy LLM reasoning, achieving rapid regression throughput in Flash mode;
-* **Popup Self-Healing & 10+ Hour Exploration**: Proprietary **Safety Net** double-checks targets before action execution to intercept and clear interfering system popups; Pro mode supports **10+ hours** of continuous exploratory & monkey-plus stability testing;
-* **Industry-Leading SOTA**: Achieved **99%+ task completion** on Google Research's **AndroidWorld** benchmark (100+ complex multi-step tasks).
+* **Cross-App Automation**: Executes testing workflows and everyday tasks on Android from natural language instructions.
+* **Multimodal Targeting**: Uses element indices when available, with coordinate and visual locating fallbacks for custom interfaces.
+* **IDE Diagnostics**: **Model Context Protocol (MCP)** integration lets **Antigravity, Claude Code, and Windsurf** drive test devices and collect **Logcat** output and screenshots.
+* **Flash Execution**: A reactive observe-and-act loop with asynchronous history summaries, typically **3–5s per step**.
+* **Pro Exploration**: Checks targets before individual actions and returns blocked actions to the Operator for recovery. Supports long-running exploratory and stability tests.
+* **AndroidWorld Results**: **99%+ task completion** on Google Research's **AndroidWorld** benchmark (100+ multi-step tasks).
 
 <a id="workflow-showcase"></a>
 ## Antigravity × ARTEMIS: Autonomous Testing Workflow
 
-Experience seamless collaboration between **Antigravity** and **ARTEMIS** via native MCP integration — taking you from a natural language requirement to a production-grade diagnostic report in four automated steps:
+**Antigravity** uses **ARTEMIS** through MCP to turn a test request into a plan, device execution, and a diagnostic report:
 
 <table width="100%">
   <tr>
@@ -65,7 +65,7 @@ Experience seamless collaboration between **Antigravity** and **ARTEMIS** via na
       <img src="./docs/assets/workflow-3-exec.png" width="100%" alt="Step 3: Autonomous Test Execution" />
     </td>
     <td width="50%" align="center">
-      <b>4. Comprehensive Final Report</b><br>
+      <b>4. Final Report</b><br>
       <sub>Delivers structured audit findings, metric tables, and raw datasets</sub><br><br>
       <img src="./docs/assets/workflow-4-report.png" width="100%" alt="Step 4: Final Report" />
     </td>
@@ -159,7 +159,8 @@ PYTHONPATH = "/path/to/artemis"
         "mobile_run_task": { "eager": true },
         "mobile_manage_task": { "eager": true },
         "mobile_get_device_state": { "eager": true },
-        "mobile_inspect_trace": { "eager": true }
+        "mobile_inspect_trace": { "eager": true },
+        "mobile_diagnose": { "eager": true }
       }
     }
   }
@@ -246,14 +247,14 @@ if __name__ == "__main__":
 </p>
 
 * **Web Visual Test Console (`uv run artemis ui`)**: Real-time screen projection and interactive panel, supporting natural language test dispatch, live reasoning telemetry, action trajectories, and execution replay; manage server lifecycle anytime from any terminal using `uv run artemis restart`, `uv run artemis stop`, and `uv run artemis status`;
-* **Native MCP Protocol (IDE Collaboration)**: Operates as a standard MCP server seamlessly integrating with **Antigravity, Claude Code, Windsurf**, etc., directly driving real devices inside the IDE to verify bugs and run test cases;
+* **MCP Server**: Connects **Antigravity, Claude Code, Windsurf**, and other MCP clients to real devices for bug reproduction and test execution;
 * **Developer CLI (`uv run artemis run`)**: Direct terminal execution for automated test cases, exploratory stability inspection, or AndroidWorld benchmarks with high-fidelity structured terminal output;
 * **Python SDK**: Integrates as a standard Python library into existing automated testing frameworks (e.g., pytest) or CI/CD pipelines with strongly typed Pydantic structured outputs and assertion support.
 
 <a id="benchmarks"></a>
 ## Benchmarks: AndroidWorld (SOTA 99%+)
 
-Evaluated on [AndroidWorld](https://github.com/google-research/android_world) — Google Research's gold-standard benchmark spanning 20+ real apps and 100+ complex multi-step tasks: **Artemis demonstrated exceptional robustness across the entire benchmark suite, achieving a 99%+ completion rate.**
+Artemis achieved a **99%+ completion rate** on [AndroidWorld](https://github.com/google-research/android_world), Google Research's benchmark spanning 20+ apps and 100+ multi-step tasks.
 
 <p align="center">
   <img src="./docs/assets/androidworld_leaderboard.png?v=2" alt="AndroidWorld Benchmark Comparison" width="100%" />
@@ -261,9 +262,9 @@ Evaluated on [AndroidWorld](https://github.com/google-research/android_world) �
 
 ## How ARTEMIS is Architected
 
-* **Pre-Touch Pixel Gate & Speculative Chaining**: Eliminates "silent misclicks" from inference latency race conditions. Milliseconds before dispatch, a local UI guard intercepts unexpected dialogs (0 tokens, 0 cloud wait), a Micro-ROI gate verifies target stability, and speculative chained taps hit transient UI (e.g. auto-fading video controls) before they expire;
-* **Three-Layer Progressive Grounding Engine**: Fuses local OCR with accessibility hierarchies (~150ms, 0 tokens) to drive 85%+ of standard actions via drift-free numeric indices, gracefully falling back to spatial vision models for custom Canvas/Compose/Flutter UI and sandboxed CV probing for subtle pixel states;
-* **Elastic Dual Engine with In-Flight Context Compactor**: Seamlessly toggles between high-throughput reactive CI loops (Flash Mode, 3–5s/step) and multi-step cognitive state graphs (Pro Mode), using background visual deltas and DOM pruning to slash token consumption by >70% for 10+ hours of continuous, unattended soak testing.
+* **Pre-Execution Checks and Action Bursts**: Pro checks the target against the live UI tree and pixels before dispatching an individual action. Action bursts handle transient controls without waiting for another model turn.
+* **Element Locating**: Combines accessibility hierarchies and OCR with visual models for custom Canvas, Compose, and Flutter interfaces.
+* **Shared History Compression**: Flash and Pro replace older screenshots with visual summaries and compress completed steps into searchable history chunks. Context thresholds control when raw turns are replaced.
 
 <p align="center">
   <img src="./docs/assets/artemis_architecture_diagram.png" alt="ARTEMIS System Architecture Diagram" width="100%" />
@@ -274,7 +275,7 @@ Evaluated on [AndroidWorld](https://github.com/google-research/android_world) �
 ARTEMIS supports two execution profiles tailored for different automation requirements:
 
 * **Flash Profile (`--profile flash`)**: Fast and token-efficient reactive loop (~3–5s per step): one model observes the live screen, thinks, and acts, with no graph orchestration. Ideal for routine, deterministic UI tasks. The loop is unbounded by default (`agent.flash.max_turns`, 0 = unlimited) because history is compressed rather than capped: Flash shares the Pro session transcript ledger (session-relative `T+mm:ss` clock, screenshots folded into visual summaries, older steps chunked into eras and recallable on demand via `search_history` / `replay_steps`) and can query the session recording through `video_analyzer`. Transient UI (auto-fading control bars, toasts) is handled by chaining taps into one `click_sequence`. *Limitations*: No task plan or notes, no pre-execution safety net, no checkpoint verification or final report, and no ADB shell.
-* **Pro Profile (`--profile pro`)**: Our most capable architecture (~15–40s per step), built as a multi-agent graph. A **Planner** maintains a living Markdown task plan with milestones and `verify` / `assert` check items; the **Operator** executes it with the full toolset (Explorer grounding whose `flash` / `pro` / `ultra` tier is a user setting per profile — `pro.explorer.mode` / `flash.explorer_mode` in `config/artemis.jsonc` or `--explorer-pro-mode` — never chosen by the agent; notes, history recall, video analysis, ADB diagnostics). Every single action passes a pre-execution **Safety Net** (XML-first, pixel fallback), while multi-action **fast-action bursts** fire back to back to beat turn latency on transient UI. A blocked or failed action opens an **execution incident** that stays in the Operator's context until a later action succeeds, so recovery is handled by the Operator itself with no separate repair agent. A read-only **Checker** verifies plan checkpoints and runs an exit final review against the original goal (`--verification-level`: `off` / `final` (default) / `checkpoints` / `strict`), and plan milestone edits get an advisory review. Handles 100+ step long-horizon workflows, `[Loop:continuous]` monitoring, and an optional written report.
+* **Pro Profile (`--profile pro`)**: A planning and verification workflow (~15–40s per step), built as a multi-agent graph. A **Planner** maintains a living Markdown task plan with milestones and `verify` / `assert` check items; the **Operator** executes it with the full toolset (Explorer grounding whose `flash` / `pro` / `ultra` tier is a user setting per profile — `pro.explorer.mode` / `flash.explorer_mode` in `config/artemis.jsonc` or `--explorer-pro-mode` — never chosen by the agent; notes, history recall, video analysis, ADB diagnostics). Every single action passes a pre-execution **Safety Net** (XML-first, pixel fallback), while multi-action **fast-action bursts** fire back to back to beat turn latency on transient UI. A blocked or failed action opens an **execution incident** that stays in the Operator's context until a later action succeeds, so recovery is handled by the Operator itself with no separate repair agent. A read-only **Checker** verifies plan checkpoints and runs an exit final review against the original goal (`--verification-level`: `off` / `final` (default) / `checkpoints` / `strict`), and plan milestone edits get an advisory review. Handles 100+ step long-horizon workflows, `[Loop:continuous]` monitoring, and an optional written report.
 
 ## Roadmap
 

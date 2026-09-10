@@ -61,7 +61,7 @@ async def test_save_note_pure_direct_execution_success(mock_ctx, tmp_path):
         key="test_pure_save",
         content="Pure saved content",
     )
-    assert result == "Successfully saved note to test_pure_save.md."
+    assert result == "Saved note 'test_pure_save'."
 
     note_path = Path(tmp_path) / "notes" / "test_pure_save.md"
     assert note_path.exists()
@@ -76,7 +76,7 @@ async def test_save_note_pure_callable_execution(mock_ctx, tmp_path):
         key="callable_pure_save",
         content="Callable pure content",
     )
-    assert result == "Successfully saved note to callable_pure_save.md."
+    assert result == "Saved note 'callable_pure_save'."
 
     note_path = Path(tmp_path) / "notes" / "callable_pure_save.md"
     assert note_path.exists()
@@ -110,7 +110,7 @@ async def test_get_save_note_tool_pure_langchain_ainvoke(mock_ctx, tmp_path):
             "content": "Saved via LangChain pure tool",
         }
     )
-    assert result == "Successfully saved note to lc_pure_save.md."
+    assert result == "Saved note 'lc_pure_save'."
 
     note_path = Path(tmp_path) / "notes" / "lc_pure_save.md"
     assert note_path.exists()

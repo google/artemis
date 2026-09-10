@@ -61,7 +61,7 @@ UNIVERSAL_EXPLORER_TOOLS = [
         "function": {
             "name": "detect_objects",
             "description": (
-                "[Perception] Locates elements, shapes and more using powerful VLM."
+                "[Perception] Locates elements, shapes and more using a vision-language model."
                 " Returns their normalized coordinates (0-1000 scale) with label dots."
             ),
             "parameters": {
@@ -235,7 +235,7 @@ NATIVE_EXPLORER_TOOL_DECLARATIONS = [
     types.FunctionDeclaration(
         name="detect_objects",
         description=(
-            "[Perception] Locates elements, shapes and more using powerful"
+            "[Perception] Locates elements, shapes and more using a"
             " VLM. Returns their normalized coordinates (in a [0, 1000]"
             " scale) labeled with [D1], [D2] etc. in the text output, along"
             " with an annotated image containing corresponding visual label"

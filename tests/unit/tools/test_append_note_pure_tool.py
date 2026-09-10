@@ -62,7 +62,7 @@ async def test_append_note_pure_direct_execution_success(mock_ctx, tmp_path):
         key="pure_append",
         content="First line",
     )
-    assert result1 == "Successfully appended note to pure_append.md."
+    assert result1 == "Appended to note 'pure_append'."
 
     note_path = Path(tmp_path) / "notes" / "pure_append.md"
     assert note_path.exists()
@@ -74,7 +74,7 @@ async def test_append_note_pure_direct_execution_success(mock_ctx, tmp_path):
         key="pure_append",
         content="Second line",
     )
-    assert result2 == "Successfully appended note to pure_append.md."
+    assert result2 == "Appended to note 'pure_append'."
     assert note_path.read_text(encoding="utf-8") == "First line\nSecond line\n"
 
 
@@ -86,7 +86,7 @@ async def test_append_note_pure_callable_execution(mock_ctx, tmp_path):
         key="callable_pure_append",
         content="Pure callable append",
     )
-    assert result == "Successfully appended note to callable_pure_append.md."
+    assert result == "Appended to note 'callable_pure_append'."
 
     note_path = Path(tmp_path) / "notes" / "callable_pure_append.md"
     assert note_path.exists()
@@ -120,7 +120,7 @@ async def test_get_append_note_tool_pure_langchain_ainvoke(mock_ctx, tmp_path):
             "content": "Saved via pure append tool",
         }
     )
-    assert result == "Successfully appended note to lc_pure_append.md."
+    assert result == "Appended to note 'lc_pure_append'."
 
     note_path = Path(tmp_path) / "notes" / "lc_pure_append.md"
     assert note_path.exists()

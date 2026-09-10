@@ -584,7 +584,8 @@ async def test_mobile_inspect_trace_step_details_replays_tool_calls_for_flash(te
     assert "error" not in res
     assert res["device_serial"] == "pixel-7"
     details = res["details"]
-    assert "- **Step 1 (Start: 12.0s)**" in details
+    # The header carries the session clock (session start 1000.0, step at 1012.0).
+    assert "- **Step 1 (T+00:12)**" in details
     assert "[Screen]: Asked the explorer, then tapped Save." in details
     assert "Confirm the toggle first." in details
     assert "`ask_explorer(" in details

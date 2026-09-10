@@ -45,6 +45,7 @@ from artemis.config.agent import MemoryTranscriptConfig
 from artemis.context import ArtemisContext
 from artemis.memory.step_memory import StepMemoryService
 from artemis.memory.transcript import (
+    EPHEMERAL_BLOCKS_KEY,
     EXECUTION_RESULT_MARKER,
     PLAN_RECITATION_MARKER,
     RESTORED_HISTORY_HEADER,
@@ -53,8 +54,8 @@ from artemis.memory.transcript import (
 
 # SHA-256 snapshots of the legacy system message with the fixed inputs below.
 # Update these when an intentional template change alters the rendered prompt.
-GOLDEN_EMPTY_PLAN = "d8cf83565c766d32893b124c974060bbd98de2d862c3b9925e546ea0c946c324"
-GOLDEN_SENTINEL_PLAN = "8f871b5e5700ba5ee07ed03b80a8f82664abe68b0c170d3185bf1ee35f7821ed"
+GOLDEN_EMPTY_PLAN = "513e0341014b9a2342f608ad4dd173b7dcf5704ce53ee028ba302a9a1b696f96"
+GOLDEN_SENTINEL_PLAN = "012fe1b08645266d5a7e518023e20fc6fbfa65d4f2d985847ebb06e0184c67ee"
 
 SCREENSHOT_B64 = base64.b64encode(b"fake-jpeg-bytes").decode("utf-8")
 
@@ -103,6 +104,8 @@ def test_transcript_static_system_is_stable_and_carries_no_history():
     # ...and no unrendered slot or trailing observation header survives.
     assert "{{" not in first
     assert not first.endswith("# CURRENT OBSERVATION\n")
+    # The history guide names the marker a resolved screenshot renders as.
+    assert "--- Historical Visual Transition ---" in first
 
 
 def _transcript_ctx():
@@ -214,13 +217,61 @@ async def test_transcript_mode_two_turns_build_four_regions(tmp_path):
         # Committed turn-1 observation followed by its validator result.
         assert any(EXECUTION_RESULT_MARKER in str(m.content) for m in active)
         committed_obs = active[0]
-        # Depth-1 scrub removed the old plan recitation copy.
+        # Text edge at depth 1: the committed observation has lost its plan
+        # recitation as soon as the next tail exists (its screenshot stays
+        # until the screenshot edge).
         assert PLAN_RECITATION_MARKER not in str(committed_obs.content)
         # The live tail still recites the plan.
         assert PLAN_RECITATION_MARKER in str(turn2_messages[-1].content)
         # Message layout is S + A + tail.
         assert turn2_messages[-1] is not turn1_messages[-1]
         assert re.search(r"T\+\d{2,}:\d{2}", str(turn2_messages[-1].content))
+
+
+@pytest.mark.asyncio
+async def test_transcript_tail_marks_per_turn_notices_ephemeral():
+    """The hand-built tail carries the builder's ephemeral indices: per-turn
+    notices are deleted by the scrub edge; header, plan recitation and the
+    observation itself are not."""
+    from artemis.agents.operator.prompts import USER_GUIDANCE_MARKER
+
+    ctx = _transcript_ctx()
+    captured: list = []
+    mock_llm = _no_action_llm(captured)
+    with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
+        node = OperatorNode(ctx, transcript_config=MemoryTranscriptConfig(enabled=True))
+        await node(
+            _transcript_state(
+                injected_instruction="Skip the login step",
+                user_stop_requested=False,
+                operator_tool_limit_exceeded=True,
+            )
+        )
+
+    tail = captured[0][-1]
+    assert isinstance(tail, HumanMessage)
+    texts = {
+        i: block.get("text", "")
+        for i, block in enumerate(tail.content)
+        if isinstance(block, dict) and block.get("type") == "text"
+    }
+    guidance = next(i for i, t in texts.items() if t.startswith(USER_GUIDANCE_MARKER))
+    warning = next(i for i, t in texts.items() if "tool-call budget" in t)
+    assert set(tail.additional_kwargs[EPHEMERAL_BLOCKS_KEY]) == {guidance, warning}
+    # The user's stop bit is relayed on the guidance block itself.
+    assert "authorized stopping" not in texts[guidance]
+    # The verbatim instruction is its own persistent block right after the
+    # wrapper (stamped with the ledger's session offset), never ephemeral:
+    # a standing instruction must outlive the turn it arrived on.
+    body = guidance + 1
+    assert re.fullmatch(r'User instruction \(T\+\d{2,}:\d{2}\): "Skip the login step"', texts[body])
+    assert body not in tail.additional_kwargs[EPHEMERAL_BLOCKS_KEY]
+    assert "Skip the login step" not in texts[guidance]
+    # Header, plan recitation and the observation stay in the history.
+    assert texts[0].startswith("# CURRENT OBSERVATION")
+    plan = next(i for i, t in texts.items() if t.startswith(PLAN_RECITATION_MARKER))
+    screenshot = next(i for i, t in texts.items() if t == "--- Current Screenshot ---")
+    assert not {0, plan, screenshot} & set(tail.additional_kwargs[EPHEMERAL_BLOCKS_KEY])
 
 
 @pytest.mark.asyncio

@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Coordinate targets must be described by the model, never inferred.
+"""Targets are either observed (an element index) or described (coordinates).
 
-The Flash/Validator dialect addresses every target by coordinates, so the
-executor refuses a click, long press, focused input, coordinate swipe or click
-sequence that does not say what it is aiming at. The description is recorded
-by the runner and never reaches the wire.
+Flash binds the Pro Operator's agent dialect: a click, long press or focused
+input names an element index from the indexed UI list -- resolved here to the
+element's center with its observed text/bounds/id recorded -- or a coordinate
+pair, which the model must describe itself. A coordinate swipe or click
+sequence must be described too. Nothing is inferred, the description never
+reaches the wire, and the wire only ever sees coordinates.
 """
 
 from unittest.mock import Mock
@@ -42,6 +44,123 @@ def _state():
     state.indexed_points = [[540, 1440], [745, 1440]]
     state.latest_ui_hierarchy = None
     return state
+
+
+def _indexed_state():
+    """Two observed elements (pixel centers, the shape ``observe()`` writes)."""
+    state = _state()
+    state.indexed_elements = [
+        {
+            "index": 1,
+            "center": [540, 1248],
+            "text": "Wi-Fi",
+            "bounds": [40, 1152, 1040, 1344],
+            "class": "android.widget.TextView",
+            "resource_id": "android:id/title",
+            "is_ocr": False,
+        },
+        {
+            "index": 2,
+            "center": [540, 720],
+            "text": "Search settings",
+            "bounds": [80, 660, 1000, 780],
+            "class": "android.widget.EditText",
+            "resource_id": "com.android.settings:id/search",
+            "is_ocr": False,
+        },
+    ]
+    state.indexed_points = [el["center"] for el in state.indexed_elements]
+    return state
+
+
+# --- Index targets: resolved against the element list, observed semantics recorded ---
+
+
+@pytest.mark.parametrize("index", [1, "1", 1.0, [1]])
+def test_click_index_resolves_to_the_elements_center_and_records_observed_fields(index):
+    executor = _make_executor()
+    wire_name, wire_args, _, recorded = executor._translate(
+        "click", {"target": index}, _indexed_state()
+    )
+    assert wire_name == "click"
+    # 540/1080 -> 500, 1248/2400 -> 520 (normalized 0-1000)
+    assert wire_args == {"target": [500, 520], "times": 1, "delay_ms": 100}
+    assert recorded == {
+        "target_text": "Wi-Fi",
+        "target_bounds": [37, 480, 963, 560],
+        "target_resource_id": "android:id/title",
+        "target_class": "android.widget.TextView",
+    }
+    assert "target_description" not in recorded
+
+
+def test_index_target_needs_no_description_and_ignores_a_stray_one():
+    """An index already names its element; the model's belief never mixes with
+    the observation on the record."""
+    executor = _make_executor()
+    _, wire_args, _, recorded = executor._translate(
+        "click", {"target": 2, "target_description": "the search box"}, _indexed_state()
+    )
+    assert wire_args["target"] == [500, 300]
+    assert recorded["target_text"] == "Search settings"
+    assert "target_description" not in recorded
+
+
+def test_long_press_and_input_text_resolve_indices_too():
+    executor = _make_executor()
+    _, press_args, _, recorded = executor._translate(
+        "long_press", {"target": 1, "duration": 1500}, _indexed_state()
+    )
+    assert press_args == {"target": [500, 520], "duration_ms": 1500}
+    assert recorded["target_text"] == "Wi-Fi"
+
+    _, type_args, _, recorded = executor._translate(
+        "input_text", {"text": "wifi", "target": 2}, _indexed_state()
+    )
+    assert type_args == {"text": "wifi", "target": [500, 300], "clear_exist": True}
+    assert recorded["target_resource_id"] == "com.android.settings:id/search"
+
+
+@pytest.mark.parametrize("name, label", [("click", "click"), ("long_press", "long press")])
+def test_out_of_range_index_is_refused_with_the_active_range(name, label):
+    executor = _make_executor()
+    with pytest.raises(_ArgError) as excinfo:
+        executor._translate(name, {"target": 7}, _indexed_state())
+    message = str(excinfo.value)
+    assert message.startswith(f"Error during {label}: Invalid target index 7.")
+    assert "1 to 2" in message
+    assert "ask_explorer" in message
+
+
+def test_index_against_an_empty_list_is_refused():
+    executor = _make_executor()
+    with pytest.raises(_ArgError) as excinfo:
+        executor._translate("click", {"target": 1}, _state())
+    message = str(excinfo.value)
+    assert "Invalid target index 1" in message
+    assert "empty" in message
+
+
+def test_unusable_target_is_refused_with_both_syntaxes_named():
+    executor = _make_executor()
+    with pytest.raises(_ArgError) as excinfo:
+        executor._translate("click", {"target": "the button"}, _indexed_state())
+    message = str(excinfo.value)
+    assert message.startswith("Error during click: Invalid target format")
+    assert "element index" in message and "[x, y]" in message
+
+
+def test_index_resolution_uses_the_live_device_resolution():
+    """The element list is built against the device size ``observe()`` wrote
+    on the context; a different resolution maps the same pixels differently."""
+    executor = _make_executor(width=720, height=1600)
+    state = _indexed_state()
+    state.indexed_elements[0]["center"] = [360, 800]
+    _, wire_args, _, _ = executor._translate("click", {"target": 1}, state)
+    assert wire_args["target"] == [500, 500]
+
+
+# --- Coordinate targets: the model describes what it aims at -------------------------
 
 
 @pytest.mark.parametrize(

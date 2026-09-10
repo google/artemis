@@ -37,7 +37,9 @@ mcp = FastMCP(
         "Use mobile_run_task to launch autonomous UI workflows on connected Android devices or emulators, "
         "mobile_manage_task to check status or steer execution, "
         "mobile_get_device_state to inspect real-time device screen/hierarchy, "
-        "and mobile_inspect_trace to inspect detailed execution steps and visual action overlays."
+        "mobile_inspect_trace to inspect detailed execution steps and visual action overlays, "
+        "and mobile_diagnose whenever a tool errors, no device is found, or the user says "
+        "ARTEMIS is not working: it checks the environment and returns ordered fix steps."
     ),
 )
 

@@ -22,11 +22,16 @@ Messages are organized into four regions:
 - **A (active window)**: raw per-turn messages, append-only. Each committed
   turn contributes its tail observation HumanMessage, the operator AIMessages
   (tool_calls and native thinking preserved by reference), the in-turn
-  ToolMessages, and the turn's validator result message. The scrub edge
-  (:class:`~artemis.agents.flash.context_compressor.ScrubEdgeCompressor`) strips
-  old UI lists and plan recitations at depth 1 and resolves screenshots to
-  visual summaries at depth K — messages are never
-  removed or reordered, so tool-call/response pairs are never split.
+  ToolMessages, and the turn's result message (every turn on the Pro path;
+  only when an action failed on the Flash path). The
+  scrub edge (:class:`~artemis.agents.flash.context_compressor.ScrubEdgeCompressor`)
+  has two depths: a shallow text edge (UI list, plan recitation and ephemeral
+  per-turn blocks leave as soon as a newer observation exists) and a
+  screenshot edge that follows the occupancy tier (relaxed below the start
+  gate, tightened past it), where the screenshot is replaced in place by its
+  visual summary. Every rewrite happens once and is never undone; everything
+  newer is byte-identical to what the model was first shown. Messages are
+  never removed or reordered, so tool-call/response pairs are never split.
 - **T (current tail)**: built fresh every turn by the operator; passed to
   :meth:`render` and only enters A when the turn is committed.
 
@@ -47,7 +52,7 @@ import json
 import time
 from typing import Any, Callable
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from artemis.memory.step_memory import StepMemoryService
 from artemis.utils.logger import get_logger
@@ -66,6 +71,28 @@ EXECUTION_RESULT_MARKER = "--- Action Execution Result"
 
 #: Header prefix of the cold-start restored-history block.
 RESTORED_HISTORY_HEADER = "[Restored history]"
+
+#: ``HumanMessage.additional_kwargs`` key listing the indices of content blocks that
+#: are only meaningful for the turn they were built for (reminders, hints, user
+#: guidance, per-turn notices). The scrub edge deletes them at its text edge, so
+#: they never reach the frozen region or a chunk capsule. The indices always
+#: describe the message's *current* block layout: a rewrite that removes blocks
+#: before the text edge (the screenshot swap when the image edge is shallower)
+#: remaps the surviving indices in place, and the key is dropped once the blocks
+#: are deleted. ``additional_kwargs`` is never sent to the provider, so the
+#: marking costs the model nothing.
+EPHEMERAL_BLOCKS_KEY = "ephemeral_blocks"
+
+
+def mark_ephemeral(message: BaseMessage, indices) -> None:
+    """Flag content blocks of ``message`` (by index) as ephemeral, see
+    :data:`EPHEMERAL_BLOCKS_KEY`."""
+    existing = list(message.additional_kwargs.get(EPHEMERAL_BLOCKS_KEY, []))
+    for index in indices:
+        index = int(index)
+        if index not in existing:
+            existing.append(index)
+    message.additional_kwargs[EPHEMERAL_BLOCKS_KEY] = existing
 
 
 def format_session_offset(seconds: float) -> str:
@@ -135,6 +162,8 @@ def render_turn_transcript(messages: list[BaseMessage]) -> str:
     names_by_id: dict[str, str] = {}
     for msg in messages:
         kind = str(getattr(msg, "type", "") or "message")
+        if isinstance(msg, AIMessage):
+            kind = "ai"  # streamed replies report type "AIMessageChunk"
         role = _ROLE_LABELS.get(kind, kind)
         if kind == "tool":
             call_id = getattr(msg, "tool_call_id", None)
@@ -157,6 +186,71 @@ def render_turn_transcript(messages: list[BaseMessage]) -> str:
     return "\n".join(lines)
 
 
+#: Tokens charged per image block in the provider-less prompt estimate
+#: (Gemini's flat per-image cost; the Flash runner uses the same figure).
+IMAGE_BLOCK_TOKENS = 258
+
+#: Characters per token assumed before any calibrated measurement.
+DEFAULT_CHARS_PER_TOKEN = 4.0
+
+#: Bounds of the calibrated chars-per-token ratio: ~1 for CJK-heavy prompts,
+#: ~4 for English prose; anything outside is a measurement artefact.
+_CHARS_PER_TOKEN_BOUNDS = (1.0, 6.0)
+
+#: Smallest text growth (characters) between two consecutive measured prompts
+#: for their difference to count as a calibration sample (see
+#: :meth:`TranscriptLedger.record_prompt_tokens`). Below this the provider's
+#: rounding and a few hundred tokens of turn-to-turn jitter dominate the
+#: quotient.
+MIN_CALIBRATION_DELTA_CHARS = 2000
+
+
+def measure_prompt_content(messages: list[Any]) -> tuple[int, int]:
+    """Count ``(text_chars, image_count)`` over a prompt's messages.
+
+    The walk covers what the provider tokenizes as text: string content in
+    full; in list content the ``text`` blocks by their text, ``image_url`` /
+    ``image`` blocks as one image each, any other block by its ``str()``; and
+    each message's ``tool_calls`` by the JSON of their arguments (an
+    AIMessage's calls are sent back to the model verbatim, and the ledger's
+    turn transcripts size them the same way).
+    """
+    text_chars = 0
+    image_count = 0
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            text_chars += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") in ("image_url", "image") or "image_url" in block:
+                        image_count += 1
+                    elif block.get("type") == "text":
+                        text_chars += len(str(block.get("text", "")))
+                    else:
+                        text_chars += len(str(block))
+                else:
+                    text_chars += len(str(block))
+        elif content is not None:
+            text_chars += len(str(content))
+        for call in getattr(msg, "tool_calls", None) or []:
+            if isinstance(call, dict):
+                text_chars += len(
+                    json.dumps(call.get("args") or {}, ensure_ascii=False, default=str)
+                )
+    return text_chars, image_count
+
+
+def estimate_prompt_tokens(messages: list[Any]) -> int:
+    """Provider-less prompt size estimate: ``text_chars // 4`` plus
+    :data:`IMAGE_BLOCK_TOKENS` per image block (see
+    :func:`measure_prompt_content` for what counts). Used as the context base
+    when a provider reports no usage metadata; never below 1."""
+    text_chars, image_count = measure_prompt_content(messages)
+    return max(1, text_chars // 4 + image_count * IMAGE_BLOCK_TOKENS)
+
+
 class TranscriptLedger:
     """Append-only four-region message ledger for one Pro session.
 
@@ -172,7 +266,10 @@ class TranscriptLedger:
         prune_history_xml: bool = True,
         image_scrub_depth: int = 3,
         pending_grace_steps: int = 3,
-        xml_scrub_depth: int = 1,
+        xml_scrub_depth: int | None = None,
+        image_scrub_depth_relaxed: int | None = None,
+        context_budget_tokens: int | None = None,
+        start_ratio: float | None = None,
         clock: Callable[[], float] | None = None,
         session_start: float | None = None,
     ):
@@ -204,6 +301,51 @@ class TranscriptLedger:
         self._frozen_blocks: list[BaseMessage] = []
         self._chunker: Any | None = None
 
+        # The owning operator's last measured prompt size (tokens). This is
+        # the live context base the chunker's start/soft/hard thresholds read;
+        # only the operator's own calls write it, so Planner/Checker/lens
+        # calls sharing the session can never masquerade as the operator's
+        # context (see HistoryChunkManager._context_base_tokens).
+        self._last_prompt_tokens: int | None = None
+        # Session-calibrated characters-per-token ratio (see
+        # record_prompt_tokens): the chunker converts transcript characters
+        # to tokens through it, so CJK-heavy sessions (~1 char/token on
+        # Gemini) are not under-estimated 4x by the fixed //4 default.
+        # Calibrated differentially: ``_calibration_sample`` is the previous
+        # measured ``(text_chars, image_count, prompt_tokens)`` and the
+        # pooled deltas between consecutive same-image-count prompts give
+        # the session's single best ratio.
+        self._chars_per_token: float = DEFAULT_CHARS_PER_TOKEN
+        self._calibration_sample: tuple[int, int, int] | None = None
+        self._pooled_delta_chars = 0
+        self._pooled_delta_tokens = 0
+
+        # Whether the last committed turn carried no visible reasoning text (bare
+        # tool calls / thinking only). Set by ``commit_staged``; both runners read
+        # it to decide whether to attach the shared reasoning reminder.
+        self._last_turn_silent: bool = False
+
+        # Text edge (default 1): UI list, plan recitation and ephemeral blocks
+        # leave as soon as a newer observation exists; screenshots follow K.
+        self._xml_scrub_depth = xml_scrub_depth
+
+        # Occupancy-driven screenshot depth. Below the start gate
+        # (``last_prompt_tokens < budget * start_ratio``, or no measurement
+        # yet) the scrub edge sits at the relaxed depth so the model keeps
+        # more raw screenshots while nothing is being replaced; from the
+        # start gate up it tightens to ``image_scrub_depth``. Scrubbing is
+        # irreversible, so a change of depth never rewrites a message:
+        # tightening scrubs the extra depths once, relaxing lets new images
+        # live longer. See :attr:`effective_image_scrub_depth`.
+        self._image_scrub_depth = max(1, int(image_scrub_depth))
+        self._image_scrub_depth_relaxed = (
+            max(self._image_scrub_depth, int(image_scrub_depth_relaxed))
+            if image_scrub_depth_relaxed is not None
+            else self._image_scrub_depth
+        )
+        self._context_budget_tokens = int(context_budget_tokens) if context_budget_tokens else None
+        self._start_ratio = float(start_ratio) if start_ratio is not None else None
+
         # id(message) -> summary-job key (DataEngine step id). A side map keeps
         # the key out of the serialized message payload entirely.
         self._step_keys: dict[int, str] = {}
@@ -234,6 +376,186 @@ class TranscriptLedger:
     def elapsed_label(self) -> str:
         """The current session offset as ``T+mm:ss``."""
         return format_session_offset(self.elapsed_seconds())
+
+    # ------------------------------------------------------------------
+    # Context base (operator-measured prompt size)
+    # ------------------------------------------------------------------
+
+    @property
+    def last_prompt_tokens(self) -> int | None:
+        """The operator's last measured prompt size, or None before the
+        first measured call (or when the provider reports no usage)."""
+        return self._last_prompt_tokens
+
+    @property
+    def last_turn_silent(self) -> bool:
+        """True when the last committed turn had no visible reasoning text.
+
+        A turn is silent when it carries at least one AI message and none of
+        them shows text: string content that is empty or whitespace, or list
+        content without a non-empty ``text`` block (native ``thinking`` blocks
+        are not visible text). A turn with no AI message at all is not silent.
+        """
+        return self._last_turn_silent
+
+    @staticmethod
+    def _ai_message_has_visible_text(message: BaseMessage) -> bool:
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, str):
+                    if block.strip():
+                        return True
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    if str(block.get("text") or "").strip():
+                        return True
+            return False
+        return False
+
+    @classmethod
+    def _turn_is_silent(cls, messages: list[BaseMessage]) -> bool:
+        # Streamed replies are ``AIMessageChunk`` (type "AIMessageChunk"), so
+        # the class, not the type string, identifies the model's messages.
+        ai_messages = [m for m in messages if isinstance(m, AIMessage)]
+        if not ai_messages:
+            return False
+        return not any(cls._ai_message_has_visible_text(m) for m in ai_messages)
+
+    @property
+    def chars_per_token(self) -> float:
+        """Calibrated characters-per-token ratio (4.0 until a measured call
+        with its messages is recorded)."""
+        return self._chars_per_token
+
+    def chars_to_tokens(self, chars: int) -> int:
+        """Convert transcript characters to tokens through the calibrated
+        ratio (identical to ``chars // 4`` at the default ratio)."""
+        return int(max(0, int(chars)) / self._chars_per_token)
+
+    @property
+    def occupancy(self) -> float | None:
+        """``last_prompt_tokens / context_budget_tokens``, or None when either
+        is unknown."""
+        if self._last_prompt_tokens is None or not self._context_budget_tokens:
+            return None
+        return self._last_prompt_tokens / self._context_budget_tokens
+
+    @property
+    def below_start_gate(self) -> bool:
+        """Whether the measured occupancy is under the start gate. An unknown
+        occupancy (no measured call yet) counts as below: a session starts
+        empty."""
+        if self._start_ratio is None:
+            return False
+        ratio = self.occupancy
+        return ratio is None or ratio < self._start_ratio
+
+    @property
+    def effective_image_scrub_depth(self) -> int:
+        """The screenshot depth the scrub edge uses at the next render: the
+        relaxed depth below the start gate, the tight depth from there up."""
+        if self.below_start_gate:
+            return self._image_scrub_depth_relaxed
+        return self._image_scrub_depth
+
+    def record_prompt_tokens(
+        self, prompt_tokens: int | None, messages: list[Any] | None = None
+    ) -> None:
+        """Record the operator's measured prompt size for one call.
+
+        Called by the ledger's owning operator (Flash runner / Pro operator)
+        after each of its own LLM calls; within a multi-call turn the last
+        (largest) call wins. Non-positive or missing values are ignored so a
+        provider without usage metadata leaves the base unknown rather than
+        zero (and the calibration state below is left untouched).
+
+        When ``messages`` (the exact list sent to the model) accompanies a
+        measured size, the call also calibrates :attr:`chars_per_token`,
+        **differentially**: the ledger remembers the previous measured
+        sample ``(text_chars, image_count, prompt_tokens)`` and, when the new
+        sample carries the same number of images, grows the text by at least
+        :data:`MIN_CALIBRATION_DELTA_CHARS` and costs more tokens, it pools
+        the pair's differences (``pooled_chars += Δchars``,
+        ``pooled_tokens += Δtokens``) and sets the ratio to
+        ``pooled_chars / pooled_tokens``, clamped to [1.0, 6.0]. The pooled
+        quotient is the maximum-likelihood single ratio for the session (no
+        smoothing constant to tune, no last-pair noise). The reference is
+        replaced only when it was consumed, when the image count changed, or
+        when the prompt shrank in tokens (a compaction or scrub reset the
+        baseline); a sample that moved too little keeps the reference, so
+        several small turns accumulate into one usable difference instead of
+        being discarded one by one (real sessions often grow < 2000 chars
+        per turn and would otherwise never calibrate).
+
+        Why differences: the provider's ``prompt_tokens`` also counts terms
+        that are not in ``messages`` or not proportional to their text — the
+        bound tool/function schemas, and full-size screenshots that tile to
+        ~1100–1800 tokens rather than the flat :data:`IMAGE_BLOCK_TOKENS`.
+        A whole-prompt quotient charges all of that to the text, and it
+        also averages over the static prefix, whereas the chunker applies
+        the ratio to the transcript *tail*, whose density differs. On real
+        Gemini Operator traces (10 sessions, 2026-09) the two disagree by
+        5-30% with a session-dependent sign, so the size-based chunk
+        trigger fired early in some sessions and late in others. Between
+        two prompts with the same image count the constant terms cancel and
+        the difference measures the tail's own rate. Until the first
+        usable difference exists the whole-prompt quotient
+        ``text_chars / (prompt_tokens - images * IMAGE_BLOCK_TOKENS)`` is
+        used as a fallback; once a pooled difference exists the pooled ratio
+        is authoritative and the fallback is no longer applied.
+        """
+        try:
+            value = int(prompt_tokens) if prompt_tokens is not None else 0
+        except (TypeError, ValueError):
+            return
+        if value <= 0:
+            return
+        self._last_prompt_tokens = value
+        if messages is None:
+            return
+        try:
+            text_chars, image_count = measure_prompt_content(messages)
+        except Exception as exc:
+            logger.debug(f"Prompt calibration skipped: {exc}", exc_info=True)
+            return
+        if text_chars <= 0:
+            return
+
+        low, high = _CHARS_PER_TOKEN_BOUNDS
+        previous = self._calibration_sample
+        sample = (text_chars, image_count, value)
+
+        if previous is None:
+            self._calibration_sample = sample
+        else:
+            prev_chars, prev_images, prev_tokens = previous
+            delta_chars = text_chars - prev_chars
+            delta_tokens = value - prev_tokens
+            if image_count != prev_images or delta_tokens < 0:
+                # Not comparable (image set changed) or the prompt actually
+                # shrank (compaction / scrub): start a fresh baseline here.
+                self._calibration_sample = sample
+            elif delta_chars >= MIN_CALIBRATION_DELTA_CHARS:
+                if delta_tokens > 0:
+                    self._pooled_delta_chars += delta_chars
+                    self._pooled_delta_tokens += delta_tokens
+                    pooled = self._pooled_delta_chars / self._pooled_delta_tokens
+                    self._chars_per_token = min(high, max(low, pooled))
+                    self._calibration_sample = sample
+                    return
+                self._calibration_sample = sample  # text grew at no cost: unusable
+            # else: moved too little to measure yet (in either direction) —
+            # keep the reference so the movement accumulates against it.
+
+        if self._pooled_delta_tokens > 0:
+            # A pooled difference already exists: it is authoritative, and
+            # the whole-prompt quotient (which mis-charges schemas and image
+            # tiling to the text) is never applied again.
+            return
+        text_tokens = max(1, value - image_count * IMAGE_BLOCK_TOKENS)
+        self._chars_per_token = min(high, max(low, text_chars / text_tokens))
 
     # ------------------------------------------------------------------
     # S region
@@ -320,6 +642,7 @@ class TranscriptLedger:
             return
         staged = self._staged
         self._staged = None
+        self._last_turn_silent = self._turn_is_silent(staged)
 
         if step_key is not None:
             observation = self._first_image_message(staged)
@@ -449,18 +772,23 @@ class TranscriptLedger:
     def render(self, tail: list[BaseMessage]) -> list[BaseMessage]:
         """Advance compression and return ``S + F + A + tail``.
 
-        Order per turn: the chunker runs first (a triggered compression event
-        deep-mutates the frozen region and advances the F/A boundary), then
-        the scrub edge advances over the active window. The returned list is a
-        fresh container: appending to it (the operator's in-turn tool loop)
-        never mutates the ledger regions.
+        Order per turn: the occupancy band is read once (from the operator's
+        last measured prompt), the scrub edge advances over the active window
+        at that band's screenshot depth, then the chunker runs (a triggered
+        compression event deep-mutates the frozen region and advances the F/A
+        boundary). Scrub-before-chunk guarantees that the turns a chunk
+        closes over — all older than the sliding-window floor — have already
+        had their screenshots resolved when the relaxed depth is no deeper
+        than the floor plus one. The returned list is a fresh container:
+        appending to it (the operator's in-turn tool loop) never mutates the
+        ledger regions.
         """
+        self._compressor.compress(self._active, image_scrub_depth=self.effective_image_scrub_depth)
         if self._chunker is not None:
             try:
                 self._chunker.on_render(self)
             except Exception as e:
                 logger.error(f"History chunker render hook failed: {e}")
-        self._compressor.compress(self._active)
         return [
             *self._static,
             *self._restored,

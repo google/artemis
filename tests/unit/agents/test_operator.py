@@ -399,6 +399,14 @@ async def test_operator_node_multiple_actions():
         assert decisions[1]["action"] == "tap"
         assert decisions[1]["coordinates"] == [54, 120]
 
+        # Each action's ToolMessage names its tool, like helper-tool results do
+        # (the loop appends them to the same list it sent to the model).
+        from langchain_core.messages import ToolMessage
+
+        sent = mock_llm.ainvoke.call_args[0][0]
+        recorded = [(m.name, m.content) for m in sent if isinstance(m, ToolMessage)]
+        assert recorded == [("input_text", "Action Recorded"), ("click", "Action Recorded")]
+
 
 @pytest.mark.asyncio
 async def test_operator_node_no_record_step():
@@ -1467,6 +1475,40 @@ async def test_operator_swipe_translation():
     assert actions[0]["coordinates"] == [648, 720, 648, 1680]
 
 
+@pytest.mark.asyncio
+async def test_operator_press_key_translation_is_case_insensitive():
+    from artemis.agents.operator.operator import OperatorNode
+    from artemis.context import ArtemisContext
+    from unittest.mock import MagicMock
+
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_state = MagicMock()
+    mock_state.operator_raw_data = {"width": 1080, "height": 2400}
+    node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
+
+    for spelling in ("back", "Back", "BACK", "KEYCODE_BACK", "keycode_back", " back "):
+        actions, err = node._translate_and_validate_tool(
+            {"name": "press_key", "args": {"key": spelling}}, mock_state
+        )
+        assert err is None, spelling
+        assert actions == [{"action": "press_key", "keycode": "KEYCODE_BACK"}], spelling
+
+    actions, err = node._translate_and_validate_tool(
+        {"name": "press_key", "args": {"key": "app_switch"}}, mock_state
+    )
+    assert err is None
+    assert actions == [{"action": "press_key", "keycode": "KEYCODE_APP_SWITCH"}]
+
+    # Unsupported keys get a self-explanatory error that lists the accepted names.
+    actions, err = node._translate_and_validate_tool(
+        {"name": "press_key", "args": {"key": "volume_up"}}, mock_state
+    )
+    assert actions == []
+    assert err == (
+        "Error: Unsupported key 'volume_up'. Supported keys: ENTER, BACK, HOME, APP_SWITCH."
+    )
+
+
 # --- helper tool results: status is structural, never sniffed from the words ----------
 
 
@@ -1537,5 +1579,79 @@ async def test_operator_helper_tool_message_status_is_structural(result, expecte
     tool_msgs = {m.tool_call_id: m for m in second_turn_messages if isinstance(m, ToolMessage)}
     assert tool_msgs["call_read"].status == expected_status
     assert tool_msgs["call_read"].content == str(result)
-    # The accompanying click is rejected only when the helper actually failed.
-    assert tool_msgs["call_click"].status == ("error" if expected_status == "error" else "success")
+    # The accompanying click never ran: rejected when the helper failed, deferred
+    # otherwise. Both are reported as errors and never claim success.
+    assert tool_msgs["call_click"].status == "error"
+    assert tool_msgs["call_click"].content.startswith("Not executed:")
+    assert "success" not in tool_msgs["call_click"].content.lower()
+    if expected_status == "error":
+        assert str(result) in tool_msgs["call_click"].content
+    else:
+        assert "deferred" in tool_msgs["call_click"].content
+
+
+@pytest.mark.asyncio
+async def test_operator_burst_limit_error_text_is_not_repeated_per_call():
+    """An over-long burst answers every tool_call id, but the full burst-limit
+    paragraph travels once; the remaining ToolMessages just point at it."""
+    from langchain_core.messages import ToolMessage
+
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.execution_setup = None
+    mock_ctx.data_engine = None
+
+    mock_state = MagicMock()
+    mock_state.subagent_calls = []
+    mock_state.initial_goal = "Test goal"
+    mock_state.open_incident = None
+
+    turn_1 = MagicMock()
+    turn_1.tool_calls = [
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": f"button {i}"},
+            "id": f"call_click_{i}",
+        }
+        for i in range(6)
+    ]
+    turn_2 = MagicMock()
+    turn_2.tool_calls = [
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_click_final",
+        }
+    ]
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(side_effect=[turn_1, turn_2])
+    mock_llm.bind_tools.return_value = mock_llm
+
+    with (
+        patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm),
+        patch.object(OperatorNode, "_max_burst_actions", return_value=4),
+    ):
+        node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
+        node_update = await node(mock_state)
+
+    assert mock_llm.ainvoke.await_count == 2
+    second_turn_messages = mock_llm.ainvoke.call_args_list[1].args[0]
+    burst_ids = {f"call_click_{i}" for i in range(6)}
+    tool_msgs = {
+        m.tool_call_id: m
+        for m in second_turn_messages
+        if isinstance(m, ToolMessage) and m.tool_call_id in burst_ids
+    }
+    assert set(tool_msgs) == burst_ids
+    assert all(m.status == "error" for m in tool_msgs.values())
+
+    first = tool_msgs["call_click_0"].content
+    assert first.startswith("Error: 6 Turn-Ending Actions in one turn exceed")
+    assert "burst limit of 4" in first
+    for i in range(1, 6):
+        assert tool_msgs[f"call_click_{i}"].content == (
+            "Not executed: see the burst-limit error above."
+        )
+
+    # Nothing from the rejected burst ran; turn 2's single click did.
+    decisions = json.loads(node_update["structured_decisions"])
+    assert len(decisions) == 1 and decisions[0]["action"] == "tap"

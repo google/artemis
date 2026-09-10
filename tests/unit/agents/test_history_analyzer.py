@@ -263,9 +263,9 @@ async def test_history_analyzer_read_note_tool_call():
         ]  # Index 5 contains the ToolMessage for read_note
         assert isinstance(read_msg, ToolMessage)
         assert read_msg.tool_call_id == "call_read"
-        assert (
-            read_msg.content == "Successfully read note 'tactical_plan'. 'tactical_plan' note"
-            f" content:\n{fake_plan_content}"
+        assert read_msg.content == (
+            f"Note 'tactical_plan' ({len(fake_plan_content.splitlines())} lines):"
+            f"\n{fake_plan_content}"
         )
 
 
@@ -306,10 +306,7 @@ def test_history_analyzer_robust_tools_behavior():
         patch("pathlib.Path.read_text", return_value="Tactical plan content"),
     ):
         result_read = read_tool.invoke({"key": "tactical_plan.md"})
-        assert (
-            result_read == "Successfully read note 'tactical_plan.md'. 'tactical_plan.md'"
-            " note content:\nTactical plan content"
-        )
+        assert result_read == "Note 'tactical_plan.md' (1 lines):\nTactical plan content"
 
 
 @pytest.mark.asyncio

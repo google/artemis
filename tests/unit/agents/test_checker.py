@@ -400,7 +400,7 @@ async def test_replay_steps_result_is_a_plain_tool_message(tmp_path):
     assert tool_msg.name == "replay_steps"
     assert "- **Step 3 (Start: 9.0s)**" in tool_msg.content
     assert "[Screen]: Saved the alarm." in tool_msg.content
-    assert "[Planned Action]: Tapped 'Save' at [0.5, 0.5]" in tool_msg.content
+    assert "[Action]: Tapped 'Save' at [0.5, 0.5]" in tool_msg.content
 
 
 # --- Streamed-reasoning transcript (replay of the live Thought/Work text) -------------
@@ -645,6 +645,89 @@ def test_format_history_marks_self_described_targets_only():
     # Neither row is the raw JSON record.
     assert "target_description" not in text
     assert "target_resource_id" not in text
+
+
+def test_format_history_uses_session_offsets_and_skips_empty_steps():
+    """Rows carry the session-relative ``T+mm:ss`` clock every agent shares
+    (from the step timestamp, else from the engine's ``97.7s`` label), and a
+    step with neither summary nor action renders no row."""
+    from artemis.agents.checker.checker import _format_history
+
+    ctx = _mock_ctx()
+    ctx.data_engine.session_start_time = 1000.0
+    ctx.data_engine.get_agent_friendly_steps.return_value = [
+        {"step_number": 1, "timestamp": 1097.7, "summary": "Opened the app"},
+        {"step_number": 2, "relative_time": "12.4s", "summary": "", "action_taken": None},
+        {
+            "step_number": 3,
+            "relative_time": "130.0s",
+            "summary": None,
+            "action_taken": {"action": "click", "coordinates": [1, 2], "target_text": "Login"},
+        },
+    ]
+
+    lines = _format_history(ctx).splitlines()
+    assert len(lines) == 2
+    assert lines[0] == "- Step 1 (T+01:37): Opened the app"
+    assert lines[1].startswith("- Step 3 (T+02:10): ")
+    assert "'Login'" in lines[1]
+
+
+async def _final_check_human_text(ctx) -> str:
+    report = CheckReport(verdicts=[])
+    structured = MagicMock()
+    structured.ainvoke = AsyncMock(return_value=report)
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+    response = MagicMock()
+    response.tool_calls = []
+    acomplete_mock = AsyncMock(return_value=response)
+
+    with (
+        patch("artemis.agents.checker.checker.get_llm", return_value=llm),
+        patch("artemis.agents.checker.checker.acomplete", new=acomplete_mock),
+        patch(
+            "artemis.agents.checker.checker._capture_final_screen",
+            new=AsyncMock(return_value=(None, "elements")),
+        ),
+    ):
+        await run_final_check(ctx, goal="the goal", plan_text="- [x] G", ledger=[], check_items=[])
+
+    messages = acomplete_mock.await_args.args[1]
+    human = messages[-1]
+    return "\n".join(
+        block["text"] for block in human.content if isinstance(block, dict) and "text" in block
+    )
+
+
+@pytest.mark.asyncio
+async def test_final_review_lists_user_guidance_from_the_step_records():
+    """Every mid-run user instruction reaches the final review, read from the
+    step it was stamped on, so the goal is audited as amended by it."""
+    ctx = _mock_ctx()
+    ctx.data_engine.get_agent_friendly_steps.return_value = [
+        {"step_number": 1, "relative_time": "3.0s", "summary": "s1", "extra_metadata": {}},
+        {
+            "step_number": 2,
+            "relative_time": "65.0s",
+            "summary": "s2",
+            "extra_metadata": {"injected_instruction": "Skip the login"},
+        },
+    ]
+    text = await _final_check_human_text(ctx)
+    section = text.split("# User guidance received during the run\n", 1)[1].split("\n\n", 1)[0]
+    assert section == '- Step 2 (T+01:05): "Skip the login"'
+    # The system prompt audits the goal as amended by that guidance.
+    from artemis.agents.checker.checker import _load_prompts
+
+    assert "as amended by the user guidance" in _load_prompts()["final_guide"]
+
+
+@pytest.mark.asyncio
+async def test_final_review_reports_no_guidance_explicitly():
+    ctx = _mock_ctx()
+    text = await _final_check_human_text(ctx)
+    assert "# User guidance received during the run\n(none)\n" in text
 
 
 # --- tool results: status is structural, never sniffed from the words -----------------

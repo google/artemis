@@ -332,3 +332,39 @@ async def test_run_tool_message_status_is_structural(
     assert messages[0].tool_call_id == "c1"
     assert messages[0].status == expected_status
     assert messages[0].content == str(result)
+
+
+# --- submit_answer rendering ------------------------------------------------------------
+
+
+def test_submit_answer_renders_numbered_steps(mock_context):
+    agent = Diagnoser(mock_context)
+    call = {
+        "name": "submit_answer",
+        "args": {
+            "analysis": "Airplane mode blocks the toggle.",
+            "actionable_steps": ["Turn off airplane mode", "Retry the toggle"],
+        },
+    }
+
+    outcome = agent._handle_submit_call(call, [])
+
+    assert outcome == (
+        "Analysis: Airplane mode blocks the toggle.\n"
+        "Actionable steps:\n"
+        "1. Turn off airplane mode\n"
+        "2. Retry the toggle"
+    )
+
+
+def test_submit_answer_without_steps_omits_section(mock_context):
+    agent = Diagnoser(mock_context)
+    call = {
+        "name": "submit_answer",
+        "args": {"analysis": "Nothing to fix.", "actionable_steps": []},
+    }
+
+    outcome = agent._handle_submit_call(call, [])
+
+    assert outcome == "Analysis: Nothing to fix."
+    assert "Actionable" not in outcome

@@ -209,6 +209,9 @@ class RegisteredCandidate:
     bounds: tuple[int, int, int, int] | None = None
     #: True when the candidate mapped onto an element that was already indexed.
     reused: bool = False
+    #: The text the agent's own indexed list shows for the reused element, so
+    #: the answer can name it the way the agent already knows it.
+    existing_text: str = ""
 
 
 #: A bare-point candidate this close to an existing indexed center (in
@@ -331,6 +334,7 @@ def register_candidates(
                     description=cand.description,
                     bounds=_element_pixel_bounds(existing),
                     reused=True,
+                    existing_text=str(existing.get("text") or ""),
                 )
             )
             continue
@@ -371,8 +375,20 @@ def register_candidates(
 # --------------------------------------------------------------------------- #
 
 
-def render_text(query: str, outcome: ExplorerOutcome, registered: list[RegisteredCandidate]) -> str:
-    """Plain-text answer for the calling agent."""
+def render_text(
+    query: str,
+    outcome: ExplorerOutcome,
+    registered: list[RegisteredCandidate],
+    *,
+    index_targets: bool = False,
+) -> str:
+    """Plain-text answer for the calling agent.
+
+    ``index_targets`` selects the targeting syntax the caller's ``click``
+    accepts: the Pro Operator and the Flash / MCP action executor take a bare
+    integer index next to coordinates; the Validator's text entry takes
+    coordinates only.
+    """
     if registered:
         lines = [
             f"Explorer located {len(registered)} candidate(s) for '{query}' in the"
@@ -381,12 +397,18 @@ def render_text(query: str, outcome: ExplorerOutcome, registered: list[Registere
         for c in registered:
             line = f"- [{c.index}] '{c.description}' at normalized [{c.coords[0]}, {c.coords[1]}]"
             if c.reused:
-                line += " (already in your indexed list)"
+                line += f" (matches your indexed element [{c.index}] '{c.existing_text}')"
             lines.append(line)
-        lines.append(
-            "Act on a candidate by its index (e.g. target=[index]) or by the"
-            " normalized coordinate. Candidates are ranked by confidence."
-        )
+        if index_targets:
+            lines.append(
+                "Act on a candidate by its index (target=3, a bare integer) or by its"
+                " normalized coordinate. Candidates are ranked by confidence."
+            )
+        else:
+            lines.append(
+                "Act on a candidate by its normalized coordinate (target=[x, y]) with a"
+                " target_description. Candidates are ranked by confidence."
+            )
         if outcome.message:
             lines.append(f"Explorer notes: {outcome.message}")
         return "\n".join(lines)
@@ -444,7 +466,7 @@ def render_operator_blocks(
     registered: list[RegisteredCandidate],
 ) -> str | list[dict[str, Any]]:
     """Multimodal answer for the Operator: text plus the annotated screenshot."""
-    text = render_text(query, outcome, registered)
+    text = render_text(query, outcome, registered, index_targets=True)
     screenshot_path = getattr(state, "latest_screenshot", None)
     image_path = (
         render_annotated_image(ctx, screenshot_path, registered) if screenshot_path else None
@@ -475,10 +497,11 @@ async def ask_explorer_text(
     *,
     agent_name: str = "validator",
 ) -> str:
-    """Text-only entry used by the Validator / Flash runner and MCP executors."""
+    """Text-only, coordinate-only entry used by the Validator (Flash and the MCP
+    executor reach the explorer through ``McpActionExecutor`` with index targets)."""
     outcome = await locate(ctx, state, query, context_feedback, agent_name=agent_name)
     registered = register_candidates(ctx, state, outcome)
-    return render_text(query, outcome, registered)
+    return render_text(query, outcome, registered, index_targets=False)
 
 
 class AskExplorerTool(ArtemisTool):

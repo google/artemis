@@ -30,6 +30,12 @@ Hard boundaries (config ``agent.memory.recall``):
 - every result carries a step number / step id;
 - large raw sources return only excerpts around the match plus a reference.
 
+Two surfaces per step: the *scoring* haystack keeps the raw record (action
+JSON, execution result JSON, UI-tree XML) so resource ids, bounds and package
+names stay searchable; the *excerpt* shown as ``Match:`` is built from the
+readable twin (the ledger action phrase, result status/error words, element
+text / content descriptions / OCR text) so the model never reads JSON.
+
 A ``step_range`` additionally returns the full-width ``build_action_ledger``
 rows of that range — the re-entry point for compressed-history marker lines.
 """
@@ -104,6 +110,15 @@ def result_search_text(result: Any) -> str:
     the haystack via :func:`_screen_text`), so base64 never enters the search."""
     if result is None:
         return ""
+    # A content-block list stored as its JSON string (trace serialization)
+    # is unwrapped first so its text blocks render, not the JSON.
+    if isinstance(result, str) and result.lstrip().startswith("[{"):
+        try:
+            parsed = json.loads(result)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list) and any(isinstance(b, dict) and "type" in b for b in parsed):
+            return result_search_text(parsed)
     if isinstance(result, list):
         texts = [
             str(block.get("text") or "")
@@ -135,23 +150,32 @@ def _events_text(step: dict) -> str:
     return "\n".join(parts)
 
 
-def _action_text(action_taken: Any) -> str:
-    """Combine the rendered action with raw fields for search.
-
-    Rendered excerpts identify self-described targets. Raw JSON also makes
-    resource IDs, bounds, and other fields searchable.
-    """
+def _rendered_action(action_taken: Any) -> str:
+    """The shared ledger phrase of a step's action (``format_actions_clean``)."""
     if not action_taken:
         return ""
     try:
-        rendered = format_actions_clean(action_taken)
+        return format_actions_clean(action_taken)
     except Exception:
-        rendered = ""
+        return ""
+
+
+def _action_text(action_taken: Any) -> str:
+    """Combine the rendered action with raw fields for *scoring*.
+
+    Rendered text identifies self-described targets. Raw JSON also makes
+    resource IDs, bounds, and other fields searchable. Never shown as-is:
+    the excerpt comes from :func:`_step_display_text`.
+    """
+    if not action_taken:
+        return ""
+    rendered = _rendered_action(action_taken)
     raw = json.dumps(action_taken, ensure_ascii=False, default=str)
     return f"{rendered}\n{raw}" if rendered else raw
 
 
 def _step_haystack(step: dict) -> str:
+    """The scoring surface of a step: every recorded field, raw JSON included."""
     extra = step.get("extra_metadata") or {}
     fields = [
         str(step.get("summary") or ""),
@@ -168,6 +192,70 @@ def _step_haystack(step: dict) -> str:
         str(extra.get("foreground_app") or ""),
     ]
     return "\n".join(f for f in fields if f)
+
+
+def _result_display_text(result: Any) -> str:
+    """The execution result as words: its status and result/error strings
+    (an execution incident renders as its one-line phrase), never JSON."""
+    if not result:
+        return ""
+    if not isinstance(result, dict):
+        return str(result)
+    parts: list[str] = []
+    status = result.get("status")
+    if status:
+        parts.append(f"status {status}")
+    try:
+        from artemis.utils.task_tree import format_result_clean
+
+        incident_or_error = format_result_clean(result)
+    except Exception:
+        incident_or_error = None
+    if incident_or_error:
+        parts.append(str(incident_or_error))
+    else:
+        for key in ("result", "error", "error_msg", "message"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+    return " | ".join(parts)
+
+
+def _events_display_text(step: dict) -> str:
+    """Tool calls and reasoning of a step as the replay shows them (name,
+    arguments, result text), without the raw event JSON."""
+    parts: list[str] = []
+    for event in step.get("interleaved_events") or []:
+        etype = event.get("type")
+        if etype == "tool_call":
+            name = str(event.get("name") or "")
+            args = event.get("args") or {}
+            result_text = result_search_text(event.get("result"))
+            try:
+                call = f"{name}({json.dumps(args, ensure_ascii=False, default=str)})"
+            except (TypeError, ValueError):
+                call = name
+            parts.append(f"{call} -> {result_text}" if result_text else call)
+        elif etype and "thought" in etype:
+            parts.append(str(event.get("content") or ""))
+    return "\n".join(p for p in parts if p)
+
+
+def _step_display_text(step: dict) -> str:
+    """The *excerpt* surface of a step: the same fields as the haystack, as the
+    agent would read them. The summary is left out — it already heads the
+    result as the ``Screen:`` line."""
+    extra = step.get("extra_metadata") or {}
+    fields = [
+        _rendered_action(step.get("action_taken")),
+        _result_display_text(step.get("last_execution_result")),
+        str(step.get("operator_raw_thinking") or ""),
+        _events_display_text(step),
+        str(extra.get("injected_instruction") or ""),
+        str(extra.get("foreground_app") or ""),
+    ]
+    # Excerpts flatten whitespace, so the field boundary must survive as text.
+    return " | ".join(f.strip() for f in fields if f and f.strip())
 
 
 def _image_text(reader: Any, image_name: str | None) -> str:
@@ -212,9 +300,37 @@ def referenced_image_names(step: dict) -> list[str]:
     return names
 
 
-def _screen_text(reader: Any, step: dict) -> str:
-    """Description text of the screenshots behind a step: its own pre- and
-    post-action screenshots plus any screenshot a tool result embedded."""
+#: UI-tree node attributes whose values are human-readable screen content.
+_UI_NODE_TEXT_KEYS = ("text", "content-desc", "content_desc", "resource-id", "resource_id")
+
+
+def _collect_screen_strings(value: Any, out: list[str], depth: int = 0) -> None:
+    """Walks a stored UI tree / OCR blob and appends its readable values
+    (element text, content description, resource id, OCR text) in order."""
+    if depth > 50:
+        return
+    if isinstance(value, str):
+        text = " ".join(value.split())
+        if text and text not in out:
+            out.append(text)
+    elif isinstance(value, dict):
+        for key in _UI_NODE_TEXT_KEYS:
+            text = value.get(key)
+            if isinstance(text, str):
+                text = " ".join(text.split())
+                if text and text not in out:
+                    out.append(text)
+        for child_key in ("children", "nodes", "elements"):
+            children = value.get(child_key)
+            if isinstance(children, (list, tuple)):
+                for child in children:
+                    _collect_screen_strings(child, out, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _collect_screen_strings(child, out, depth + 1)
+
+
+def _screen_names(step: dict) -> list[str]:
     names: list[str] = []
     for name in (
         step.get("pre_image_name"),
@@ -223,7 +339,32 @@ def _screen_text(reader: Any, step: dict) -> str:
     ):
         if name and name not in names:
             names.append(name)
-    return "\n".join(t for t in (_image_text(reader, n) for n in names) if t)
+    return names
+
+
+def _screen_text(reader: Any, step: dict) -> str:
+    """Description text of the screenshots behind a step (its own pre- and
+    post-action screenshots plus any screenshot a tool result embedded) —
+    the raw XML/OCR blobs, for *scoring* only."""
+    return "\n".join(t for t in (_image_text(reader, n) for n in _screen_names(step)) if t)
+
+
+def _screen_display_text(reader: Any, step: dict) -> str:
+    """The readable content of the same screenshots for the *excerpt*: element
+    text / content descriptions / resource ids and OCR text joined by
+    ``" | "``, never the UI-tree JSON."""
+    strings: list[str] = []
+    for name in _screen_names(step):
+        try:
+            record = reader.storage.get_image(name)
+        except (sqlite3.Error, ValueError, AttributeError):
+            continue
+        if record is None:
+            continue
+        for blob in (record.ui_tree, record.ocr_result):
+            if blob:
+                _collect_screen_strings(blob, strings)
+    return " | ".join(strings)
 
 
 def _step_label(step: dict, session_start: float | None) -> str:
@@ -321,12 +462,22 @@ def search_history_text(
             total = score + screen_score
             if total <= 0:
                 continue
-            source = haystack if score >= screen_score else screen
             lines = [f"[{_step_label(step, session_start)} | id {step.get('step_id')}]"]
             summary = step.get("summary")
             if summary:
                 lines.append(f"  Screen: {_clamp(str(summary), EXCERPT_CHARS)}")
-            lines.append(f"  Match: {_excerpt(source, terms, EXCERPT_CHARS)}")
+            # The excerpt comes from the readable twin of whichever surface
+            # scored higher; the raw JSON only ever scores. When the hit sits
+            # in the summary alone, the Screen line already shows it.
+            display = (
+                _step_display_text(step)
+                if score >= screen_score
+                else _screen_display_text(reader, step)
+            )
+            display_hit = _score(display, terms) > 0
+            summary_hit = bool(summary) and _score(str(summary), terms) > 0
+            if display and (display_hit or not summary_hit):
+                lines.append(f"  Match: {_excerpt(display, terms, EXCERPT_CHARS)}")
             number = step.get("step_number") or 0
             results.append((total, number, "\n".join(lines)))
 

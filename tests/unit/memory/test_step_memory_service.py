@@ -16,10 +16,13 @@
 
 import asyncio
 from unittest.mock import Mock
+import uuid
 
 import pytest
 
-from artemis.memory.step_memory import StepMemoryService
+from artemis.data_engine.context_vars import CURRENT_NODE_NAME, CURRENT_TRACE_ID
+from artemis.data_engine.trace import detached_trace
+from artemis.memory.step_memory import StepLens, StepMemoryService
 
 
 class _ScriptedService(StepMemoryService):
@@ -159,6 +162,79 @@ async def test_flush_uses_configured_default_timeout():
     await asyncio.wait_for(service.flush(), timeout=5)
 
     assert service._pending_tasks["slow"].done()
+
+
+@pytest.mark.asyncio
+async def test_lens_job_runs_detached_from_the_submitters_trace_span():
+    """A job submitted while an operator step span is current (the task
+    inherits that context) must not see the span: whatever the lens records
+    can never be attributed to the caller's step. The caller's own context is
+    untouched, and the job's node label names the lens."""
+    seen: list[tuple] = []
+
+    class _Lens(StepLens):
+        name = "probe"
+
+        async def render(self, key, payload):
+            seen.append((CURRENT_TRACE_ID.get(), CURRENT_NODE_NAME.get()))
+            return "rendered"
+
+    service = StepMemoryService(Mock(), lens=_Lens())
+    operator_span = uuid.uuid4()
+    token = CURRENT_TRACE_ID.set(operator_span)
+    token_name = CURRENT_NODE_NAME.set("operator")
+    try:
+        service.submit("step-1", {"step_number": 1})
+        await service.flush()
+        assert CURRENT_TRACE_ID.get() == operator_span
+        assert CURRENT_NODE_NAME.get() == "operator"
+    finally:
+        CURRENT_TRACE_ID.reset(token)
+        CURRENT_NODE_NAME.reset(token_name)
+
+    assert service.get_summary("step-1") == "rendered"
+    assert seen == [(None, "lens:probe")]
+
+
+@pytest.mark.asyncio
+async def test_lens_less_subclass_attempt_is_detached_too():
+    """The detachment lives in the runner, so a subclass with an inlined
+    ``_attempt`` (the Flash visual summarizer shape) gets it for free."""
+    seen: list = []
+
+    async def attempt(svc, key):
+        seen.append(CURRENT_TRACE_ID.get())
+        svc._summaries[key] = "ok"
+        return True
+
+    service = _ScriptedService(attempt)
+    token = CURRENT_TRACE_ID.set(uuid.uuid4())
+    try:
+        service.submit("s", {"step_number": 1})
+        await service.flush()
+    finally:
+        CURRENT_TRACE_ID.reset(token)
+    assert seen == [None]
+    assert service.trace_node_name == "lens:_scriptedservice"
+
+
+def test_detached_trace_restores_context_on_exception():
+    span = uuid.uuid4()
+    token = CURRENT_TRACE_ID.set(span)
+    token_name = CURRENT_NODE_NAME.set("operator")
+    try:
+        with pytest.raises(RuntimeError):
+            with detached_trace("lens:x"):
+                assert CURRENT_TRACE_ID.get() is None
+                assert CURRENT_NODE_NAME.get() == "lens:x"
+                raise RuntimeError("boom")
+        assert CURRENT_TRACE_ID.get() == span
+        assert CURRENT_NODE_NAME.get() == "operator"
+        with detached_trace():  # no node label: the name is left alone
+            assert CURRENT_NODE_NAME.get() == "operator"
+    finally:
+        CURRENT_TRACE_ID.reset(token)
+        CURRENT_NODE_NAME.reset(token_name)
 
 
 @pytest.mark.asyncio

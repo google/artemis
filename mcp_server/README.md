@@ -1,6 +1,6 @@
 # 🔌 Universal MCP Server for ARTEMIS
 
-This directory contains the universal **Model Context Protocol (MCP)** server for **ARTEMIS**, enabling seamless mobile device automation inside AI IDEs and agents like **Antigravity**, **Cursor**, **Claude Code**, **OpenClaw**, and **Windsurf**.
+This directory contains the **Model Context Protocol (MCP)** server for **ARTEMIS**. It exposes mobile device automation to clients such as **Antigravity**, **Cursor**, **Claude Code**, **OpenClaw**, and **Windsurf**.
 
 ## 🏗️ Architecture
 
@@ -24,7 +24,8 @@ mcp_server/
 │   ├── task_runner.py    # mobile_run_task
 │   ├── task_manager.py   # mobile_manage_task
 │   ├── device_state.py   # mobile_get_device_state
-│   └── inspect_trace.py  # mobile_inspect_trace
+│   ├── inspect_trace.py  # mobile_inspect_trace
+│   └── diagnose.py       # mobile_diagnose
 └── utils/                # Environment and device utilities
     ├── device_utils.py   # Cross-platform ADB and emulator resolver
     └── env_utils.py      # Python interpreter and process manager
@@ -56,6 +57,7 @@ The included [`rules.md`](./rules.md) file contains the **Mobile Testing Mindset
 2. **Flash vs. Pro Routing Strategy**: Guides the AI to choose **Flash** for rapid, straightforward UI actions (no step cap by default) and **Pro** for tasks that need a persistent plan, verified checkpoints, polling loops, or ADB / video / log diagnosis.
 3. **Latency & Timing Compensation**: Clarifies the difference between AI exploratory latency (e.g., model decision intervals) and the deterministic timing requirements of final test code.
 4. **"Dynamic-First, Coordinate-Fallback" Locator Pattern**: Teaches the AI to prioritize dynamic UI locators (Resource IDs, OCR text, semantics) for layout resilience, while implementing absolute coordinate fallbacks for maximum execution reliability.
+5. **Environment Self-Diagnosis**: Tells the AI to call `mobile_diagnose` first whenever a tool errors or the user says ARTEMIS is not working, and how to act on the returned fix list (run local commands itself, relay device prompts to the user, never move API keys through the chat, reload the MCP server after config changes).
 
 ### How Global Rules & MCP are Installed
 When you run `uv run artemis mcp --install all` (or target a specific IDE like `--install cursor`, `--install claude`, etc.), the installer **automatically synchronizes both global MCP server configuration and global testing rules** into the corresponding user home directories (without creating project-level rule files in your workspace):
@@ -75,6 +77,7 @@ When you run `uv run artemis mcp --install all` (or target a specific IDE like `
 * **`mobile_manage_task`**: Manages task lifecycle (`status`, `stop`, `inject_instruction`), returning task state and assigned `device_serial`. Pass `release_loop=True` with `inject_instruction` to gracefully end a `[Loop:continuous]` monitoring task — this explicit signal (not "please stop" wording) is what unlocks the loop milestone's completion.
 * **`mobile_get_device_state`**: Real-time observer (`screenshot` or OCR+XML `hierarchy`) with optional `device_serial`.
 * **`mobile_inspect_trace`**: Granular trace inspection, visual action overlays, agent reasoning, and `device_serial` tracking.
+* **`mobile_diagnose`**: Environment doctor for the IDE. Reuses the readiness probes behind `artemis doctor` and the web console's device wizard (Python runtime, config, LLM credentials, ADB / devices / RSA keys / emulators, video toolchain) plus an MCP-host probe (server interpreter vs project `.venv`, detected MCP client, `.env` location, traces directory, daemon port collisions). Returns a `verdict` (`ready` | `degraded` | `blocked`), an ordered `next_steps` fix list the AI agent can act on (`Run:` one-command lines vs `Guidance:` for the user), scrubbed per-check details, `tasks` holding or waiting for devices, log paths, and the most recent failed task with its `recent_errors`. Optional deep checks: `verify_credentials=true` (live API-key validation, ~12s, result in `credentials`), `probe_device=true` (end-to-end screenshot + UIAutomator hierarchy, ~20s, result in `device_probe`), `launch_avd="<name>"` (boots an installed AVD in the background; re-run after ~60s). `attempt_fix=true` applies the safe self-heals (regenerate corrupted ADB keys, restart the ADB server, clear stale device locks / queue tickets left by crashed runners).
 
 ### 📱 Device Selection & Multi-Device Execution
 ARTEMIS supports parallel execution across multiple connected Android devices and emulators:

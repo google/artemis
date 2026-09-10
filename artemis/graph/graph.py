@@ -16,6 +16,7 @@ import asyncio
 import base64
 import functools
 import json
+from collections import Counter
 from typing import Annotated, Literal
 
 from langchain_core.messages import ToolMessage
@@ -49,6 +50,8 @@ from artemis.graph.checkpoints import (
     publish_checker_event,
     queue_checkpoints,
     read_ledger,
+    reinstate_check_items,
+    retire_check_items,
     revert_subgoal_status,
     settle_all_checkpoints,
     spawn_pending_checkpoints,
@@ -87,8 +90,10 @@ from artemis.utils.notes import (
 )
 from artemis.utils.plan_grammar import (
     milestones_changed,
+    missing_check_items,
     new_top_level_completions,
     parse_plan,
+    render_check_line,
     restore_missing_check_items,
     subgoal_hash,
     unintended_milestone_edits,
@@ -432,7 +437,13 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
 
     # END path: assemble the machine-readable run outcome.
     records = read_ledger(base_dir)
-    outcome = compute_run_outcome(snapshot, records, verify_blocked=verify_blocked)
+    retired = getattr(ctx, "guidance_retired_checks", None)
+    outcome = compute_run_outcome(
+        snapshot,
+        records,
+        verify_blocked=verify_blocked,
+        retired=retired if isinstance(retired, set) else None,
+    )
     if snapshot.all_check_items or records or verify_blocked:
         update["run_outcome"] = outcome.model_dump()
         # BLOCKED/partial wrap-ups carry the last findings in the metadata file.
@@ -451,7 +462,8 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
             f"Run outcome: task_status={outcome.task_status},"
             f" tests(passed={outcome.tests.passed}, failed={outcome.tests.failed},"
             f" inconclusive={outcome.tests.inconclusive},"
-            f" unchecked={outcome.tests.unchecked})"
+            f" unchecked={outcome.tests.unchecked},"
+            f" retired={outcome.tests.retired})"
         )
     return update
 
@@ -634,17 +646,59 @@ async def _process_plan_write(
     # deleted/rewritten check lines are merged back in a pure text operation.
     # This is content-driven and independent of any switch — a resumed plan
     # with check lines stays protected even when checking is disabled.
-    merged = restore_missing_check_items(content_before, content_after)
-    if merged is not None:
+    # The one exception is user guidance: it outranks the declared standards,
+    # so every check line that existed when an instruction arrived (recorded
+    # by perception in ``ctx.guidance_unprotected_checks``) may be dropped or
+    # reworded at any later write — the Operator usually re-plans over several
+    # surgical edits, turns after the guidance landed. Lines added after the
+    # instruction are protected again until the next one.
+    #
+    # ``missing_check_items`` diffs on the full signature (kind, when, text,
+    # parent hash), so rewording a milestone re-signs every check line under
+    # it. Such a line has merely moved: it is still declared, so it is neither
+    # merged back (that would duplicate it as a task-level ``@end`` orphan)
+    # nor retired (the ledger, the harvest gate and the run outcome all key a
+    # check item by ``(kind, text)``). Only a line whose ``(kind, text)`` is
+    # gone from the new plan counts as dropped.
+    before_snapshot = parse_plan(content_before)
+    after_snapshot = parse_plan(content_after)
+    missing = missing_check_items(before_snapshot, after_snapshot)
+    unprotected = getattr(ctx, "guidance_unprotected_checks", None)
+    if not isinstance(unprotected, set):
+        unprotected = set()
+    still_declared = Counter((ci.kind, ci.text) for ci in after_snapshot.check_items)
+    dropped: list = []
+    for ci in missing:
+        if still_declared.get((ci.kind, ci.text), 0) > 0:
+            still_declared[(ci.kind, ci.text)] -= 1
+            continue  # moved under a reworded milestone / re-timed: still declared
+        dropped.append(ci)
+    waived = [ci for ci in dropped if (ci.kind, ci.text) in unprotected]
+    protected = [ci for ci in dropped if (ci.kind, ci.text) not in unprotected]
+    if waived:
         logger.info(
-            "Plan write removed or rewrote declared check lines; merging them"
-            " back (check standards are protected deterministically)."
+            "Plan write dropped declared check lines because of user guidance"
+            f" (the change stands): {[render_check_line(ci).strip() for ci in waived]}"
         )
-        content_after = merged
-        try:
-            task_plan_path.write_text(content_after, encoding="utf-8")
-        except Exception as e:
-            logger.error(f"Failed to write merged check lines: {e}")
+        # Records the retirement (harvest gate + run outcome) and withdraws any
+        # standing finding headline those lines had already produced.
+        retire_check_items(ctx, [(ci.kind, ci.text) for ci in waived])
+    # A retired line the Operator declares again is live again: the harvest
+    # gate and the run outcome must agree with the plan on disk.
+    reinstate_check_items(ctx, [(ci.kind, ci.text) for ci in after_snapshot.check_items])
+    if protected:
+        merged = restore_missing_check_items(content_before, content_after, items=protected)
+        if merged is not None:
+            logger.info(
+                "Plan write removed or rewrote declared check lines; merging them"
+                " back (check standards are protected deterministically):"
+                f" {[render_check_line(ci).strip() for ci in protected]}"
+            )
+            content_after = merged
+            try:
+                task_plan_path.write_text(content_after, encoding="utf-8")
+            except Exception as e:
+                logger.error(f"Failed to write merged check lines: {e}")
 
     # Deterministic finding-line projection: unresolved verify findings are
     # re-rendered from the checkpoint repair state on every plan write, so a
@@ -653,7 +707,7 @@ async def _process_plan_write(
     # never influences the parses below.
     sync_finding_lines(ctx)
 
-    before = parse_plan(content_before)
+    before = before_snapshot
     after = parse_plan(content_after)
 
     # Ratchet baseline: judge the current plan against the last *validated*

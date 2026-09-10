@@ -68,7 +68,7 @@ async def test_read_note_direct_execution_success(mock_ctx, tmp_path):
     save_note_content(tmp_path, "sample", "line 1\nline 2\nline 3\nline 4\nline 5")
 
     result = await read_note.execute(ctx=mock_ctx, key="sample")
-    assert "Successfully read note 'sample'." in result
+    assert "Note 'sample' (" in result
     assert "line 1\nline 2\nline 3\nline 4\nline 5" in result
 
 
@@ -83,7 +83,7 @@ async def test_read_note_slice(mock_ctx, tmp_path):
         start_line=2,
         end_line=4,
     )
-    assert "Successfully read note 'sample' (lines 2 to 4)." in result
+    assert "Note 'sample' (lines 2 to 4):" in result
     assert "line 1" not in result
     assert "line 2\nline 3\nline 4" in result
     assert "line 5" not in result
@@ -95,7 +95,7 @@ async def test_read_note_callable_execution(mock_ctx, tmp_path):
     save_note_content(tmp_path, "callable_sample", "hello from callable")
 
     result = await read_note(ctx=mock_ctx, key="callable_sample")
-    assert "Successfully read note 'callable_sample'." in result
+    assert "Note 'callable_sample' (" in result
     assert "hello from callable" in result
 
 
@@ -115,7 +115,7 @@ async def test_read_note_with_state_tool_message(mock_ctx, tmp_path):
 
     assert isinstance(result, ToolMessage)
     assert result.tool_call_id == "call_read_999"
-    assert "Successfully read note 'state_sample'." in result.content
+    assert "Note 'state_sample' (" in result.content
     assert "state note content" in result.content
     assert result.status == "success"
 
@@ -147,7 +147,7 @@ async def test_get_read_note_tool_langchain_ainvoke(mock_ctx, tmp_path):
     assert lc_tool.name == "read_note"
 
     result = await lc_tool.ainvoke({"key": "lc_sample"})
-    assert "Successfully read note 'lc_sample'." in result
+    assert "Note 'lc_sample' (" in result
     assert "langchain content" in result
 
 
@@ -160,5 +160,5 @@ async def test_get_read_note_tool_pure(mock_ctx, tmp_path):
     assert pure_tool.name == "read_note"
 
     result = await pure_tool.ainvoke({"key": "pure_sample"})
-    assert "Successfully read note 'pure_sample'." in result
+    assert "Note 'pure_sample' (" in result
     assert "pure content" in result

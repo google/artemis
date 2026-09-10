@@ -260,23 +260,82 @@ class VisualStepSummarizer(StepMemoryService):
     def _action_phrase(action_name: str, action_args: dict[str, Any] | None) -> str:
         """The action as every other history reader sees it (``format_actions_clean``).
 
-        A described coordinate target renders as ``'play button' (self-described)``,
-        an observed element as ``'Play'``; a Pro burst lists every member.
+        ``action_args`` is the recorded action minus its verb (what the Pro
+        summarizer extracts from ``action_taken`` and what the Flash runner
+        builds from the same record shape). The action name always wins over
+        an argument of the same key: ``manage_app``'s own ``action="launch"``
+        argument becomes the ``intent`` the renderer reads, never the verb. A
+        described coordinate target renders as ``'play button'
+        (self-described)``, an observed element as ``'Play'``; a Pro burst
+        lists every member.
         """
         args = dict(action_args or {})
         extra = args.pop("additional_actions", None)
+        own_verb = args.pop("action", None)
+        if own_verb is not None and own_verb != action_name:
+            args.setdefault("intent", own_verb)
         # Flash's coordinate swipe names its points ``start``/``end``; the
         # history renderer reads ``start_coordinates``/``end_coordinates``.
-        if action_name == "swipe" and "start" in args and "end" in args:
-            args.setdefault("start_coordinates", args["start"])
-            args.setdefault("end_coordinates", args["end"])
+        if action_name == "swipe":
+            raw = args.get("args") if isinstance(args.get("args"), dict) else {}
+            start = args.get("start", raw.get("start"))
+            end = args.get("end", raw.get("end"))
+            if start is not None and end is not None:
+                args.setdefault("start_coordinates", start)
+                args.setdefault("end_coordinates", end)
         try:
-            first = {"action": action_name, **args}
+            first = {**args, "action": action_name}
             actions = [first, *extra] if isinstance(extra, list) and extra else first
             return format_actions_clean(actions)
         except Exception as exc:
             logger.debug(f"Action phrase rendering fell back to raw args: {exc}", exc_info=True)
             return f"{action_name}({action_args})"
+
+    @staticmethod
+    def _verbatim_args(action_args: dict[str, Any] | None) -> dict[str, Any]:
+        """The agent-facing arguments of the action.
+
+        A Flash record keeps the tool call's arguments under ``args``; a Pro
+        record is the arguments themselves. Bookkeeping keys never count.
+        """
+        args = action_args or {}
+        raw = args.get("args")
+        if isinstance(raw, dict):
+            return dict(raw)
+        internal = {
+            "additional_actions",
+            "coordinate_space",
+            "normalized_coordinates",
+            "normalized_start_coordinates",
+            "normalized_end_coordinates",
+        }
+        return {k: v for k, v in args.items() if k not in internal}
+
+    @staticmethod
+    def _phrase_carries(phrase: str, args: dict[str, Any]) -> bool:
+        """Whether every argument value is visible in the rendered phrase.
+
+        Booleans and ``None`` never count (the phrase spells their effect, not
+        their value); everything else must appear verbatim, so an index
+        target, a repeat count or a duration the phrase folded away keeps the
+        verbatim argument line.
+        """
+        haystack = phrase.lower()
+
+        def _shown(value: Any) -> bool:
+            if isinstance(value, (list, tuple)):
+                # A point renders whole (``at [880, 410]``); a sequence or a
+                # description list renders member by member.
+                return str(list(value)).lower() in haystack or (
+                    bool(value) and all(_shown(v) for v in value)
+                )
+            return str(value).lower() in haystack
+
+        return all(
+            _shown(value)
+            for value in args.values()
+            if value is not None and not isinstance(value, bool)
+        )
 
     def _meter_lens_call(self, response: Any) -> None:
         """Meter one raw-model lens call as an ``llm_usage`` trace, best-effort.
@@ -338,11 +397,14 @@ class VisualStepSummarizer(StepMemoryService):
             dual = bool(pre_bytes) and bool(post_bytes)
             template = self._prompt_template if dual else self._single_prompt_template
             rendered_prompt = Template(template).render(step_number=step_number)
-            lead_lines = [
-                f"Step {step_number} Physical Action: {self._action_phrase(action_name, action_args)}",
-                f"Action arguments (verbatim): {action_name}({action_args})",
-                f"Controller Outcome: {exec_outcome}",
-            ]
+            phrase = self._action_phrase(action_name, action_args)
+            lead_lines = [f"Step {step_number} Physical Action: {phrase}"]
+            # The verbatim arguments are worth a line only when the phrase
+            # folded some of them away (an index target, a repeat count, ...).
+            verbatim = self._verbatim_args(action_args)
+            if verbatim and not self._phrase_carries(phrase, verbatim):
+                lead_lines.append(f"Action arguments (verbatim): {action_name}({verbatim})")
+            lead_lines.append(f"Controller Outcome: {exec_outcome}")
             focus = input_data.get("focus")
             if isinstance(focus, dict) and focus:
                 lead_lines.extend(["", render_focus_block(focus, dual=dual)])

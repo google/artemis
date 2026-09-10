@@ -70,7 +70,7 @@ async def test_append_note_direct_execution_success(mock_ctx, tmp_path):
         key="test_append",
         content="First line",
     )
-    assert result1 == "Successfully appended note to test_append.md."
+    assert result1 == "Appended to note 'test_append'."
 
     note_path = Path(tmp_path) / "notes" / "test_append.md"
     assert note_path.exists()
@@ -82,7 +82,7 @@ async def test_append_note_direct_execution_success(mock_ctx, tmp_path):
         key="test_append",
         content="Second line",
     )
-    assert result2 == "Successfully appended note to test_append.md."
+    assert result2 == "Appended to note 'test_append'."
     assert note_path.read_text(encoding="utf-8") == "First line\nSecond line\n"
 
 
@@ -94,7 +94,7 @@ async def test_append_note_callable_execution(mock_ctx, tmp_path):
         key="callable_append",
         content="Callable append test",
     )
-    assert result == "Successfully appended note to callable_append.md."
+    assert result == "Appended to note 'callable_append'."
 
     note_path = Path(tmp_path) / "notes" / "callable_append.md"
     assert note_path.exists()
@@ -116,7 +116,7 @@ async def test_append_note_with_state_tool_message(mock_ctx, tmp_path):
 
     assert isinstance(result, ToolMessage)
     assert result.tool_call_id == "call_append_999"
-    assert result.content == "Successfully appended note to state_append_note.md."
+    assert result.content == "Appended to note 'state_append_note'."
     assert result.status == "success"
 
     note_path = Path(tmp_path) / "notes" / "state_append_note.md"
@@ -151,7 +151,7 @@ async def test_get_append_note_tool_langchain_ainvoke(mock_ctx, tmp_path):
             "content": "Appended via LangChain BaseTool",
         }
     )
-    assert result == "Successfully appended note to lc_append_note.md."
+    assert result == "Appended to note 'lc_append_note'."
 
     note_path = Path(tmp_path) / "notes" / "lc_append_note.md"
     assert note_path.exists()
@@ -170,7 +170,7 @@ async def test_get_append_note_tool_pure(mock_ctx, tmp_path):
             "content": "Appended via pure tool",
         }
     )
-    assert result == "Successfully appended note to pure_append_note.md."
+    assert result == "Appended to note 'pure_append_note'."
 
     note_path = Path(tmp_path) / "notes" / "pure_append_note.md"
     assert note_path.exists()

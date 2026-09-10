@@ -392,7 +392,7 @@ def _foreground_engine(tmp_path):
 
 
 def test_record_step_persists_explicit_foreground_app(tmp_path):
-    """M5: the historically dropped foreground_app parameter is persisted."""
+    """The foreground_app parameter is persisted."""
     engine = _foreground_engine(tmp_path)
     engine.record_step(
         foreground_app="com.android.settings",

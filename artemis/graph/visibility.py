@@ -116,7 +116,7 @@ NODE_VISIBILITY: dict[str, NodeVisibility] = {
             "operator_native_thinking",
             "user_stop_requested",
             "initial_goal",
-            # M3: the turn's injected instruction is stamped verbatim onto the
+            # The turn's injected instruction is stamped verbatim onto the
             # step record so the chunk ledger can preserve it (never-evict).
             "injected_instruction",
         },

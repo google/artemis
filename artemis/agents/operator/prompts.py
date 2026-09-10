@@ -17,6 +17,7 @@ from functools import lru_cache
 import io
 import json
 from pathlib import Path
+from typing import NamedTuple
 
 from jinja2 import Environment, StrictUndefined, Template
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -31,9 +32,8 @@ from artemis.tools.command_tool import (
     _is_output_long,
 )
 from artemis.utils.logger import get_logger
-from artemis.utils.notes import get_note_file_path
 from artemis.utils.plan_grammar import parse_plan, render_plan_grammar_spec
-from artemis.utils.task_tree import SELF_DESCRIBED_MARKER
+from artemis.utils.task_tree import SELF_DESCRIBED_MARKER, action_intent_phrase
 
 logger = get_logger(__name__)
 
@@ -149,11 +149,19 @@ class PromptBuilder:
         self.system_parts = []
         self.human_parts = []
         self.human_footer = None
+        #: Indices into ``human_parts`` of blocks that only matter this turn (see
+        #: ``artemis.memory.transcript.EPHEMERAL_BLOCKS_KEY``).
+        self.ephemeral_indices: list[int] = []
 
     def add_system_text(self, text: str):
         self.system_parts.append(text)
 
-    def add_human_content(self, content: str | dict):
+    def add_human_content(self, content: str | dict, *, ephemeral: bool = False):
+        """Append a block to the observation. ``ephemeral=True`` marks it as valid
+        for this turn only: the transcript scrub edge deletes it at depth K, so it
+        never reaches the frozen history or a chunk capsule."""
+        if ephemeral:
+            self.ephemeral_indices.append(len(self.human_parts))
         self.human_parts.append(content)
 
     def set_human_footer(self, content: str):
@@ -171,10 +179,12 @@ class PromptBuilder:
         if self.human_footer:
             human_content.append({"type": "text", "text": self.human_footer})
 
-        return [
-            SystemMessage(content=system_content),
-            HumanMessage(content=human_content),
-        ]
+        human = HumanMessage(content=human_content)
+        if self.ephemeral_indices:
+            from artemis.memory.transcript import mark_ephemeral
+
+            mark_ephemeral(human, self.ephemeral_indices)
+        return [SystemMessage(content=system_content), human]
 
 
 class PromptComponent:
@@ -221,18 +231,42 @@ def resolve_operator_prompt_tools(ctx: ArtemisContext) -> frozenset[str]:
     return frozenset(available)
 
 
-def _operator_grammar_flags(ctx: ArtemisContext) -> tuple[bool, bool]:
-    """(include_checks, verification_active) for the template render."""
+def _operator_grammar_flags(ctx: ArtemisContext) -> tuple[bool, bool, bool]:
+    """(midway_checks, final_check, verification_active) for the template render.
+
+    The two check gates are read separately so the grammar and the check-line
+    guidance are worded for what actually runs: with midway checks off there is
+    no repair loop to teach, and with both off the check-line grammar never
+    enters any prompt.
+    """
     setup = getattr(ctx, "execution_setup", None)
-    # Grammar spec assembly is a function of configuration: with both check
-    # gates disabled, the check-line grammar never enters any prompt.
-    include_checks = bool(setup and getattr(setup, "checks_enabled", False))
+    midway = bool(setup and getattr(setup, "midway_checks_enabled", False))
+    final = bool(setup and getattr(setup, "final_check_enabled", False))
     # The rejection/finding diagnosis trigger only exists while a mechanism
     # that can produce rejections or findings is active.
-    verification_active = include_checks or bool(
-        setup and not getattr(setup, "disable_planner_validation", True)
+    verification_active = (
+        midway or final or bool(setup and not getattr(setup, "disable_planner_validation", True))
     )
-    return include_checks, verification_active
+    return midway, final, verification_active
+
+
+def _checkpoint_max_repairs(ctx: ArtemisContext) -> int:
+    """The midway repair budget recited in the static prompt."""
+    setup = getattr(ctx, "execution_setup", None)
+    max_repairs = getattr(setup, "checkpoint_max_repairs", None)
+    return max_repairs if isinstance(max_repairs, int) else 2
+
+
+def _grammar_render_context(ctx: ArtemisContext) -> dict:
+    """Template variables shared by the static and legacy system renders."""
+    midway, final, verification_active = _operator_grammar_flags(ctx)
+    return {
+        "plan_grammar": render_plan_grammar_spec(midway=midway, final=final),
+        "verification_active": verification_active,
+        "checks_active": midway or final,
+        "midway_checks_active": midway,
+        "checkpoint_max_repairs": _checkpoint_max_repairs(ctx),
+    }
 
 
 # --- M2 template split -----------------------------------------------------------
@@ -282,18 +316,15 @@ def render_transcript_static_system(
 
     available = resolve_operator_prompt_tools(ctx)
     static_template = apply_operator_prompt_contract(static_template, available_tools=available)
-    include_checks, verification_active = _operator_grammar_flags(ctx)
     return Template(static_template).render(
         initial_goal=state.initial_goal,
         subgoals_status="",
         plan_and_history="",
         unified_history="",
-        plan_grammar=render_plan_grammar_spec(include_checks),
-        verification_active=verification_active,
-        checks_active=include_checks,
         transcript_history=True,
         max_burst_actions=_max_burst_actions_for_prompt(),
         max_tool_calls=OPERATOR_MAX_TOOL_ITERATIONS,
+        **_grammar_render_context(ctx),
     )
 
 
@@ -326,19 +357,15 @@ class TemplatePromptComponent(PromptComponent):
 
         plan_and_history = kwargs.get("plan_and_history", "No plan or history yet.")
 
-        include_checks, verification_active = _operator_grammar_flags(ctx)
-
         full_prompt = Template(prompt_template).render(
             initial_goal=state.initial_goal,
             subgoals_status="",
             plan_and_history=plan_and_history,
             unified_history="",
-            plan_grammar=render_plan_grammar_spec(include_checks),
-            verification_active=verification_active,
-            checks_active=include_checks,
             transcript_history=False,
             max_burst_actions=_max_burst_actions_for_prompt(),
             max_tool_calls=OPERATOR_MAX_TOOL_ITERATIONS,
+            **_grammar_render_context(ctx),
         )
 
         parts = full_prompt.split("# CURRENT OBSERVATION")
@@ -400,7 +427,8 @@ class FeedbackPromptComponent(PromptComponent):
             " address any reverted subgoal accordingly; do not re-litigate"
             " them. [planner] findings are advisory: a lightweight reviewer"
             " had a concern about a plan change that stayed applied — weigh"
-            " the reason against your own observations."
+            " the reason against your own observations.",
+            ephemeral=True,
         )
 
 
@@ -472,7 +500,9 @@ def render_execution_incident(incident: dict, steps: list) -> str:
     kind = incident.get("kind") or "exec_error"
     category = str(incident.get("category") or "general")
     consecutive = int(incident.get("consecutive_failures") or 1)
-    description = incident.get("action_description") or "the planned action"
+    # Intent form ("launch app 'X'"): the action did not happen, so the
+    # past-tense outcome phrase would misreport it as done.
+    description = action_intent_phrase(incident.get("action_description") or "the planned action")
     reason = str(incident.get("reason") or "").strip()
     burst_size = int(incident.get("burst_size") or 1)
     index = int(incident.get("action_index") or 0)
@@ -505,8 +535,8 @@ def render_execution_incident(incident: dict, steps: list) -> str:
         )
     else:
         lines.append(
-            f"What happened: your planned action `{description}` was dispatched, but the"
-            f" device/executor reported: {reason}"
+            f"What happened: your planned action `{description}` could"
+            f" not be executed; the device/executor reported: {reason}"
         )
 
     # --- Category-specific evidence -------------------------------------------------
@@ -547,7 +577,7 @@ def render_closed_incident(closed: dict) -> str:
     """One-turn notice after an incident closes: settle the original intent."""
     opened = closed.get("step_number")
     closed_at = closed.get("closed_at_step")
-    description = closed.get("action_description") or "the blocked action"
+    description = action_intent_phrase(closed.get("action_description") or "the blocked action")
     header = (
         f"--- Execution Incident (CLOSED at Step {closed_at}) ---"
         if closed_at
@@ -567,61 +597,22 @@ class ExecutionIncidentPromptComponent(PromptComponent):
     then a one-turn CLOSED notice asking the Operator to settle the intent.
 
     Reads ``state.open_incident`` / ``state.last_closed_incident`` (both written
-    by the Validator). The block is its own text part of the observation tail,
-    so the transcript ledger keeps it verbatim: the whole resolution effort
-    stays legible across turns.
+    by the Validator). Both blocks are ephemeral: the open block is re-rendered
+    every turn the incident stays open, and the step record already carries the
+    failed execution result, so older copies add nothing to the history.
     """
 
     async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
         incident = getattr(state, "open_incident", None)
         if isinstance(incident, dict) and incident.get("reason"):
             builder.add_human_content(
-                render_execution_incident(incident, kwargs.get("steps") or [])
+                render_execution_incident(incident, kwargs.get("steps") or []),
+                ephemeral=True,
             )
             return
         closed = getattr(state, "last_closed_incident", None)
         if isinstance(closed, dict) and closed.get("kind"):
-            builder.add_human_content(render_closed_incident(closed))
-
-
-class CheckItemsExplainerPromptComponent(PromptComponent):
-    """Behavioral guidance for check lines, rendered iff the CURRENT plan
-    actually contains check lines (content-driven, not switch-driven: a resumed
-    plan carrying check lines still gets the explanation)."""
-
-    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
-        if not ctx or not getattr(ctx, "data_engine", None):
-            return
-        try:
-            task_plan_path = get_note_file_path(ctx.data_engine.base_dir, "task_plan")
-            if not task_plan_path.exists():
-                return
-            snapshot = parse_plan(task_plan_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.error(f"Failed to parse plan for check-items explainer: {e}")
-            return
-        if not snapshot.all_check_items:
-            return
-        setup = getattr(ctx, "execution_setup", None)
-        max_repairs = getattr(setup, "checkpoint_max_repairs", None)
-        if not isinstance(max_repairs, int):
-            max_repairs = 2
-        builder.add_human_content(
-            "--- About the plan's check lines ---\n"
-            "The task plan declares `- verify:` / `- assert:` check lines (see Task"
-            " Plan Grammar). Use `verify:` lines to confirm your work is complete,"
-            " but never declare a check passed yourself or record conclusions on"
-            " its behalf. Take NO extra actions for `assert:` lines and never"
-            " construct or fake state to satisfy one. Check lines must not be"
-            " deleted or reworded (deletions are automatically restored by the"
-            " system); keep them verbatim when rewriting the plan — adding new ones"
-            " is allowed. Simply mark completions per the plan grammar as usual;"
-            " checking runs asynchronously in the background and does not block you."
-            f" A failed `verify:` reopens its milestone at most {max_repairs} time(s);"
-            " once that repair budget is exhausted, its standing `finding:` line"
-            " disappears and the failure stands as the recorded result — do not"
-            " keep repairing it."
-        )
+            builder.add_human_content(render_closed_incident(closed), ephemeral=True)
 
 
 class BackgroundTasksPromptComponent(PromptComponent):
@@ -700,6 +691,26 @@ _LEDGER_BOUNCE_TAIL = (
 )
 
 
+#: One-line tail notice for the turn after a turn whose replies carried no visible
+#: reasoning text. Thinking-mode models satisfy "reason first" inside their thought
+#: channel and emit bare tool calls; the reminder costs no extra model call.
+REASONING_REMINDER = (
+    "--- Reminder ---\n"
+    "Your previous turn carried no visible reasoning text (internal thinking is not"
+    " shown). This turn, write one short paragraph of plain prose before calling a"
+    " Turn-Ending Action: what the screen shows, whether the last action worked, and"
+    " what you do next and why."
+)
+
+
+class ReasoningReminderPromptComponent(PromptComponent):
+    """Renders :data:`REASONING_REMINDER` when the previous turn was silent."""
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        if kwargs.get("previous_turn_silent"):
+            builder.add_human_content(REASONING_REMINDER, ephemeral=True)
+
+
 def render_plan_ledger_bounce(task_plan: str, streak: int, stale_turns: int) -> str | None:
     """Return a plan-ledger validation error, if any."""
     snapshot = parse_plan(task_plan or "")
@@ -735,25 +746,126 @@ class ToolLimitWarningPromptComponent(PromptComponent):
                 "\nWarning: your last turn used up its tool-call budget without a"
                 " Turn-Ending Action. Re-examine the task goal and your plan;"
                 " the current approach may not be the right path. If the cause"
-                " is unclear, ask_diagnoser can help."
+                " is unclear, ask_diagnoser can help.",
+                ephemeral=True,
             )
+
+
+#: Header of the user-guidance block (shared by the Flash runner and the Pro
+#: operator; the operator's static prompt explains the channel once).
+USER_GUIDANCE_MARKER = "--- User Guidance ---"
+
+
+#: Prefix of the persistent user-instruction line (see :func:`render_user_guidance`).
+USER_INSTRUCTION_PREFIX = "User instruction"
+
+
+class UserGuidance(NamedTuple):
+    """The two observation blocks delivering a mid-run user instruction.
+
+    ``wrapper`` is the per-turn ``--- User Guidance ---`` framing (relay
+    notice, rank, release-loop wording): it is marked ephemeral and leaves
+    with the recent window. ``body`` is the verbatim instruction as one
+    self-contained line; it is added as a regular block so it stays in the
+    active window until the turn is chunk-compressed, at which point the
+    chunk's ``user_lines`` carry it verbatim. Standing instructions remain
+    visible after the turn in which they arrived.
+    """
+
+    body: str
+    wrapper: str
+
+
+def render_user_instruction(instruction: str, *, offset_label: str | None = None) -> str:
+    """The persistent one-line body: ``User instruction (T+mm:ss): "..."``.
+
+    ``offset_label`` is the session-relative time the instruction was
+    delivered when the call site has it; omitted otherwise.
+    """
+    when = f" ({offset_label})" if offset_label else ""
+    return f'{USER_INSTRUCTION_PREFIX}{when}: "{instruction}"'
+
+
+def render_user_guidance(
+    instruction: str,
+    *,
+    release_loop: bool = False,
+    has_plan: bool = True,
+    offset_label: str | None = None,
+) -> UserGuidance:
+    """The observation blocks delivering a mid-run user instruction.
+
+    One rendering for both profiles: the instruction is stated as what it is (an
+    external interruption from the user, relayed by the system) rather than as
+    advice to be weighed, and it explicitly outranks the plan and its check lines.
+    Returns ``(body, wrapper)``; callers add ``wrapper`` with ``ephemeral=True``
+    and ``body`` without (see :class:`UserGuidance`).
+    """
+    rank = (
+        " It outranks the task plan and its check lines: edit the plan to match,"
+        " check lines included."
+        if has_plan
+        else " It outranks your current milestones: adjust them to match."
+    )
+    lines = [
+        USER_GUIDANCE_MARKER,
+        "The user watching this run sent the instruction quoted below; the system"
+        " relays it as an external interruption, like a stop signal." + rank,
+        "Act on it from this turn: reconcile it with the current screen and recent"
+        " history, then choose the next action. The quoted line stays in your"
+        " history as a standing instruction until the user sends another.",
+    ]
+    if release_loop:
+        lines.append(
+            "The user has explicitly authorized stopping any ongoing monitoring loop;"
+            " you may now wrap up and complete the task."
+        )
+    return UserGuidance(
+        body=render_user_instruction(instruction, offset_label=offset_label),
+        wrapper=chr(10).join(lines),
+    )
+
+
+def add_user_guidance(builder: PromptBuilder, guidance: UserGuidance) -> None:
+    """Adds the two guidance blocks: the wrapper ephemeral, the body persistent."""
+    builder.add_human_content(guidance.wrapper, ephemeral=True)
+    builder.add_human_content(guidance.body)
 
 
 class InjectedInstructionPromptComponent(PromptComponent):
+    """The mid-run user instruction: an ephemeral wrapper plus the persistent
+    verbatim body (:class:`UserGuidance`).
+
+    The step record also keeps the instruction verbatim (``extra_metadata``),
+    which is what the chunk ledger renders once the turn is compressed.
+    """
+
     async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
         injected = getattr(state, "injected_instruction", None)
         if injected:
-            builder.add_human_content(
-                f"\n--- User Guidance ---\n"
-                f"The user observing your progress has provided the following"
-                f" feedback or correction:\n"
-                f'"{injected}"\n\n'
-                f"Please review this guidance, evaluate it against your current"
-                f" screen state and recent history, "
-                f"and integrate it into your reasoning. Use it to refine your"
-                f" task plan and determine the "
-                f"most appropriate next action."
+            release_loop = bool(getattr(state, "user_stop_requested", False))
+            add_user_guidance(
+                builder,
+                render_user_guidance(
+                    injected,
+                    release_loop=release_loop,
+                    has_plan=True,
+                    offset_label=_session_offset_label(ctx),
+                ),
             )
+
+
+def _session_offset_label(ctx: ArtemisContext | None) -> str | None:
+    """The transcript ledger's ``T+mm:ss`` label when a ledger is attached."""
+    ledger = getattr(ctx, "transcript_ledger", None) if ctx is not None else None
+    elapsed_label = getattr(ledger, "elapsed_label", None)
+    if ledger is None or not callable(elapsed_label):
+        return None
+    try:
+        label = elapsed_label()
+    except Exception:
+        return None
+    return label if isinstance(label, str) and label else None
 
 
 class ScreenshotSimilarityPromptComponent(PromptComponent):
@@ -824,7 +936,7 @@ class ScreenshotSimilarityPromptComponent(PromptComponent):
         if matched_step_nums:
             steps_str = ", ".join(matched_step_nums)
             note_text = f"Note: the screen is unchanged since step {steps_str} (pixel-identical)."
-            builder.add_human_content(note_text)
+            builder.add_human_content(note_text, ephemeral=True)
 
     def _count_differing_pixels(
         self,
@@ -947,5 +1059,6 @@ class HistoricalStateHintPromptComponent(PromptComponent):
             builder.add_human_content(
                 f"Historical state hint: current screen closely resembles the"
                 f" post-action screen from Step {best_step_number}. Use"
-                " search_history / replay_steps only if its details are needed."
+                " search_history / replay_steps only if its details are needed.",
+                ephemeral=True,
             )

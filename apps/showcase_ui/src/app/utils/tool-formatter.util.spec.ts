@@ -2,6 +2,9 @@ import {
   cleanErrorMessage,
   extractToolExtraParams,
   getCompressionLabel,
+  getCompressionPhase,
+  getCompressionPhaseLabel,
+  isCompressionWaiting,
   getToolDisplayLabel,
   getToolIcon,
   getToolTargetText,
@@ -35,6 +38,22 @@ describe('compress_history timeline line', () => {
       .toBe('Condensing step 5 into a short memory to free up room…');
   });
 
+  it('says the summary is ready but held while working memory is still small', () => {
+    const held = trace('running', {
+      start_step: 1,
+      end_step: 4,
+      note: 'held',
+      context_tokens: 20000,
+      context_budget: 80000,
+      swap_at_tokens: 28000
+    });
+    expect(getCompressionLabel(held)).toBe(
+      'Short memory for steps 1–4 is ready; keeping the full record until working memory fills up · ≈ 20k of 28k tokens'
+    );
+    expect(getCompressionLabel(trace('running', { start_step: 1, end_step: 4, note: 'held' })))
+      .toBe('Short memory for steps 1–4 is ready; keeping the full record until working memory fills up');
+  });
+
   it('reports the size reduction and the working memory once done', () => {
     const done = trace('success', {
       start_step: 12,
@@ -54,12 +73,52 @@ describe('compress_history timeline line', () => {
     expect(getCompressionLabel(done)).toBe('Steps 1–4 condensed into a short memory · 3k → 1.5k tokens (2× smaller)');
   });
 
-  it('explains a forced snapshot and a failed attempt in plain words', () => {
+  it('explains a forced recap and a failed attempt in plain words', () => {
     const forced = trace('success', { start_step: 1, end_step: 4, forced: true, context_tokens: 70000, context_budget: 80000 });
     expect(getCompressionLabel(forced))
-      .toBe('Steps 1–4 replaced by a brief snapshot (memory was nearly full) · working memory ≈ 70k of 80k tokens');
+      .toBe('Steps 1–4 condensed into a recap to free up memory · working memory ≈ 70k of 80k tokens');
     expect(getCompressionLabel(trace('failed', { start_step: 1, end_step: 4 })))
       .toBe("Couldn't condense steps 1–4 yet; keeping the full record and retrying later");
+  });
+
+  describe('phase (args.phase from the backend)', () => {
+    it('reads the declared phase and maps it to one short plain-language label', () => {
+      const cases: Array<[string, string, string]> = [
+        ['running', 'summarizing', 'Summarizing this stretch'],
+        ['running', 'ready', 'Summary ready; kept in reserve until the context fills up'],
+        ['success', 'applied', 'Replaced this stretch with its summary'],
+        ['failed', 'failed', 'Summary failed; full record kept']
+      ];
+      for (const [status, phase, label] of cases) {
+        const tool = trace(status, { start_step: 1, end_step: 4, phase });
+        expect(getCompressionPhase(tool)).toBe(phase as any);
+        expect(getCompressionPhaseLabel(tool)).toBe(label);
+      }
+    });
+
+    it('falls back to status and note on traces that carry no phase', () => {
+      expect(getCompressionPhase(trace('running', { start_step: 1, end_step: 4 }))).toBe('summarizing');
+      expect(getCompressionPhase(trace('running', { start_step: 1, end_step: 4, note: 'retrying' }))).toBe('summarizing');
+      expect(getCompressionPhase(trace('running', { start_step: 1, end_step: 4, note: 'held' }))).toBe('ready');
+      expect(getCompressionPhase(trace('success', { start_step: 1, end_step: 4 }))).toBe('applied');
+      expect(getCompressionPhase(trace('failed', { start_step: 1, end_step: 4 }))).toBe('failed');
+      expect(getCompressionPhase(trace('running', { start_step: 1, end_step: 4, phase: 'bogus' }))).toBe('summarizing');
+    });
+
+    it('drives the timeline line from the phase even without a note', () => {
+      expect(getCompressionLabel(trace('running', { start_step: 1, end_step: 4, phase: 'ready' })))
+        .toBe('Short memory for steps 1–4 is ready; keeping the full record until working memory fills up');
+      expect(getCompressionLabel(trace('running', { start_step: 1, end_step: 4, phase: 'summarizing' })))
+        .toBe('Condensing steps 1–4 into a short memory to free up room…');
+    });
+
+    it('treats a ready-but-held summary as waiting, not running', () => {
+      expect(isCompressionWaiting(trace('running', { start_step: 1, end_step: 4, phase: 'ready' }))).toBeTrue();
+      expect(isCompressionWaiting(trace('running', { start_step: 1, end_step: 4, note: 'held' }))).toBeTrue();
+      expect(isCompressionWaiting(trace('running', { start_step: 1, end_step: 4, phase: 'summarizing' }))).toBeFalse();
+      expect(isCompressionWaiting(trace('success', { start_step: 1, end_step: 4, phase: 'applied' }))).toBeFalse();
+      expect(isCompressionWaiting({ type: 'tool', name: 'save_note', status: 'running', payload: { args: { phase: 'ready' } } })).toBeFalse();
+    });
   });
 });
 

@@ -69,7 +69,7 @@ async def test_save_note_direct_execution_success(mock_ctx, tmp_path):
         key="test_note",
         content="Hello Artemis memory",
     )
-    assert result == "Successfully saved note to test_note.md."
+    assert result == "Saved note 'test_note'."
 
     note_path = Path(tmp_path) / "notes" / "test_note.md"
     assert note_path.exists()
@@ -84,7 +84,7 @@ async def test_save_note_callable_execution(mock_ctx, tmp_path):
         key="callable_note",
         content="Callable invocation test",
     )
-    assert result == "Successfully saved note to callable_note.md."
+    assert result == "Saved note 'callable_note'."
 
     note_path = Path(tmp_path) / "notes" / "callable_note.md"
     assert note_path.exists()
@@ -106,7 +106,7 @@ async def test_save_note_with_state_tool_message(mock_ctx, tmp_path):
 
     assert isinstance(result, ToolMessage)
     assert result.tool_call_id == "call_save_999"
-    assert result.content == "Successfully saved note to state_note.md."
+    assert result.content == "Saved note 'state_note'."
     assert result.status == "success"
 
     note_path = Path(tmp_path) / "notes" / "state_note.md"
@@ -141,7 +141,7 @@ async def test_get_save_note_tool_langchain_ainvoke(mock_ctx, tmp_path):
             "content": "Saved via LangChain BaseTool",
         }
     )
-    assert result == "Successfully saved note to lc_note.md."
+    assert result == "Saved note 'lc_note'."
 
     note_path = Path(tmp_path) / "notes" / "lc_note.md"
     assert note_path.exists()
@@ -160,7 +160,7 @@ async def test_get_save_note_tool_pure(mock_ctx, tmp_path):
             "content": "Saved via pure tool",
         }
     )
-    assert result == "Successfully saved note to pure_note.md."
+    assert result == "Saved note 'pure_note'."
 
     note_path = Path(tmp_path) / "notes" / "pure_note.md"
     assert note_path.exists()

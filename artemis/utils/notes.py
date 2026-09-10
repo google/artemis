@@ -376,17 +376,18 @@ def format_read_note_success(
     start_line: int | None = None,
     end_line: int | None = None,
 ) -> str:
-    """Formats the success message for reading a note."""
-    range_str = ""
+    """The read result: a one-line header naming the note and its extent, then the content."""
     if start_line is not None or end_line is not None:
-        range_str = f" (lines {start_line or 1} to {end_line or 'end'})"
-    return f"Successfully read note '{key}'{range_str}. '{key}' note content:\n{content}"
+        extent = f"lines {start_line or 1} to {end_line or 'end'}"
+    else:
+        extent = f"{len(content.splitlines())} lines"
+    return f"Note '{key}' ({extent}):\n{content}"
 
 
 def format_read_note_failure(key: str, error: str) -> str:
     """Formats the failure message for reading a note."""
     if "not found" in error.lower():
-        return ToolFailure(f"Note '{key}' not found in scratchpad.")
+        return ToolFailure(f"Note '{key}' not found. Use list_notes to see the saved keys.")
     return ToolFailure(f"Failed to read note '{key}': {error}")
 
 

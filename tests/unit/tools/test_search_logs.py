@@ -133,6 +133,32 @@ def test_search_and_merge_logs_regex():
     assert result == expected
 
 
+def test_search_and_merge_logs_header_compresses_consecutive_matches():
+    # 100 consecutive matches at lines 699-798 collapse into one range.
+    logs = "\n".join("ERROR: failure" if 699 <= i <= 798 else f"line {i}" for i in range(900))
+    result = search_and_merge_logs(logs, "ERROR", context_lines=0)
+
+    assert result.splitlines()[0] == "--- Match at line(s) 699-798 ---"
+    assert "699, 700" not in result
+
+
+def test_search_and_merge_logs_header_mixes_singles_and_ranges():
+    # Matches at 6 and 69-79 sit in one block once context windows overlap.
+    hits = {6} | set(range(69, 80))
+    logs = "\n".join("ERROR: failure" if i in hits else f"line {i}" for i in range(100))
+    result = search_and_merge_logs(logs, "ERROR", context_lines=40)
+
+    assert result.splitlines()[0] == "--- Match at line(s) 6, 69-79 ---"
+
+
+def test_search_and_merge_logs_header_caps_range_count():
+    # Every other line matches: 50 single-line ranges, capped at 8 plus "...".
+    logs = "\n".join("ERROR: failure" if i % 2 == 0 else f"line {i}" for i in range(100))
+    result = search_and_merge_logs(logs, "ERROR", context_lines=1)
+
+    assert result.splitlines()[0] == "--- Match at line(s) 0, 2, 4, 6, 8, 10, 12, 14, ... ---"
+
+
 def test_search_and_merge_logs_invalid_regex():
     logs = "line 0"
     result = search_and_merge_logs(logs, "[invalid", is_regex=True)
