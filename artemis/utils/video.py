@@ -46,6 +46,8 @@ SCRCPY_STARTUP_TIMEOUT_SECONDS = 6.0
 VIDEO_READY_DELAY_SECONDS = 1
 ANDROID_DEVICE_VIDEO_PATH = "/sdcard/screen_recording.mp4"
 ANDROID_MAX_RECORDING_DURATION_SECONDS = 180  # Android screenrecord limit
+NATIVE_RECORDING_DEVICE_DIR = "/data/local/tmp/artemis"
+NATIVE_RECORDING_WATCHDOG_INTERVAL_SECONDS = 1.0
 # Ignore small timing differences at segment boundaries.
 TIMELINE_GAP_EPSILON_SECONDS = 0.05
 
@@ -167,6 +169,8 @@ class RecordingSession(BaseModel):
     sealed_until: float = 0.0
     is_active: bool = True
     errors: list[str] = []
+    recording_backend: str = "scrcpy"
+    native_device_segments: list[str] = []
 
 
 class VideoRecordingResult(BaseModel):
@@ -389,41 +393,62 @@ async def remux_recording_to_mp4(source_path: Path, output_path: Path) -> bool:
 
 async def probe_video_segment(video_path: Path) -> dict[str, float | int]:
     """Read duration and coded dimensions for a finalized segment."""
-    process = await asyncio.create_subprocess_exec(
-        get_ffprobe_path(),
-        "-v",
-        "error",
-        "-show_entries",
-        "stream=width,height,duration,codec_type:format=duration",
-        "-of",
-        "json",
-        str(video_path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _stderr = await process.communicate()
-    if process.returncode != 0:
-        return {}
     try:
-        payload = json.loads(stdout)
-        streams = payload.get("streams") or []
-        video_stream = next(
-            (s for s in streams if s.get("width") and s.get("height")),
-            next(
-                (s for s in streams if s.get("codec_type") == "video"),
-                streams[0] if streams else {},
-            ),
+        process = await asyncio.create_subprocess_exec(
+            get_ffprobe_path(),
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=width,height,duration,codec_type:format=duration",
+            "-of",
+            "json",
+            str(video_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        duration = float(
-            (payload.get("format") or {}).get("duration") or video_stream.get("duration") or 0
-        )
-        return {
-            "duration": duration,
-            "width": int(video_stream.get("width") or 0),
-            "height": int(video_stream.get("height") or 0),
-        }
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
+        stdout, _stderr = await process.communicate()
+        if process.returncode == 0:
+            payload = json.loads(stdout)
+            streams = payload.get("streams") or []
+            video_stream = next(
+                (s for s in streams if s.get("width") and s.get("height")),
+                next(
+                    (s for s in streams if s.get("codec_type") == "video"),
+                    streams[0] if streams else {},
+                ),
+            )
+            duration = float(
+                (payload.get("format") or {}).get("duration") or video_stream.get("duration") or 0
+            )
+            if duration > 0:
+                return {
+                    "duration": duration,
+                    "width": int(video_stream.get("width") or 0),
+                    "height": int(video_stream.get("height") or 0),
+                }
+    except (TypeError, ValueError, json.JSONDecodeError, OSError, subprocess.SubprocessError):
+        pass
+
+    # OpenCV fallback for environments where ffprobe is not installed
+    try:
+        cap = cv2.VideoCapture(str(video_path))
+        if cap.isOpened():
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+            frame_count = float(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            duration = (frame_count / fps) if fps > 0 else 0.0
+            cap.release()
+            if duration > 0 and width > 0 and height > 0:
+                return {
+                    "duration": round(duration, 3),
+                    "width": width,
+                    "height": height,
+                }
+    except (cv2.error, OSError, ValueError):
+        pass
+
+    return {}
 
 
 async def get_android_display_state(device_id: str) -> tuple[int, int, int] | None:
@@ -659,9 +684,24 @@ def is_scrcpy_installed() -> bool:
     return shutil.which("scrcpy") is not None
 
 
+def is_adb_installed() -> bool:
+    """Check if adb is available in the system PATH."""
+    return shutil.which("adb") is not None
+
+
+is_adb_available = is_adb_installed
+
+
 def detect_video_tools_enabled() -> bool:
-    """Check if both scrcpy and ffmpeg are available to enable automated video features."""
-    return is_ffmpeg_installed() and is_scrcpy_installed()
+    """Check if video recording tools are available.
+
+    Recording is enabled when either the scrcpy+ffmpeg stack is present
+    (for high-quality MKV capture with remuxing) or when adb alone is
+    available (for native screenrecord fallback producing MP4 directly).
+    """
+    if is_ffmpeg_installed() and is_scrcpy_installed():
+        return True
+    return is_adb_installed()
 
 
 class FFmpegNotInstalledError(Exception):
