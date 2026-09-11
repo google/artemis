@@ -37,6 +37,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Check public dependency sources before installation
+        run: python scripts/check_dependency_sources.py
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
         with:
@@ -44,7 +47,7 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Install locked development environment
-        run: uv sync --dev --frozen
+        run: uv sync --dev --locked
 
       - name: Check Python formatting
         run: uv run ruff format --check .
