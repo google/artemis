@@ -21,6 +21,7 @@ thought stream recording, and role-based dynamic dispatching.
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
 from contextvars import ContextVar, Token
+from enum import Enum
 import functools
 import logging
 from pathlib import Path
@@ -1061,8 +1062,8 @@ def _resolve_endpoint(
         val = getattr(obj, attr, None)
         return val if isinstance(val, expected_type) else None
 
-    provider_val = getattr(cfg, "provider", "google")
-    model_val = getattr(cfg, "model", "gemini-2.5-flash")
+    provider_val = _get_val(cfg, "provider", (str, ModelProvider, Enum)) or "google"
+    model_val = _get_val(cfg, "model", (str, Enum)) or "gemini-2.5-flash"
 
     return ModelEndpoint(
         provider=ModelProvider.from_string(provider_val),

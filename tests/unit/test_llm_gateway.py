@@ -239,3 +239,37 @@ async def test_mid_stream_failure_records_stream_reset_payload(monkeypatch):
     assert payload["reason"] == "mid_stream_failure"
     assert "stream_exec_id" in payload
     assert "lower API priority" in payload["message"]
+
+
+def test_resolve_endpoint_fallback_and_types():
+    from unittest.mock import MagicMock
+    from artemis.llm.router import ModelProvider
+
+    ctx = MagicMock()
+    # 1. Non-string / mock attributes fall back to defaults
+    mock_agent_cfg = MagicMock()
+    ctx.llm_config.get_agent.return_value = mock_agent_cfg
+
+    ep = llm_service._resolve_endpoint(ctx, "operator")
+    assert ep.provider == ModelProvider.GOOGLE
+    assert ep.model_name == "gemini-2.5-flash"
+
+    # 2. String provider & model
+    str_cfg = MagicMock()
+    str_cfg.provider = "openai"
+    str_cfg.model = "gpt-4o"
+    ctx.llm_config.get_agent.return_value = str_cfg
+
+    ep = llm_service._resolve_endpoint(ctx, "operator")
+    assert ep.provider == ModelProvider.OPENAI
+    assert ep.model_name == "gpt-4o"
+
+    # 3. Enum ModelProvider
+    enum_cfg = MagicMock()
+    enum_cfg.provider = ModelProvider.ANTHROPIC
+    enum_cfg.model = "claude-3-5-sonnet"
+    ctx.llm_config.get_agent.return_value = enum_cfg
+
+    ep = llm_service._resolve_endpoint(ctx, "operator")
+    assert ep.provider == ModelProvider.ANTHROPIC
+    assert ep.model_name == "claude-3-5-sonnet"
