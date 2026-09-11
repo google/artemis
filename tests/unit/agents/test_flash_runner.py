@@ -29,6 +29,18 @@ from artemis.agents.validator.tool_declarations import (
 from artemis.context import ArtemisContext
 
 
+@pytest.fixture(autouse=True)
+def isolate_summarizer_model(monkeypatch):
+    """Keep real summarizer behavior without constructing a provider client."""
+    model = Mock()
+    model.ainvoke = AsyncMock(
+        side_effect=AssertionError("Configure a model response before invoking the summarizer")
+    )
+    factory = Mock(return_value=model)
+    monkeypatch.setattr("artemis.agents.flash.summarizer.get_llm", factory)
+    monkeypatch.setattr("artemis.agents.flash.summarizer.get_google_llm", factory)
+
+
 @pytest.fixture
 def mock_context():
     ctx = Mock(spec=ArtemisContext)
