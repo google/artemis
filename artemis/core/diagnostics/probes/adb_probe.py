@@ -38,6 +38,29 @@ from artemis.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def select_active_device(ready_devices: list, target_serial: str | None):
+    """Pick the device a diagnostics report should describe.
+
+    An explicitly requested serial wins unless it is CONFIRMED locked. The rule
+    used to require `is_locked is False`, so a requested device whose lock state
+    came back undetermined (emulators routinely do) silently lost to whichever
+    other attached phone answered first, and the report described a device the
+    caller never asked about.
+    """
+    preferred_dev = None
+    if target_serial:
+        preferred_dev = next((d for d in ready_devices if d.serial == target_serial), None)
+
+    if preferred_dev is not None and preferred_dev.is_locked is not True:
+        return preferred_dev
+
+    unlocked_dev = next((d for d in ready_devices if d.is_locked is False), None)
+    if unlocked_dev:
+        return unlocked_dev
+    unknown_dev = next((d for d in ready_devices if d.is_locked is None), None)
+    return preferred_dev or unknown_dev or ready_devices[0]
+
+
 class AdbDeviceProbe(BaseProbe):
     """Deep inspection probe for Android Debug Bridge, connected mobile devices, and local AVD emulators."""
 
@@ -812,23 +835,7 @@ class AdbDeviceProbe(BaseProbe):
                 )
 
         # 4. Ready device available
-        preferred_dev = None
-        if self._target_serial:
-            preferred_dev = next(
-                (d for d in ready_devices if d.serial == self._target_serial), None
-            )
-
-        if preferred_dev and preferred_dev.is_locked is False:
-            active_dev = preferred_dev
-        else:
-            # Prefer a confirmed unlocked ready device
-            unlocked_dev = next((d for d in ready_devices if d.is_locked is False), None)
-            if unlocked_dev:
-                active_dev = unlocked_dev
-            else:
-                # If no confirmed unlocked device, prefer undetermined lock state over confirmed locked
-                unknown_dev = next((d for d in ready_devices if d.is_locked is None), None)
-                active_dev = preferred_dev or unknown_dev or ready_devices[0]
+        active_dev = select_active_device(ready_devices, self._target_serial)
 
         display_name = active_dev.model or active_dev.serial
         if active_dev.screen_resolution:
