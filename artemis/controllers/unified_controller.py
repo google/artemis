@@ -15,6 +15,7 @@
 import asyncio
 import os
 from pathlib import Path
+import shlex
 import signal
 import subprocess
 import tempfile
@@ -218,7 +219,11 @@ class UnifiedMobileController:
         return await self._driver.stop_app(package_or_bundle_id)
 
     async def open_url(self, url: str) -> bool:
-        await self._driver.execute_shell(f"am start -a android.intent.action.VIEW -d '{url}'")
+        # shlex.quote (not naive '...' wrapping) so a URL containing a single
+        # quote can't break out of the quoting and inject extra shell commands.
+        await self._driver.execute_shell(
+            f"am start -a android.intent.action.VIEW -d {shlex.quote(url)}"
+        )
         return True
 
     async def go_back(self) -> bool:

@@ -18,6 +18,7 @@ import asyncio
 import base64
 from io import BytesIO
 from pathlib import Path
+import re
 from typing import Any, Literal
 
 from adbutils import AdbClient, AdbDevice
@@ -45,6 +46,25 @@ ANDROID_KEYCODE_MAP: dict[str, int] = {
     "volume_up": 24,
     "volume_down": 25,
 }
+
+
+# Android package names: dot-separated Java-style identifiers. Used to reject
+# strings before they are interpolated into an `adb shell` command line, since
+# that line is parsed by the device's own shell (backticks, `;`, `$()`, `&&`,
+# etc. would otherwise be executed on-device).
+_PACKAGE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
+
+
+def _validate_package_name(package_name: str) -> str:
+    """Validates an Android package name before it is used in a shell command.
+
+    Raises:
+        ValueError: if ``package_name`` is not a syntactically valid Android
+            package name (e.g. contains shell metacharacters).
+    """
+    if not isinstance(package_name, str) or not _PACKAGE_NAME_RE.match(package_name):
+        raise ValueError(f"Refusing to use invalid Android package name: {package_name!r}")
+    return package_name
 
 
 def _escape_for_adb_text(s: str) -> str:
@@ -384,6 +404,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def launch_app(self, package_name: str) -> bool:
         try:
+            package_name = _validate_package_name(package_name)
             cmd = f"monkey -p {package_name} -c android.intent.category.LAUNCHER 1"
             await asyncio.to_thread(self.device.shell, cmd)
             return True
@@ -393,6 +414,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def stop_app(self, package_name: str) -> bool:
         try:
+            package_name = _validate_package_name(package_name)
             await asyncio.to_thread(self.device.shell, f"am force-stop {package_name}")
             return True
         except Exception as e:
