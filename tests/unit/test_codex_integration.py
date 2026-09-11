@@ -308,3 +308,108 @@ async def test_busy_phone_does_not_disconnect_another_session(tmp_path, monkeypa
     screen.connect.assert_not_called()
     screen.disconnect.assert_not_called()
     lock.release.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("offline"), subprocess.TimeoutExpired("adb", 1)])
+def test_failed_action_consumes_observation_and_budget(device_tools, failure):
+    device_tools.observe()
+    device_tools.screen.tap.side_effect = failure
+    with pytest.raises(type(failure)):
+        device_tools.call("android_tap", {"observation": 1, "x": 1, "y": 2})
+    assert device_tools.actions == 1
+    assert not device_tools.ready
+    with pytest.raises(ValueError, match="stale"):
+        device_tools.call("android_tap", {"observation": 1, "x": 1, "y": 2})
+    assert device_tools.screen.tap.call_count == 1
+
+
+def test_failed_observation_invalidates_previous_screen(device_tools):
+    device_tools.observe()
+    device_tools.screen.get_screen_data.side_effect = RuntimeError("offline")
+    with pytest.raises(RuntimeError, match="offline"):
+        device_tools.observe()
+    assert not device_tools.ready
+    with pytest.raises(ValueError, match="stale"):
+        device_tools.call("android_key", {"observation": 1, "key": "home"})
+    device_tools.screen.press_key.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_approval_is_rejected_and_interrupts(device_tools):
+    client = _client([{"id": 8, "method": "item/commandExecution/requestApproval"}])
+    with pytest.raises(CodexError, match="unsupported interaction"):
+        await drive_turn(client, "thread", "test", device_tools, 5)
+    client.reject_request.assert_awaited_once()
+    assert client.request.call_args.args[0] == "turn/interrupt"
+    assert device_tools.observation == device_tools.actions == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_interrupted_run_releases_phone_and_records_terminal_status(
+    tmp_path, monkeypatch, cancelled
+):
+    from artemis.integrations.codex import runner
+
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    monkeypatch.setattr(runner, "CodexClient", Mock(return_value=client))
+    monkeypatch.setattr(runner, "device_state", lambda serial: "device")
+    monkeypatch.setattr(runner.trace_store, "TRACES_DIR", str(tmp_path))
+    lock, screen = Mock(), Mock()
+    monkeypatch.setattr(runner, "DeviceExecutionLock", Mock(return_value=lock))
+    monkeypatch.setattr(runner, "AccessibilityClient", Mock(return_value=screen))
+    monkeypatch.setattr(runner, "start_thread", AsyncMock(return_value="thread"))
+    error = asyncio.CancelledError() if cancelled else TimeoutError()
+    monkeypatch.setattr(runner, "drive_turn", AsyncMock(side_effect=error))
+    with pytest.raises(asyncio.CancelledError if cancelled else CodexError):
+        await run_task("test", "phone", "codex", None, 1, 3)
+    lock.release.assert_called_once()
+    screen.disconnect.assert_called_once()
+    status = json.loads(next(tmp_path.glob("*/status.json")).read_text())
+    assert status["status"] == ("cancelled" if cancelled else "failed")
+    assert status["end_time"] is not None
+
+
+@pytest.mark.parametrize("device_code", [False, True])
+@pytest.mark.parametrize("succeeded", [False, True])
+def test_login_flows_complete_or_cancel_without_real_credentials(
+    tmp_path, monkeypatch, device_code, succeeded
+):
+    from typer.testing import CliRunner
+    from artemis.interfaces.cli.commands import codex
+
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.account.return_value = {"authenticated": False, "auth_type": None}
+    client.request.return_value = {
+        "loginId": "test-login",
+        "authUrl": "https://example.org/test-login",
+        "verificationUrl": "https://example.org/device",
+        "userCode": "TEST-CODE",
+    }
+    client.event.side_effect = [
+        {"method": "account/login/completed", "params": {"loginId": "other", "success": True}},
+        {
+            "method": "account/login/completed",
+            "params": {"loginId": "test-login", "success": succeeded, "error": "Test rejection"},
+        },
+    ]
+    monkeypatch.setattr(codex, "CodexClient", Mock(return_value=client))
+    browser = Mock()
+    monkeypatch.setattr(codex.webbrowser, "open", browser)
+    result = CliRunner().invoke(
+        codex.codex_app, ["login", *(["--device-code"] if device_code else [])]
+    )
+    assert result.exit_code == (0 if succeeded else 1), result.output
+    assert client.request.call_args_list[0].args == (
+        "account/login/start",
+        {"type": "chatgptDeviceCode" if device_code else "chatgpt"},
+    )
+    assert browser.call_count == (0 if device_code else 1)
+    if succeeded:
+        client.require_chatgpt.assert_awaited_once()
+        assert client.request.await_count == 1
+    else:
+        assert client.request.call_args.args == ("account/login/cancel", {"loginId": "test-login"})
+        client.require_chatgpt.assert_not_awaited()
