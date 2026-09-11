@@ -1,0 +1,1 @@
+# Keep certs directory in repository while ignoring .crt and .key files

@@ -1,0 +1,6 @@
+{
+  "status": 504,
+  "error": "gateway_timeout",
+  "message": "The upstream Artemis container or device service took too long to respond.",
+  "timestamp": "auto"
+}

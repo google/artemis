@@ -6,20 +6,40 @@ Dedicated, session-isolated container image for running the Artemis Autonomous A
 
 ## 📌 Architecture & Lifecycle
 
-When a user initiates a session via the [Backend Manager](../backend_manager/README.md), the backend dynamically spawns an instance of this container named `artemis-session-<session_id>` on the shared `artemis-net` bridge network.
+When a user initiates a session via the [Backend Manager](file:///usr/local/google/home/yaoyaogoogle/develop/artemis/playground/backend_manager/README.md), the backend dynamically spawns an instance of this container named `artemis-session-<session_id>` on the shared `artemis-net` bridge network.
+
+```mermaid
+flowchart LR
+    subgraph COS_Host["COS VM Host Network"]
+        CVD["Cuttlefish AVD Emulator\n(Port: 6520+N)"]
+    end
+
+    subgraph ArtemisContainer["Artemis Session Container (artemis-session-:id)"]
+        Entrypoint["docker-entrypoint.sh\n(adb connect host.docker.internal:6520)"]
+        Server["Artemis Server (:8080)\n- apps.admin_console.server\n- Agent Task Loop\n- SSE Stream (/stream/events)"]
+    end
+
+    subgraph NginxProxy["Nginx Reverse Proxy"]
+        Ingress["/session/:id/artemis/*"]
+    end
+
+    Entrypoint -->|ADB TCP Link| CVD
+    Server -->|Screen Capture & Dynamic Touch Events| CVD
+    Ingress -->|Dynamic Proxy (127.0.0.11)| Server
+```
 
 ---
 
 ## 🔑 Key Features
 
 1. **Automated ADB Bridging**:
-   - The container entrypoint automatically connects to the target Cuttlefish instance with automatic retry handling.
+   - The container entrypoint ([docker-entrypoint.sh](file:///usr/local/google/home/yaoyaogoogle/develop/artemis/playground/artemis_container/docker-entrypoint.sh)) automatically connects to the target Cuttlefish instance using `$ADB_DEVICE_SERIAL` (e.g. `host.docker.internal:6520`) with automatic retry handling.
 
 2. **Multimodal Perception & Toolchain**:
-   - Packaged with Android Platform Tools, ffmpeg, OpenCV libraries, and Python.
+   - Packaged with Android Platform Tools (`adb`), `ffmpeg`, OpenCV libraries (`libgl1`, `libglib2.0-0`), and Python 3.12.
 
 3. **Real-time Event Streaming**:
-   - Hosts the Artemis Admin Console server exposing SSE and WebSocket endpoints for live streaming agent reasoning, thought steps, and action execution directly to the frontend.
+   - Hosts the Artemis Admin Console server exposing SSE and WebSocket endpoints (`/stream/events`) for live streaming agent reasoning, thought steps, and action execution directly to the frontend.
 
 4. **Dynamic Selector & Coordinate Fallback Engine**:
    - Drives real-time automated navigation on the connected Cuttlefish emulator using Artemis's multimodal reasoning pipeline.
@@ -36,6 +56,19 @@ playground/artemis_container/
 ├── .dockerignore
 └── README.md                    # Documentation & operational guide
 ```
+
+---
+
+## ⚙️ Environment Variables
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `SESSION_ID` | `standalone-dev` | Unique session UUID passed by the Backend Manager |
+| `ADB_DEVICE_SERIAL` | `host.docker.internal:6520` | TCP host and port of the target Cuttlefish emulator |
+| `PORT` | `8080` | Port for Artemis Admin & Stream server |
+| `PYTHONUNBUFFERED` | `1` | Ensures immediate stdout logging |
+| `GEMINI_API_KEY` | - | Google Gemini API key for agent reasoning |
+| `OPENAI_API_KEY` | - | Optional OpenAI API key |
 
 ---
 
