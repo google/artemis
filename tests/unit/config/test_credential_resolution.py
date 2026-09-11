@@ -85,3 +85,37 @@ def test_placeholder_secret_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.GOOGLE_API_KEY is None
     assert isinstance(SecretStr("x"), SecretStr)
+
+
+def test_blank_inherited_env_var_does_not_shadow_dotenv(tmp_path, monkeypatch) -> None:
+    """A blank inherited `GOOGLE_API_KEY=` must not win over a filled .env.
+
+    `load_dotenv` skips variables already set in the environment, so a parent
+    process launched with blank credentials used to poison every child.
+    """
+    from artemis.config.settings import _clear_blank_credential_env_vars
+    from dotenv import load_dotenv
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("GOOGLE_API_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
+    _clear_blank_credential_env_vars()
+    load_dotenv(dotenv_path=env_file)
+    import os as _os
+
+    assert _os.environ["GOOGLE_API_KEY"] == "from-dotenv"
+
+
+def test_nonblank_env_var_still_wins_over_dotenv(tmp_path, monkeypatch) -> None:
+    """A real inherited value must be preserved (dotenv must not override it)."""
+    from artemis.config.settings import _clear_blank_credential_env_vars
+    from dotenv import load_dotenv
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("GOOGLE_API_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_API_KEY", "from-parent")
+    _clear_blank_credential_env_vars()
+    load_dotenv(dotenv_path=env_file)
+    import os as _os
+
+    assert _os.environ["GOOGLE_API_KEY"] == "from-parent"
