@@ -48,3 +48,22 @@ def test_no_request_prefers_confirmed_unlocked() -> None:
     locked = _Dev("a", True)
     unlocked = _Dev("b", False)
     assert select_active_device([locked, unlocked], None) is unlocked
+
+
+def test_engine_defaults_probe_target_to_configured_serial(monkeypatch) -> None:
+    """`artemis doctor` passes no serial; the pinned ADB_DEVICE_SERIAL must still win."""
+    from artemis.config.settings import settings
+    from artemis.core.diagnostics.engine import ReadinessEngine
+
+    monkeypatch.setattr(settings, "ADB_DEVICE_SERIAL", "emulator-5554")
+    engine = ReadinessEngine()
+    assert engine._adb_probe._target_serial == "emulator-5554"
+
+
+def test_engine_target_is_none_when_unset(monkeypatch) -> None:
+    from artemis.config.settings import settings
+    from artemis.core.diagnostics.engine import ReadinessEngine
+
+    monkeypatch.setattr(settings, "ADB_DEVICE_SERIAL", "   ")
+    engine = ReadinessEngine()
+    assert engine._adb_probe._target_serial is None

@@ -43,6 +43,7 @@ from artemis.core.diagnostics.schema import (
 from artemis.toolchain import toolchain
 from artemis.platform import platform
 from artemis.utils.logger import get_logger
+from artemis.config.settings import settings
 
 logger = get_logger(__name__)
 
@@ -66,7 +67,12 @@ class ReadinessEngine:
         self._toolchain_probe = ToolchainProbe()
         self._credentials_probe = LLMCredentialsProbe()
         self._ocr_probe = VisionOCRProbe()
-        self._adb_probe = AdbDeviceProbe()
+        # Default the report's device to the configured ADB_DEVICE_SERIAL: without
+        # it, `artemis doctor` (which passes no serial) described whichever device
+        # answered first, which on a multi-device host is not the one the operator
+        # pinned in .env.
+        _configured_serial = (settings.ADB_DEVICE_SERIAL or "").strip() or None
+        self._adb_probe = AdbDeviceProbe(target_serial=_configured_serial)
         self._report_cache: SystemReadinessReport | None = None
         self._report_cache_time = 0.0
         self._report_cache_generation = -1
