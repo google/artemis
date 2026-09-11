@@ -60,6 +60,7 @@ ENV_OCR_API_KEY = "OCR_API_KEY"
 ENV_VISION_API_KEY = "VISION_API_KEY"
 ENV_API_KEY = "API_KEY"
 ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
+ENV_DEEPSEEK_API_KEY = "DEEPSEEK_API_KEY"
 ENV_OPENAI_BASE_URL = "OPENAI_BASE_URL"
 ENV_ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY"
 ENV_OPEN_ROUTER_API_KEY = "OPEN_ROUTER_API_KEY"
@@ -119,7 +120,16 @@ DEFAULT_EXPLORER_VERSION: Literal["flash", "pro", "ultra"] = "flash"
 # ==============================================================================
 
 LLMProvider = Literal[
-    "openai", "google", "openrouter", "xai", "vertexai", "anthropic", "ollama", "vllm", "custom"
+    "openai",
+    "deepseek",
+    "google",
+    "openrouter",
+    "xai",
+    "vertexai",
+    "anthropic",
+    "ollama",
+    "vllm",
+    "custom",
 ]
 ExplorerVersion = Literal["flash", "pro", "ultra"]
 

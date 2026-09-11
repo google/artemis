@@ -292,6 +292,8 @@ Artemis achieved a **99%+ completion rate** on [AndroidWorld](https://github.com
 
 ## Execution Profiles: Flash vs. Pro
 
+For DeepSeek API configuration and compatibility limits, see [DeepSeek configuration](docs/deepseek.md).
+
 ARTEMIS supports two execution profiles tailored for different automation requirements:
 
 * **Flash Profile (`--profile flash`)**: Fast and token-efficient reactive loop (~3–5s per step): one model observes the live screen, thinks, and acts, with no graph orchestration. Ideal for routine, deterministic UI tasks. The loop is unbounded by default (`agent.flash.max_turns`, 0 = unlimited) because history is compressed rather than capped: Flash shares the Pro session transcript ledger (session-relative `T+mm:ss` clock, screenshots folded into visual summaries, older steps chunked into eras and recallable on demand via `search_history` / `replay_steps`) and can query the session recording through `video_analyzer`. Transient UI (auto-fading control bars, toasts) is handled by chaining taps into one `click_sequence`. *Limitations*: No task plan or notes, no pre-execution safety net, no checkpoint verification or final report, and no ADB shell.

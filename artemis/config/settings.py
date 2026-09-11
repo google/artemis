@@ -28,6 +28,7 @@ from artemis.config.constants import (
     DEFAULT_PROFILE,
     ENV_ANTHROPIC_API_KEY,
     ENV_DATA_ENGINE_DB_PATH,
+    ENV_DEEPSEEK_API_KEY,
     ENV_GCP_API_KEY,
     ENV_GEMINI_API_KEY,
     ENV_GOOGLE_API_KEY,
@@ -94,6 +95,7 @@ class Settings(BaseSettings):
 
     # LLM Provider Authentication
     OPENAI_API_KEY: SecretStr | None = None
+    DEEPSEEK_API_KEY: SecretStr | None = None
     GOOGLE_API_KEY: SecretStr | None = None
     GEMINI_API_KEY: SecretStr | None = None
     GCP_API_KEY: SecretStr | None = None
@@ -158,6 +160,7 @@ class Settings(BaseSettings):
         # Sanitize any placeholder values loaded from environment or .env
         for attr in (
             "OPENAI_API_KEY",
+            "DEEPSEEK_API_KEY",
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",
             "GCP_API_KEY",
@@ -202,6 +205,8 @@ class Settings(BaseSettings):
             key = self.OCR_API_KEY or self.VISION_API_KEY
         elif provider_lower == "openai":
             key = self.OPENAI_API_KEY
+        elif provider_lower == "deepseek":
+            key = self.DEEPSEEK_API_KEY
         elif provider_lower in ("anthropic", "claude"):
             key = self.ANTHROPIC_API_KEY
         elif provider_lower == "openrouter":
@@ -239,6 +244,10 @@ class Settings(BaseSettings):
             self.OPENAI_API_KEY = secret
             env_key_name = ENV_OPENAI_API_KEY
             os.environ[ENV_OPENAI_API_KEY] = key
+        elif provider_lower == "deepseek":
+            self.DEEPSEEK_API_KEY = secret
+            env_key_name = ENV_DEEPSEEK_API_KEY
+            os.environ[ENV_DEEPSEEK_API_KEY] = key
         elif provider_lower in ("anthropic", "claude"):
             self.ANTHROPIC_API_KEY = secret
             env_key_name = ENV_ANTHROPIC_API_KEY
