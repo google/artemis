@@ -511,24 +511,6 @@ def _get_active_subgoal_hashes(ctx: ArtemisContext) -> tuple[str, str | None]:
     return "default", None
 
 
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
-
-
 def check_plan_mutation_rejections(
     content_before: str, content_after: str, state: State | None = None
 ) -> str | None:
@@ -614,7 +596,6 @@ def _reject_checker_note_write(key: str, tool_call_id: str | None) -> ToolMessag
 
 
 class NoteArgs(BaseModel):
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     key: str = Field(..., description=SAVE_NOTE_ARG_KEY_DESC)
     content: str = Field(..., description=SAVE_NOTE_ARG_CONTENT_DESC)
 
@@ -852,7 +833,6 @@ def wrap_note_tool(ctx: ArtemisContext, original_tool):
 
 
 class UpdateNoteArgs(BaseModel):
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     key: str = Field(..., description=UPDATE_NOTE_ARG_KEY_DESC)
     target: str = Field(..., description=UPDATE_NOTE_ARG_TARGET_DESC)
     replacement: str = Field(..., description=UPDATE_NOTE_ARG_REPLACEMENT_DESC)

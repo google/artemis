@@ -12,16 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""File and configuration loading utilities for ARTEMIS."""
+
+from __future__ import annotations
+
 import json
+from pathlib import Path
 import re
-from typing import IO
+from typing import IO, Any
 
 
 def strip_json_comments(text: str) -> str:
-    text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    return text
+    """Removes single-line (//) and multi-line (/* ... */) comments from JSONC text.
+
+    Args:
+        text: Raw JSON with comments string.
+
+    Returns:
+        Clean JSON string with comments stripped.
+    """
+    pattern = r"//.*?$|/\*.*?\*/"
+    return re.sub(pattern, "", text, flags=re.MULTILINE | re.DOTALL)
 
 
-def load_jsonc(file: IO) -> dict:
-    return json.loads(strip_json_comments(file.read()))
+def load_jsonc(source: str | Path | IO[str] | IO[bytes]) -> dict[str, Any]:
+    """Loads and parses a JSONC (JSON with Comments) document.
+
+    Args:
+        source: File-like object, Path, or string path to parse.
+
+    Returns:
+        Parsed dictionary.
+    """
+    if isinstance(source, (str, Path)):
+        raw_content = Path(source).read_text(encoding="utf-8")
+    else:
+        content = source.read()
+        raw_content = content.decode("utf-8") if isinstance(content, bytes) else content
+
+    cleaned = strip_json_comments(raw_content)
+    return json.loads(cleaned)

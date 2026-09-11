@@ -12,128 +12,89 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
-from collections.abc import Awaitable, Callable
+"""Lifecycle callback and execution telemetry decorators for ARTEMIS.
+
+Provides function interception hooks for pre-execution logging, success verification,
+and error capture across synchronous and asynchronous agent invocations.
+"""
+
+from __future__ import annotations
+
 from functools import wraps
 import inspect
-from typing import Any, TypeVar, cast, overload
-
-R = TypeVar("R")
-
-
-def wrap_with_callbacks_sync(
-    fn: Callable[..., R],
-    *,
-    before: Callable[..., None] | None = None,
-    on_success: Callable[[R], None] | None = None,
-    on_failure: Callable[[Exception], None] | None = None,
-    suppress_exceptions: bool = False,
-) -> Callable[..., R]:
-    @wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> R:
-        if before:
-            before()
-        try:
-            result = fn(*args, **kwargs)
-            if on_success:
-                on_success(result)
-            return result
-        except Exception as e:
-            if on_failure:
-                on_failure(e)
-            if suppress_exceptions:
-                return None  # type: ignore
-            raise
-
-    return wrapper
-
-
-def wrap_with_callbacks_async(
-    fn: Callable[..., Awaitable[R]],
-    *,
-    before: Callable[..., None] | None = None,
-    on_success: Callable[[R], None] | None = None,
-    on_failure: Callable[[Exception], None] | None = None,
-    suppress_exceptions: bool = False,
-) -> Callable[..., Awaitable[R]]:
-    @wraps(fn)
-    async def wrapper(*args: Any, **kwargs: Any) -> R:
-        if before:
-            before()
-        try:
-            result = await fn(*args, **kwargs)
-            if on_success:
-                on_success(result)
-            return result
-        except Exception as e:
-            if on_failure:
-                on_failure(e)
-            if suppress_exceptions:
-                return None  # type: ignore
-            raise
-
-    return wrapper
-
-
-@overload
-def wrap_with_callbacks(
-    fn: Callable[..., Awaitable[R]],
-    *,
-    before: Callable[[], None] | None = ...,
-    on_success: Callable[[R], None] | None = ...,
-    on_failure: Callable[[Exception], None] | None = ...,
-    suppress_exceptions: bool = ...,
-) -> Callable[..., Awaitable[R]]: ...
-
-
-@overload
-def wrap_with_callbacks(
-    *,
-    before: Callable[..., None] | None = ...,
-    on_success: Callable[[Any], None] | None = ...,
-    on_failure: Callable[[Exception], None] | None = ...,
-    suppress_exceptions: bool = ...,
-) -> Callable[[Callable[..., R]], Callable[..., R]]: ...
-
-
-@overload
-def wrap_with_callbacks(
-    fn: Callable[..., R],
-    *,
-    before: Callable[[], None] | None = ...,
-    on_success: Callable[[R], None] | None = ...,
-    on_failure: Callable[[Exception], None] | None = ...,
-    suppress_exceptions: bool = ...,
-) -> Callable[..., R]: ...
+from typing import Any, Callable
 
 
 def wrap_with_callbacks(
     fn: Callable[..., Any] | None = None,
     *,
-    before: Callable[[], None] | None = None,
+    before: Callable[..., None] | None = None,
     on_success: Callable[[Any], None] | None = None,
     on_failure: Callable[[Exception], None] | None = None,
     suppress_exceptions: bool = False,
 ) -> Any:
-    def decorator(func: Callable[..., Any]) -> Any:
-        if inspect.iscoroutinefunction(func):
-            return wrap_with_callbacks_async(
-                cast(Callable[..., Awaitable[Any]], func),
-                before=before,
-                on_success=on_success,
-                on_failure=on_failure,
-                suppress_exceptions=suppress_exceptions,
-            )
-        else:
-            return wrap_with_callbacks_sync(
-                cast(Callable[..., Any], func),
-                before=before,
-                on_success=on_success,
-                on_failure=on_failure,
-                suppress_exceptions=suppress_exceptions,
-            )
+    """Wrap a callable with pre-invocation, success, and error callback handlers.
 
-    if fn is None:
-        return decorator
-    else:
-        return decorator(fn)
+    Supports decorating both coroutines and regular synchronous functions.
+    """
+
+    def _decorator(target_fn: Callable[..., Any]) -> Callable[..., Any]:
+        if inspect.iscoroutinefunction(target_fn):
+
+            @wraps(target_fn)
+            async def _async_wrapped(*args: Any, **kwargs: Any) -> Any:
+                if before is not None:
+                    try:
+                        before()
+                    except Exception:
+                        pass
+                try:
+                    result = await target_fn(*args, **kwargs)
+                    if on_success is not None:
+                        try:
+                            on_success(result)
+                        except Exception:
+                            pass
+                    return result
+                except Exception as exc:
+                    if on_failure is not None:
+                        try:
+                            on_failure(exc)
+                        except Exception:
+                            pass
+                    if suppress_exceptions:
+                        return None
+                    raise
+
+            return _async_wrapped
+
+        @wraps(target_fn)
+        def _sync_wrapped(*args: Any, **kwargs: Any) -> Any:
+            if before is not None:
+                try:
+                    before()
+                except Exception:
+                    pass
+            try:
+                result = target_fn(*args, **kwargs)
+                if on_success is not None:
+                    try:
+                        on_success(result)
+                    except Exception:
+                        pass
+                return result
+            except Exception as exc:
+                if on_failure is not None:
+                    try:
+                        on_failure(exc)
+                    except Exception:
+                        pass
+                if suppress_exceptions:
+                    return None
+                raise
+
+        return _sync_wrapped
+
+    if fn is not None:
+        return _decorator(fn)
+    return _decorator

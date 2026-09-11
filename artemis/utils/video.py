@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
+# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
 """Video recording utilities for mobile devices.
 
@@ -121,24 +124,6 @@ async def await_scrcpy_first_frame(
             return fallback
         if SCRCPY_RECORDING_STARTED_MARKER in line.decode(errors="replace"):
             return max(spawned_at, time.time())
-
-
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
 
 
 class RecordingSession(BaseModel):

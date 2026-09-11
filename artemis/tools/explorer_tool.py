@@ -58,7 +58,6 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.tools.types import CyFunctionDetector
 from artemis.utils.element_hit_test import find_element_at_point
 from artemis.utils.logger import get_logger
 from artemis.utils.visualization import draw_dots
@@ -94,8 +93,6 @@ CANDIDATE_DOT_COLOR = "magenta"
 
 class AskExplorerArgs(BaseModel):
     """Arguments of ``ask_explorer`` as seen by every calling agent."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     query: str = Field(..., description=ASK_EXPLORER_QUERY_DESCRIPTION)
     context_feedback: str = Field("", description=ASK_EXPLORER_CONTEXT_FEEDBACK_DESCRIPTION)
 

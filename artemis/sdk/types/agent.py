@@ -11,9 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
+# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
 from typing import Literal
-from urllib.parse import urlparse
 
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import (
@@ -29,63 +31,8 @@ from artemis.utils.video import detect_video_tools_enabled
 from pydantic import BaseModel, Field
 
 
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
-
-
-class ApiBaseUrl(BaseModel):
-    """Defines an API base URL."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
-    scheme: Literal["http", "https"]
-    host: str
-    port: int | None = None
-
-    def __eq__(self, other):
-        if not isinstance(other, ApiBaseUrl):
-            return False
-        return self.to_url() == other.to_url()
-
-    def to_url(self):
-        return (
-            f"{self.scheme}://{self.host}:{self.port}"
-            if self.port is not None
-            else f"{self.scheme}://{self.host}"
-        )
-
-    @classmethod
-    def from_url(cls, url: str) -> "ApiBaseUrl":
-        parsed_url = urlparse(url)
-        if parsed_url.scheme not in ["http", "https"]:
-            raise ValueError(f"Invalid scheme: {parsed_url.scheme}")
-        if parsed_url.hostname is None:
-            raise ValueError("Invalid hostname")
-        return cls(
-            scheme=parsed_url.scheme,  # type: ignore
-            host=parsed_url.hostname,
-            port=parsed_url.port,
-        )
-
-
 class ServerConfig(BaseModel):
     """Configuration for the required servers."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
-
     adb_host: str
     adb_port: int
 

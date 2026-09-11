@@ -12,94 +12,95 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Exceptions for the ARTEMIS SDK.
+"""Hierarchical exception taxonomy for the ARTEMIS client and automation runtime.
 
-This module defines the exception hierarchy used throughout the Artemis SDK.
+Establishes categorized exception types covering host device discovery,
+daemon lifecycle management, agent operational faults, and toolchain dependencies.
 """
+
+from __future__ import annotations
 
 from typing import Literal
 
+_TOOLCHAIN_INSTALL_URLS: dict[str, str] = {
+    "adb": "https://developer.android.com/tools/adb",
+}
+
 
 class ArtemisError(Exception):
-    """Base exception class for all ARTEMIS SDK exceptions."""
+    """Root ancestor of all exceptions originating from ARTEMIS operations."""
 
-    def __init__(self, message="An error occurred in the Artemis SDK"):
+    def __init__(self, message: str = "An unexpected error occurred within the ARTEMIS runtime.") -> None:
         self.message = message
         super().__init__(self.message)
 
 
 class DeviceError(ArtemisError):
-    """Exception raised for errors related to mobile devices."""
+    """Raised when hardware interaction or ADB communication fails."""
 
-    def __init__(self, message="A device-related error occurred"):
+    def __init__(self, message: str = "A mobile device error occurred.") -> None:
         super().__init__(message)
 
 
 class DeviceNotFoundError(DeviceError):
-    """Exception raised when no mobile device is found."""
+    """Raised when no authorized target Android device or emulator is accessible."""
 
-    def __init__(self, message="No mobile device found"):
+    def __init__(self, message: str = "No connected and authorized Android device found.") -> None:
         super().__init__(message)
 
 
 class ServerError(ArtemisError):
-    """Exception raised for errors related to ARTEMIS servers."""
+    """Raised when an internal ARTEMIS daemon or background service encounters an error."""
 
-    def __init__(self, message="A server-related error occurred"):
+    def __init__(self, message: str = "An ARTEMIS daemon service failure occurred.") -> None:
         super().__init__(message)
 
 
 class ServerStartupError(ServerError):
-    """Exception raised when ARTEMIS servers fail to start."""
+    """Raised when a background process (e.g. Scrcpy, MCP, or local server) fails to boot."""
 
-    def __init__(self, server_name=None, message=None):
-        if server_name and not message:
-            message = f"Failed to start {server_name}"
-        elif not message:
-            message = "Failed to start Artemis servers"
-        super().__init__(message)
+    def __init__(self, server_name: str | None = None, message: str | None = None) -> None:
+        resolved_msg = message or (f"Service '{server_name}' failed to start." if server_name else "Service startup failed.")
+        super().__init__(resolved_msg)
         self.server_name = server_name
 
 
 class AgentError(ArtemisError):
-    """Exception raised for errors related to the ARTEMIS agent."""
+    """Raised when reasoning, task scheduling, or graph traversal fails."""
 
-    def __init__(self, message="An agent-related error occurred"):
+    def __init__(self, message: str = "An agent operational failure occurred.") -> None:
         super().__init__(message)
 
 
 class AgentNotInitializedError(AgentError):
-    """Exception raised when attempting operations on an uninitialized agent."""
+    """Raised when invoking automation actions before initialization."""
 
-    def __init__(self, message="Agent is not initialized. Call init() first"):
+    def __init__(self, message: str = "Agent runtime has not been initialized.") -> None:
         super().__init__(message)
 
 
 class AgentTaskRequestError(AgentError):
-    """Exception raised when a requested task is invalid."""
+    """Raised when task parameters violate execution bounds or constraints."""
 
-    def __init__(self, message="An agent task-related error occurred"):
+    def __init__(self, message: str = "Invalid task request configuration.") -> None:
         super().__init__(message)
 
 
 class AgentProfileNotFoundError(AgentTaskRequestError):
-    """Exception raised when an agent profile is not found."""
+    """Raised when requested execution profile is not registered in system catalog."""
 
-    def __init__(self, profile_name: str):
-        super().__init__(f"Agent profile {profile_name} not found")
-
-
-EXECUTABLES = Literal["adb"]
+    def __init__(self, profile_name: str) -> None:
+        super().__init__(f"Agent profile '{profile_name}' is not registered.")
+        self.profile_name = profile_name
 
 
 class ExecutableNotFoundError(ArtemisError):
-    """Exception raised when a required executable is not found."""
+    """Raised when a mandatory host CLI toolchain executable is missing from PATH."""
 
-    def __init__(self, executable_name: EXECUTABLES):
-        install_instructions: dict[EXECUTABLES, str] = {
-            "adb": "https://developer.android.com/tools/adb",
-        }
-        message = f"Required executable '{executable_name}' not found in PATH."
-        if executable_name in install_instructions:
-            message += f"\nTo install it, please visit: {install_instructions[executable_name]}"
-        super().__init__(message)
+    def __init__(self, executable_name: Literal["adb"] | str) -> None:
+        guidance = _TOOLCHAIN_INSTALL_URLS.get(executable_name, "")
+        msg = f"Required tool '{executable_name}' was not detected in system PATH."
+        if guidance:
+            msg += f" Install instructions: {guidance}"
+        super().__init__(msg)
+        self.executable_name = executable_name

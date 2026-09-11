@@ -26,7 +26,6 @@ from artemis.config.constants import (
     ENV_EVENTS_OUTPUT_PATH,
     ENV_RESULTS_OUTPUT_PATH,
 )
-from artemis.config.llm import CyFunctionDetector
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,8 +33,6 @@ logger = get_logger(__name__)
 
 class OutputConfig(BaseModel):
     """Configuration for structured output formatting and schemas."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     structured_output: Annotated[
         type[BaseModel] | dict | None,
         Field(

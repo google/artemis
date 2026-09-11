@@ -11,45 +11,42 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
+# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
+
+"""Abstract device controller contract and telemetry interfaces for ARTEMIS.
+
+Defines the hardware interaction lifecycle including touch gestures, text entry,
+process lifecycle operations, display capture, and multi-segment recording.
+"""
+
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from artemis.controllers.types import Bounds, CoordinatesSelectorRequest, TapOutput
 from artemis.utils.video import VideoRecordingResult
-from pydantic import BaseModel, Field
-
-
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
 
 
 class ScreenDataResponse(BaseModel):
-    model_config = {"ignored_types": (CyFunctionDetector,)}
-    base64: str = Field(default="", description="Base64 encoded screenshot string")
-    elements: list[dict[str, Any]] = Field(
-        default_factory=list, description="Parsed UI hierarchy elements"
-    )
-    width: int = Field(default=1080, description="Device screen width in pixels")
-    height: int = Field(default=2400, description="Device screen height in pixels")
-    platform: str = Field(default="android", description="Platform identifier")
+    """Aggregate snapshot containing live display frames and parsed node hierarchies."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    base64: str = Field(default="", description="Base64 encoded JPEG/PNG frame capture.")
+    elements: list[dict[str, Any]] = Field(default_factory=list, description="Parsed hierarchy node elements.")
+    width: int = Field(default=1080, description="Active viewport width in physical pixels.")
+    height: int = Field(default=2400, description="Active viewport height in physical pixels.")
+    platform: str = Field(default="android", description="Target platform identifier.")
 
 
 class MobileDeviceController(ABC):
+    """Abstract driver interface establishing device actuation and telemetry operations."""
+
     @abstractmethod
     async def tap(
         self,
@@ -59,7 +56,8 @@ class MobileDeviceController(ABC):
         times: int = 1,
         delay_ms: int = 100,
     ) -> TapOutput:
-        raise NotImplementedError("Subclasses must implement this method")
+        """Dispatch single, repeated, or long-press tap events to the target coordinates."""
+        raise NotImplementedError
 
     @abstractmethod
     async def swipe(
@@ -68,161 +66,102 @@ class MobileDeviceController(ABC):
         end: CoordinatesSelectorRequest,
         duration: int = 400,
     ) -> str | None:
-        """Swipe from start to end coordinates.
-
-        Returns error message on failure, None on success.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Execute directional drag or fling between two coordinate positions."""
+        raise NotImplementedError
 
     @abstractmethod
     async def screenshot(self) -> str:
-        """Take a screenshot and return raw image data."""
-        raise NotImplementedError("Subclasses must implement this method")
+        """Capture current display frame as an encoded image payload."""
+        raise NotImplementedError
 
     @abstractmethod
     async def input_text(self, text: str) -> bool:
-        """Input text at the currently focused field.
-
-        Returns True on success, False on failure.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Stream textual characters into the currently active input field."""
+        raise NotImplementedError
 
     @abstractmethod
-    async def launch_app(self, package_or_bundle_id: str) -> bool:
-        """Launch an application by package name (Android).
-
-        Returns True on success, False on failure.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+    async def launch_app(self, package_name: str) -> bool:
+        """Bring target Android application package into foreground."""
+        raise NotImplementedError
 
     @abstractmethod
-    async def terminate_app(self, package_or_bundle_id: str | None) -> bool:
-        """Terminate an application.
-
-        Returns True on success, False on failure.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+    async def terminate_app(self, package_name: str | None) -> bool:
+        """Force-stop application process matching the target package."""
+        raise NotImplementedError
 
     @abstractmethod
     async def open_url(self, url: str) -> bool:
-        """Open a URL.
-
-        Returns True on success, False on failure.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Dispatch system VIEW intent for the specified URI."""
+        raise NotImplementedError
 
     @abstractmethod
     async def press_back(self) -> bool:
-        """Press the back button (Android).
-
-        Returns True on success, False on failure.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Trigger Android BACK system navigation key event."""
+        raise NotImplementedError
 
     @abstractmethod
     async def press_home(self) -> bool:
-        """Press the home button.
-
-        Returns True on success, False on failure.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Trigger Android HOME system navigation key event."""
+        raise NotImplementedError
 
     @abstractmethod
     async def press_enter(self) -> bool:
-        """Press the enter/return key.
-
-        Returns True on success, False on failure.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Trigger ENTER / ACTION_DONE key event on virtual keyboard."""
+        raise NotImplementedError
 
     @abstractmethod
     async def press_key(self, keycode: str) -> bool:
-        """Press a specific key event.
-
-        Returns True on success, False on failure.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Dispatch raw Android keycode event (e.g., 'KEYCODE_TAB')."""
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_ui_hierarchy(self) -> list[dict]:
-        """Get the UI element hierarchy.
-
-        Returns a list of UI elements with their properties.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+    async def get_ui_hierarchy(self) -> list[dict[str, Any]]:
+        """Retrieve flattened or nested accessibility tree node descriptors."""
+        raise NotImplementedError
 
     @abstractmethod
     def find_element(
         self,
-        ui_hierarchy: list[dict],
+        ui_hierarchy: list[dict[str, Any]],
         resource_id: str | None = None,
         text: str | None = None,
         index: int = 0,
-    ) -> tuple[dict | None, Bounds | None, str | None]:
-        """Find a UI element in the hierarchy.
-
-        Returns:
-            Tuple of (element_dict, bounds, error_message)
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+    ) -> tuple[dict[str, Any] | None, Bounds | None, str | None]:
+        """Locate target element within parsed hierarchy by ID or label matching."""
+        raise NotImplementedError
 
     @abstractmethod
     async def cleanup(self) -> None:
-        """Clean up resources (e.g., stop companion processes)."""
-        raise NotImplementedError("Subclasses must implement this method")
+        """Tear down companion sessions, tunnels, and streaming handles."""
+        raise NotImplementedError
 
     @abstractmethod
     async def erase_text(self, nb_chars: int | None = None) -> bool:
-        """Erase the last nb_chars characters.
-
-        Returns True on success, False on failure.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Dispatch backspace events to clear trailing characters in focused field."""
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_screen_data(self) -> "ScreenDataResponse":
-        """Get screen data including screenshot (base64), UI hierarchy elements,
-
-        screen dimensions, and platform.
-
-        Returns:
-            ScreenDataResponse with base64 screenshot, elements, width, height,
-            platform
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+    async def get_screen_data(self) -> ScreenDataResponse:
+        """Capture unified screen frame, layout tree, and viewport dimensions."""
+        raise NotImplementedError
 
     @abstractmethod
     def get_compressed_b64_screenshot(self, image_base64: str, quality: int = 50) -> str:
-        """Compress a base64 image.
-
-        Returns the compressed base64 image.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Produce compressed image payload for bandwidth-constrained turns."""
+        raise NotImplementedError
 
     @abstractmethod
     async def start_video_recording(
         self,
         max_duration_seconds: int = 900,
     ) -> VideoRecordingResult:
-        """Start screen recording on the device.
-
-        Args:
-            max_duration_seconds: Maximum recording duration in seconds.
-
-        Returns:
-            VideoRecordingResult with success status and message.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Initialize session screen capture recording."""
+        raise NotImplementedError
 
     @abstractmethod
     async def stop_video_recording(self) -> VideoRecordingResult:
-        """Stop screen recording and retrieve the video file.
-
-        Returns:
-            VideoRecordingResult with success status, message, and video_path if
-            successful.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Terminate active screen capture and finalize video artifact."""
+        raise NotImplementedError
 
     @abstractmethod
     async def extract_segment_metadata(
@@ -230,16 +169,5 @@ class MobileDeviceController(ABC):
         start_relative_time: float,
         end_relative_time: float | None = None,
     ) -> VideoRecordingResult:
-        """Get a video segment for a specific time range.
-
-        Args:
-            start_relative_time: Start time in seconds relative to session
-              start.
-            end_relative_time: End time in seconds relative to session start, or
-              None for latest.
-
-        Returns:
-            VideoRecordingResult with success status, message, and video_path if
-            successful.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        """Slice video segment for the requested relative execution epoch."""
+        raise NotImplementedError

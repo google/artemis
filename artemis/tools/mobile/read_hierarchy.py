@@ -25,7 +25,6 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -33,10 +32,6 @@ logger = get_logger(__name__)
 
 class GetUiHierarchyArgs(BaseModel):
     """Arguments schema for getting UI hierarchy."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
-
-
 GET_UI_HIERARCHY_DOCSTRING = (
     "[DIAGNOSTIC] Retrieves the current screen UI hierarchy XML using a persistent"
     " UI Automator client.\n\nUse this instead of running 'uiautomator dump'"

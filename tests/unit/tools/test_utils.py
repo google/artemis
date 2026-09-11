@@ -12,446 +12,340 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
-import sys
-from unittest.mock import Mock, patch
+"""Unit tests for ARTEMIS tool utility functions and element interaction helpers."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Mock the problematic langgraph import at module level
-_orig_chat_agent_executor = sys.modules.get("langgraph.prebuilt.chat_agent_executor")
-_orig_state = sys.modules.get("artemis.graph.state")
-
-sys.modules["langgraph.prebuilt.chat_agent_executor"] = Mock()
-sys.modules["artemis.graph.state"] = Mock()
-
-from artemis.context import DeviceContext, DevicePlatform, ArtemisContext  # noqa: E402
-from artemis.tools.types import Target  # noqa: E402
-from artemis.tools.utils import (  # noqa: E402
+from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
+from artemis.controllers.types import CoordinatesSelectorRequest
+from artemis.tools.types import Target
+from artemis.tools.utils import (
     IdSelectorRequest,
+    IdWithTextSelectorRequest,
     SelectorRequestWithCoordinates,
+    SelectorRequestWithPercentages,
+    TextSelectorRequest,
+    _extract_resource_id_and_text_from_selector,
+    find_element_by_text,
     focus_element_if_needed,
+    has_valid_selectors,
     move_cursor_to_end_if_bounds,
+    tap_bottom_right_of_element,
+    validate_coordinates_bounds,
 )
-from artemis.utils.ui_hierarchy import ElementBounds  # noqa: E402
-
-# Restore original modules to prevent contaminating other tests
-if _orig_chat_agent_executor is not None:
-    sys.modules["langgraph.prebuilt.chat_agent_executor"] = _orig_chat_agent_executor
-else:
-    del sys.modules["langgraph.prebuilt.chat_agent_executor"]
-
-if _orig_state is not None:
-    sys.modules["artemis.graph.state"] = _orig_state
-else:
-    del sys.modules["artemis.graph.state"]
+from artemis.utils.ui_hierarchy import ElementBounds
 
 
 @pytest.fixture
-def mock_context():
-    """Create a mock ArtemisContext for testing."""
-    ctx = Mock(spec=ArtemisContext)
-
-    # Create device context with necessary attributes
-    ctx.device = Mock(spec=DeviceContext)
+def dummy_context() -> MagicMock:
+    """Fixture providing an ARTEMIS runtime context configured for Android."""
+    ctx = MagicMock(spec=ArtemisContext)
+    ctx.device = MagicMock(spec=DeviceContext)
     ctx.device.mobile_platform = DevicePlatform.ANDROID
-    ctx.device.device_id = "test_device_123"
+    ctx.device.device_id = "test-device-pixel8"
     ctx.device.device_width = 1080
-    ctx.device.device_height = 2340
-    ctx.device.host_platform = "LINUX"
-
-    ctx.ui_adb_client = Mock()
-
-    # Mock the ADB client for Android
-    ctx.adb_client = Mock()
-    mock_device = Mock()
-    mock_device.shell = Mock(return_value="")
-    ctx.adb_client.device = Mock(return_value=mock_device)
-
-    # Mock the ADB client for Android
-    mock_response = Mock()
-    mock_response.json.return_value = {"elements": []}
-    ctx.ui_adb_client.get_screen_data = Mock(return_value=mock_response)
-    ctx.ui_adb_client.get_hierarchy = Mock(
-        return_value=(
-            b'<hierarchy><node bounds="[0,0][1000,1000]"><node'
-            b' bounds="[0,0][100,100]"/></node></hierarchy>'
-        )
-    )
-
+    ctx.device.device_height = 2400
     return ctx
 
 
 @pytest.fixture
-def mock_state():
-    """Create a mock State for testing."""
-    state = Mock()
+def mock_graph_state() -> MagicMock:
+    """Fixture providing a mock LangGraph state container."""
+    state = MagicMock()
     state.latest_ui_hierarchy = []
     return state
 
 
 @pytest.fixture
-def sample_element():
-    """Create a sample UI element for testing."""
+def sample_hierarchy_node() -> dict:
+    """Fixture providing a standard flat hierarchy node."""
     return {
-        "resourceId": "com.example:id/text_input",
-        "text": "Sample text",
-        "bounds": {"x": 100, "y": 200, "width": 300, "height": 50},
+        "resourceId": "com.google.android.apps:id/search_query",
+        "text": "Search Google",
+        "bounds": {"x": 120, "y": 250, "width": 400, "height": 80},
         "focused": "false",
     }
 
 
 @pytest.fixture
-def sample_rich_element():
-    """Create a sample rich UI element for testing."""
+def sample_nested_node() -> dict:
+    """Fixture providing a rich nested hierarchy node."""
     return {
         "attributes": {
-            "resource-id": "com.example:id/text_input",
+            "resource-id": "com.google.android.apps:id/search_query",
+            "text": "Search Google",
+            "bounds": {"x": 120, "y": 250, "width": 400, "height": 80},
             "focused": "false",
-            "text": "Sample text",
-            "bounds": {"x": 100, "y": 200, "width": 300, "height": 50},
         },
         "children": [],
     }
 
 
-class TestMoveCursorToEndIfBounds:
-    """Test cases for move_cursor_to_end_if_bounds function."""
+# ==============================================================================
+# Cursor Placement & Boundary Alignment Tests
+# ==============================================================================
 
-    @patch("artemis.tools.utils.tap")
+
+class TestCursorAlignment:
+    """Validates precise cursor placement against interactive targets."""
+
+    @pytest.mark.asyncio
+    @patch("artemis.tools.utils.tap", new_callable=AsyncMock)
     @patch("artemis.tools.utils.find_element_by_resource_id")
-    def test_move_cursor_with_resource_id(
+    async def test_cursor_routes_to_end_via_resource_id(
         self,
-        mock_find_element,
-        mock_tap,
-        mock_context,
-        mock_state,
-        sample_element,
+        mock_find_elem: MagicMock,
+        mock_tap_fn: AsyncMock,
+        dummy_context: MagicMock,
+        mock_graph_state: MagicMock,
+        sample_hierarchy_node: dict,
     ):
-        """Test moving cursor using resource_id (highest priority)."""
-        mock_state.latest_ui_hierarchy = [sample_element]
-        mock_find_element.return_value = sample_element
+        """Resource ID locator should calculate end-boundary tap (99% width/height offset)."""
+        mock_graph_state.latest_ui_hierarchy = [sample_hierarchy_node]
+        mock_find_elem.return_value = sample_hierarchy_node
 
-        target = Target(
-            resource_id="com.example:id/text_input",
-            resource_id_index=None,
-            text=None,
-            text_index=None,
-            bounds=None,
-        )
-        result = asyncio.run(
-            move_cursor_to_end_if_bounds(ctx=mock_context, state=mock_state, target=target)
+        target = Target(resource_id="com.google.android.apps:id/search_query")
+        elem = await move_cursor_to_end_if_bounds(
+            ctx=dummy_context, state=mock_graph_state, target=target
         )
 
-        mock_find_element.assert_called_once_with(
-            ui_hierarchy=[sample_element],
-            resource_id="com.example:id/text_input",
+        mock_find_elem.assert_called_once_with(
+            ui_hierarchy=[sample_hierarchy_node],
+            resource_id="com.google.android.apps:id/search_query",
             index=0,
         )
-        mock_tap.assert_called_once()
-        call_args = mock_tap.call_args[1]
-        selector_request = call_args["selector_request"]
-        assert isinstance(selector_request, SelectorRequestWithCoordinates)
-        coords = selector_request.coordinates
-        assert coords.x == 397  # 100 + 300 * 0.99
-        assert coords.y == 249  # 200 + 50 * 0.99
-        assert result == sample_element
+        mock_tap_fn.assert_awaited_once()
+        kwargs = mock_tap_fn.await_args.kwargs
+        selector_req = kwargs["selector_request"]
+        assert isinstance(selector_req, SelectorRequestWithCoordinates)
+        assert selector_req.coordinates.x == 516
+        assert selector_req.coordinates.y == 329
+        assert elem == sample_hierarchy_node
 
-    @patch("artemis.tools.utils.tap")
+    @pytest.mark.asyncio
+    @patch("artemis.tools.utils.tap", new_callable=AsyncMock)
     @patch("artemis.tools.utils.find_element_by_resource_id")
-    def test_move_cursor_with_coordinates_only(
-        self, mock_find_element, mock_tap, mock_context, mock_state
+    async def test_cursor_routes_using_direct_bounds(
+        self,
+        mock_find_elem: MagicMock,
+        mock_tap_fn: AsyncMock,
+        dummy_context: MagicMock,
+        mock_graph_state: MagicMock,
     ):
-        """Test moving cursor when only coordinates are provided."""
-        bounds = ElementBounds(x=50, y=150, width=200, height=40)
-        target = Target(
-            resource_id=None,
-            resource_id_index=None,
-            text=None,
-            text_index=None,
-            bounds=bounds,
+        """Direct bounding box coordinates should bypass hierarchy inspection."""
+        bounds = ElementBounds(x=80, y=100, width=200, height=60)
+        target = Target(bounds=bounds)
+
+        result = await move_cursor_to_end_if_bounds(
+            ctx=dummy_context, state=mock_graph_state, target=target
         )
 
-        result = asyncio.run(
-            move_cursor_to_end_if_bounds(ctx=mock_context, state=mock_state, target=target)
-        )
+        mock_find_elem.assert_not_called()
+        mock_tap_fn.assert_awaited_once()
+        kwargs = mock_tap_fn.await_args.kwargs
+        selector_req = kwargs["selector_request"]
+        assert selector_req.coordinates.x == 278
+        assert selector_req.coordinates.y == 159
+        assert result is None
 
-        mock_find_element.assert_not_called()
-        mock_tap.assert_called_once()
-        call_args = mock_tap.call_args[1]
-        selector_request = call_args["selector_request"]
-        coords = selector_request.coordinates
-        assert coords.x == 248  # 50 + 200 * 0.99
-        assert coords.y == 189  # 150 + 40 * 0.99
-        assert result is None  # No element is returned when using coords directly
-
-    @patch("artemis.tools.utils.tap")
+    @pytest.mark.asyncio
+    @patch("artemis.tools.utils.tap", new_callable=AsyncMock)
     @patch("artemis.tools.utils.find_element_by_text")
-    def test_move_cursor_with_text_only_success(
-        self, mock_find_text, mock_tap, mock_context, mock_state, sample_element
+    async def test_cursor_routes_by_matched_text(
+        self,
+        mock_find_text: MagicMock,
+        mock_tap_fn: AsyncMock,
+        dummy_context: MagicMock,
+        mock_graph_state: MagicMock,
+        sample_hierarchy_node: dict,
     ):
-        """Test moving cursor when only text is provided and succeeds."""
-        mock_state.latest_ui_hierarchy = [sample_element]
-        mock_find_text.return_value = sample_element
+        """Visible text locator should successfully resolve bounds and trigger cursor placement."""
+        mock_graph_state.latest_ui_hierarchy = [sample_hierarchy_node]
+        mock_find_text.return_value = sample_hierarchy_node
 
-        target = Target(
-            resource_id=None,
-            resource_id_index=None,
-            text="Sample text",
-            text_index=0,
-            bounds=None,
-        )
-        result = asyncio.run(
-            move_cursor_to_end_if_bounds(ctx=mock_context, state=mock_state, target=target)
+        target = Target(text="Search Google", text_index=0)
+        result = await move_cursor_to_end_if_bounds(
+            ctx=dummy_context, state=mock_graph_state, target=target
         )
 
-        mock_find_text.assert_called_once_with([sample_element], "Sample text", index=0)
-        mock_tap.assert_called_once()
-        assert result == sample_element
+        mock_find_text.assert_called_once_with([sample_hierarchy_node], "Search Google", index=0)
+        mock_tap_fn.assert_awaited_once()
+        assert result == sample_hierarchy_node
 
-    @patch("artemis.tools.utils.tap")
+    @pytest.mark.asyncio
+    @patch("artemis.tools.utils.tap", new_callable=AsyncMock)
     @patch("artemis.tools.utils.find_element_by_text")
-    def test_move_cursor_with_text_only_element_not_found(
-        self, mock_find_text, mock_tap, mock_context, mock_state
+    async def test_cursor_skips_when_text_unmatched(
+        self,
+        mock_find_text: MagicMock,
+        mock_tap_fn: AsyncMock,
+        dummy_context: MagicMock,
+        mock_graph_state: MagicMock,
     ):
-        """Test when searching by text finds no element."""
-        mock_state.latest_ui_hierarchy = []
+        """Unresolved text target returns None without tapping."""
         mock_find_text.return_value = None
+        target = Target(text="Unmatched Query")
 
-        target = Target(
-            resource_id=None,
-            resource_id_index=None,
-            text="Nonexistent text",
-            text_index=None,
-            bounds=None,
+        result = await move_cursor_to_end_if_bounds(
+            ctx=dummy_context, state=mock_graph_state, target=target
         )
-        result = asyncio.run(
-            move_cursor_to_end_if_bounds(ctx=mock_context, state=mock_state, target=target)
-        )
-
-        mock_tap.assert_not_called()
-        assert result is None
-
-    @patch("artemis.tools.utils.tap")
-    @patch("artemis.tools.utils.find_element_by_text")
-    def test_move_cursor_with_text_only_no_bounds(
-        self, mock_find_text, mock_tap, mock_context, mock_state
-    ):
-        """Test when element is found by text but has no bounds."""
-        element_no_bounds = {"text": "Text without bounds"}
-        mock_state.latest_ui_hierarchy = [element_no_bounds]
-        mock_find_text.return_value = element_no_bounds
-
-        target = Target(
-            resource_id=None,
-            resource_id_index=None,
-            text="Text without bounds",
-            text_index=None,
-            bounds=None,
-        )
-        result = asyncio.run(
-            move_cursor_to_end_if_bounds(ctx=mock_context, state=mock_state, target=target)
-        )
-
-        mock_tap.assert_not_called()
-        assert result is None  # Should return None as no action was taken
-
-    @patch("artemis.tools.utils.find_element_by_resource_id")
-    def test_move_cursor_element_not_found_by_id(self, mock_find_element, mock_context, mock_state):
-        """Test when element is not found by resource_id."""
-        mock_find_element.return_value = None
-
-        target = Target(
-            resource_id="com.example:id/nonexistent",
-            resource_id_index=None,
-            text=None,
-            text_index=None,
-            bounds=None,
-        )
-        result = asyncio.run(
-            move_cursor_to_end_if_bounds(ctx=mock_context, state=mock_state, target=target)
-        )
-
+        mock_tap_fn.assert_not_awaited()
         assert result is None
 
 
-class TestFocusElementIfNeeded:
-    """Test cases for focus_element_if_needed function."""
+# ==============================================================================
+# Element Focus Resolution Tests
+# ==============================================================================
 
-    @patch("artemis.tools.utils.tap")
-    @patch("artemis.tools.utils.find_element_by_resource_id")
-    def test_focus_element_already_focused(
-        self, mock_find_element, mock_tap, mock_context, sample_rich_element
+
+class TestElementFocusing:
+    """Validates conditional focusing behavior prior to keyboard inputs."""
+
+    @pytest.mark.asyncio
+    @patch("artemis.tools.utils.tap", new_callable=AsyncMock)
+    @patch("artemis.tools.utils.UnifiedMobileController")
+    async def test_skips_tap_when_already_focused(
+        self,
+        mock_controller_cls: MagicMock,
+        mock_tap_fn: AsyncMock,
+        dummy_context: MagicMock,
+        sample_hierarchy_node: dict,
     ):
-        """Test when element is already focused."""
-        focused_element = sample_rich_element.copy()
-        focused_element["attributes"]["focused"] = "true"
+        """Elements reporting focused state true should avoid redundant tap interactions."""
+        focused_elem = sample_hierarchy_node.copy()
+        focused_elem["focused"] = "true"
 
-        mock_response = Mock()
-        mock_response.json.return_value = {"elements": [focused_element]}
-        mock_context.ui_adb_client.get_screen_data = Mock(return_value=mock_response)
-        mock_find_element.return_value = focused_element["attributes"]
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_ui_elements = AsyncMock(return_value=[focused_elem])
+        mock_controller_cls.return_value = mock_ctrl
 
-        target = Target(
-            resource_id="com.example:id/text_input",
-            resource_id_index=None,
-            text=None,
-            text_index=None,
-            bounds=None,
-        )
-        result = asyncio.run(focus_element_if_needed(ctx=mock_context, target=target))
+        target = Target(resource_id="com.google.android.apps:id/search_query")
+        focus_strategy = await focus_element_if_needed(ctx=dummy_context, target=target)
 
-        mock_tap.assert_not_called()
-        assert result == "resource_id"
-        mock_context.ui_adb_client.get_hierarchy.assert_called_once()
+        mock_tap_fn.assert_not_awaited()
+        assert focus_strategy == "resource_id"
 
-    @patch("artemis.tools.utils.tap")
-    @patch("artemis.tools.utils.find_element_by_resource_id")
-    def test_focus_element_needs_focus_success(
-        self, mock_find_element, mock_tap, mock_context, sample_rich_element
+    @pytest.mark.asyncio
+    @patch("artemis.tools.utils.tap", new_callable=AsyncMock)
+    @patch("artemis.tools.utils.UnifiedMobileController")
+    async def test_focus_executes_tap_for_unfocused_element(
+        self,
+        mock_controller_cls: MagicMock,
+        mock_tap_fn: AsyncMock,
+        dummy_context: MagicMock,
+        sample_hierarchy_node: dict,
     ):
-        """Test when element needs focus and focusing succeeds."""
-        unfocused_element = sample_rich_element
-        focused_element = {
-            "attributes": {
-                "resource-id": "com.example:id/text_input",
-                "focused": "true",
-            },
-            "children": [],
-        }
+        """Unfocused element triggers focus tap and confirms state change."""
+        unfocused = sample_hierarchy_node.copy()
+        unfocused["focused"] = "false"
+        focused = sample_hierarchy_node.copy()
+        focused["focused"] = "true"
 
-        mock_find_element.side_effect = [
-            unfocused_element["attributes"],
-            focused_element["attributes"],
-        ]
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_ui_elements = AsyncMock(side_effect=[[unfocused], [focused]])
+        mock_controller_cls.return_value = mock_ctrl
 
-        target = Target(
-            resource_id="com.example:id/text_input",
-            resource_id_index=None,
-            text=None,
-            text_index=None,
-            bounds=None,
-        )
-        result = asyncio.run(focus_element_if_needed(ctx=mock_context, target=target))
+        target = Target(resource_id="com.google.android.apps:id/search_query")
+        strategy = await focus_element_if_needed(ctx=dummy_context, target=target)
 
-        mock_tap.assert_called_once_with(
-            ctx=mock_context,
-            selector_request=IdSelectorRequest(id="com.example:id/text_input"),
+        mock_tap_fn.assert_awaited_once_with(
+            ctx=dummy_context,
+            selector_request=IdSelectorRequest(id="com.google.android.apps:id/search_query"),
             index=0,
         )
-        assert mock_context.ui_adb_client.get_hierarchy.call_count == 2
-        assert result == "resource_id"
+        assert strategy == "resource_id"
 
-    @patch("artemis.tools.utils.tap")
-    @patch("artemis.tools.utils.logger")
-    @patch("artemis.tools.utils.find_element_by_resource_id")
-    def test_focus_id_and_text_mismatch_fallback_to_text(
+    @pytest.mark.asyncio
+    @patch("artemis.tools.utils.tap", new_callable=AsyncMock)
+    @patch("artemis.tools.utils.UnifiedMobileController")
+    async def test_focus_falls_back_to_text_coordinates(
         self,
-        mock_find_id,
-        mock_logger,
-        mock_tap,
-        mock_context,
-        sample_rich_element,
+        mock_controller_cls: MagicMock,
+        mock_tap_fn: AsyncMock,
+        dummy_context: MagicMock,
+        sample_hierarchy_node: dict,
     ):
-        """Test fallback when resource_id and text point to different elements."""
-        element_from_id = sample_rich_element["attributes"].copy()
-        element_from_id["text"] = "Different text"
+        """When ID is unavailable, focusing falls back to text center tap coordinates."""
+        elem = sample_hierarchy_node.copy()
+        elem["bounds"] = {"x": 20, "y": 40, "width": 200, "height": 60}
 
-        element_from_text = sample_rich_element.copy()
-        element_from_text["attributes"]["bounds"] = {
-            "x": 10,
-            "y": 20,
-            "width": 100,
-            "height": 30,
-        }
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_ui_elements = AsyncMock(return_value=[elem])
+        mock_controller_cls.return_value = mock_ctrl
 
-        mock_response = Mock()
-        mock_response.json.return_value = {"elements": [element_from_text]}
-        mock_context.ui_adb_client.get_screen_data = Mock(return_value=mock_response)
-        mock_find_id.return_value = element_from_id
+        target = Target(text="Search Google")
+        strategy = await focus_element_if_needed(ctx=dummy_context, target=target)
 
-        with patch("artemis.tools.utils.find_element_by_text") as mock_find_text:
-            mock_find_text.return_value = element_from_text["attributes"]
+        mock_tap_fn.assert_awaited_once()
+        req = mock_tap_fn.await_args.kwargs["selector_request"]
+        assert isinstance(req, SelectorRequestWithCoordinates)
+        assert req.coordinates.x == 120  # 20 + 200/2
+        assert req.coordinates.y == 70  # 40 + 60/2
+        assert strategy == "text"
 
-            target = Target(
-                resource_id="com.example:id/text_input",
-                resource_id_index=None,
-                text="Sample text",
-                text_index=None,
-                bounds=None,
-            )
-            result = asyncio.run(focus_element_if_needed(ctx=mock_context, target=target))
-
-            mock_logger.warning.assert_called_once()
-            mock_tap.assert_called_once()
-            assert result == "text"
-
-    @patch("artemis.tools.utils.tap")
-    @patch("artemis.tools.utils.find_element_by_text")
-    def test_focus_fallback_to_text(
-        self, mock_find_text, mock_tap, mock_context, sample_rich_element
-    ):
-        """Test fallback to focusing using text."""
-        element_with_bounds = sample_rich_element.copy()
-        element_with_bounds["attributes"]["bounds"] = {
-            "x": 10,
-            "y": 20,
-            "width": 100,
-            "height": 30,
-        }
-
-        mock_response = Mock()
-        mock_response.json.return_value = {"elements": [element_with_bounds]}
-        mock_context.ui_adb_client.get_screen_data = Mock(return_value=mock_response)
-        mock_find_text.return_value = element_with_bounds["attributes"]
-
-        target = Target(
-            resource_id=None,
-            resource_id_index=None,
-            text="Sample text",
-            text_index=None,
-            bounds=None,
-        )
-        result = asyncio.run(focus_element_if_needed(ctx=mock_context, target=target))
-
-        mock_find_text.assert_called_once()
-        mock_tap.assert_called_once()
-        call_args = mock_tap.call_args[1]
-        selector = call_args["selector_request"]
-        assert isinstance(selector, SelectorRequestWithCoordinates)
-        assert selector.coordinates.x == 60  # 10 + 100/2
-        assert selector.coordinates.y == 35  # 20 + 30/2
-        assert result == "text"
-
+    @pytest.mark.asyncio
     @patch("artemis.tools.utils.logger")
-    def test_focus_all_locators_fail(self, mock_logger, mock_context):
-        """Test failure when no locator can find an element."""
+    @patch("artemis.tools.utils.UnifiedMobileController")
+    async def test_focus_aborts_when_no_locators_resolve(
+        self,
+        mock_controller_cls: MagicMock,
+        mock_logger: MagicMock,
+        dummy_context: MagicMock,
+    ):
+        """When none of the declared locators match an active element, returns None and logs error."""
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_ui_elements = AsyncMock(return_value=[])
+        mock_controller_cls.return_value = mock_ctrl
 
-        mock_response = Mock()
-        mock_response.json.return_value = {"elements": []}
-        mock_context.ui_adb_client.get_screen_data = Mock(return_value=mock_response)
-        with (
-            patch("artemis.tools.utils.find_element_by_resource_id") as mock_find_id,
-            patch("artemis.tools.utils.find_element_by_text") as mock_find_text,
-        ):
-            mock_find_id.return_value = None
-            mock_find_text.return_value = None
+        target = Target(resource_id="unknown_id", text="unknown_text")
+        strategy = await focus_element_if_needed(ctx=dummy_context, target=target)
 
-            target = Target(
-                resource_id="nonexistent",
-                resource_id_index=None,
-                text="nonexistent",
-                text_index=None,
-                bounds=None,
-            )
-            result = asyncio.run(focus_element_if_needed(ctx=mock_context, target=target))
+        mock_logger.error.assert_called_once()
+        assert strategy is None
 
-        mock_logger.error.assert_called_once_with(
-            "Failed to focus element."
-            + " No valid locator (resource_id, coordinates, or text) succeeded."
+
+# ==============================================================================
+# Helper Verification & Selector Validation Tests
+# ==============================================================================
+
+
+class TestSelectorValidation:
+    """Verifies target completeness and boundary constraint checks."""
+
+    def test_has_valid_selectors_matrix(self):
+        """Verifies selector detection across valid and invalid combinations."""
+        assert has_valid_selectors(Target(resource_id="elem_id"))
+        assert has_valid_selectors(Target(text="Label"))
+        assert has_valid_selectors(Target(bounds=ElementBounds(x=0, y=0, width=10, height=10)))
+        assert not has_valid_selectors(Target())
+
+    def test_validate_coordinates_bounds(self):
+        """Checks bounds containment against physical device display limits."""
+        valid_target = Target(bounds=ElementBounds(x=100, y=200, width=100, height=100))
+        assert validate_coordinates_bounds(valid_target, 1080, 2400) is None
+
+        out_width = Target(bounds=ElementBounds(x=1050, y=200, width=100, height=100))
+        assert validate_coordinates_bounds(out_width, 1080, 2400) is not None
+
+        out_height = Target(bounds=ElementBounds(x=100, y=2380, width=100, height=100))
+        assert validate_coordinates_bounds(out_height, 1080, 2400) is not None
+
+    def test_extract_selector_attributes(self):
+        """Extracts resource ID and text from heterogeneous selector requests."""
+        req_id = IdSelectorRequest(id="view_item")
+        assert _extract_resource_id_and_text_from_selector(req_id) == ("view_item", None)
+
+        req_text = TextSelectorRequest(text="Confirm")
+        assert _extract_resource_id_and_text_from_selector(req_text) == (None, "Confirm")
+
+        req_both = IdWithTextSelectorRequest(id="submit_btn", text="Submit")
+        assert _extract_resource_id_and_text_from_selector(req_both) == ("submit_btn", "Submit")
+
+        req_coords = SelectorRequestWithCoordinates(
+            coordinates=CoordinatesSelectorRequest(x=50, y=50)
         )
-        assert result is None
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])
+        assert _extract_resource_id_and_text_from_selector(req_coords) == (None, None)

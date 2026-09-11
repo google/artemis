@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime
+"""Entity extractor and package resolver agent for ARTEMIS."""
 
+from artemis.agents.entity_extractor.entity_extractor import (
+    ExtractionResult,
+    extract_entity,
+)
 
-def convert_timestamp_to_str(ts: float) -> str:
-    dt = datetime.fromtimestamp(ts)
-    return dt.strftime("%Y-%m-%dT%H-%M-%S")
+__all__ = [
+    "ExtractionResult",
+    "extract_entity",
+]

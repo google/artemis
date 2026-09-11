@@ -31,13 +31,8 @@ from artemis.context import ArtemisContext
 from artemis.data_engine import engine as engine_mod
 from artemis.data_engine.trace import CURRENT_TRACE_ID, smart_serialize
 from artemis.graph.state import State
-from artemis.tools.types import CyFunctionDetector
-
-
 class ToolWrapper(BaseModel):
     """Wrapper holding a tool factory and lifecycle callbacks."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     tool_fn_getter: Callable[[ArtemisContext], BaseTool]
     on_success_fn: Callable[..., str]
     on_failure_fn: Callable[..., str]

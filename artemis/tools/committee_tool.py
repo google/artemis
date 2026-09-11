@@ -46,7 +46,6 @@ from artemis.tools.tool_wrapper import (
     invoke_tool_with_injection,
     tool_result_messages,
 )
-from artemis.tools.types import CyFunctionDetector
 from artemis.tools.video_tool import get_video_analyzer_tool
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path, get_notes_dir
@@ -61,8 +60,6 @@ logger = get_logger(__name__)
 
 class AskCommitteeArgs(BaseModel):
     """Arguments schema for invoking the committee tool."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     avatar_directive: str = Field(
         ...,
         description="Directive to frame and steer the debate for your avatar.",

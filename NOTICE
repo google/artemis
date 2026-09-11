@@ -1,0 +1,27 @@
+ARTEMIS Android Agent & Automation Platform
+Copyright 2026 Google LLC
+
+This product includes software developed by Google LLC.
+
+================================================================================
+Third-Party Software Attribution
+================================================================================
+
+Portions of this software are derived from and incorporate code originally
+developed by the following open-source projects under the Apache License, Version 2.0:
+
+1. mobile-use
+   Repository: https://github.com/minitap-ai/mobile-use
+   Copyright 2025-2026 Minitap, Inc.
+   Original authors & contributors:
+     Pierre-Louis Favreau, Jean-Pierre Lo, Nicolas Dehandschoewercker,
+     Clément Guiguet, Karun Agarwal, and the mobile-use open-source community.
+   License: Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
+
+2. finalrun-agent
+   Repository: https://github.com/final-run/finalrun-agent
+   Copyright 2025 FinalRun Inc.
+   Original authors & contributors:
+     Ashish Yadav, Arnold Laishram, Srinidhi G S,
+     and the finalrun-agent open-source community.
+   License: Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)

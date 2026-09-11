@@ -11,15 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
+# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
 import os
 from shutil import which
+import subprocess
 import time
 from typing import Any
 
 from artemis.context import ArtemisContext, DevicePlatform
 from artemis.utils.logger import ArtemisLogger, get_logger
-from artemis.utils.shell_utils import run_shell_command_on_host
 
 logger = get_logger(__name__)
 
@@ -57,12 +60,17 @@ def get_first_device(
 
     if which("adb"):
         try:
-            android_output = run_shell_command_on_host("adb devices")
-            lines = android_output.strip().split("\n")
-            for line in lines:
+            res = subprocess.run(
+                ["adb", "devices"],
+                capture_output=True,
+                text=True,
+                check=True,
+                stdin=subprocess.DEVNULL,
+            )
+            for line in res.stdout.strip().split("\n"):
                 if "device" in line and not line.startswith("List of devices"):
                     return line.split()[0], DevicePlatform.ANDROID, None
-        except RuntimeError as e:
+        except Exception as e:
             if logger:
                 logger.error(f"ADB command failed: {e}")
 

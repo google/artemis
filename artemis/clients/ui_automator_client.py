@@ -11,12 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
+# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
 """UIAutomator2 client for Android device screen data retrieval.
 
-Provides an alternative to the Maestro-based screen API with direct device
-access.
-Handles Maestro blocker detection and removal before connecting.
+Provides direct device access for hierarchy and screenshot retrieval.
 """
 
 import base64
@@ -41,31 +42,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-MAESTRO_PACKAGE = "dev.mobile.maestro"
-
-
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
-
-
 class UIAutomatorScreenData(BaseModel):
     """Screen data response from UIAutomator2."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
 
     base64: str
     hierarchy_xml: str
@@ -170,88 +148,11 @@ def _pil_to_base64(img: Image.Image, format: str = "JPEG", quality: int = 80) ->
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def _is_package_installed(device_id: str, pkg: str) -> bool:
-    """Check if a package is installed on the device."""
-    try:
-        result = subprocess.run(
-            adb_command(["-s", device_id, "shell", "pm", "list", "packages"]),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            logger.warning(f"Failed to list packages: {result.stderr}")
-            return False
-
-        lines = result.stdout.splitlines()
-        target = f"package:{pkg}"
-        return target in lines
-    except subprocess.TimeoutExpired:
-        logger.warning("Timeout checking installed packages")
-        return False
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.warning(f"Error checking installed packages: {e}")
-        return False
-
-
-def _uninstall_package(device_id: str, pkg: str) -> bool:
-    """Uninstall a package from the device for the current user."""
-    try:
-        result = subprocess.run(
-            adb_command(
-                [
-                    "-s",
-                    device_id,
-                    "shell",
-                    "pm",
-                    "uninstall",
-                    "--user",
-                    "0",
-                    pkg,
-                ]
-            ),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            logger.info(f"Successfully uninstalled {pkg}")
-            return True
-        else:
-            logger.warning(f"Failed to uninstall {pkg}: {result.stderr}")
-            return False
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Timeout uninstalling {pkg}")
-        return False
-    except Exception as e:
-        logger.warning(f"Error uninstalling {pkg}: {e}")
-        return False
-
-
-def _ensure_maestro_not_installed(device_id: str) -> None:
-    """Check if Maestro is installed and uninstall it.
-
-    Maestro conflicts with uiautomator2 - if Maestro's package is installed,
-    u2.connect() will fail. This function ensures Maestro is removed before
-    attempting to connect.
-    """
-    if _is_package_installed(device_id, MAESTRO_PACKAGE):
-        logger.warning(
-            f"Maestro ({MAESTRO_PACKAGE}) detected - uninstalling to enable UIAutomator2..."
-        )
-        _uninstall_package(device_id, MAESTRO_PACKAGE)
-
-
 class UIAutomatorClient:
     """UIAutomator2 client for Android screen data retrieval.
 
-    This client uses uiautomator2 library for direct device communication,
-    providing faster hierarchy and screenshot retrieval compared to Maestro.
-
-    Important: Maestro must not be installed on the device as it conflicts
-    with uiautomator2. This client automatically handles Maestro removal.
+    This client uses the uiautomator2 library for direct device communication,
+    providing high-performance hierarchy and screenshot retrieval.
     """
 
     def __init__(self, device_id: str):
@@ -265,7 +166,7 @@ class UIAutomatorClient:
         self._awake_strategy: str | None = None
 
     def _ensure_connected(self) -> "Device":
-        """Ensure connection to the device, handling Maestro blocker.
+        """Ensure connection to the device.
 
         Returns:
             Connected uiautomator2 Device instance
@@ -278,9 +179,6 @@ class UIAutomatorClient:
             except Exception:
                 logger.warning("UIAutomator2 connection lost, reconnecting...")
                 self._device = None
-
-        # Ensure Maestro is not blocking us
-        _ensure_maestro_not_installed(self._device_id)
 
         # Enroll the device in the containing Artemis service lifetime before
         # UIAutomator2 reads the screen. Client disconnects do not release it.

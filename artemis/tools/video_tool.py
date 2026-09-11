@@ -34,7 +34,6 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -42,8 +41,6 @@ logger = get_logger(__name__)
 
 class VideoAnalyzerArgs(BaseModel):
     """Arguments schema for video analyzer tool."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     time_description: str = Field(
         ...,
         description=(

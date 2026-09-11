@@ -11,23 +11,33 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
+# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
+
+"""Media synthesis and trace asset management for ARTEMIS.
+
+Handles chronological trace GIF generation, frame quantization, and step snapshot
+compilation while preserving active session recording manifests.
+"""
+
+from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
+from typing import Any
+
+from PIL import Image
 
 from artemis.utils.logger import get_logger
-from PIL import Image
 
 logger = get_logger(__name__)
 
-USE_FFMPEG_GIF = os.environ.get("USE_FFMPEG_GIF", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
+_PREFER_FFMPEG = os.environ.get("USE_FFMPEG_GIF", "").strip().lower() in ("1", "true", "yes")
 
 
 def quantize_and_save_gif_from_paths(
@@ -36,81 +46,68 @@ def quantize_and_save_gif_from_paths(
     colors: int = 128,
     duration: int = 100,
 ) -> None:
-    """Create an optimized GIF from image file paths.
-
-    By default uses PIL (loads all frames into memory).
-    Set USE_FFMPEG_GIF=1 env var to use ffmpeg for memory-efficient streaming.
-
-    Args:
-        image_paths: List of paths to image files (must be sorted in desired
-          order)
-        output_path: Path where the GIF will be saved
-        colors: Number of colors to use in quantization (lower = smaller file)
-        duration: Duration of each frame in milliseconds
-
-    Raises:
-        ValueError: If image_paths list is empty
-        RuntimeError: If ffmpeg fails (when USE_FFMPEG_GIF is enabled)
-    """
+    """Compile ordered image snapshots into a quantized animation asset."""
     if not image_paths:
-        raise ValueError("image_paths must not be empty")
+        raise ValueError("Cannot assemble animation from an empty image sequence.")
 
-    if USE_FFMPEG_GIF:
-        _save_gif_ffmpeg(image_paths, output_path, colors, duration)
-    else:
-        _save_gif_pillow(image_paths, output_path, colors, duration)
+    if _PREFER_FFMPEG and shutil.which("ffmpeg"):
+        try:
+            _render_gif_with_ffmpeg(image_paths, output_path, colors=colors, frame_delay_ms=duration)
+            return
+        except Exception as exc:
+            logger.warning(f"FFmpeg GIF rendering encountered an error ({exc}); falling back to Pillow.")
+
+    _render_gif_with_pillow(image_paths, output_path, colors=colors, frame_delay_ms=duration)
 
 
-def _save_gif_pillow(
-    image_paths: list[Path],
+def _render_gif_with_pillow(
+    paths: list[Path],
     output_path: Path,
     colors: int,
-    duration: int,
+    frame_delay_ms: int,
 ) -> None:
-    """Create GIF using PIL (loads all frames into memory)."""
+    """Internal Pillow quantization loop."""
+    frames: list[Image.Image] = []
+    for p in paths:
+        try:
+            with Image.open(p) as img:
+                rgb_img = img.convert("RGB") if img.mode != "RGB" else img.copy()
+                frames.append(rgb_img.quantize(colors=colors, method=Image.Quantize.MEDIANCUT))
+        except Exception as exc:
+            logger.debug(f"Skipping damaged frame {p}: {exc}")
 
-    def frame_generator():
-        for path in image_paths:
-            with Image.open(path) as img:
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                yield img.quantize(colors=colors, method=2)
+    if not frames:
+        return
 
-    frames = frame_generator()
-    first_frame = next(frames)
+    first_frame = frames[0]
     first_frame.save(
         output_path,
         save_all=True,
-        append_images=frames,
+        append_images=frames[1:],
         loop=0,
         optimize=True,
-        duration=duration,
+        duration=frame_delay_ms,
     )
 
 
-def _save_gif_ffmpeg(
-    image_paths: list[Path],
+def _render_gif_with_ffmpeg(
+    paths: list[Path],
     output_path: Path,
     colors: int,
-    duration: int,
+    frame_delay_ms: int,
 ) -> None:
-    """Create GIF using ffmpeg (memory-efficient streaming)."""
-    fps = 1000 / duration
+    """Streamlined two-pass palette-generated GIF rendering via FFmpeg."""
+    fps = max(1.0, 1000.0 / max(1, frame_delay_ms))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        list_file = Path(tmpdir) / "frames.txt"
+        palette = Path(tmpdir) / "palette.png"
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-        for i, path in enumerate(image_paths):
-            f.write(f"file '{path.absolute()}'\n")
-            # Last file needs no duration (ffmpeg concat demuxer uses it as the final frame)
-            if i < len(image_paths) - 1:
-                f.write(f"duration {duration / 1000}\n")
-        # Repeat last file to ensure it's included (ffmpeg concat demuxer quirk)
-        f.write(f"file '{image_paths[-1].absolute()}'\n")
-        concat_file = Path(f.name)
+        lines = [f"file '{p.resolve()}'\nduration {frame_delay_ms / 1000.0}" for p in paths]
+        if paths:
+            lines.append(f"file '{paths[-1].resolve()}'")
+        list_file.write_text("\n".join(lines), encoding="utf-8")
 
-    palette_path = output_path.with_suffix(".palette.png")
-
-    try:
-        result = subprocess.run(
+        subprocess.run(
             [
                 "ffmpeg",
                 "-y",
@@ -119,18 +116,16 @@ def _save_gif_ffmpeg(
                 "-safe",
                 "0",
                 "-i",
-                str(concat_file),
+                str(list_file),
                 "-vf",
-                f"palettegen=max_colors={min(colors, 256)}:stats_mode=diff",
-                str(palette_path),
+                f"palettegen=max_colors={min(colors, 256)}",
+                str(palette),
             ],
             capture_output=True,
-            text=True,
+            check=True,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg palette generation failed: {result.stderr}")
 
-        result = subprocess.run(
+        subprocess.run(
             [
                 "ffmpeg",
                 "-y",
@@ -139,71 +134,78 @@ def _save_gif_ffmpeg(
                 "-safe",
                 "0",
                 "-i",
-                str(concat_file),
+                str(list_file),
                 "-i",
-                str(palette_path),
+                str(palette),
                 "-lavfi",
-                f"fps={fps},paletteuse=dither=bayer:bayer_scale=5",
-                "-loop",
-                "0",
+                f"fps={fps},paletteuse",
                 str(output_path),
             ],
             capture_output=True,
-            text=True,
+            check=True,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg GIF creation failed: {result.stderr}")
-
-    finally:
-        concat_file.unlink(missing_ok=True)
-        if palette_path.exists():
-            palette_path.unlink()
 
 
-def create_gif_from_trace_folder(trace_folder_path: Path):
-    image_files: list[Path] = []
-
-    for file in trace_folder_path.iterdir():
-        if file.suffix == ".jpeg":
-            image_files.append(file)
-
-    image_files.sort(key=lambda f: int(f.stem))
-
-    logger.info(f"Found {len(image_files)} images to compile")
-
-    if not image_files:
+def create_gif_from_trace_folder(trace_folder_path: Path) -> None:
+    """Scan and synthesize sequential JPEG frames in a trace directory to trace.gif."""
+    if not trace_folder_path.is_dir():
         return
 
-    gif_path = trace_folder_path / "trace.gif"
-    quantize_and_save_gif_from_paths(image_files, gif_path)
-    logger.info(f"GIF created at {gif_path}")
+    frames = sorted(
+        [f for f in trace_folder_path.iterdir() if f.suffix.lower() in (".jpeg", ".jpg") and f.stem.isdigit()],
+        key=lambda x: int(x.stem),
+    )
+    if not frames:
+        return
+
+    target_gif = trace_folder_path / "trace.gif"
+    quantize_and_save_gif_from_paths(frames, target_gif)
+    logger.info(f"Assembled trace animation: {target_gif}")
 
 
-def remove_images_from_trace_folder(trace_folder_path: Path):
-    for file in trace_folder_path.iterdir():
-        if file.suffix == ".jpeg":
-            file.unlink()
+def remove_images_from_trace_folder(trace_folder_path: Path) -> None:
+    """Purge temporary individual JPEG frame captures once compiled."""
+    if not trace_folder_path.is_dir():
+        return
+    for item in trace_folder_path.iterdir():
+        if item.suffix.lower() in (".jpeg", ".jpg") and item.stem.isdigit():
+            try:
+                item.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
-def create_steps_json_from_trace_folder(trace_folder_path: Path):
-    """Compile legacy timestamp-named step files without consuming manifests."""
-    steps = []
-    for file in trace_folder_path.iterdir():
-        if file.suffix == ".json" and file.stem.isdigit():
-            with open(file, encoding="utf-8", errors="ignore") as f:
-                json_content = f.read()
-                steps.append({"timestamp": int(file.stem), "data": json_content})
+def create_steps_json_from_trace_folder(trace_folder_path: Path) -> None:
+    """Collate discrete numeric step payload dumps into steps.json preserving metadata manifests."""
+    if not trace_folder_path.is_dir():
+        return
 
-    steps.sort(key=lambda f: f["timestamp"])
+    numeric_step_files = sorted(
+        [f for f in trace_folder_path.iterdir() if f.suffix == ".json" and f.stem.isdigit()],
+        key=lambda x: int(x.stem),
+    )
 
-    logger.info(f"Found {len(steps)} steps to compile")
+    records: list[dict[str, Any]] = []
+    for step_file in numeric_step_files:
+        try:
+            records.append({
+                "timestamp": int(step_file.stem),
+                "data": step_file.read_text(encoding="utf-8", errors="ignore"),
+            })
+        except Exception as exc:
+            logger.debug(f"Unable to read step file {step_file}: {exc}")
 
-    with open(trace_folder_path / "steps.json", "w", encoding="utf-8", errors="ignore") as f:
-        f.write(json.dumps(steps))
+    output_file = trace_folder_path / "steps.json"
+    output_file.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
 
 
-def remove_steps_json_from_trace_folder(trace_folder_path: Path):
-    """Remove only legacy timestamp-named step files, preserving manifests."""
-    for file in trace_folder_path.iterdir():
-        if file.suffix == ".json" and file.stem.isdigit():
-            file.unlink()
+def remove_steps_json_from_trace_folder(trace_folder_path: Path) -> None:
+    """Clean up standalone numeric step files, leaving steps.json and recording manifests untouched."""
+    if not trace_folder_path.is_dir():
+        return
+    for item in trace_folder_path.iterdir():
+        if item.suffix == ".json" and item.stem.isdigit():
+            try:
+                item.unlink(missing_ok=True)
+            except OSError:
+                pass

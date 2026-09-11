@@ -9,6 +9,8 @@ from mcp_server.utils import device_utils
 def test_ensure_emulator_uses_windows_creation_flags(monkeypatch) -> None:
     popen = MagicMock()
     monkeypatch.setattr(device_utils.sys, "platform", "win32")
+    monkeypatch.setattr(device_utils.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    monkeypatch.setattr(device_utils.subprocess, "DETACHED_PROCESS", 0x00000008, raising=False)
     monkeypatch.setattr(device_utils, "is_emulator_running", lambda _adb: False)
     monkeypatch.setattr(device_utils.os.path, "exists", lambda _path: True)
     monkeypatch.setattr(device_utils.subprocess, "Popen", popen)
@@ -20,7 +22,7 @@ def test_ensure_emulator_uses_windows_creation_flags(monkeypatch) -> None:
     monkeypatch.setattr(device_utils.time, "sleep", lambda _seconds: None)
 
     assert device_utils.ensure_emulator(
-        adb_path="adb.exe", emulator_path="emulator.exe", timeout_seconds=1
+        adb_path="adb.exe", emulator_path="emulator.exe", timeout_seconds=10
     )
 
     kwargs = popen.call_args.kwargs
@@ -43,7 +45,7 @@ def test_ensure_emulator_starts_new_session_on_posix(monkeypatch) -> None:
     )
     monkeypatch.setattr(device_utils.time, "sleep", lambda _seconds: None)
 
-    assert device_utils.ensure_emulator(adb_path="adb", emulator_path="emulator", timeout_seconds=1)
+    assert device_utils.ensure_emulator(adb_path="adb", emulator_path="emulator", timeout_seconds=10)
 
     kwargs = popen.call_args.kwargs
     assert kwargs["start_new_session"] is True

@@ -27,7 +27,6 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -36,8 +35,6 @@ logger = get_logger(__name__)
 # pylint: disable=too-few-public-methods
 class AnalyzeLogsArgs(BaseModel):
     """Arguments schema for invoking the Log Analyzer subagent."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     specific_query: str = Field(
         ...,
         description=(

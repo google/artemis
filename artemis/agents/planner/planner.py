@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
-from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan, trace
+from artemis.data_engine.trace import TraceSpan, trace
 from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
 from artemis.services.llm import (
@@ -108,26 +108,7 @@ def build_planner_system_blocks(prompts_data: dict, mode: str, include_checks: b
     return blocks
 
 
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
-
-
 class ValidationResult(BaseModel):
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     is_approved: bool = Field(
         description=(
             "True if the new plan still serves the initial goal and is coherent."

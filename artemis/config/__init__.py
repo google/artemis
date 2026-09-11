@@ -83,6 +83,7 @@ from artemis.config.constants import (
     ENV_ARTEMIS_TRACES_DIR,
     ENV_ARTEMIS_USE_FILE_API,
     ENV_ARTEMIS_USE_USER_DIR,
+    ENV_OPENROUTER_API_KEY,
     ENV_OPEN_ROUTER_API_KEY,
     ENV_OPENAI_API_KEY,
     ENV_OPENAI_BASE_URL,
@@ -100,7 +101,6 @@ from artemis.config.constants import (
     LLMUtilsNodeWithFallback,
 )
 from artemis.config.llm import (
-    CyFunctionDetector,
     LLM,
     LLMConfig,
     LLMConfigUtils,
@@ -196,7 +196,6 @@ __all__ = [
     "get_ls_address_file",
     "is_frozen_bundle",
     # LLM Config & Models
-    "CyFunctionDetector",
     "LLM",
     "LLMWithFallback",
     "LLMConfigUtils",
@@ -296,6 +295,7 @@ __all__ = [
     "ENV_OPENAI_API_KEY",
     "ENV_OPENAI_BASE_URL",
     "ENV_ANTHROPIC_API_KEY",
+    "ENV_OPENROUTER_API_KEY",
     "ENV_OPEN_ROUTER_API_KEY",
     "ENV_XAI_API_KEY",
     "ENV_ARTEMIS_EXPLORER_VERSION",

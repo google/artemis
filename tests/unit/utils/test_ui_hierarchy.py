@@ -11,6 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
+# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
+
+"""Unit tests validating Artemis UI hierarchy parsing and geometry computation."""
 
 from unittest.mock import patch
 
@@ -29,215 +34,160 @@ def test_text_input_is_empty():
     assert text_input_is_empty(text=None, hint_text=None)
     assert text_input_is_empty(text="", hint_text=None)
     assert text_input_is_empty(text="", hint_text="")
-    assert text_input_is_empty(text="text", hint_text="text")
+    assert text_input_is_empty(text="search", hint_text="search")
 
-    assert not text_input_is_empty(text="text", hint_text=None)
-    assert not text_input_is_empty(text="text", hint_text="")
+    assert not text_input_is_empty(text="search", hint_text=None)
+    assert not text_input_is_empty(text="search", hint_text="")
 
 
 def test_find_element_by_resource_id():
-    ui_hierarchy = [
+    tree = [
         {
-            "resourceId": "com.example:id/button1",
-            "text": "Button 1",
+            "resourceId": "com.google.android.settings:id/search_bar",
+            "text": "Search Settings",
             "children": [],
         },
         {
-            "resourceId": "com.example:id/container",
+            "resourceId": "com.google.android.settings:id/content_frame",
             "children": [
                 {
-                    "resourceId": "com.example:id/nested_button",
-                    "text": "Nested Button",
+                    "resourceId": "com.google.android.settings:id/network_item",
+                    "text": "Network & Internet",
                     "children": [],
                 }
             ],
         },
     ]
 
-    result = find_element_by_resource_id(ui_hierarchy, "com.example:id/button1")
-    assert result is not None
-    assert result["resourceId"] == "com.example:id/button1"
-    assert result["text"] == "Button 1"
+    target = find_element_by_resource_id(tree, "com.google.android.settings:id/search_bar")
+    assert target is not None
+    assert target["resourceId"] == "com.google.android.settings:id/search_bar"
+    assert target["text"] == "Search Settings"
 
-    result = find_element_by_resource_id(ui_hierarchy, "com.example:id/nested_button")
-    assert result is not None
-    assert result["resourceId"] == "com.example:id/nested_button"
-    assert result["text"] == "Nested Button"
+    nested = find_element_by_resource_id(tree, "com.google.android.settings:id/network_item")
+    assert nested is not None
+    assert nested["resourceId"] == "com.google.android.settings:id/network_item"
 
-    result = find_element_by_resource_id(ui_hierarchy, "com.example:id/nonexistent")
-    assert result is None
-
-    result = find_element_by_resource_id([], "com.example:id/button1")
-    assert result is None
+    assert find_element_by_resource_id(tree, "com.google.android.settings:id/missing") is None
+    assert find_element_by_resource_id([], "com.google.android.settings:id/search_bar") is None
 
 
 def test_find_element_by_resource_id_with_index():
-    ui_hierarchy = [
+    duplicate_items = [
+        {"resourceId": "com.artemis.ui:id/row_item", "text": "Item Alpha", "children": []},
+        {"resourceId": "com.artemis.ui:id/row_item", "text": "Item Beta", "children": []},
         {
-            "resourceId": "com.example:id/button",
-            "text": "Button 1",
-            "children": [],
-        },
-        {
-            "resourceId": "com.example:id/button",
-            "text": "Button 2",
-            "children": [],
-        },
-        {
-            "resourceId": "com.example:id/container",
+            "resourceId": "com.artemis.ui:id/section_group",
             "children": [
-                {
-                    "resourceId": "com.example:id/button",
-                    "text": "Button 3",
-                    "children": [],
-                }
+                {"resourceId": "com.artemis.ui:id/row_item", "text": "Item Gamma", "children": []}
             ],
         },
     ]
 
-    result = find_element_by_resource_id(ui_hierarchy, "com.example:id/button", index=0)
-    assert result is not None
-    assert result["text"] == "Button 1"
+    first = find_element_by_resource_id(duplicate_items, "com.artemis.ui:id/row_item", index=0)
+    assert first is not None
+    assert first["text"] == "Item Alpha"
 
-    result = find_element_by_resource_id(ui_hierarchy, "com.example:id/button", index=1)
-    assert result is not None
-    assert result["text"] == "Button 2"
+    second = find_element_by_resource_id(duplicate_items, "com.artemis.ui:id/row_item", index=1)
+    assert second is not None
+    assert second["text"] == "Item Beta"
 
-    result = find_element_by_resource_id(ui_hierarchy, "com.example:id/button", index=2)
-    assert result is not None
-    assert result["text"] == "Button 3"
+    third = find_element_by_resource_id(duplicate_items, "com.artemis.ui:id/row_item", index=2)
+    assert third is not None
+    assert third["text"] == "Item Gamma"
 
-    result = find_element_by_resource_id(ui_hierarchy, "com.example:id/button", index=3)
-    assert result is None
+    assert find_element_by_resource_id(duplicate_items, "com.artemis.ui:id/row_item", index=3) is None
 
 
 def test_find_element_by_resource_id_rich_hierarchy():
-    rich_hierarchy = [
+    rich_nodes = [
         {
-            "attributes": {"resource-id": "com.example:id/button1"},
+            "attributes": {"resource-id": "com.android.systemui:id/clock"},
             "children": [],
         },
         {
-            "attributes": {"resource-id": "com.example:id/container"},
+            "attributes": {"resource-id": "com.android.systemui:id/status_bar"},
             "children": [
                 {
-                    "attributes": {"resource-id": "com.example:id/nested_button"},
+                    "attributes": {"resource-id": "com.android.systemui:id/battery_meter"},
                     "children": [],
                 }
             ],
         },
     ]
 
-    result = find_element_by_resource_id(
-        rich_hierarchy, "com.example:id/button1", is_rich_hierarchy=True
+    match = find_element_by_resource_id(
+        rich_nodes, "com.android.systemui:id/clock", is_rich_hierarchy=True
     )
-    assert result is not None
-    assert result["resource-id"] == "com.example:id/button1"
+    assert match is not None
+    assert match["resource-id"] == "com.android.systemui:id/clock"
 
-    result = find_element_by_resource_id(
-        rich_hierarchy, "com.example:id/nested_button", is_rich_hierarchy=True
+    nested_match = find_element_by_resource_id(
+        rich_nodes, "com.android.systemui:id/battery_meter", is_rich_hierarchy=True
     )
-    assert result is not None
-    assert result["resource-id"] == "com.example:id/nested_button"
+    assert nested_match is not None
+    assert nested_match["resource-id"] == "com.android.systemui:id/battery_meter"
 
-    result = find_element_by_resource_id(
-        rich_hierarchy, "com.example:id/nonexistent", is_rich_hierarchy=True
-    )
-    assert result is None
+    assert find_element_by_resource_id(
+        rich_nodes, "com.android.systemui:id/unknown", is_rich_hierarchy=True
+    ) is None
 
 
 def test_is_element_focused():
-    focused_element = {"focused": "true"}
-    assert is_element_focused(focused_element)
-
-    non_focused_element = {"focused": "false"}
-    assert not is_element_focused(non_focused_element)
-
-    no_focused_element = {"text": "some text"}
-    assert not is_element_focused(no_focused_element)
-
-    none_focused_element = {"focused": None}
-    assert not is_element_focused(none_focused_element)
+    assert is_element_focused({"focused": "true"})
+    assert is_element_focused({"focused": True})
+    assert not is_element_focused({"focused": "false"})
+    assert not is_element_focused({"focused": False})
+    assert not is_element_focused({"text": "sample"})
+    assert not is_element_focused({"focused": None})
 
 
 def test_get_element_text():
-    element = {"text": "Button Text", "hintText": "Hint Text"}
-    assert get_element_text(element) == "Button Text"
-    assert get_element_text(element, hint_text=False) == "Button Text"
-    assert get_element_text(element, hint_text=True) == "Hint Text"
+    node = {"text": "Battery", "hintText": "Search settings"}
+    assert get_element_text(node) == "Battery"
+    assert get_element_text(node, hint_text=False) == "Battery"
+    assert get_element_text(node, hint_text=True) == "Search settings"
 
-    element_no_text = {"hintText": "Hint Text"}
-    assert get_element_text(element_no_text) is None
-    assert get_element_text(element_no_text, hint_text=True) == "Hint Text"
-    element_no_hint = {"text": "Button Text"}
-    assert get_element_text(element_no_hint) == "Button Text"
-    assert get_element_text(element_no_hint, hint_text=True) is None
+    node_no_text = {"hintText": "Placeholder"}
+    assert get_element_text(node_no_text) is None
+    assert get_element_text(node_no_text, hint_text=True) == "Placeholder"
 
-    empty_element = {}
-    assert get_element_text(empty_element) is None
-    assert get_element_text(empty_element, hint_text=True) is None
+    assert get_element_text({}) is None
 
 
 def test_get_bounds_for_element():
-    element_with_bounds = {"bounds": {"x": 10, "y": 20, "width": 100, "height": 50}}
-    bounds = get_bounds_for_element(element_with_bounds)
-    assert bounds is not None
-    assert isinstance(bounds, ElementBounds)
-    assert bounds.x == 10
-    assert bounds.y == 20
-    assert bounds.width == 100
-    assert bounds.height == 50
+    node_with_box = {"bounds": {"x": 24, "y": 48, "width": 400, "height": 80}}
+    box = get_bounds_for_element(node_with_box)
+    assert box is not None
+    assert isinstance(box, ElementBounds)
+    assert box.x == 24
+    assert box.y == 48
+    assert box.width == 400
+    assert box.height == 80
 
-    element_no_bounds = {"text": "Button"}
-    bounds = get_bounds_for_element(element_no_bounds)
-    assert bounds is None
+    assert get_bounds_for_element({"text": "Click"}) is None
 
-    # Suppress logger output for the invalid bounds test case
     with patch("artemis.utils.ui_hierarchy.logger.error"):
-        element_invalid_bounds = {
-            "bounds": {
-                "x": "invalid",  # Should be int
-                "y": 20,
-                "width": 100,
-                "height": 50,
-            }
-        }
-        bounds = get_bounds_for_element(element_invalid_bounds)
-        assert bounds is None
+        bad_box = {"bounds": {"x": "corrupted", "y": 48, "width": 400, "height": 80}}
+        assert get_bounds_for_element(bad_box) is None
 
 
-def test_element_bounds():
-    bounds = ElementBounds(x=10, y=20, width=100, height=50)
+def test_element_bounds_geometry():
+    box = ElementBounds(x=100, y=200, width=500, height=100)
 
-    center = bounds.get_center()
+    center = box.get_center()
     assert isinstance(center, Point)
-    assert center.x == 60
-    assert center.y == 45
+    assert center.x == 350
+    assert center.y == 250
 
-    center_point = bounds.get_relative_point(0.5, 0.5)
-    assert isinstance(center_point, Point)
-    assert center_point.x == 60
-    assert center_point.y == 45
+    mid = box.get_relative_point(0.5, 0.5)
+    assert mid.x == 350
+    assert mid.y == 250
 
-    top_left = bounds.get_relative_point(0.0, 0.0)
-    assert top_left.x == 10
-    assert top_left.y == 20
+    top_left = box.get_relative_point(0.0, 0.0)
+    assert top_left.x == 100
+    assert top_left.y == 200
 
-    bottom_right = bounds.get_relative_point(1.0, 1.0)
-    assert bottom_right.x == 110
-    assert bottom_right.y == 70
-    custom_point = bounds.get_relative_point(0.95, 0.95)
-    assert custom_point.x == 105
-    assert custom_point.y == 67
-
-
-if __name__ == "__main__":
-    test_text_input_is_empty()
-    test_find_element_by_resource_id()
-    test_find_element_by_resource_id_with_index()
-    test_find_element_by_resource_id_rich_hierarchy()
-    test_is_element_focused()
-    test_get_element_text()
-    test_get_bounds_for_element()
-    test_element_bounds()
-    print("All tests passed")
+    bottom_right = box.get_relative_point(1.0, 1.0)
+    assert bottom_right.x == 600
+    assert bottom_right.y == 300

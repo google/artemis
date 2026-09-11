@@ -18,7 +18,10 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from artemis.agents.hopper.hopper import HopperOutput, hopper
+from artemis.agents.entity_extractor.entity_extractor import (
+    ExtractionResult,
+    extract_entity,
+)
 from artemis.context import ArtemisContext
 from artemis.controllers.platform_specific_commands_controller import (
     list_packages_async,
@@ -28,7 +31,6 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.tools.types import CyFunctionDetector
 from artemis.utils.app_launch_utils import launch_app_with_retries
 from artemis.utils.logger import get_logger
 
@@ -37,8 +39,6 @@ logger = get_logger(__name__)
 
 class LaunchAppArgs(BaseModel):
     """Arguments schema for launching an application."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
     app_name: str = Field(
         ...,
         description="The natural language name of the application to launch.",
@@ -77,21 +77,21 @@ async def find_package(ctx: ArtemisContext, app_name: str, use_fallback: bool = 
                 package_cache[app_name] = app_name
             return app_name
 
-        hopper_output: HopperOutput = await hopper(
+        extractor_output: ExtractionResult = await extract_entity(
             ctx=ctx,
             request=(f"I'm looking for the package name of the following app: '{app_name}'"),
             data=all_packages,
             use_fallback=use_fallback,
         )
-        if not hopper_output.found or not hopper_output.output:
+        if not extractor_output.found or not extractor_output.output:
             if isinstance(package_cache, dict):
                 package_cache[app_name] = None
             return None
 
-        package_name = hopper_output.output.strip()
+        package_name = extractor_output.output.strip()
         if package_name not in package_set:
             logger.warning(
-                f"Hopper returned package '{package_name}' for '{app_name}', "
+                f"Entity extractor returned package '{package_name}' for '{app_name}', "
                 "but it is NOT physically installed on the device!"
             )
             if isinstance(package_cache, dict):
