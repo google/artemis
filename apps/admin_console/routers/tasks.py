@@ -204,22 +204,32 @@ async def list_devices():
     return {"devices": [d.to_dict() for d in devices]}
 
 
+def _parse_bool(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes", "on")
+    return bool(val)
+
+
 @router.post("/api/stop")
 async def stop_task(
     request: Request,
     all: bool = False,
+    clear_all: bool | None = None,
     session_id: str | None = None,
     device_id: str | None = None,
 ):
-    target_all = all
+    target_all = clear_all if clear_all is not None else all
     target_sid = session_id
     target_dev = device_id
 
     try:
         body = await request.json()
         if isinstance(body, dict):
-            if "all" in body:
-                target_all = bool(body["all"]) or target_all
+            raw_all = body.get("clear_all") if "clear_all" in body else body.get("all")
+            if raw_all is not None:
+                target_all = _parse_bool(raw_all)
             if body.get("session_id"):
                 target_sid = str(body["session_id"])
             if body.get("device_id"):
