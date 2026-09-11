@@ -144,7 +144,7 @@ PYTHONUNBUFFERED = "1"
 PYTHONPATH = "/path/to/artemis"
 ```
 
-* **Antigravity** (`~/.gemini/jetski/mcp_config.json`):
+* **Antigravity** (`~/.gemini/antigravity/mcp_config.json`):
 ```json
 {
   "mcpServers": {
