@@ -24,6 +24,8 @@ to end (screenshot + UI hierarchy) to prove a task could actually start.
 
 from __future__ import annotations
 
+import subprocess
+
 import asyncio
 import os
 from pathlib import Path
@@ -42,6 +44,7 @@ from artemis.core.diagnostics.readiness import (
 )
 from artemis.core.diagnostics.schema import ProbeResult, ProbeStatus, SystemReadinessReport
 from artemis.runtime import DeviceExecutionLock, trace_store
+from artemis.runtime.helper_manager import helper_manager
 from artemis.utils.credentials_validator import validate_api_key
 from artemis.utils.logger import get_logger
 
@@ -500,6 +503,159 @@ def _device_probe_steps(device_probe: dict[str, Any] | None) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# Accessibility helper (UI hierarchy backend)
+# --------------------------------------------------------------------------- #
+
+
+def _hierarchy_backend() -> str:
+    try:
+        from artemis.clients.screen_client_factory import resolve_backend
+
+        return resolve_backend().value
+    except (ImportError, ValueError):
+        return "auto"
+
+
+def _helper_target(adb_result: ProbeResult | None, requested_device: str | None) -> str | None:
+    """The one ready device whose helper state is worth reporting, or None."""
+    devices = (adb_result.metadata.get("devices") if adb_result else None) or []
+    ready = [str(d.get("serial")) for d in devices if d.get("state") == "device"]
+    if requested_device:
+        return requested_device if requested_device in ready else None
+    return ready[0] if len(ready) == 1 else None
+
+
+def _helper_status(serial: str) -> dict[str, Any]:
+    try:
+        status = helper_manager.status(serial)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        return {"serial": serial, "error": f"{exc.__class__.__name__}: {exc}"}
+    status["serial"] = serial
+    status["backend"] = _hierarchy_backend()
+    return status
+
+
+def _helper_needs_provision(status: dict[str, Any] | None) -> bool:
+    if not status or status.get("error"):
+        return False
+    return not status.get("installed") or bool(status.get("outdated")) or not status.get("enabled")
+
+
+def _helper_fix(
+    adb_result: ProbeResult | None, requested_device: str | None
+) -> dict[str, Any] | None:
+    """Install / upgrade / enable the helper on the idle target device (attempt_fix only)."""
+    serial = _helper_target(adb_result, requested_device)
+    if serial is None or _hierarchy_backend() == "uiautomator":
+        return None
+    status = _helper_status(serial)
+    if not _helper_needs_provision(status):
+        return None
+    if not status.get("bundled_apk_present"):
+        return {
+            "fix": "install_accessibility_helper",
+            "success": False,
+            "skipped": True,
+            "message": "Skipped: the bundled ArtemisAccessibilityHelper.apk is missing from the checkout.",
+        }
+    wanted = _normalize_serial(serial)
+    if any(_normalize_serial(entry.get("device")) == wanted for entry in _task_state()["active"]):
+        return {
+            "fix": "install_accessibility_helper",
+            "success": False,
+            "skipped": True,
+            "message": f"Skipped: a task is running on {serial}; install it after the task finishes.",
+        }
+    try:
+        result = helper_manager.provision(serial)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        return {
+            "fix": "install_accessibility_helper",
+            "success": False,
+            "skipped": False,
+            "message": f"provisioning raised {exc.__class__.__name__}: {exc}",
+        }
+    message = (
+        f"{result.action} (installed version {result.installed_version}, "
+        f"bundled {result.bundled_version}, service enabled={result.enabled})"
+    )
+    if result.error:
+        message += f": {result.error}"
+    return {
+        "fix": "install_accessibility_helper",
+        "success": result.ok,
+        "skipped": False,
+        "message": message,
+    }
+
+
+def _helper_steps(status: dict[str, Any] | None, *, attempt_fix: bool) -> list[str]:
+    if not status:
+        return []
+    serial = status.get("serial") or "the device"
+    backend = status.get("backend") or "auto"
+    if backend == "uiautomator":
+        return []
+    if status.get("error"):
+        return [
+            f"[OPTIONAL] Accessibility helper state on {serial} could not be read: {status['error']}"
+        ]
+    healthy = status.get("installed") and not status.get("outdated") and status.get("enabled")
+    if healthy and status.get("reachable"):
+        return []
+    if not status.get("installed"):
+        problem = "is not installed"
+    elif status.get("outdated"):
+        problem = (
+            f"is outdated (device has version {status.get('installed_version')}, "
+            f"bundled is {status.get('bundled_version')})"
+        )
+    elif not status.get("enabled"):
+        problem = "is installed but its accessibility service is disabled"
+    elif status.get("newer_than_bundled") and status.get("reachable"):
+        return []  # a newer dev build is fine; nothing to do
+    else:
+        problem = "is installed and enabled but not answering on its loopback port"
+    tag = "REQUIRED" if backend == "helper" else "OPTIONAL"
+    consequence = (
+        "tasks cannot read the UI hierarchy until it is fixed"
+        if backend == "helper"
+        else "tasks fall back to UIAutomator2 (slower dumps, conflicts with Appium/Mobly)"
+    )
+    steps = [f"[{tag}] Accessibility helper on {serial} {problem}; {consequence}."]
+    if not status.get("bundled_apk_present"):
+        steps.append(
+            "  Guidance: the bundled APK is missing; build it with "
+            "packages/artemis-accessibility-helper/build_apk.sh."
+        )
+        return steps
+    if problem.startswith("is installed and enabled"):
+        steps.append(
+            "  Guidance: unlock the phone; if the helper still does not answer, reinstall it with "
+            "the command below (add --force)."
+        )
+        steps.append(f"  Run: uv run artemis helper install --serial {serial} --force")
+        return steps
+    if not attempt_fix:
+        steps.append(
+            "  Guidance: call mobile_diagnose(attempt_fix=true) to install and enable it "
+            "without touching the phone, or run the command below."
+        )
+    steps.append(f"  Run: uv run artemis helper install --serial {serial}")
+    if problem.startswith("is installed but"):
+        # Enabling from adb was already attempted once by whoever installed it;
+        # on ROMs that reject it only a person can flip the switch.
+        from artemis.runtime.helper_manager import MANUAL_ENABLE_PATH
+
+        steps.append(
+            "  Guidance: if the command reports that this device rejected enabling the "
+            f"service, ask the user to turn it on by hand: {MANUAL_ENABLE_PATH} "
+            "(the command opens that settings screen on the phone)."
+        )
+    return steps
+
+
+# --------------------------------------------------------------------------- #
 # next_steps
 # --------------------------------------------------------------------------- #
 
@@ -575,6 +731,7 @@ def _next_steps(
     credentials: list[dict[str, Any]] | None,
     tasks: dict[str, list[dict[str, Any]]],
     device_probe: dict[str, Any] | None,
+    accessibility_helper: dict[str, Any] | None = None,
 ) -> list[str]:
     steps: list[str] = []
     needs_restart = False
@@ -628,6 +785,7 @@ def _next_steps(
     )
     steps.extend(launch_steps)
     steps.extend(_device_probe_steps(device_probe))
+    steps.extend(_helper_steps(accessibility_helper, attempt_fix=attempt_fix))
 
     for fix in fixes_applied:
         outcome = "applied" if fix.get("success") else "did not help"
@@ -750,7 +908,9 @@ def _cleanup_stale_locks() -> dict[str, Any] | None:
     }
 
 
-async def _apply_safe_fixes(report: SystemReadinessReport) -> list[dict[str, Any]]:
+async def _apply_safe_fixes(
+    report: SystemReadinessReport, requested_device: str | None = None
+) -> list[dict[str, Any]]:
     """Run the self-heals the console exposes as buttons, only when they cannot disrupt a task."""
     applied: list[dict[str, Any]] = []
     cleanup = _cleanup_stale_locks()
@@ -768,7 +928,12 @@ async def _apply_safe_fixes(report: SystemReadinessReport) -> list[dict[str, Any
 
     devices = adb.metadata.get("devices") or []
     if any(d.get("state") == "device" for d in devices):
-        return applied  # a ready device exists; nothing to restart
+        # A ready device exists; nothing to restart. Provision the accessibility
+        # helper on it when it is idle and missing, outdated or disabled.
+        helper_fix = await asyncio.to_thread(_helper_fix, adb, requested_device)
+        if helper_fix is not None:
+            applied.append(helper_fix)
+        return applied
     if DeviceExecutionLock.get_active_owners():
         applied.append(
             {
@@ -787,7 +952,9 @@ async def _apply_safe_fixes(report: SystemReadinessReport) -> list[dict[str, Any
 def _probes_changed(fixes_applied: list[dict[str, Any]]) -> bool:
     """Only ADB-side fixes can change probe results; lock cleanup does not warrant a re-run."""
     return any(
-        fix.get("success") and not fix.get("skipped") and fix.get("fix") != "cleanup_stale_locks"
+        fix.get("success")
+        and not fix.get("skipped")
+        and fix.get("fix") not in ("cleanup_stale_locks", "install_accessibility_helper")
         for fix in fixes_applied
     )
 
@@ -817,15 +984,18 @@ async def _run_extras(
     else:
         emulator = _emulator_status()
 
-    credentials, device_probe = await asyncio.gather(
+    helper_serial = _helper_target(adb_result, requested_device)
+    credentials, device_probe, accessibility_helper = await asyncio.gather(
         _verify_credentials(_find(results, "gemini_api_key")) if verify_credentials else _none(),
         _run_device_probe(adb_result, requested_device) if probe_device else _none(),
+        asyncio.to_thread(_helper_status, helper_serial) if helper_serial else _none(),
     )
     return {
         "emulator": emulator,
         "launch_steps": launch_steps,
         "credentials": credentials,
         "device_probe": device_probe,
+        "accessibility_helper": accessibility_helper,
         "tasks": _task_state(),
     }
 
@@ -847,6 +1017,7 @@ def _verdict(
     requested_device: str | None,
     credentials: list[dict[str, Any]] | None,
     device_probe: dict[str, Any] | None,
+    accessibility_helper: dict[str, Any] | None = None,
 ) -> str:
     verdict = base_verdict(results)
     if verdict == "blocked" or not _requested_device_ready(results, requested_device):
@@ -856,8 +1027,13 @@ def _verdict(
         return "blocked"
     if device_probe is not None and not device_probe.get("ok"):
         return "blocked"
+    helper_backend = (accessibility_helper or {}).get("backend")
+    if helper_backend == "helper" and not accessibility_helper.get("reachable"):
+        return "blocked"
     if any(not entry.get("valid") for entry in credentials or []):
         return "degraded"
+    if helper_backend == "auto" and _helper_needs_provision(accessibility_helper):
+        return "degraded" if verdict == "ready" else verdict
     return verdict
 
 
@@ -949,7 +1125,12 @@ async def mobile_diagnose(
         traces_dir, mcp_client (when known), daemon {port, reachable,
         port_held_by_other_process, log_path}.
       - `device`: the device a task would use ({serial, state, model,
-        android_version, is_locked, is_emulator}) or null.
+        android_version, is_locked, is_emulator, accessibility_helper}) or
+        null. `accessibility_helper` describes the Artemis UI-hierarchy
+        helper APK on that device ({installed, installed_version,
+        bundled_version, outdated, enabled, forward_port, reachable,
+        backend}); with backend "auto" a missing helper only degrades
+        (UIAutomator2 fallback), with backend "helper" it blocks.
       - `emulator`: background emulator launch state ({avd_name, status,
         stage_message, error, serial, elapsed_seconds, progress_percent}) or
         null when nothing was launched. `status` is starting /
@@ -970,8 +1151,10 @@ async def mobile_diagnose(
     Args:
         attempt_fix: When true, applies the safe self-heals the ARTEMIS
           console offers: remove device locks left by dead processes,
-          regenerate corrupted ADB RSA keys, and restart the ADB server
-          (only when no device is ready and no task holds a device). Then
+          regenerate corrupted ADB RSA keys, restart the ADB server (only
+          when no device is ready and no task holds a device), and install,
+          upgrade or enable the Artemis accessibility helper APK on the idle
+          target device when it is missing, outdated or disabled. Then
           re-runs the checks. Nothing else is changed.
         device_serial: Optional serial the user wants to use; the report
           then states explicitly whether that device is attached, authorized
@@ -1004,7 +1187,7 @@ async def mobile_diagnose(
         )
         if attempt_fix:
             fixes_applied = await asyncio.wait_for(
-                _apply_safe_fixes(report), timeout=DIAGNOSIS_TIMEOUT_SECONDS
+                _apply_safe_fixes(report, requested_device), timeout=DIAGNOSIS_TIMEOUT_SECONDS
             )
             if _probes_changed(fixes_applied):
                 report, host = await asyncio.wait_for(
@@ -1026,12 +1209,17 @@ async def mobile_diagnose(
 
     credentials: list[dict[str, Any]] | None = extras["credentials"]
     device_probe: dict[str, Any] | None = extras["device_probe"]
+    accessibility_helper: dict[str, Any] | None = extras.get("accessibility_helper")
     verdict = _verdict(
         results,
         requested_device=requested_device,
         credentials=credentials,
         device_probe=device_probe,
+        accessibility_helper=accessibility_helper,
     )
+    device = _compact_device(report)
+    if device is not None and accessibility_helper is not None:
+        device["accessibility_helper"] = accessibility_helper
     env_file = host.metadata.get("env_file")
     return {
         "verdict": verdict,
@@ -1047,10 +1235,11 @@ async def mobile_diagnose(
             credentials=credentials,
             tasks=extras["tasks"],
             device_probe=device_probe,
+            accessibility_helper=accessibility_helper,
         ),
         "checks": [_render_check(r) for r in sort_by_fix_order(results)],
         "host": _compact_host(host.metadata),
-        "device": _compact_device(report),
+        "device": device,
         "emulator": extras["emulator"],
         "tasks": extras["tasks"],
         "credentials": credentials,

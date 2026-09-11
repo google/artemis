@@ -12,96 +12,324 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Artemis Accessibility Helper client for Android device automation.
+"""HTTP client for the Artemis Accessibility Helper running on a device.
 
-Provides a lightweight, conflict-free alternative to UIAutomator2.
-Runs concurrently with Mobly, Appium, and Espresso without monopolizing
-the singleton UiAutomationConnection.
+A lightweight, conflict-free alternative to UIAutomator2: it never takes the
+singleton ``UiAutomationConnection``, so it runs alongside Mobly, Appium and
+Espresso. This class only speaks the helper's HTTP API. Installing, enabling,
+port forwarding, the session token and hot-plug recovery live in
+:mod:`artemis.runtime.helper_manager`; this client asks the manager for a
+session lazily and hands transport failures back to it once.
+
+The screen-data contract is byte-for-byte the one :class:`UIAutomatorClient`
+exposes (``UIAutomatorScreenData`` with the element dictionaries produced by
+``_parse_hierarchy_xml_to_elements``), so every consumer downstream
+(``filter_ui_hierarchy``, the Explorer index, the MCP actuators that compare
+``clickable == "true"``) sees identical shapes whichever backend is active.
+
+One observation is one request: ``/snapshot?fields=xml`` returns the XML and,
+on Android 11+, the screenshot taken at the same instant with the bitmap's own
+dimensions. On older Android the same answer carries the XML and the client
+only adds an adb screencap; the hierarchy is never dumped twice.
 """
+
+from __future__ import annotations
 
 from io import BytesIO
 import json
-import os
 import subprocess
-import time
+from typing import Any
 import urllib.error
 import urllib.request
 
 from PIL import Image
 
-from artemis.clients.ui_automator_client import UIAutomatorScreenData, _pil_to_base64
+from artemis.clients.ui_automator_client import (
+    UIAutomatorScreenData,
+    _parse_hierarchy_xml_to_elements,
+    _pil_to_base64,
+)
 from artemis.runtime.adb_endpoint import adb_command
+from artemis.runtime.awake_service import ensure_device_awake
+from artemis.runtime.helper_manager import (
+    DEVICE_PORT,
+    PACKAGE_NAME,
+    SERVICE_NAME,
+    AccessibilityHelperManager,
+    HelperSession,
+    HelperUnavailable,
+    ProvisionEvent,
+    helper_manager,
+)
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-PACKAGE_NAME = "com.artemis.helper"
-SERVICE_NAME = f"{PACKAGE_NAME}/.ArtemisAccessibilityService"
-DEFAULT_PORT = 18888
+# Kept for callers that imported these from here.
+DEFAULT_PORT = DEVICE_PORT
+TOKEN_HEADER = "X-Artemis-Token"
+__all__ = [
+    "AccessibilityClient",
+    "DEFAULT_PORT",
+    "HelperEmptyHierarchy",
+    "HelperRequestError",
+    "HelperUnavailable",
+    "PACKAGE_NAME",
+    "SERVICE_NAME",
+    "TOKEN_HEADER",
+    "normalize_helper_elements",
+]
+
+_BOOL_ATTRIBUTES = (
+    "checkable",
+    "checked",
+    "clickable",
+    "enabled",
+    "focusable",
+    "focused",
+    "scrollable",
+    "long-clickable",
+    "password",
+    "selected",
+    "visible-to-user",
+)
+_GLOBAL_KEYS = ("back", "home", "recents", "notifications", "quick_settings")
+
+
+class HelperEmptyHierarchy(RuntimeError):
+    """The helper answered but found no window to dump.
+
+    Raised instead of returning a screen with zero elements, so ``auto`` mode
+    can try UIAutomator2 and ``helper`` mode reports the real cause instead of
+    showing the agent an empty screen.
+    """
+
+
+class HelperRequestError(RuntimeError):
+    """The helper answered with an HTTP error that a new tunnel cannot fix."""
+
+    def __init__(self, status: int, path: str, body: str):
+        self.status = status
+        self.path = path
+        self.body = body
+        super().__init__(f"accessibility helper {path} answered HTTP {status}: {body[:200]}")
+
+
+def normalize_helper_elements(elements: Any) -> list[dict[str, Any]]:
+    """Coerce the helper's JSON element list into the UIAutomator element shape.
+
+    Used only when a dump carries elements but no XML. The JSON encodes flags
+    as booleans and omits ``accessibilityText``; the XML parser emits string
+    flags and mirrors ``content-desc`` into ``accessibilityText``, and several
+    consumers compare against the string ``"true"``.
+    """
+    if isinstance(elements, dict):
+        elements = [elements]
+    if not isinstance(elements, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for raw in elements:
+        if not isinstance(raw, dict):
+            continue
+        element = dict(raw)
+        for key in _BOOL_ATTRIBUTES:
+            if key in element and isinstance(element[key], bool):
+                element[key] = "true" if element[key] else "false"
+        desc = element.get("content-desc")
+        if desc is not None and "accessibilityText" not in element:
+            element["accessibilityText"] = desc
+        bounds = element.get("parsed_bounds")
+        if isinstance(bounds, dict):
+            element["parsed_bounds"] = {
+                side: int(bounds.get(side, 0)) for side in ("left", "top", "right", "bottom")
+            }
+        element.pop("children", None)
+        normalized.append(element)
+    return normalized
 
 
 class AccessibilityClient:
-    """Non-exclusive accessibility client for Artemis UI automation."""
+    """Screen-data client over the helper's loopback HTTP API."""
 
-    def __init__(self, device_id: str, local_port: int = DEFAULT_PORT):
+    backend_name = "helper"
+
+    def __init__(
+        self,
+        device_id: str,
+        manager: AccessibilityHelperManager | None = None,
+        *,
+        provision_on_connect: bool = True,
+        request_timeout: float = 6.0,
+    ) -> None:
         self._device_id = device_id
-        self._local_port = local_port
-        self._base_url = f"http://127.0.0.1:{local_port}"
+        self._manager = manager or helper_manager
+        self._provision_on_connect = provision_on_connect
+        self._request_timeout = request_timeout
+        self._session: HelperSession | None = None
+        self._awake_strategy: str | None = None
 
-    def ensure_service_ready(self, apk_path: str | None = None) -> bool:
-        """Ensure ArtemisAccessibilityHelper is installed, enabled, and port-forwarded."""
-        # 1. Check if package is installed
-        if not self._is_installed():
-            if apk_path is None:
-                default_apk = os.path.abspath(
-                    os.path.join(
-                        os.path.dirname(__file__),
-                        "../../packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk",
-                    )
-                )
-                if os.path.exists(default_apk):
-                    apk_path = default_apk
+    # ------------------------------------------------------------------ #
+    # Session lifecycle
+    # ------------------------------------------------------------------ #
 
-            if apk_path and os.path.exists(apk_path):
-                logger.info(f"Installing ArtemisAccessibilityHelper on {self._device_id}...")
-                self._run_adb(["install", "-r", "-g", apk_path])
-            else:
-                logger.warning(
-                    f"ArtemisAccessibilityHelper not installed on {self._device_id} and no APK provided."
-                )
+    @property
+    def device_id(self) -> str:
+        return self._device_id
 
-        # 2. Ensure accessibility service is enabled via secure settings
-        self._enable_accessibility_service()
+    @property
+    def session(self) -> HelperSession | None:
+        return self._session
 
-        # 3. Setup port forward
-        self._setup_port_forward()
+    @property
+    def active_backend(self) -> str | None:
+        return self.backend_name if self._session is not None else None
 
-        # 4. Verify connection
-        for attempt in range(5):
-            if self.ping():
-                logger.info(
-                    f"ArtemisAccessibilityHelper connected successfully on {self._device_id}"
-                )
-                return True
-            time.sleep(0.5)
+    def connect(self, on_event: ProvisionEvent | None = None) -> None:
+        """Task-path entry: provision (install / upgrade / enable) and attach.
 
-        logger.warning(
-            f"Failed to connect to ArtemisAccessibilityHelper on port {self._local_port}"
+        ``on_event`` receives ``installing`` / ``upgrading`` before the slow step.
+        """
+        self._session = self._manager.attach(
+            self._device_id, provision=self._provision_on_connect, on_event=on_event
         )
-        return False
+        if self._awake_strategy is None:
+            self._awake_strategy = ensure_device_awake(self._device_id)
+
+    def _ensure_session(self) -> HelperSession:
+        """Observer-path entry: attach to a helper that is already running."""
+        if self._session is None:
+            self._session = self._manager.attach(self._device_id, provision=False)
+            if self._awake_strategy is None:
+                self._awake_strategy = ensure_device_awake(self._device_id)
+        return self._session
+
+    def disconnect(self) -> None:
+        self._manager.detach(self._device_id)
+        self._session = None
+        self._awake_strategy = None
 
     def ping(self) -> bool:
-        """Health check probe."""
         try:
-            req = urllib.request.Request(f"{self._base_url}/ping")
-            with urllib.request.urlopen(req, timeout=2.0) as resp:
-                data = json.loads(resp.read().decode())
-                return data.get("success", False)
-        except Exception:
+            session = self._ensure_session()
+        except HelperUnavailable:
             return False
+        return self._manager.ping(session.local_port) is not None
+
+    # ------------------------------------------------------------------ #
+    # Transport
+    # ------------------------------------------------------------------ #
+
+    def _http(
+        self, path: str, payload: dict[str, Any] | None = None, timeout: float | None = None
+    ) -> bytes:
+        """One request with two single-shot repairs.
+
+        * HTTP 401: the helper lost its token (re-bound service, reboot): push it
+          again and retry once.
+        * Transport failure on a read: rebuild the tunnel once and retry.
+          Actions are not replayed because they may already have executed.
+
+        Any other HTTP status is a :class:`HelperRequestError`; a new tunnel
+        would not change the answer.
+        """
+        session = self._ensure_session()
+        try:
+            return self._http_once(session, path, payload, timeout)
+        except urllib.error.HTTPError as exc:
+            body = _read_error_body(exc)
+            if exc.code != 401:
+                raise HelperRequestError(exc.code, path, body) from exc
+            logger.warning(
+                f"Accessibility helper on {self._device_id} rejected the session token "
+                f"({body[:120]}); pushing it again."
+            )
+            self._manager.push_token(self._device_id)
+            try:
+                return self._http_once(session, path, payload, timeout)
+            except urllib.error.HTTPError as again:
+                raise HelperRequestError(again.code, path, _read_error_body(again)) from again
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            if payload is not None:
+                raise
+            logger.warning(
+                f"Accessibility helper request {path} on {self._device_id} failed ({exc}); "
+                "rebuilding the tunnel once."
+            )
+            self._session = self._manager.reattach(self._device_id)
+            try:
+                return self._http_once(self._session, path, payload, timeout)
+            except urllib.error.HTTPError as again:
+                raise HelperRequestError(again.code, path, _read_error_body(again)) from again
+
+    def _http_once(
+        self,
+        session: HelperSession,
+        path: str,
+        payload: dict[str, Any] | None,
+        timeout: float | None,
+    ) -> bytes:
+        data = (
+            json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+        )
+        headers: dict[str, str] = {}
+        token = session.token or self._manager.host_token()
+        if token:
+            headers[TOKEN_HEADER] = token
+        if data is not None:
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        request = urllib.request.Request(f"{session.base_url}{path}", data=data, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout or self._request_timeout) as resp:
+            return resp.read()
+
+    def _rpc(self, cmd: str, params: dict[str, Any] | None = None) -> bool:
+        payload = {"cmd": cmd, **(params or {})}
+        try:
+            data = json.loads(self._http("/action", payload).decode("utf-8"))
+        except (
+            HelperUnavailable,
+            HelperRequestError,
+            urllib.error.URLError,
+            OSError,
+            ValueError,
+            TimeoutError,
+        ) as exc:
+            logger.warning(f"Accessibility helper command '{cmd}' failed: {exc}")
+            return False
+        return bool(data.get("success", False))
+
+    # ------------------------------------------------------------------ #
+    # Screen data
+    # ------------------------------------------------------------------ #
+
+    def get_hierarchy(self) -> str:
+        """Raw UIAutomator-format XML, the same contract as ``UIAutomatorClient``."""
+        return self._http("/dump_xml").decode("utf-8")
+
+    def get_hierarchy_json(self, *, include_invisible: bool = False) -> dict[str, Any]:
+        """The helper's JSON dump (XML plus its own element list); diagnostics only."""
+        query = "fields=xml,elements" + ("&include_invisible=1" if include_invisible else "")
+        return json.loads(self._http(f"/dump?{query}").decode("utf-8"))
+
+    def _snapshot(self) -> dict[str, Any]:
+        """``/snapshot?fields=xml``: hierarchy plus, on Android 11+, the screenshot."""
+        data = json.loads(self._http("/snapshot?fields=xml", timeout=8.0).decode("utf-8"))
+        if not isinstance(data, dict):
+            raise HelperRequestError(200, "/snapshot", "non-object answer")
+        if not data.get("success"):
+            raise HelperEmptyHierarchy(
+                f"accessibility helper on {self._device_id} returned no hierarchy: "
+                f"{data.get('error') or 'unknown reason'}"
+            )
+        return data
+
+    def get_atomic_snapshot(self) -> dict[str, Any] | None:
+        """Screenshot + hierarchy captured in one call on the device (Android 11+), else None."""
+        data = self._snapshot()
+        if data.get("has_screenshot") and data.get("screenshot_base64"):
+            return data
+        return None
 
     def get_screenshot(self) -> Image.Image | None:
-        """Capture screenshot via high-speed ADB exec-out."""
         try:
             result = subprocess.run(
                 adb_command(["-s", self._device_id, "exec-out", "screencap", "-p"]),
@@ -111,160 +339,111 @@ class AccessibilityClient:
                 check=True,
             )
             return Image.open(BytesIO(result.stdout))
-        except Exception as e:
-            logger.error(f"Failed to capture screenshot via adb: {e}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.error(f"Failed to capture screenshot via adb: {exc}")
             return None
 
-    def get_hierarchy(self) -> dict:
-        """Fetch hierarchy JSON directly from ArtemisAccessibilityHelper."""
-        req = urllib.request.Request(f"{self._base_url}/dump")
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            return json.loads(resp.read().decode())
+    def get_screenshot_base64(self) -> str | None:
+        screenshot = self.get_screenshot()
+        return None if screenshot is None else _pil_to_base64(screenshot, format="JPEG")
 
-    def get_hierarchy_xml(self) -> str:
-        """Fetch raw standard UIAutomator XML string directly from helper."""
-        req = urllib.request.Request(f"{self._base_url}/dump_xml")
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            return resp.read().decode("utf-8")
-
-    def get_atomic_snapshot(self) -> dict | None:
-        """Fetch atomic snapshot (screenshot Base64 + hierarchy) directly in one call."""
-        try:
-            req = urllib.request.Request(f"{self._base_url}/snapshot")
-            with urllib.request.urlopen(req, timeout=6.0) as resp:
-                data = json.loads(resp.read().decode())
-                if (
-                    data.get("success")
-                    and data.get("has_screenshot")
-                    and data.get("screenshot_base64")
-                ):
-                    return data
-        except Exception as e:
-            logger.debug(f"Atomic snapshot request failed (falling back to dual path): {e}")
-        return None
+    @staticmethod
+    def _elements_from_dump(dump: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+        xml = dump.get("xml") or ""
+        if isinstance(xml, str) and xml.strip():
+            return xml, _parse_hierarchy_xml_to_elements(xml)
+        return "", normalize_helper_elements(dump.get("elements"))
 
     def get_screen_data(self) -> UIAutomatorScreenData:
-        """Retrieve complete screen data (screenshot + parsed elements + standard XML).
-
-        Prioritizes the atomic hardware snapshot API (Android 11+) to eliminate
-        any temporal phase mismatch between visual frame and layout DOM tree.
-        Falls back to separate ADB screencap + HTTP dump on older platforms.
-        """
-        # 1. Try atomic snapshot
-        atomic = self.get_atomic_snapshot()
-        if atomic is not None:
+        snapshot = self._snapshot()
+        xml, elements = self._elements_from_dump(snapshot)
+        if snapshot.get("has_screenshot") and snapshot.get("screenshot_base64"):
+            width, height = _dimensions(snapshot)
             return UIAutomatorScreenData(
-                base64=atomic.get("screenshot_base64", ""),
-                hierarchy_xml=atomic.get("xml", ""),
-                elements=atomic.get("elements", []),
-                width=atomic.get("width", 1080),
-                height=atomic.get("height", 2400),
+                base64=str(snapshot["screenshot_base64"]),
+                hierarchy_xml=xml,
+                elements=elements,
+                width=width,
+                height=height,
             )
 
-        # 2. Fallback: separate screenshot and hierarchy dump
+        # Android 10 and below (or a rate-limited capture that did not recover):
+        # keep the hierarchy we already have and only add an adb screencap.
+        reason = snapshot.get("screenshot_error")
+        if reason:
+            logger.debug(f"Helper snapshot without screenshot ({reason}); using adb screencap")
         screenshot = self.get_screenshot()
         if screenshot is None:
             raise RuntimeError("Failed to capture screenshot")
-
-        hierarchy_data = self.get_hierarchy()
-        elements = hierarchy_data.get("elements", [])
-        hierarchy_xml = hierarchy_data.get("xml", "")
-
         return UIAutomatorScreenData(
             base64=_pil_to_base64(screenshot, format="JPEG"),
-            hierarchy_xml=hierarchy_xml,
+            hierarchy_xml=xml,
             elements=elements,
             width=screenshot.width,
             height=screenshot.height,
         )
 
-    def tap(self, x: float, y: float) -> bool:
-        """Perform tap gesture via AccessibilityService."""
-        return self._send_rpc("tap", {"x": x, "y": y})
+    # ------------------------------------------------------------------ #
+    # Input
+    # ------------------------------------------------------------------ #
 
-    def swipe(self, x1: float, y1: float, x2: float, y2: float, duration_ms: int = 300) -> bool:
-        """Perform swipe gesture via AccessibilityService."""
-        return self._send_rpc(
-            "swipe",
-            {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "duration": duration_ms},
-        )
+    def set_clipboard(self, text: str) -> bool:
+        """Put ``text`` on the device clipboard so the driver can paste it."""
+        return self._rpc("clipboard", {"text": text})
 
     def send_text(self, text: str) -> bool:
-        """Send text input via AccessibilityNodeInfo.ACTION_SET_TEXT."""
-        success = self._send_rpc("type", {"text": text})
-        if not success:
-            # Fallback to adb shell input text
-            safe_text = text.replace(" ", "%s")
-            self._run_adb(["shell", "input", "text", safe_text])
-            return True
-        return success
+        """Append ``text`` to the focused field, the way typing through an IME does."""
+        return self._rpc("type", {"text": text, "append": True})
 
     def clear_text(self) -> bool:
-        """Clear text of focused input."""
-        return self._send_rpc("clear", {})
+        return self._rpc("clear", {})
 
     def press_key(self, key: str) -> bool:
-        """Perform global navigation action (back, home, recents)."""
-        key_lower = key.lower()
-        if key_lower in ("back", "home", "recents", "notifications", "quick_settings"):
-            return self._send_rpc("global", {"action": key_lower})
-        # Fallback to adb keyevent
-        self._run_adb(["shell", "input", "keyevent", f"KEYCODE_{key.upper()}"])
-        return True
-
-    def _send_rpc(self, cmd: str, params: dict) -> bool:
-        """Send JSON-RPC payload to helper server."""
-        payload = {"cmd": cmd, **params}
-        try:
-            req = urllib.request.Request(
-                f"{self._base_url}/action",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
-                data = json.loads(resp.read().decode())
-                return data.get("success", False)
-        except Exception as e:
-            logger.warning(f"RPC command '{cmd}' failed: {e}")
-            return False
-
-    def _is_installed(self) -> bool:
-        res = self._run_adb(["shell", "pm", "list", "packages", PACKAGE_NAME])
-        return f"package:{PACKAGE_NAME}" in res.stdout
-
-    def _enable_accessibility_service(self) -> None:
-        """Silently enable the accessibility service via adb settings without UI prompts."""
-        res = self._run_adb(
-            ["shell", "settings", "get", "secure", "enabled_accessibility_services"]
-        )
-        current_services = res.stdout.strip()
-        if SERVICE_NAME not in current_services:
-            new_services = (
-                f"{current_services}:{SERVICE_NAME}"
-                if current_services and current_services != "null"
-                else SERVICE_NAME
-            )
-            self._run_adb(
+        key_lower = str(key).lower()
+        if key_lower in _GLOBAL_KEYS:
+            return self._rpc("global", {"action": key_lower})
+        result = subprocess.run(
+            adb_command(
                 [
+                    "-s",
+                    self._device_id,
                     "shell",
-                    "settings",
-                    "put",
-                    "secure",
-                    "enabled_accessibility_services",
-                    new_services,
+                    "input",
+                    "keyevent",
+                    f"KEYCODE_{key_lower.upper()}",
                 ]
-            )
-        self._run_adb(["shell", "settings", "put", "secure", "accessibility_enabled", "1"])
-
-    def _setup_port_forward(self) -> None:
-        self._run_adb(["forward", f"tcp:{self._local_port}", f"tcp:{DEFAULT_PORT}"])
-
-    def _run_adb(self, args: list[str]) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            adb_command(["-s", self._device_id] + args),
+            ),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=15,
             check=False,
         )
+        return result.returncode == 0
+
+    def tap(self, x: float, y: float) -> bool:
+        return self._rpc("tap", {"x": x, "y": y})
+
+    def swipe(self, x1: float, y1: float, x2: float, y2: float, duration_ms: int = 300) -> bool:
+        return self._rpc("swipe", {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "duration": duration_ms})
+
+
+def _read_error_body(exc: urllib.error.HTTPError) -> str:
+    try:
+        return exc.read().decode("utf-8", "replace")
+    except OSError:
+        return str(exc)
+
+
+def _dimensions(snapshot: dict[str, Any]) -> tuple[int, int]:
+    """The screenshot's own size; a snapshot without it is a broken answer, not a 1080x2400 one."""
+    try:
+        width = int(snapshot.get("width") or 0)
+        height = int(snapshot.get("height") or 0)
+    except (TypeError, ValueError):
+        width = height = 0
+    if width <= 0 or height <= 0:
+        raise HelperRequestError(
+            200, "/snapshot", f"screenshot without dimensions (width={width}, height={height})"
+        )
+    return width, height

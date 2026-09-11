@@ -27,6 +27,7 @@ from dataclasses import dataclass
 import json
 import platform as sys_platform
 import shutil
+import subprocess
 from typing import Any
 
 from rich.console import Console
@@ -191,6 +192,66 @@ def _showcase_row() -> ExtraRow:
         status_markup="[bold yellow]○ Not Compiled[/bold yellow]",
         summary="Not Compiled",
         detail="Run ./start.sh or artemis ui to auto-compile.",
+    )
+
+
+def _helper_row(results: list[ProbeResult]) -> ExtraRow | None:
+    """State of the Artemis accessibility helper on the one ready, idle device.
+
+    Tasks install the helper themselves when they take a device; this row lets a
+    person pre-install it so the first task does not pay the install delay, and
+    tells them the helper is a thing they can remove.
+    """
+    from artemis.clients.screen_client_factory import resolve_backend
+    from artemis.runtime.helper_manager import helper_manager
+
+    if resolve_backend().value == "uiautomator":
+        return None
+    adb = next((r for r in results if r.id == "android_adb"), None)
+    devices = (adb.metadata.get("devices") if adb else None) or []
+    ready = [str(d.get("serial")) for d in devices if d.get("state") == "device"]
+    if len(ready) != 1:
+        return None
+    serial = ready[0]
+    try:
+        status = helper_manager.status(serial)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return ExtraRow(
+            key="accessibility_helper",
+            title="Artemis Accessibility Helper",
+            status="missing",
+            status_markup="[dim]⚪ Unknown[/dim]",
+            summary="Could not read",
+            detail=f"{serial}: {exc}",
+        )
+    healthy = status["installed"] and status["enabled"] and not status["outdated"]
+    if healthy and status["reachable"]:
+        version = status.get("installed_version")
+        note = " (newer than the bundled build)" if status.get("newer_than_bundled") else ""
+        return ExtraRow(
+            key="accessibility_helper",
+            title="Artemis Accessibility Helper",
+            status="pass",
+            status_markup="[bold green]✔ Ready[/bold green]",
+            summary=f"v{version} on {serial}{note}",
+            detail=f"Remove any time with: artemis helper uninstall --serial {serial}",
+        )
+    if not status["installed"]:
+        summary, why = "Not installed", "the first task on this device will install it (about 3 s)"
+    elif status["outdated"]:
+        summary = f"Outdated (v{status['installed_version']} < v{status['bundled_version']})"
+        why = "the next task will upgrade it"
+    elif not status["enabled"]:
+        summary, why = "Service disabled", "the next task will try to enable it"
+    else:
+        summary, why = "Not answering", "unlock the phone or reinstall with --force"
+    return ExtraRow(
+        key="accessibility_helper",
+        title="Artemis Accessibility Helper",
+        status="missing",
+        status_markup="[bold yellow]○ Pending[/bold yellow]",
+        summary=summary,
+        detail=f"{why}; pre-install now: artemis helper install --serial {serial}",
     )
 
 
@@ -373,6 +434,9 @@ def doctor_command(
     """Run diagnostics to inspect system dependencies, device connectivity, and configuration."""
     results, fixes = asyncio.run(_diagnose(fix))
     extras = [_npm_row(), _showcase_row()]
+    helper_row = _helper_row(results)
+    if helper_row is not None:
+        extras.append(helper_row)
     verdict = base_verdict(results)
 
     if json_output:

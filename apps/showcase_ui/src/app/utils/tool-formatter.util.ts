@@ -279,6 +279,7 @@ export function shouldShowTool(tool: any, _stepData?: any): boolean {
   if (!tool || !tool.name) return false;
   if (tool.type === 'llm_call') return false;
   if (tool.type === 'agent') return false;
+  if (tool.type === 'log') return false; // system notes render as quiet rows, not tool cards
   if (isInternalPlumbingTool(tool)) return false;
 
   return true;

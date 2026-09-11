@@ -61,6 +61,10 @@ interface StartupWorkStage {
   started: string;
   completed: string;
   completedMessage: string;
+  /** Sub-steps that replace the live message while the stage is still running. */
+  liveDetailStages?: string[];
+  /** A later event whose message is a better completion line than the stage's own. */
+  completedDetailStage?: string;
 }
 
 const STARTUP_WORK_STAGES: StartupWorkStage[] = [
@@ -72,7 +76,12 @@ const STARTUP_WORK_STAGES: StartupWorkStage[] = [
   {
     started: 'uiautomator',
     completed: 'uiautomator_ready',
-    completedMessage: 'UI Automator is ready'
+    completedMessage: 'UI hierarchy service is ready',
+    // First task on a device installs / upgrades the accessibility helper
+    // (a few seconds): say so instead of a generic "connecting".
+    liveDetailStages: ['helper_install', 'helper_upgrade'],
+    // "UI hierarchy source: Artemis accessibility helper v1.1.3" (or UIAutomator2).
+    completedDetailStage: 'hierarchy_backend'
   },
   {
     started: 'environment',
@@ -119,10 +128,21 @@ export function buildStartupWorkItems(
     const endTimestamp = completed?.timestamp
       || (isActive ? nowSeconds : events[events.length - 1]?.timestamp || startTimestamp);
 
+    const liveDetail = (stage.liveDetailStages || [])
+      .map((detailStage) => byStage.get(detailStage))
+      .filter((event): event is StartupProgressEvent => Boolean(event))
+      .filter((event) => event.timestamp >= startTimestamp)
+      .sort((a, b) => b.timestamp - a.timestamp)[0];
+    const completedDetail = stage.completedDetailStage
+      ? byStage.get(stage.completedDetailStage)
+      : undefined;
+    const message = completed
+      ? (completedDetail?.message || explicitlyCompleted?.message || stage.completedMessage)
+      : (liveDetail?.message || started!.message);
+
     return [{
       ...(explicitlyCompleted || started!),
-      message: explicitlyCompleted?.message
-        || (completed ? stage.completedMessage : started!.message),
+      message,
       isActive,
       elapsed: formatStartupElapsed(endTimestamp - startTimestamp)
     }];
@@ -198,6 +218,7 @@ import { drawActionCoordinatesOnOverlay } from '../../utils/image-overlay.util';
 
 import {
   consolidateLogsToBlocks,
+  isBackendSwitchNote,
   groupBlocksToPhases,
   extractBlockTokens,
   formatTokenCount,
@@ -1795,6 +1816,7 @@ export class AgentStreamComponent implements AfterViewInit {
       || this.isDisplayableLLMFailure(t)
       || this.isLLMRetry(t)
       || this.isReportStatusAction(t)
+      || this.isBackendSwitchNote(t)
     );
     const hasAndroidActions = Boolean(block.data?.action_taken) && (this.isAndroidAction(block.data.action_taken) || this.isReportStatusAction(block.data.action_taken));
     return hasNative || hasRaw || hasReset || hasVisibleTools || hasAndroidActions;
@@ -1824,6 +1846,15 @@ export class AgentStreamComponent implements AfterViewInit {
     return tool?.type === 'llm_call'
       && tool?.status === 'failed'
       && (tool?.name === 'llm_pause' || tool?.payload?.pause === true);
+  }
+
+  /** Mid-run change of the UI-hierarchy source (helper <-> UIAutomator2). */
+  public isBackendSwitchNote(tool: any): boolean {
+    return isBackendSwitchNote(tool);
+  }
+
+  public getBackendSwitchMessage(tool: any): string {
+    return String(tool?.payload?.message || 'UI hierarchy source changed');
   }
 
   public resumePausedTask(event: Event): void {

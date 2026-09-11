@@ -33,7 +33,7 @@ def parse_ui_hierarchy(xml_string: str) -> list[dict[str, Any]]:
         for node in root.iter():
             attribs = node.attrib
             bounds_str = attribs.get("bounds", "")
-            match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds_str)
+            match = re.match(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", bounds_str)
             if not match:
                 continue
 

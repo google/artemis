@@ -113,6 +113,12 @@ class Settings(BaseSettings):
     ADB_HOST: str | None = Field(default=DEFAULT_ADB_HOST)
     ADB_PORT: int | None = Field(default=DEFAULT_ADB_PORT)
     ADB_DEVICE_SERIAL: str | None = None
+    # UI hierarchy backend: "auto" = Accessibility Helper with UIAutomator2
+    # fallback, "helper" = helper only, "uiautomator" = UIAutomator2 only.
+    ARTEMIS_HIERARCHY_BACKEND: str = Field(default="auto")
+    # Whether a task may install / upgrade the Accessibility Helper APK on a device
+    # it holds. False = only attach to a helper installed by `artemis helper install`.
+    ARTEMIS_HELPER_AUTO_INSTALL: bool = Field(default=True)
 
     # Execution Defaults
     PROJECT_NAME: str | None = None

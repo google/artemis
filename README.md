@@ -251,6 +251,26 @@ if __name__ == "__main__":
 * **Developer CLI (`uv run artemis run`)**: Direct terminal execution for automated test cases, exploratory stability inspection, or AndroidWorld benchmarks with high-fidelity structured terminal output;
 * **Python SDK**: Integrates as a standard Python library into existing automated testing frameworks (e.g., pytest) or CI/CD pipelines with strongly typed Pydantic structured outputs and assertion support.
 
+<a id="on-device-helper"></a>
+## What ARTEMIS Installs on Your Phone
+
+The first task on a device installs the **Artemis Accessibility Helper**, a small
+accessibility service that reads the screen layout without taking the
+UiAutomation connection. Tools using UiAutomation can suppress the helper unless
+they enable `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`. You will see
+a collapsed "Artemis test helper is running" notification and a new entry under
+Settings > Accessibility; both are that helper. It listens only on the phone
+itself and sends nothing elsewhere.
+
+* Pre-install it (avoids the ~3 s delay on the first task): `uv run artemis helper install`
+* Inspect it: `uv run artemis helper status` / `uv run artemis doctor`
+* Remove it any time: `uv run artemis helper uninstall`
+* Use UIAutomator2 instead: `ARTEMIS_HIERARCHY_BACKEND=uiautomator` in `.env`
+* Prevent automatic installation: `ARTEMIS_HELPER_AUTO_INSTALL=false` in `.env`
+
+If the helper ever fails mid-task, ARTEMIS falls back to UIAutomator2 and says
+so in the task timeline, in `mobile_manage_task` status, and in the final report.
+
 <a id="benchmarks"></a>
 ## Benchmarks: AndroidWorld (SOTA 99%+)
 

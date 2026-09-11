@@ -268,6 +268,7 @@ async def smoke_test_device(
 
         {"ok": bool, "serial": str | None, "elapsed_seconds": float,
          "screenshot_bytes": int | None, "element_count": int | None,
+         "hierarchy_backend": "helper" | "uiautomator" | None,
          "error": str | None, "fix": list[str]}
     """
     started = time.monotonic()
@@ -278,6 +279,7 @@ async def smoke_test_device(
         "elapsed_seconds": 0.0,
         "screenshot_bytes": None,
         "element_count": None,
+        "hierarchy_backend": None,
         "error": None,
         "fix": [],
     }
@@ -342,6 +344,9 @@ async def smoke_test_device(
 
     result["screenshot_bytes"] = _decoded_length(getattr(device_data, "base64", None))
     result["element_count"] = _count_elements(getattr(device_data, "elements", None))
+    from artemis.clients.screen_client_factory import describe_backend
+
+    result["hierarchy_backend"] = describe_backend(getattr(controller_ctx, "ui_adb_client", None))
 
     if result["screenshot_bytes"] is None:
         return _finish("Screen capture returned no screenshot data")

@@ -398,29 +398,42 @@ def format_minimal_list_with_elements(
                     idx += 1
                     registered = True
 
-        if not registered and text.strip() and bounds:
+        # An empty input field carries no text but usually a hint ("Search settings");
+        # a rejected one carries an error ("Password too short"). Both come from the
+        # accessibility helper's dump and are exactly what the agent needs to see.
+        hint = str(node.get("hint") or "").strip()
+        error = str(node.get("error") or "").strip()
+        shown = text.strip() or hint
+        if not registered and shown and bounds:
             left, top, right, bottom = bounds
             cx, cy = get_center_coordinates(left, top, right, bottom)
-            if is_duplicate(text, cx, cy):
+            if is_duplicate(shown, cx, cy):
                 continue
 
             norm_bounds = normalize_bounds(left, top, right, bottom)
-            lines.append(f"[{idx}] Text: '{text.strip()}' | Bounds: {norm_bounds}")
+            kind = "Text" if text.strip() else "Hint"
+            line = f"[{idx}] {kind}: '{shown}' | Bounds: {norm_bounds}"
+            if error:
+                line += f" | Error: '{error}'"
+            lines.append(line)
             items_bounds.append((idx, (left, top, right, bottom)))
 
-            elements.append(
-                {
-                    "index": idx,
-                    "center": [cx, cy],
-                    "text": text.strip(),
-                    "bounds": [left, top, right, bottom],
-                    "class": node.get("class"),
-                    "resource_id": node.get("resource-id"),
-                    "is_ocr": False,
-                }
-            )
+            element = {
+                "index": idx,
+                "center": [cx, cy],
+                "text": shown,
+                "bounds": [left, top, right, bottom],
+                "class": node.get("class"),
+                "resource_id": node.get("resource-id"),
+                "is_ocr": False,
+            }
+            if not text.strip():
+                element["is_hint"] = True
+            if error:
+                element["error"] = error
+            elements.append(element)
             labels.append(str(idx))
-            added_items.append((text.strip(), cx, cy))
+            added_items.append((shown, cx, cy))
             idx += 1
 
     lines = _inject_mutual_occlusion_warnings(lines, items_bounds)

@@ -185,6 +185,27 @@ async def outputter(
         except Exception as e:
             logger.error(f"Failed to attach verdict ledger to outputter: {e}")
 
+    # Run environment facts the model must not guess: which UI-hierarchy source
+    # served the run and whether it switched mid-way (a fallback to UIAutomator2
+    # explains slower steps and possible conflicts with other automation tools).
+    from artemis.clients.screen_client_factory import hierarchy_backend_sentence
+
+    relative = ctx.data_engine.get_relative_time if ctx.data_engine else None
+    environment_line = hierarchy_backend_sentence(
+        getattr(ctx, "ui_adb_client", None), relative_time=relative
+    )
+    if environment_line:
+        human_message_content.append(
+            {
+                "type": "text",
+                "text": (
+                    "## Run Environment (facts, include verbatim under a short "
+                    "'Environment' note only if the source changed mid-run or the "
+                    "user asked about it)" + chr(10) + environment_line
+                ),
+            }
+        )
+
     if screenshot_b64:
         human_message_content.append(
             {

@@ -117,7 +117,7 @@ def _parse_hierarchy_xml_to_elements(hierarchy_xml: str) -> list[dict]:
             elif attr_name == "bounds":
                 element["bounds"] = attr_value
 
-                match = _re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", attr_value)
+                match = _re.match(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", attr_value)
                 if match:
                     x1, y1, x2, y2 = map(int, match.groups())
                     element["parsed_bounds"] = {
@@ -190,7 +190,7 @@ def _is_package_installed(device_id: str, pkg: str) -> bool:
     except subprocess.TimeoutExpired:
         logger.warning("Timeout checking installed packages")
         return False
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         logger.warning(f"Error checking installed packages: {e}")
         return False
 
@@ -400,7 +400,7 @@ class UIAutomatorClient:
                 check=True,
             )
             return Image.open(BytesIO(result.stdout))
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             logger.warning(
                 f"Failed to capture screenshot via adb: {e}, falling back to uiautomator2"
             )
@@ -446,11 +446,38 @@ class UIAutomatorClient:
             height=screenshot.height,
         )
 
-    def disconnect(self) -> None:
-        """Disconnect this client without ending the host's awake lifetime."""
+    def disconnect(self, stop_server: bool = False) -> None:
+        """Disconnect this client without ending the host's awake lifetime.
+
+        ``stop_server`` also kills uiautomator2's device server. Its UiAutomation
+        connection suppresses every accessibility service (the Artemis helper
+        included) for as long as it lives, so a caller that prefers the helper
+        must release it; the pure UIAutomator2 backend keeps it for fast reconnects.
+        """
+        device = self._device
         self._awake_strategy = None
         self._device = None
+        if stop_server and device is not None:
+            self.stop_server(device)
         logger.info("UIAutomator2 client disconnected")
+
+    def stop_server(self, device: "Device | None" = None) -> bool:
+        """Kill uiautomator2's on-device server (see :meth:`disconnect`)."""
+        device = device or self._device
+        if device is None:
+            return False
+        try:
+            device.stop_uiautomator()
+            logger.info(f"UIAutomator2 device server stopped on {self._device_id}")
+            return True
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.SubprocessError,
+            u2.exceptions.DeviceError,
+        ) as exc:
+            logger.debug(f"Stopping the UIAutomator2 server on {self._device_id} failed: {exc}")
+            return False
 
 
 def get_client(device_id: str) -> UIAutomatorClient:

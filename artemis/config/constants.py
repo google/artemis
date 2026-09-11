@@ -46,6 +46,11 @@ ENV_ARTEMIS_DEVICE_ID = "ARTEMIS_DEVICE_ID"
 ENV_ADB_HOST = "ADB_HOST"
 ENV_ADB_PORT = "ADB_PORT"
 ENV_ADB_SERVER_SOCKET = "ADB_SERVER_SOCKET"
+# UI hierarchy backend: "auto" (helper, UIAutomator2 fallback), "helper", "uiautomator"
+ENV_ARTEMIS_HIERARCHY_BACKEND = "ARTEMIS_HIERARCHY_BACKEND"
+# "true" (default) lets a task install / upgrade the Accessibility Helper APK on a
+# device it holds; "false" only attaches to a helper someone installed by hand.
+ENV_ARTEMIS_HELPER_AUTO_INSTALL = "ARTEMIS_HELPER_AUTO_INSTALL"
 
 # LLM & Vision OCR API Keys
 ENV_GOOGLE_API_KEY = "GOOGLE_API_KEY"

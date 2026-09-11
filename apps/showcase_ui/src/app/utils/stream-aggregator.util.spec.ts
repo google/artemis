@@ -1,4 +1,4 @@
-import { consolidateLogsToBlocks, getSortedStepEvents, persistedStreamToSegments } from './stream-aggregator.util';
+import { consolidateLogsToBlocks, getSortedStepEvents, isBackendSwitchNote, persistedStreamToSegments } from './stream-aggregator.util';
 
 describe('stream aggregator timeline ordering', () => {
   it('interleaves text, tools, and actions by timestamp', () => {
@@ -412,6 +412,51 @@ describe('stream aggregator step ownership', () => {
 
     expect(blocks.length).toBe(1);
     expect(blocks[0].data.generic_tools.map((t: any) => t.trace_id)).toEqual(['trace-note']);
+  });
+
+  it('keeps a mid-run hierarchy source switch in the step where it happened, as a note', () => {
+    const initial = {
+      type: 'trace_recorded',
+      timestamp: '2026-09-02T03:57:20.000Z',
+      data: {
+        trace_id: 'trace-backend-initial',
+        type: 'log',
+        name: 'hierarchy_backend',
+        payload: { backend: 'helper', previous_backend: null, message: 'UI hierarchy source: Artemis accessibility helper v1.1.3' }
+      }
+    };
+    const switched = {
+      type: 'trace_recorded',
+      timestamp: '2026-09-02T03:57:26.000Z',
+      data: {
+        trace_id: 'trace-backend-switch',
+        type: 'log',
+        name: 'hierarchy_backend',
+        timestamp: '2026-09-02T03:57:26.000Z',
+        payload: {
+          backend: 'uiautomator',
+          previous_backend: 'helper',
+          reason: 'HelperUnavailable: tunnel gone',
+          message: 'UI hierarchy source switched from Artemis accessibility helper to UIAutomator2 because HelperUnavailable: tunnel gone'
+        }
+      }
+    };
+    const ordinaryLog = {
+      type: 'trace_recorded',
+      timestamp: '2026-09-02T03:57:27.000Z',
+      data: { trace_id: 'trace-log', type: 'log', name: 'artemis.runtime', payload: { message: 'noise' } }
+    };
+
+    const blocks = consolidateLogsToBlocks([initial, plannerStream, switched, ordinaryLog]);
+
+    // The initial line belongs to the startup block; ordinary logs stay out.
+    expect(blocks.length).toBe(1);
+    expect(blocks[0].data.generic_tools.map((t: any) => t.trace_id)).toEqual(['trace-backend-switch']);
+    expect(isBackendSwitchNote(blocks[0].data.generic_tools[0])).toBeTrue();
+    expect(isBackendSwitchNote(initial.data)).toBeFalse();
+
+    const events = getSortedStepEvents(blocks[0].data);
+    expect(events.map((e) => e.type)).toEqual(['text', 'tool']);
   });
 });
 

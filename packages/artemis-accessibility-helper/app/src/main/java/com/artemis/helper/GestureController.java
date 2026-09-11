@@ -2,6 +2,9 @@ package com.artemis.helper;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.graphics.Path;
 import android.os.Build;
 import android.os.Bundle;
@@ -65,14 +68,36 @@ public final class GestureController {
     }
 
     public static boolean setText(AccessibilityService service, String text) {
+        return setText(service, text, false);
+    }
+
+    /**
+     * Sets (or, with {@code append}, extends) the text of the focused / first editable field.
+     * ACTION_SET_TEXT replaces the whole content; appending mirrors what typing through an
+     * IME does, which is the contract the host's send_text has always had.
+     */
+    public static boolean setText(AccessibilityService service, String text, boolean append) {
         AccessibilityNodeInfo inputNode = HierarchyDumper.findInputNode(service);
         if (inputNode == null) {
             Log.w(TAG, "No editable/focused input node found for setText");
             return false;
         }
         try {
+            String value = text == null ? "" : text;
+            if (append) {
+                CharSequence existing = inputNode.getText();
+                boolean showingHint = false;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    try {
+                        showingHint = inputNode.isShowingHintText();
+                    } catch (Throwable ignored) {}
+                }
+                if (existing != null && existing.length() > 0 && !showingHint) {
+                    value = existing.toString() + value;
+                }
+            }
             Bundle args = new Bundle();
-            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
             return inputNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
         } catch (Throwable t) {
             Log.w(TAG, "performAction ACTION_SET_TEXT failed", t);
@@ -170,5 +195,38 @@ public final class GestureController {
         } catch (InterruptedException e) {
             return false;
         }
+    }
+
+    /**
+     * Write text to the system clipboard. Clipboard writes are allowed from any
+     * app on every API level (only reads are restricted since Android 10), so this
+     * is the IME-free path the host uses for multiline and non-ASCII input:
+     * set the clip here, then KEYCODE_PASTE over adb.
+     */
+    public static boolean setClipboard(final AccessibilityService service, final String text) {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final AtomicBoolean ok = new AtomicBoolean(false);
+        MAIN_HANDLER.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    ClipboardManager cm = (ClipboardManager) service.getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(ClipData.newPlainText("artemis", text == null ? "" : text));
+                        ok.set(true);
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "setClipboard failed: " + t.getMessage());
+                } finally {
+                    latch.countDown();
+                }
+            }
+        });
+        try {
+            latch.await(2000, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return ok.get();
     }
 }

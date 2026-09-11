@@ -252,6 +252,22 @@ if __name__ == "__main__":
 * **开发者命令行 CLI (`uv run artemis run`)**：支持通过终端直接执行自动化测试用例、探索性稳定性巡检或 AndroidWorld 基准评测，提供高保真结构化终端输出；
 * **Python SDK**：作为标准 Python 库集成至现有自动化测试框架（如 pytest）或 CI/CD 流水线，提供基于 Pydantic 的强类型结构化结果与断言支持。
 
+<a id="on-device-helper"></a>
+## ARTEMIS 会在手机上安装什么
+
+首次在某台设备上执行任务时，ARTEMIS 会安装 **Artemis Accessibility Helper**：一个用于读取屏幕布局的小型无障碍服务，
+不占用 UiAutomation 连接。使用 UiAutomation 的工具需要启用 `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`，否则可能使该服务暂停运行。
+手机上会出现一条折叠的"Artemis test helper is running"通知，以及"设置 > 无障碍"里的一个新条目，都是它。
+它只监听手机本机回环地址，不向外发送任何数据。
+
+* 预先安装（避免首个任务多等约 3 秒）：`uv run artemis helper install`
+* 查看状态：`uv run artemis helper status` / `uv run artemis doctor`
+* 随时移除：`uv run artemis helper uninstall`
+* 改用 UIAutomator2：在 `.env` 中设置 `ARTEMIS_HIERARCHY_BACKEND=uiautomator`
+* 禁止自动安装：在 `.env` 中设置 `ARTEMIS_HELPER_AUTO_INSTALL=false`
+
+任务中途 helper 失效时，ARTEMIS 会回退到 UIAutomator2，并在任务时间线、`mobile_manage_task` 状态和最终报告里明确说明。
+
 <a id="benchmarks"></a>
 <a id="基准评测"></a>
 ## 基准评测：AndroidWorld (SOTA 99%+)

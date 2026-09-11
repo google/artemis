@@ -39,7 +39,7 @@ except Exception as exc:  # pylint: disable=broad-exception-caught
     # Best-effort compatibility shim for FastMCP/pydantic version drift.
     logger.debug("FastMCP Settings model_rebuild skipped: %s", exc, exc_info=True)
 
-from artemis.clients.ui_automator_client import UIAutomatorClient
+from artemis.clients.screen_client_factory import create_screen_client
 from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.platform import platform
@@ -146,7 +146,10 @@ def _get_controller(device_serial: str | None = None):
         device = devices[0]
     device_id = device.serial
 
-    ui_client = UIAutomatorClient(device_id=device_id)
+    # Observer path: the helper is used only when it is already installed and
+    # running; nothing is installed from here (that happens inside a task's
+    # device-lock boundary or via `artemis helper install`).
+    ui_client = create_screen_client(device_id)
     try:
         ui_data = ui_client.get_screen_data()
         width, height = ui_data.width, ui_data.height

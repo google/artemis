@@ -962,6 +962,17 @@ limitations under the License.
                               }
                               <!-- Generic Tools & LLM Calls (when item is a tool) -->
                               @if (item.type === 'tool') {
+                                <!-- UI-hierarchy source changed mid-run (helper <-> UIAutomator2). -->
+                                @if (isBackendSwitchNote(item.data)) {
+                                  <div class="llm-retry-notes">
+                                    <div class="llm-retry-note">
+                                      <span class="stream-status-dot"></span>
+                                      <div class="llm-retry-note-text">
+                                        <span class="llm-retry-status-line">{{ getBackendSwitchMessage(item.data) }}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                }
                                 <!-- Only SDK-observed Gemini retries are shown as quiet stream notes. -->
                                 @if (isLLMRetry(item.data)) {
                                   <div class="llm-retry-notes">

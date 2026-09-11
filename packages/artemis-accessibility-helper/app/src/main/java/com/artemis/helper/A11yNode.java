@@ -1,6 +1,5 @@
 package com.artemis.helper;
 
-import android.graphics.Rect;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -12,6 +11,12 @@ import java.util.List;
  * Decoupled from live Android AccessibilityNodeInfo objects to prevent
  * Binder proxy memory leaks, avoid stale node crashes, and ensure
  * instant thread-safe serialization to both XML and JSON.
+ *
+ * {@code bounds} are the node's <em>visible</em> bounds: the raw
+ * {@code getBoundsInScreen} rectangle intersected with the display, the
+ * node's window and every scrollable ancestor, exactly like UIAutomator's
+ * {@code getVisibleBoundsInScreen}. They are therefore never negative and
+ * never extend past the screen.
  */
 public final class A11yNode {
 
@@ -32,6 +37,7 @@ public final class A11yNode {
     public boolean longClickable = false;
     public boolean password = false;
     public boolean selected = false;
+    public boolean visibleToUser = true;
 
     // Window metadata for multi-window awareness
     public int windowId = -1;
@@ -94,9 +100,12 @@ public final class A11yNode {
         XmlUtils.appendBooleanAttribute(sb, "long-clickable", longClickable);
         XmlUtils.appendBooleanAttribute(sb, "password", password);
         XmlUtils.appendBooleanAttribute(sb, "selected", selected);
+        XmlUtils.appendBooleanAttribute(sb, "visible-to-user", visibleToUser);
         XmlUtils.appendAttribute(sb, "bounds", getBoundsString());
         XmlUtils.appendIntAttribute(sb, "drawing-order", drawingOrder);
-        XmlUtils.appendAttribute(sb, "hint", hint);
+        if (!hint.isEmpty()) {
+            XmlUtils.appendAttribute(sb, "hint", hint);
+        }
 
         // Window metadata (emitted on window root nodes)
         if (windowId >= 0) {
@@ -199,6 +208,7 @@ public final class A11yNode {
             obj.put("selected", selected);
             obj.put("password", password);
             obj.put("long-clickable", longClickable);
+            obj.put("visible-to-user", visibleToUser);
             obj.put("drawing-order", drawingOrder);
             if (!hint.isEmpty()) {
                 obj.put("hint", hint);

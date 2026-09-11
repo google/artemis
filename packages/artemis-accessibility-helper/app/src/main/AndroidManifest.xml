@@ -32,6 +32,18 @@
                 android:value="Artemis mobile automation test bridge" />
         </service>
 
+        <!-- Session token drop: only a sender holding WRITE_SECURE_SETTINGS (the adb
+             shell user, the system) can deliver this broadcast, so no ordinary app on
+             the device can set a token of its own and then talk to the loopback server. -->
+        <receiver
+            android:name=".TokenReceiver"
+            android:exported="true"
+            android:permission="android.permission.WRITE_SECURE_SETTINGS">
+            <intent-filter>
+                <action android:name="com.artemis.helper.SET_TOKEN" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

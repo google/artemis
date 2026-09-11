@@ -279,10 +279,21 @@ def _run(
     cleanup=0,
     validate=None,
     smoke=None,
+    helper_status=None,
+    helper_provision=None,
+    backend="auto",
     **kwargs,
 ):
     """Run the tool with every side-effecting collaborator stubbed."""
     with ExitStack() as stack:
+        fake_helper = MagicMock()
+        fake_helper.status = MagicMock(
+            side_effect=lambda serial: dict(helper_status or _helper_healthy(serial))
+        )
+        fake_helper.provision = helper_provision or MagicMock(return_value=_provision_ok())
+        stack.enter_context(patch.object(diagnose, "helper_manager", fake_helper))
+        stack.enter_context(patch.object(diagnose, "_hierarchy_backend", lambda: backend))
+        kwargs["_fake_helper"] = fake_helper
         stack.enter_context(
             patch.object(
                 diagnose.readiness_engine,
@@ -342,7 +353,35 @@ def _run(
                 smoke or AsyncMock(return_value=_smoke_ok()),
             )
         )
-        return asyncio.run(mobile_diagnose(**kwargs))
+        fake_helper = kwargs.pop("_fake_helper")
+        result = asyncio.run(mobile_diagnose(**kwargs))
+        result["_fake_helper"] = fake_helper
+        return result
+
+
+def _helper_healthy(serial: str = "pixel-1") -> dict:
+    return {
+        "package": "com.artemis.helper",
+        "installed": True,
+        "installed_version": 2,
+        "bundled_version": 2,
+        "bundled_apk_present": True,
+        "outdated": False,
+        "enabled": True,
+        "forward_port": 41234,
+        "reachable": True,
+        "reported_version": 2,
+        "transport_id": "7",
+        "session": None,
+    }
+
+
+def _provision_ok():
+    from artemis.runtime.helper_manager import ProvisionResult
+
+    return ProvisionResult(
+        ok=True, action="installed", installed_version=2, bundled_version=2, enabled=True
+    )
 
 
 def _smoke_ok(serial: str = "pixel-1") -> dict:
@@ -433,6 +472,7 @@ def test_ready_environment_reports_ready_with_slim_shape(temp_trace_env):
         "android_version": "15",
         "is_locked": False,
         "is_emulator": False,
+        "accessibility_helper": {**_helper_healthy(), "serial": "pixel-1", "backend": "auto"},
     }
     assert result["host"] == {
         "server_python": "/proj/.venv/bin/python",
@@ -946,6 +986,11 @@ def test_attempt_fix_heals_corrupted_keys_then_rechecks(temp_trace_env):
         patch.object(diagnose.DeviceExecutionLock, "get_active_owners", return_value={}),
         patch.object(diagnose.DeviceExecutionLock, "get_queued_tasks", return_value=[]),
         patch.object(IntegrationHostProbe, "probe", AsyncMock(return_value=_host())),
+        patch.object(
+            diagnose,
+            "_helper_status",
+            lambda serial: {**_helper_healthy(serial), "serial": serial, "backend": "auto"},
+        ),
     ):
         result = asyncio.run(mobile_diagnose(attempt_fix=True))
 
@@ -1139,3 +1184,104 @@ def test_logs_surface_recent_errors_and_last_failed_task(temp_trace_env, monkeyp
         "Traceback (most recent call last):",
         "RuntimeError: device offline",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Accessibility helper (UI hierarchy backend)
+# --------------------------------------------------------------------------- #
+
+
+def test_missing_helper_in_auto_mode_degrades_with_optional_step(temp_trace_env):
+    status = {
+        **_helper_healthy(),
+        "installed": False,
+        "installed_version": None,
+        "reachable": False,
+    }
+    result = _run(_healthy_probes(), helper_status=status)
+
+    assert result["verdict"] == "degraded"
+    helper = result["device"] is None or result["device"]["accessibility_helper"]
+    assert helper
+    optional = [s for s in result["next_steps"] if s.startswith("[OPTIONAL] Accessibility helper")]
+    assert len(optional) == 1 and "is not installed" in optional[0]
+    assert "  Run: uv run artemis helper install --serial pixel-1" in result["next_steps"]
+    assert any("attempt_fix=true" in s for s in result["next_steps"])
+    result["_fake_helper"].provision.assert_not_called()
+
+
+def test_missing_helper_in_helper_mode_blocks(temp_trace_env):
+    status = {**_helper_healthy(), "installed": False, "reachable": False}
+    result = _run(_healthy_probes(), helper_status=status, backend="helper")
+
+    assert result["verdict"] == "blocked"
+    assert any(s.startswith("[REQUIRED] Accessibility helper") for s in result["next_steps"])
+
+
+def test_uiautomator_backend_ignores_helper_state(temp_trace_env):
+    status = {**_helper_healthy(), "installed": False, "reachable": False}
+    result = _run(_healthy_probes(), helper_status=status, backend="uiautomator")
+
+    assert result["verdict"] == "ready"
+    assert not any("Accessibility helper" in s for s in result["next_steps"])
+
+
+def test_outdated_helper_reports_versions(temp_trace_env):
+    status = {**_helper_healthy(), "installed_version": 1, "outdated": True}
+    result = _run(_healthy_probes(), helper_status=status)
+
+    step = next(s for s in result["next_steps"] if "Accessibility helper" in s)
+    assert "device has version 1, bundled is 2" in step
+
+
+def test_attempt_fix_provisions_missing_helper_on_idle_device(temp_trace_env):
+    status = {
+        **_helper_healthy(),
+        "installed": False,
+        "installed_version": None,
+        "reachable": False,
+    }
+    result = _run(_healthy_probes(), helper_status=status, attempt_fix=True)
+
+    result["_fake_helper"].provision.assert_called_once_with("pixel-1")
+    fix = next(f for f in result["fixes_applied"] if f["fix"] == "install_accessibility_helper")
+    assert fix["success"] is True and fix["skipped"] is False
+    assert "installed" in fix["message"]
+
+
+def test_attempt_fix_skips_helper_install_while_task_holds_device(temp_trace_env):
+    status = {**_helper_healthy(), "installed": False, "reachable": False}
+    result = _run(
+        _healthy_probes(),
+        helper_status=status,
+        attempt_fix=True,
+        active_owners={"pixel-1": _owner()},
+    )
+
+    result["_fake_helper"].provision.assert_not_called()
+    fix = next(f for f in result["fixes_applied"] if f["fix"] == "install_accessibility_helper")
+    assert fix["skipped"] is True
+
+
+def test_attempt_fix_leaves_healthy_helper_alone(temp_trace_env):
+    result = _run(_healthy_probes(), attempt_fix=True)
+
+    result["_fake_helper"].provision.assert_not_called()
+    assert not any(f["fix"] == "install_accessibility_helper" for f in result["fixes_applied"])
+
+
+def test_disabled_helper_step_includes_the_manual_path(temp_trace_env):
+    from artemis.runtime.helper_manager import MANUAL_ENABLE_PATH
+
+    status = {**_helper_healthy(), "enabled": False, "reachable": False}
+    result = _run(_healthy_probes(), helper_status=status)
+    step = next(s for s in result["next_steps"] if "Accessibility helper" in s)
+    assert "service is disabled" in step
+    assert any(MANUAL_ENABLE_PATH in s for s in result["next_steps"])
+
+
+def test_newer_helper_than_bundle_is_not_a_finding(temp_trace_env):
+    status = {**_helper_healthy(), "installed_version": 9, "newer_than_bundled": True}
+    result = _run(_healthy_probes(), helper_status=status)
+    assert result["verdict"] == "ready"
+    assert not any("Accessibility helper" in s for s in result["next_steps"])

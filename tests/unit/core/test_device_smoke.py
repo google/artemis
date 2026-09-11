@@ -93,6 +93,7 @@ async def test_success_reports_bytes_elements_serial_and_elapsed(patch_controlle
         "elapsed_seconds",
         "screenshot_bytes",
         "element_count",
+        "hierarchy_backend",
         "error",
         "fix",
     }

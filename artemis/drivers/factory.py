@@ -33,7 +33,9 @@ logger = get_logger(__name__)
 
 def create_driver(ctx: "ArtemisContext") -> BaseDeviceDriver:
     """Instantiates the appropriate BaseDeviceDriver based on the runtime context."""
-    # 1. Cloud mode check
+    # 1. Cloud mode check. Cloud devices are reached through the gateway's
+    # RemoteUIAutomatorClient; ARTEMIS_HIERARCHY_BACKEND does not apply there
+    # because the Accessibility Helper needs a local adb forward.
     if os.environ.get("ARTEMIS_CLOUD_MODE") == "1":
         if ctx.adb_client is None:
             from cloud_service.virtualization import RemoteAdbClient

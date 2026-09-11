@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import inspect
 import os
 import re
 
@@ -29,7 +30,7 @@ from shutil import which
 import sys
 import threading
 from types import NoneType
-from typing import TypeVar, overload
+from typing import Any, TypeVar, overload
 import uuid
 
 from adbutils import AdbClient
@@ -41,7 +42,13 @@ from pydantic import BaseModel
 
 from artemis.agents.flash.runner import FlashRunner
 from artemis.agents.outputter.outputter import outputter
-from artemis.clients.ui_automator_client import UIAutomatorClient
+from artemis.clients.screen_client_factory import (
+    ScreenClient,
+    create_screen_client,
+    describe_backend,
+    helper_version,
+    hierarchy_backend_sentence,
+)
 from artemis.config import (
     CheckerConfig,
     OutputConfig,
@@ -60,7 +67,7 @@ from artemis.controllers.controller_factory import get_controller
 from artemis.controllers.platform_specific_commands_controller import (
     get_first_device,
 )
-from artemis.runtime import DeviceExecutionLock
+from artemis.runtime import DeviceExecutionLock, trace_store
 from artemis.runtime.cancel_requests import watch_for_cancel_request
 from artemis.data_engine.engine import DataEngine
 from artemis.data_engine.trace import DataEngineCallbackHandler
@@ -126,7 +133,7 @@ class Agent:
     _initialized: bool = False
     _device_context: DeviceContext
     _adb_client: AdbClient | None
-    _ui_adb_client: UIAutomatorClient | None
+    _ui_adb_client: ScreenClient | Any | None
 
     _current_task: asyncio.Task | None = None
     _task_lock: asyncio.Lock
@@ -237,6 +244,8 @@ class Agent:
                 platform=platform,
             )
         else:
+            # Cloud mode is pinned to UIAutomator2 through the gateway; the
+            # hierarchy backend switch only applies to locally attached devices.
             from cloud_service.virtualization import RemoteAdbClient, RemoteUIAutomatorClient
 
             self._adb_client = RemoteAdbClient()
@@ -632,13 +641,7 @@ class Agent:
                 self._prepare_output_files(task=task)
                 if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
                     if self._ui_adb_client is not None:
-                        publish_startup_progress(
-                            "uiautomator", "Connecting to UI Automator", session_id=str(sess_id)
-                        )
-                        await asyncio.to_thread(self._ui_adb_client.connect)
-                        publish_startup_progress(
-                            "uiautomator_ready", "UI Automator is ready", session_id=str(sess_id)
-                        )
+                        await self._connect_screen_client(context, str(sess_id))
                     await self._ensure_device_unlocked()
                 publish_startup_progress(
                     "environment", "Preparing the device environment", session_id=str(sess_id)
@@ -1277,6 +1280,141 @@ class Agent:
     def _get_graph_state(self, task: Task):
         return State.initial(task.request.goal)
 
+    # ------------------------------------------------------------------ #
+    # UI hierarchy backend: connect, and keep the user told which one serves
+    # ------------------------------------------------------------------ #
+
+    async def _connect_screen_client(self, context: ArtemisContext, session_id: str) -> None:
+        """Connect the screen client with visible progress for slow first-time steps."""
+        client = self._ui_adb_client
+        previous_listener = getattr(self, "_hierarchy_backend_listener", None)
+        if previous_listener is not None:
+            previous_client, listener = previous_listener
+            previous_client.remove_backend_listener(listener)
+            self._hierarchy_backend_listener = None
+        publish_startup_progress(
+            "uiautomator", "Connecting to the UI hierarchy service", session_id=session_id
+        )
+
+        def on_provision(event: str, details: dict) -> None:
+            version = details.get("version_name") or details.get("to_version")
+            if event == "installing":
+                publish_startup_progress(
+                    "helper_install",
+                    "Installing the Artemis accessibility helper on this device for the "
+                    f"first time (v{version}, about 3 seconds)",
+                    session_id=session_id,
+                    **details,
+                )
+            elif event == "upgrading":
+                publish_startup_progress(
+                    "helper_upgrade",
+                    "Upgrading the Artemis accessibility helper "
+                    f"(v{details.get('from_version')} -> v{details.get('to_version')})",
+                    session_id=session_id,
+                    **details,
+                )
+
+        # Clients without provisioning (UIAutomator2, cloud) take no callback.
+        try:
+            accepts_events = "on_event" in inspect.signature(client.connect).parameters
+        except (TypeError, ValueError):
+            accepts_events = False
+        if accepts_events:
+            await asyncio.to_thread(client.connect, on_event=on_provision)
+        else:
+            await asyncio.to_thread(client.connect)
+
+        backend = describe_backend(client) or "uiautomator"
+        publish_startup_progress(
+            "uiautomator_ready",
+            f"UI hierarchy service is ready ({backend})",
+            session_id=session_id,
+        )
+        self._announce_hierarchy_backend(context, session_id, None, backend, None)
+        add_listener = getattr(client, "add_backend_listener", None)
+        if callable(add_listener):
+
+            def listener(previous, new, reason):
+                self._announce_hierarchy_backend(context, session_id, previous, new, reason)
+
+            add_listener(listener)
+            self._hierarchy_backend_listener = (client, listener)
+
+    def _announce_hierarchy_backend(
+        self,
+        context: ArtemisContext,
+        session_id: str,
+        previous: str | None,
+        backend: str,
+        reason: str | None,
+    ) -> None:
+        """One line everywhere a person or an agent looks for it.
+
+        Startup-progress event (UI timeline), a named log trace, the session's
+        device_info, and status.json for ``mobile_manage_task``. Runs from
+        worker threads too, so every sink is best effort.
+        """
+        label = {"helper": "Artemis accessibility helper", "uiautomator": "UIAutomator2"}
+        version = helper_version(self._ui_adb_client)
+        if previous is None:
+            message = f"UI hierarchy source: {label.get(backend, backend)}"
+            if backend == "helper" and version:
+                message += f" v{version}"
+            stage = "hierarchy_backend"
+        else:
+            message = (
+                f"UI hierarchy source switched from {label.get(previous, previous)} to "
+                f"{label.get(backend, backend)}"
+            )
+            if reason:
+                message += f" because {reason}"
+            stage = "hierarchy_backend_changed"
+        logger.info(message)
+        try:
+            publish_startup_progress(
+                stage,
+                message,
+                session_id=session_id,
+                backend=backend,
+                previous_backend=previous,
+                reason=reason,
+                helper_version=version,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.debug(f"Could not publish hierarchy backend progress: {exc}")
+        engine = getattr(context, "data_engine", None)
+        if engine is not None and getattr(engine, "current_session_id", None):
+            try:
+                engine.record_trace(
+                    type="log",
+                    name="hierarchy_backend",
+                    payload={
+                        "message": message,
+                        "backend": backend,
+                        "previous_backend": previous,
+                        "reason": reason,
+                        "helper_version": version,
+                        "level": "WARNING" if previous is not None else "INFO",
+                    },
+                )
+                engine.update_session_device_info(
+                    hierarchy_backend=backend,
+                    hierarchy_backend_note=hierarchy_backend_sentence(
+                        self._ui_adb_client, relative_time=engine.get_relative_time
+                    ),
+                )
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.debug(f"Could not record hierarchy backend in the data engine: {exc}")
+        try:
+            trace_store.update_trace_fields(
+                session_id,
+                hierarchy_backend=backend,
+                hierarchy_backend_note=hierarchy_backend_sentence(self._ui_adb_client),
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.debug(f"Could not record hierarchy backend in status.json: {exc}")
+
     def _init_clients(
         self,
         device_id: str,
@@ -1286,7 +1424,7 @@ class Agent:
             host=self._config.servers.adb_host,
             port=self._config.servers.adb_port,
         )
-        self._ui_adb_client = UIAutomatorClient(device_id=device_id)
+        self._ui_adb_client = create_screen_client(device_id)
 
     async def _get_device_context(
         self,

@@ -59,7 +59,7 @@ def _parse_bounds(bounds: Any) -> dict[str, int] | None:
             return res
 
     if isinstance(bounds, str):
-        match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+        match = re.match(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", bounds)
         if match:
             x1, y1, x2, y2 = map(int, match.groups())
             return {"left": x1, "top": y1, "right": x2, "bottom": y2}
@@ -111,6 +111,11 @@ def _clip_bounds(
 
     if is_fully_clipped:
         node["is_clipped"] = True
+
+    # The cached parse is what every later consumer (and _parse_bounds itself)
+    # reads first; leaving it stale would hand out the unclipped rectangle.
+    if isinstance(node.get("parsed_bounds"), dict):
+        node["parsed_bounds"] = new_bounds.copy()
 
     # Re-serialize bounds into the node matching original format
     orig = node.get("bounds")

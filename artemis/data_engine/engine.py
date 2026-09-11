@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import sqlite3
 import threading
 import time
 from typing import Any
@@ -784,6 +785,19 @@ class DataEngine:
             )
         except Exception as e:
             logger.error(f"Failed to record video failure in DataEngine: {e}")
+
+    def update_session_device_info(self, **fields: Any) -> None:
+        """Merge ``fields`` into the running session's ``device_info`` record."""
+        if not self.storage or not self.current_session_id:
+            return
+        try:
+            session = self.storage.get_session(self.current_session_id)
+            if session is None:
+                return
+            session.device_info = {**(session.device_info or {}), **fields}
+            self.storage.update_session(session)
+        except (OSError, ValueError, sqlite3.Error) as e:
+            logger.warning(f"Failed to update session device_info in DataEngine: {e}")
 
     def update_video_path(self, local_video_path: str | Path):
         """Update the video path across tables when traces or videos are moved."""

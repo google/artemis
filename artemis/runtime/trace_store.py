@@ -343,6 +343,20 @@ def update_trace_pid(trace_id: str, pid: int) -> dict[str, Any] | None:
         return data
 
 
+def update_trace_fields(trace_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Merge ``fields`` into status.json; no-op when the trace has no status file yet."""
+    path = get_status_path(trace_id)
+    if not os.path.exists(path):
+        return None
+    with _status_lock(path):
+        data = read_status(trace_id)
+        if not data:
+            return None
+        data.update(fields)
+        write_status(trace_id, data)
+        return data
+
+
 def update_trace_device_serial(trace_id: str, device_serial: str) -> dict[str, Any] | None:
     """Updates the device_serial field of the status.json for a given trace_id."""
     path = get_status_path(trace_id)

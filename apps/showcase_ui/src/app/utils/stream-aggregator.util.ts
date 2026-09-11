@@ -247,8 +247,17 @@ function relocateCheckerTools(blocks: StepBlock[]): void {
 }
 
 /**
- * Consolidate raw SSE logs into deduplicated and ordered StepBlocks
+ * A `hierarchy_backend` log trace that records a *switch* (helper -> UIAutomator2
+ * or back). The initial "source: ..." line belongs to the startup block; only
+ * the mid-run change is worth a row in the timeline.
  */
+export function isBackendSwitchNote(tool: any): boolean {
+  return tool?.type === 'log'
+    && tool?.name === 'hierarchy_backend'
+    && Boolean(tool?.payload?.previous_backend);
+}
+
+/** Consolidate raw SSE logs into deduplicated and ordered StepBlocks. */
 export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
   if (!rawLogs || rawLogs.length === 0) return [];
 
@@ -487,7 +496,7 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
       const isTool = log.data.type === 'tool' || isAction;
       const isVisibleLLMEvent = log.data.type === 'llm_call'
         && (log.data.status === 'failed' || log.data.status === 'retrying');
-      if (!isTool && !isVisibleLLMEvent) return;
+      if (!isTool && !isVisibleLLMEvent && !isBackendSwitchNote(log.data)) return;
 
       let stepId = log.data.step_id;
       let existingIndex = -1;

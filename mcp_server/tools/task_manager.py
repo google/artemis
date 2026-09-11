@@ -334,6 +334,12 @@ def mobile_manage_task(
             "stdout_log": os.path.join(trace_dir, "stdout.log"),
             "stderr_log": os.path.join(trace_dir, "stderr.log"),
         }
+        # Which UI-hierarchy source served the run ("helper" or "uiautomator"),
+        # plus any mid-run switch; written by the agent once the device connects.
+        if status_data.get("hierarchy_backend"):
+            response["hierarchy_backend"] = status_data.get("hierarchy_backend")
+        if status_data.get("hierarchy_backend_note"):
+            response["hierarchy_backend_note"] = status_data.get("hierarchy_backend_note")
         if status_data.get("model", "").lower() != "flash":
             response["notes_dir"] = os.path.join(trace_dir, "notes")
 
