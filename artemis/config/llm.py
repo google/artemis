@@ -68,6 +68,38 @@ class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
     pass
 
 
+def _credential_hint(primary: str, *aliases: str) -> str:
+    """Build a diagnostic hint for a missing credential (never exposes key material).
+
+    Reports which dotenv file was actually loaded and, for each accepted env var,
+    whether it is unset, present-but-empty, or set — the three cases that look
+    identical when you only read `.env` by eye.
+    """
+    from artemis.config.paths import get_env_file
+    from artemis.config.settings import is_placeholder_key
+
+    def state(var: str) -> str:
+        raw = os.environ.get(var)
+        if raw is None:
+            return f"{var}=<unset>"
+        if not raw.strip() or is_placeholder_key(raw):
+            return f"{var}=<present but empty/placeholder>"
+        return f"{var}=<set>"
+
+    try:
+        env_file = str(get_env_file())
+    except Exception:  # pragma: no cover - defensive
+        env_file = "<unresolved>"
+    names = (primary, *aliases)
+    states = ", ".join(state(v) for v in names)
+    alias_note = f" (accepted aliases: {', '.join(aliases)})" if aliases else ""
+    return (
+        f"{primary}{alias_note}; dotenv loaded from {env_file}; {states}. "
+        "Set a non-empty value there and restart the MCP server / CLI process "
+        "(settings are read once at import)."
+    )
+
+
 class LLM(BaseModel):
     """Base model representing an LLM model provider and runtime parameters."""
 
@@ -85,21 +117,24 @@ class LLM(BaseModel):
         """Ensure the required API key or credentials exist in settings for this provider."""
         if self.provider == "openai":
             if not settings.OPENAI_API_KEY:
-                raise Exception(f"{name} requires OPENAI_API_KEY in .env")
+                raise Exception(f"{name} requires " + _credential_hint("OPENAI_API_KEY"))
         elif self.provider == "google":
             if not settings.GOOGLE_API_KEY:
-                raise Exception(f"{name} requires GOOGLE_API_KEY in .env")
+                raise Exception(
+                    f"{name} requires "
+                    + _credential_hint("GOOGLE_API_KEY", "GEMINI_API_KEY", "GCP_API_KEY")
+                )
         elif self.provider == "vertexai":
             validate_vertex_ai_credentials()
         elif self.provider == "anthropic":
             if not (settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")):
-                raise Exception(f"{name} requires ANTHROPIC_API_KEY in .env")
+                raise Exception(f"{name} requires " + _credential_hint("ANTHROPIC_API_KEY"))
         elif self.provider == "openrouter":
             if not settings.OPEN_ROUTER_API_KEY:
-                raise Exception(f"{name} requires OPEN_ROUTER_API_KEY in .env")
+                raise Exception(f"{name} requires " + _credential_hint("OPEN_ROUTER_API_KEY"))
         elif self.provider == "xai":
             if not settings.XAI_API_KEY:
-                raise Exception(f"{name} requires XAI_API_KEY in .env")
+                raise Exception(f"{name} requires " + _credential_hint("XAI_API_KEY"))
 
     def __str__(self) -> str:
         return f"{self.provider}/{self.model}"

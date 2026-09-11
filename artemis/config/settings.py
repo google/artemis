@@ -169,7 +169,11 @@ class Settings(BaseSettings):
             "API_KEY",
         ):
             val = getattr(self, attr, None)
-            if val and is_placeholder_key(val):
+            # NOTE: an empty value in .env (e.g. `GOOGLE_API_KEY=`) parses to
+            # SecretStr("") which is falsy, so `if val and ...` skipped it and the
+            # attribute stayed a non-None empty secret. Normalize on `is not None`
+            # so an empty/placeholder credential always becomes None.
+            if val is not None and is_placeholder_key(val):
                 setattr(self, attr, None)
 
         if not self.GOOGLE_API_KEY:
