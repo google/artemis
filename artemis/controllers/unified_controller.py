@@ -33,10 +33,14 @@ from artemis.controllers.types import (
     SwipeStartEndPercentagesRequest,
     TapOutput,
 )
+from artemis.toolchain import find_adb
 from artemis.utils.logger import get_logger
 from artemis.utils.video import (
+    ANDROID_MAX_RECORDING_DURATION_SECONDS,
     ANDROID_RECORDING_SEGMENT_SECONDS,
     DEFAULT_MAX_DURATION_SECONDS,
+    NATIVE_RECORDING_DEVICE_DIR,
+    NATIVE_RECORDING_WATCHDOG_INTERVAL_SECONDS,
     RecordingSession,
     VideoRecordingResult,
     await_scrcpy_first_frame,
@@ -46,6 +50,7 @@ from artemis.utils.video import (
     get_android_display_state,
     get_active_session,
     has_active_session,
+    is_scrcpy_installed,
     normalize_recording_to_mp4,
     remux_recording_to_mp4,
     render_timeline_clip,
@@ -94,6 +99,183 @@ class UnifiedMobileController:
             if process.returncode is None:
                 process.terminate()
                 await asyncio.wait_for(process.wait(), timeout=5.0)
+
+    async def _start_native_recording_segment(
+        self,
+        session: RecordingSession,
+        device_id: str,
+        output_dir: Path,
+    ) -> bool:
+        """Start an adb screenrecord segment as fallback when scrcpy is unavailable."""
+        segment_idx = session.android_segment_index
+        remote_path = f"{NATIVE_RECORDING_DEVICE_DIR}/rec_{segment_idx:03d}.mp4"
+
+        adb_bin = find_adb()
+        try:
+            mkdir_proc = await asyncio.create_subprocess_exec(
+                adb_bin,
+                "-s",
+                device_id,
+                "shell",
+                "mkdir",
+                "-p",
+                NATIVE_RECORDING_DEVICE_DIR,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            if hasattr(mkdir_proc, "wait"):
+                wait_val = mkdir_proc.wait()
+                if asyncio.iscoroutine(wait_val):
+                    await wait_val
+
+            command = [
+                adb_bin,
+                "-s",
+                device_id,
+                "shell",
+                "screenrecord",
+                "--time-limit",
+                str(ANDROID_MAX_RECORDING_DURATION_SECONDS),
+                remote_path,
+            ]
+            process = await self._spawn_scrcpy(command)
+
+            await asyncio.sleep(0.5)
+            if process.returncode is not None:
+                stderr = await process.stderr.read() if process.stderr else b""
+                logger.error(
+                    f"Native screenrecord failed on {device_id}: {stderr.decode(errors='replace')}"
+                )
+                return False
+
+            session.process = process
+            session.native_device_segments.append(remote_path)
+            session.android_segment_started_at = time.time()
+            local_path = output_dir / (
+                "recording.mp4" if segment_idx == 0 else f"recording_{segment_idx:03d}.mp4"
+            )
+            session.local_video_path = local_path
+            logger.info(
+                f"Native screenrecord segment {segment_idx} started on {device_id} -> {remote_path}"
+            )
+            return True
+        except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+            logger.error(f"Error starting native recording on {device_id}: {exc}")
+            return False
+
+    async def _pull_native_segment(
+        self,
+        device_id: str,
+        remote_path: str,
+        local_path: Path,
+    ) -> bool:
+        """Pull a completed native recording segment from device and remove remote file."""
+        adb_bin = find_adb()
+        try:
+            pull_proc = await asyncio.create_subprocess_exec(
+                adb_bin,
+                "-s",
+                device_id,
+                "pull",
+                remote_path,
+                str(local_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            if hasattr(pull_proc, "wait"):
+                wait_val = pull_proc.wait()
+                if asyncio.iscoroutine(wait_val):
+                    await asyncio.wait_for(wait_val, timeout=30.0)
+            if (
+                pull_proc.returncode != 0
+                or not local_path.exists()
+                or local_path.stat().st_size == 0
+            ):
+                logger.warning(f"Failed to pull native segment: {remote_path}")
+                return False
+
+            rm_proc = await asyncio.create_subprocess_exec(
+                adb_bin,
+                "-s",
+                device_id,
+                "shell",
+                "rm",
+                "-f",
+                remote_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            if hasattr(rm_proc, "wait"):
+                rm_val = rm_proc.wait()
+                if asyncio.iscoroutine(rm_val):
+                    await rm_val
+            return True
+        except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+            logger.warning(f"Error pulling native segment {remote_path}: {exc}")
+            return False
+
+    async def _native_recording_watchdog(self, device_id: str) -> None:
+        """Roll native screenrecord segments at the 180s boundary."""
+        try:
+            while True:
+                await asyncio.sleep(NATIVE_RECORDING_WATCHDOG_INTERVAL_SECONDS)
+                session = get_active_session(device_id)
+                if not session or not session.is_active or not session.process:
+                    return
+
+                if session.process.returncode is None:
+                    continue
+
+                if not session.native_device_segments:
+                    return
+
+                segment_idx = session.android_segment_index
+                remote_path = session.native_device_segments[-1]
+                if not session.local_video_path:
+                    return
+                output_dir = session.local_video_path.parent
+                local_path = output_dir / (
+                    "recording.mp4" if segment_idx == 0 else f"recording_{segment_idx:03d}.mp4"
+                )
+
+                end_time = time.time()
+                pulled = await self._pull_native_segment(device_id, remote_path, local_path)
+                if pulled:
+                    start_offset = (
+                        session.android_segment_started_at or session.start_time
+                    ) - session.start_time
+                    session.android_segment_records.append(
+                        {
+                            "path": local_path,
+                            "output_path": local_path,
+                            "start": max(0.0, start_offset),
+                            "end": max(0.0, end_time - session.start_time),
+                            "rotation": session.android_rotation,
+                            "generation": session.generation,
+                            "conversion_scheduled": True,
+                        }
+                    )
+                    session.android_video_segments.append(local_path)
+                    session.sealed_until = max(
+                        session.sealed_until,
+                        max(0.0, end_time - session.start_time),
+                    )
+
+                if not session.is_active:
+                    return
+
+                session.android_segment_index += 1
+                session.generation = session.android_segment_index
+                logger.info(
+                    f"Rolling native recording segment after time limit (next index: {session.android_segment_index})"
+                )
+                if not await self._start_native_recording_segment(session, device_id, output_dir):
+                    logger.error("Failed to start next native recording segment")
+                    return
+        except asyncio.CancelledError:
+            return
+        except (OSError, subprocess.SubprocessError, TimeoutError, RuntimeError) as e:
+            logger.error(f"Error in native recording watchdog for {device_id}: {e}")
 
     async def tap_at(
         self,
@@ -653,25 +835,64 @@ class UnifiedMobileController:
             if display_state:
                 session.capture_width, session.capture_height = display_state[1:]
 
-            # Start scrcpy in background
+            # Try starting scrcpy in background, falling back to native screenrecord
+            process: asyncio.subprocess.Process | None = None
+            scrcpy_error_msg: str | None = None
+            spawned_at: float = start_time
+            first_frame_at: float = start_time
+
             cmd = build_scrcpy_record_command("scrcpy", device_id, local_video_path)
+            try:
+                process = await self._spawn_scrcpy(cmd)
+                spawned_at = time.time()
+                session.process = process
+                set_active_session(device_id, session)
+                logger.info(
+                    f"Started scrcpy recording on {device_id}, saving to {local_video_path}"
+                )
+                first_frame_at = await await_scrcpy_first_frame(process, spawned_at)
+                if process.returncode is not None:
+                    stderr = await process.stderr.read() if process.stderr else b""
+                    scrcpy_error_msg = stderr.decode(errors="replace")
+            except (FileNotFoundError, OSError) as e:
+                scrcpy_error_msg = str(e)
+                set_active_session(device_id, session)
 
-            process = await self._spawn_scrcpy(cmd)
-            spawned_at = time.time()
+            if process is None or process.returncode is not None:
+                err_msg = scrcpy_error_msg or "unknown error"
+                logger.warning(
+                    f"scrcpy unavailable on {device_id}: {err_msg}; "
+                    "attempting native screenrecord fallback"
+                )
 
-            session.process = process
-            set_active_session(device_id, session)
+                session.recording_backend = "native"
+                session.local_video_path = output_dir / "recording.mp4"
+                if await self._start_native_recording_segment(session, device_id, output_dir):
+                    session.start_time = time.time()
+                    session.android_segment_started_at = session.start_time
 
-            logger.info(f"Started scrcpy recording on {device_id}, saving to {local_video_path}")
+                    if self.ctx and self.ctx.data_engine:
+                        self.ctx.data_engine.record_video_start(
+                            video_id=video_id,
+                            device_id=device_id,
+                            local_video_path=session.local_video_path,
+                            start_time=session.start_time,
+                        )
 
-            # The file's t=0 is the first captured frame, about a second after
-            # spawn. Anchor the recording timeline there: segment offsets and
-            # analyzer clip trimming all treat session.start_time as that t=0.
-            first_frame_at = await await_scrcpy_first_frame(process, spawned_at)
-            if process.returncode is not None:
-                stderr = await process.stderr.read()
-                err_msg = stderr.decode()
-                logger.error(f"scrcpy failed to start on {device_id}: {err_msg}")
+                    session.watchdog_task = asyncio.create_task(
+                        self._native_recording_watchdog(device_id)
+                    )
+                    logger.info(f"Native screenrecord fallback active on {device_id}")
+                    return VideoRecordingResult(
+                        success=True,
+                        message=f"Recording started on {device_id} (native fallback)",
+                        video_id=session.video_id,
+                        generation=session.generation,
+                        sealed_until=session.sealed_until,
+                        source_revision=f"{session.video_id}:{session.generation}:active",
+                    )
+
+                logger.error(f"Both scrcpy and native screenrecord failed on {device_id}")
                 if self.ctx and self.ctx.data_engine:
                     self.ctx.data_engine.record_video_start(
                         video_id=video_id,
@@ -679,11 +900,13 @@ class UnifiedMobileController:
                         local_video_path=local_video_path,
                         start_time=session.start_time,
                     )
-                self._record_recording_failure(session, f"scrcpy failed to start: {err_msg}")
+                self._record_recording_failure(
+                    session, f"scrcpy failed ({err_msg}); native fallback also failed"
+                )
                 remove_active_session(device_id)
                 return VideoRecordingResult(
                     success=False,
-                    message=f"scrcpy failed to start: {err_msg}",
+                    message="Both scrcpy and native screenrecord failed to start",
                 )
 
             session.start_time = first_frame_at
@@ -769,8 +992,67 @@ class UnifiedMobileController:
             if process is not None:
                 try:
                     await self._stop_scrcpy(process)
-                except Exception as proc_e:
-                    logger.warning(f"Error terminating scrcpy process: {proc_e}")
+                except (
+                    OSError,
+                    subprocess.SubprocessError,
+                    TimeoutError,
+                    ProcessLookupError,
+                ) as proc_e:
+                    logger.warning(f"Error terminating recording process: {proc_e}")
+
+            if session.recording_backend == "native" and session.native_device_segments:
+                final_remote = session.native_device_segments[-1]
+                segment_idx = session.android_segment_index
+                if session.local_video_path:
+                    local_path = session.local_video_path.parent / (
+                        "recording.mp4" if segment_idx == 0 else f"recording_{segment_idx:03d}.mp4"
+                    )
+                    end_time = time.time()
+                    pulled = await self._pull_native_segment(device_id, final_remote, local_path)
+                    if pulled and local_path.exists() and local_path.stat().st_size > 0:
+                        if not any(
+                            Path(r.get("path", "")) == local_path
+                            for r in session.android_segment_records
+                        ):
+                            start_offset = (
+                                session.android_segment_started_at or session.start_time
+                            ) - session.start_time
+                            session.android_segment_records.append(
+                                {
+                                    "path": local_path,
+                                    "output_path": local_path,
+                                    "start": max(0.0, start_offset),
+                                    "end": max(0.0, end_time - session.start_time),
+                                    "rotation": session.android_rotation,
+                                    "generation": session.generation,
+                                    "conversion_scheduled": True,
+                                }
+                            )
+                            session.android_video_segments.append(local_path)
+                            session.sealed_until = max(
+                                session.sealed_until,
+                                max(0.0, end_time - session.start_time),
+                            )
+
+                try:
+                    adb_bin = find_adb()
+                    rm_proc = await asyncio.create_subprocess_exec(
+                        adb_bin,
+                        "-s",
+                        device_id,
+                        "shell",
+                        "rm",
+                        "-rf",
+                        NATIVE_RECORDING_DEVICE_DIR,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    if hasattr(rm_proc, "wait"):
+                        rm_val = rm_proc.wait()
+                        if asyncio.iscoroutine(rm_val):
+                            await rm_val
+                except (OSError, subprocess.SubprocessError, TimeoutError) as e:
+                    logger.debug(f"Device recording cleanup failed: {e}")
 
             output_path = session.local_video_path
             has_existing_recording = (output_path and output_path.exists()) or any(
