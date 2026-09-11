@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     ARTEMIS_MEMORY_LIMIT: str = "2g"
 
     # Cloud Orchestrator & Cuttlefish Host Settings
-    CLOUD_ORCHESTRATOR_URL: str = os.getenv("CLOUD_ORCHESTRATOR_URL", "http://cloud-orchestrator:2081")
+    CLOUD_ORCHESTRATOR_URL: str = os.getenv(
+        "CLOUD_ORCHESTRATOR_URL", "http://cloud-orchestrator:2081"
+    )
     CUTTLEFISH_HOST_GATEWAY: str = os.getenv("CUTTLEFISH_HOST_GATEWAY", "cloud-orchestrator")
     CUTTLEFISH_START_ADB_PORT: int = 6520
     CUTTLEFISH_START_WEBRTC_PORT: int = 8443

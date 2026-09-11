@@ -79,11 +79,15 @@ class AccessibilityClient:
         # 4. Verify connection
         for attempt in range(5):
             if self.ping():
-                logger.info(f"ArtemisAccessibilityHelper connected successfully on {self._device_id}")
+                logger.info(
+                    f"ArtemisAccessibilityHelper connected successfully on {self._device_id}"
+                )
                 return True
             time.sleep(0.5)
 
-        logger.warning(f"Failed to connect to ArtemisAccessibilityHelper on port {self._local_port}")
+        logger.warning(
+            f"Failed to connect to ArtemisAccessibilityHelper on port {self._local_port}"
+        )
         return False
 
     def ping(self) -> bool:
@@ -129,7 +133,11 @@ class AccessibilityClient:
             req = urllib.request.Request(f"{self._base_url}/snapshot")
             with urllib.request.urlopen(req, timeout=6.0) as resp:
                 data = json.loads(resp.read().decode())
-                if data.get("success") and data.get("has_screenshot") and data.get("screenshot_base64"):
+                if (
+                    data.get("success")
+                    and data.get("has_screenshot")
+                    and data.get("screenshot_base64")
+                ):
                     return data
         except Exception as e:
             logger.debug(f"Atomic snapshot request failed (falling back to dual path): {e}")
@@ -226,11 +234,26 @@ class AccessibilityClient:
 
     def _enable_accessibility_service(self) -> None:
         """Silently enable the accessibility service via adb settings without UI prompts."""
-        res = self._run_adb(["shell", "settings", "get", "secure", "enabled_accessibility_services"])
+        res = self._run_adb(
+            ["shell", "settings", "get", "secure", "enabled_accessibility_services"]
+        )
         current_services = res.stdout.strip()
         if SERVICE_NAME not in current_services:
-            new_services = f"{current_services}:{SERVICE_NAME}" if current_services and current_services != "null" else SERVICE_NAME
-            self._run_adb(["shell", "settings", "put", "secure", "enabled_accessibility_services", new_services])
+            new_services = (
+                f"{current_services}:{SERVICE_NAME}"
+                if current_services and current_services != "null"
+                else SERVICE_NAME
+            )
+            self._run_adb(
+                [
+                    "shell",
+                    "settings",
+                    "put",
+                    "secure",
+                    "enabled_accessibility_services",
+                    new_services,
+                ]
+            )
         self._run_adb(["shell", "settings", "put", "secure", "accessibility_enabled", "1"])
 
     def _setup_port_forward(self) -> None:

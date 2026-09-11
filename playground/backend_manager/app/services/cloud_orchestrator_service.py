@@ -47,7 +47,9 @@ class CloudOrchestratorService:
             try:
                 resp = await client.get(f"{settings.CLOUD_ORCHESTRATOR_URL}/cvds")
                 if resp.status_code != 200:
-                    logger.error(f"[Cloud Orchestrator] Failed to fetch CVD list: HTTP {resp.status_code} ({resp.text})")
+                    logger.error(
+                        f"[Cloud Orchestrator] Failed to fetch CVD list: HTTP {resp.status_code} ({resp.text})"
+                    )
                     return []
 
                 all_cvds = resp.json().get("cvds", [])
@@ -69,9 +71,13 @@ class CloudOrchestratorService:
                 logger.warning(f"[Cloud Orchestrator] Error listing CVDs from orchestrator: {e}")
                 return []
 
-    async def create_new_cuttlefish_emulator(self, instance_name: str, preset: str = "pixel_7_pro") -> dict:
+    async def create_new_cuttlefish_emulator(
+        self, instance_name: str, preset: str = "pixel_7_pro"
+    ) -> dict:
         """Trigger creation of a new CVD via Host Orchestrator and poll until ready."""
-        logger.info(f"[Cloud Orchestrator] Provisioning new Cuttlefish emulator '{instance_name}' via Host Orchestrator...")
+        logger.info(
+            f"[Cloud Orchestrator] Provisioning new Cuttlefish emulator '{instance_name}' via Host Orchestrator..."
+        )
         async with httpx.AsyncClient(timeout=10.0) as client:
             create_resp = await client.post(
                 f"{settings.CLOUD_ORCHESTRATOR_URL}/cvds",
@@ -94,19 +100,27 @@ class CloudOrchestratorService:
             )
 
             if create_resp.status_code not in (200, 201):
-                raise RuntimeError(f"Host Orchestrator rejected CVD creation (HTTP {create_resp.status_code}): {create_resp.text}")
+                raise RuntimeError(
+                    f"Host Orchestrator rejected CVD creation (HTTP {create_resp.status_code}): {create_resp.text}"
+                )
 
             op = create_resp.json()
             op_name = op.get("name")
-            logger.info(f"[Cloud Orchestrator] Creation operation started: {op_name}. Waiting for device boot...")
+            logger.info(
+                f"[Cloud Orchestrator] Creation operation started: {op_name}. Waiting for device boot..."
+            )
 
             # Poll operation until done
             for attempt in range(60):  # Poll up to 120 seconds
                 await asyncio.sleep(2.0)
                 try:
-                    op_resp = await client.get(f"{settings.CLOUD_ORCHESTRATOR_URL}/operations/{op_name}")
+                    op_resp = await client.get(
+                        f"{settings.CLOUD_ORCHESTRATOR_URL}/operations/{op_name}"
+                    )
                     if op_resp.status_code == 200 and op_resp.json().get("done", False):
-                        logger.info(f"[Cloud Orchestrator] Operation {op_name} successfully finished!")
+                        logger.info(
+                            f"[Cloud Orchestrator] Operation {op_name} successfully finished!"
+                        )
                         break
                 except Exception as e:
                     logger.debug(f"[Cloud Orchestrator] Polling operation {op_name}: {e}")
@@ -119,9 +133,13 @@ class CloudOrchestratorService:
                         logger.info(f"[Cloud Orchestrator] Newly provisioned CVD found: {cvd}")
                         return cvd
 
-            raise RuntimeError(f"CVD '{instance_name}' creation operation finished, but device was not found in running CVD list")
+            raise RuntimeError(
+                f"CVD '{instance_name}' creation operation finished, but device was not found in running CVD list"
+            )
 
-    async def create_cuttlefish_instance(self, session_id: str, preset: str = "pixel_7_pro") -> CuttlefishInstanceInfo:
+    async def create_cuttlefish_instance(
+        self, session_id: str, preset: str = "pixel_7_pro"
+    ) -> CuttlefishInstanceInfo:
         """
         Main entrypoint:
         1. Find an available running emulator not bound to any active Artemis session.
@@ -140,7 +158,9 @@ class CloudOrchestratorService:
             chosen_cvd = None
             if available:
                 chosen_cvd = available[0]
-                logger.info(f"[Cloud Orchestrator] Reusing existing free emulator '{chosen_cvd.get('name')}' for session {session_id}.")
+                logger.info(
+                    f"[Cloud Orchestrator] Reusing existing free emulator '{chosen_cvd.get('name')}' for session {session_id}."
+                )
             else:
                 # 2. If no emulator available, create one
                 instance_name = f"cvd-{session_id[:8]}"
@@ -158,7 +178,9 @@ class CloudOrchestratorService:
                     pass
 
             if not adb_port:
-                raise RuntimeError(f"Could not dynamically determine ADB port for emulator '{emulator_name}': {chosen_cvd}")
+                raise RuntimeError(
+                    f"Could not dynamically determine ADB port for emulator '{emulator_name}': {chosen_cvd}"
+                )
 
             adb_port = int(adb_port)
             logger.info(f"[Cloud Orchestrator] Dynamic ADB port for '{emulator_name}': {adb_port}")
@@ -174,7 +196,9 @@ class CloudOrchestratorService:
             self._allocated_instances[session_id] = info
             self._emulator_bindings[emulator_name] = session_id
 
-            logger.info(f"[Cloud Orchestrator] Successfully bound emulator '{emulator_name}' (port {adb_port}) to session {session_id}.")
+            logger.info(
+                f"[Cloud Orchestrator] Successfully bound emulator '{emulator_name}' (port {adb_port}) to session {session_id}."
+            )
             return info
 
     async def destroy_cuttlefish_instance(self, session_id: str) -> None:
@@ -182,11 +206,15 @@ class CloudOrchestratorService:
         async with self._lock:
             info = self._allocated_instances.pop(session_id, None)
             if not info:
-                logger.info(f"[Cloud Orchestrator] No active binding found for session {session_id}")
+                logger.info(
+                    f"[Cloud Orchestrator] No active binding found for session {session_id}"
+                )
                 return
 
             self._emulator_bindings.pop(info.instance_id, None)
-            logger.info(f"[Cloud Orchestrator] Unbound emulator '{info.instance_id}' from session {session_id}. Emulator returned to pool.")
+            logger.info(
+                f"[Cloud Orchestrator] Unbound emulator '{info.instance_id}' from session {session_id}. Emulator returned to pool."
+            )
 
 
 cloud_orchestrator_service = CloudOrchestratorService()

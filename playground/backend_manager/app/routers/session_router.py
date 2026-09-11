@@ -83,7 +83,9 @@ async def terminate_session(
     user_id: str = Depends(get_current_user),
 ):
     """Terminate the session, destroy Artemis container and Cuttlefish AVD."""
-    success = await session_manager.terminate_session(session_id, user_id=user_id, reason="User terminated")
+    success = await session_manager.terminate_session(
+        session_id, user_id=user_id, reason="User terminated"
+    )
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -76,6 +76,7 @@ async def serve_spa_root():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "app.main:app",
         host=settings.HOST,

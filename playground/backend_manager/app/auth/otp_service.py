@@ -45,7 +45,9 @@ class OTPService:
         }
 
         # Dispatch via SMS / Email provider (mocked logger in template)
-        logger.info(f"[OTP Service] Generated OTP for {ident}: [{code}] (Expires at: {expires_at.isoformat()})")
+        logger.info(
+            f"[OTP Service] Generated OTP for {ident}: [{code}] (Expires at: {expires_at.isoformat()})"
+        )
         return code
 
     def verify_otp(self, identifier: str, code: str) -> bool:

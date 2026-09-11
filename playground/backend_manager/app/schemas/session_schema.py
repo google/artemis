@@ -27,9 +27,15 @@ class SessionStatus(str, Enum):
 
 
 class CreateSessionRequest(BaseModel):
-    device_preset: str = Field(default="pixel_7_pro", description="Target Cuttlefish device configuration")
-    initial_task: str | None = Field(default=None, description="Optional initial prompt/task for Artemis")
-    ttl_minutes: int = Field(default=60, ge=5, le=480, description="Session time to live in minutes")
+    device_preset: str = Field(
+        default="pixel_7_pro", description="Target Cuttlefish device configuration"
+    )
+    initial_task: str | None = Field(
+        default=None, description="Optional initial prompt/task for Artemis"
+    )
+    ttl_minutes: int = Field(
+        default=60, ge=5, le=480, description="Session time to live in minutes"
+    )
 
 
 class SessionRecord(BaseModel):

@@ -163,16 +163,27 @@ def generate_banner(
     center_x = px + iw / 2.0
     center_y = py + ih / 2.0
     print(f"Banner successfully generated: {output_path} ({cw}x{ch})")
-    print(f"Ink dimensions: {iw}x{ih}px, Exact center: ({center_x:.1f}, {center_y:.1f}) [Canvas center: ({cw/2:.1f}, {ch/2:.1f}), Offset X: {offset_x:+d}px]")
+    print(
+        f"Ink dimensions: {iw}x{ih}px, Exact center: ({center_x:.1f}, {center_y:.1f}) [Canvas center: ({cw / 2:.1f}, {ch / 2:.1f}), Offset X: {offset_x:+d}px]"
+    )
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="ARTEMIS Official Banner Generator")
-    parser.add_argument("--offset-x", type=int, default=160, help="Horizontal pixel offset to the right from mathematical center (default: 160)")
-    parser.add_argument("--tracking", type=int, default=64, help="Character tracking spacing (default: 64)")
-    parser.add_argument("--font-size", type=int, default=98, help="Font size in pixels (default: 98)")
+    parser.add_argument(
+        "--offset-x",
+        type=int,
+        default=160,
+        help="Horizontal pixel offset to the right from mathematical center (default: 160)",
+    )
+    parser.add_argument(
+        "--tracking", type=int, default=64, help="Character tracking spacing (default: 64)"
+    )
+    parser.add_argument(
+        "--font-size", type=int, default=98, help="Font size in pixels (default: 98)"
+    )
     args = parser.parse_args()
 
     assets_dir = os.path.dirname(os.path.abspath(__file__))

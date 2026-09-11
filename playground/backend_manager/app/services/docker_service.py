@@ -23,6 +23,7 @@ logger = logging.getLogger("artemis.docker")
 try:
     import docker
     from docker.errors import DockerException, NotFound
+
     DOCKER_AVAILABLE = True
 except ImportError:
     DOCKER_AVAILABLE = False
@@ -36,10 +37,14 @@ class DockerManagerService:
         if DOCKER_AVAILABLE:
             try:
                 self._client = docker.DockerClient(base_url=settings.DOCKER_SOCKET_PATH)
-                logger.info(f"[Docker Service] Connected to Docker socket at {settings.DOCKER_SOCKET_PATH}")
+                logger.info(
+                    f"[Docker Service] Connected to Docker socket at {settings.DOCKER_SOCKET_PATH}"
+                )
                 self._ensure_network()
             except Exception as e:
-                logger.warning(f"[Docker Service] Could not connect to Docker socket: {e}. Running in simulation mode.")
+                logger.warning(
+                    f"[Docker Service] Could not connect to Docker socket: {e}. Running in simulation mode."
+                )
                 self._client = None
         else:
             logger.warning("[Docker Service] Docker SDK not available; running in simulation mode.")
@@ -66,7 +71,9 @@ class DockerManagerService:
         container_name = f"{settings.ARTEMIS_CONTAINER_PREFIX}-{session_id}"
         adb_target = f"{cuttlefish_host}:{cuttlefish_adb_port}"
 
-        logger.info(f"[Docker Service] Launching container '{container_name}' targeting ADB device '{adb_target}'...")
+        logger.info(
+            f"[Docker Service] Launching container '{container_name}' targeting ADB device '{adb_target}'..."
+        )
 
         if not self._client:
             # Simulated mode for environments without raw Docker socket access

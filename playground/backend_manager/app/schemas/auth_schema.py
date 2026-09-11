@@ -16,7 +16,9 @@ from pydantic import BaseModel, Field
 
 
 class OTPRequest(BaseModel):
-    identifier: str = Field(..., description="User phone number or email address", example="user@example.com")
+    identifier: str = Field(
+        ..., description="User phone number or email address", example="user@example.com"
+    )
 
 
 class OTPRequestResponse(BaseModel):
@@ -26,7 +28,9 @@ class OTPRequestResponse(BaseModel):
 
 
 class OTPVerify(BaseModel):
-    identifier: str = Field(..., description="User phone number or email address", example="user@example.com")
+    identifier: str = Field(
+        ..., description="User phone number or email address", example="user@example.com"
+    )
     code: str = Field(..., description="6-digit verification code", example="123456")
 
 

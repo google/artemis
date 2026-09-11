@@ -55,11 +55,21 @@ class SessionManagerService:
                 for s in active_sessions:
                     # Check if session has exceeded expiration or missed heartbeats
                     if s.expires_at < now:
-                        logger.info(f"[Session Reaper] Session {s.session_id} has expired (TTL elapsed). Tearing down...")
-                        await self.terminate_session(s.session_id, user_id=s.user_id, reason="TTL expired")
-                    elif (now - s.last_heartbeat_at).total_seconds() > settings.SESSION_HEARTBEAT_TIMEOUT_SECONDS:
-                        logger.info(f"[Session Reaper] Session {s.session_id} heartbeat timed out. Tearing down...")
-                        await self.terminate_session(s.session_id, user_id=s.user_id, reason="Heartbeat timeout")
+                        logger.info(
+                            f"[Session Reaper] Session {s.session_id} has expired (TTL elapsed). Tearing down..."
+                        )
+                        await self.terminate_session(
+                            s.session_id, user_id=s.user_id, reason="TTL expired"
+                        )
+                    elif (
+                        now - s.last_heartbeat_at
+                    ).total_seconds() > settings.SESSION_HEARTBEAT_TIMEOUT_SECONDS:
+                        logger.info(
+                            f"[Session Reaper] Session {s.session_id} heartbeat timed out. Tearing down..."
+                        )
+                        await self.terminate_session(
+                            s.session_id, user_id=s.user_id, reason="Heartbeat timeout"
+                        )
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -71,7 +81,9 @@ class SessionManagerService:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=request.ttl_minutes)
 
-        logger.info(f"[Session Manager] Starting session creation for user={user_id}, session_id={session_id}...")
+        logger.info(
+            f"[Session Manager] Starting session creation for user={user_id}, session_id={session_id}..."
+        )
 
         # Initialize record with PROVISIONING status
         record = SessionRecord(
@@ -126,7 +138,9 @@ class SessionManagerService:
         if not record:
             return None
         if record.user_id != user_id:
-            logger.warning(f"[Session Manager] Tenant mismatch: user {user_id} attempted access to session {session_id}")
+            logger.warning(
+                f"[Session Manager] Tenant mismatch: user {user_id} attempted access to session {session_id}"
+            )
             return None
         return self._build_session_response(record)
 
@@ -162,7 +176,9 @@ class SessionManagerService:
             expires_at=record.expires_at,
         )
 
-    async def terminate_session(self, session_id: str, user_id: str | None = None, reason: str = "User requested") -> bool:
+    async def terminate_session(
+        self, session_id: str, user_id: str | None = None, reason: str = "User requested"
+    ) -> bool:
         """Gracefully terminate container, emulator, and update records."""
         record = await bigquery_service.get_session(session_id)
         if not record:

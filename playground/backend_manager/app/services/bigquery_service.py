@@ -23,6 +23,7 @@ logger = logging.getLogger("artemis.bigquery")
 try:
     from google.cloud import bigquery
     from google.cloud.exceptions import NotFound
+
     BQ_AVAILABLE = True
 except ImportError:
     BQ_AVAILABLE = False
@@ -34,7 +35,9 @@ class BigQueryMappingService:
     def __init__(self):
         self._local_cache: dict[str, SessionRecord] = {}
         self._client: Optional["bigquery.Client"] = None
-        self._table_ref: str = f"{settings.GCP_PROJECT_ID}.{settings.BQ_DATASET}.{settings.BQ_TABLE}"
+        self._table_ref: str = (
+            f"{settings.GCP_PROJECT_ID}.{settings.BQ_DATASET}.{settings.BQ_TABLE}"
+        )
 
         if BQ_AVAILABLE and not settings.USE_LOCAL_FALLBACK_DB:
             try:
@@ -42,7 +45,9 @@ class BigQueryMappingService:
                 self._ensure_dataset_and_table()
                 logger.info(f"[BigQuery] Connected to BigQuery table: {self._table_ref}")
             except Exception as e:
-                logger.warning(f"[BigQuery] Failed to initialize BigQuery client: {e}. Falling back to in-memory store.")
+                logger.warning(
+                    f"[BigQuery] Failed to initialize BigQuery client: {e}. Falling back to in-memory store."
+                )
                 self._client = None
         else:
             logger.info("[BigQuery] Using in-memory fallback database for local/test execution.")
@@ -110,7 +115,9 @@ class BigQueryMappingService:
                 }
                 errors = self._client.insert_rows_json(self._table_ref, [row])
                 if errors:
-                    logger.error(f"[BigQuery] Insert errors for session {record.session_id}: {errors}")
+                    logger.error(
+                        f"[BigQuery] Insert errors for session {record.session_id}: {errors}"
+                    )
             except Exception as e:
                 logger.error(f"[BigQuery] Streaming insert failed: {e}")
 
@@ -121,18 +128,22 @@ class BigQueryMappingService:
     async def list_user_sessions(self, user_id: str) -> list[SessionRecord]:
         """List active/valid sessions belonging to a specific user."""
         return [
-            rec for rec in self._local_cache.values()
+            rec
+            for rec in self._local_cache.values()
             if rec.user_id == user_id and rec.status != SessionStatus.TERMINATED
         ]
 
     async def list_all_active_sessions(self) -> list[SessionRecord]:
         """List all non-terminated sessions for maintenance/reaping."""
         return [
-            rec for rec in self._local_cache.values()
+            rec
+            for rec in self._local_cache.values()
             if rec.status in (SessionStatus.PROVISIONING, SessionStatus.ACTIVE, SessionStatus.IDLE)
         ]
 
-    async def update_status(self, session_id: str, status: SessionStatus, error_message: str | None = None) -> None:
+    async def update_status(
+        self, session_id: str, status: SessionStatus, error_message: str | None = None
+    ) -> None:
         """Update the status of an existing session record."""
         record = self._local_cache.get(session_id)
         if record:

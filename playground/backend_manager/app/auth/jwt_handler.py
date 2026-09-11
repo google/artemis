@@ -23,7 +23,9 @@ security = HTTPBearer(auto_error=False)
 
 def create_access_token(user_id: str, extra_claims: dict | None = None) -> str:
     """Generate a signed JWT access token."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+    )
     to_encode = {
         "sub": user_id,
         "exp": expire,
@@ -48,7 +50,9 @@ def decode_access_token(token: str) -> dict:
         )
 
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials | None = Security(security)) -> str:
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Security(security),
+) -> str:
     """FastAPI dependency to extract and verify the current user_id."""
     if not credentials:
         raise HTTPException(
