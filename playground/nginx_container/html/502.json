@@ -1,0 +1,6 @@
+{
+  "status": 502,
+  "error": "bad_gateway",
+  "message": "The requested Artemis session container or Cuttlefish device is provisioning, booting, or currently unreachable. Please retry shortly.",
+  "timestamp": "auto"
+}
