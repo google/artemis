@@ -596,6 +596,9 @@ class RobustChatModelWrapper:
         )
 
     def with_structured_output(self, *args, **kwargs):
+        if self.endpoint is not None and self.endpoint.provider == ModelProvider.DEEPSEEK:
+            # ChatOpenAI defaults to json_schema, which DeepSeek does not accept.
+            kwargs.setdefault("method", "function_calling")
         if hasattr(self.base_model, "with_structured_output"):
             return RobustChatModelWrapper(
                 self.base_model.with_structured_output(*args, **kwargs),

@@ -86,6 +86,9 @@ class LLM(BaseModel):
         if self.provider == "openai":
             if not settings.OPENAI_API_KEY:
                 raise Exception(f"{name} requires OPENAI_API_KEY in .env")
+        elif self.provider == "deepseek":
+            if not settings.get_api_key("deepseek"):
+                raise ValueError(f"{name} requires DEEPSEEK_API_KEY")
         elif self.provider == "google":
             if not settings.GOOGLE_API_KEY:
                 raise Exception(f"{name} requires GOOGLE_API_KEY in .env")

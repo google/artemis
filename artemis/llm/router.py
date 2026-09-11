@@ -39,6 +39,7 @@ class ModelProvider(StrEnum):
     GEMINI = "google"
     VERTEX_AI = "vertexai"
     OPENAI = "openai"
+    DEEPSEEK = "deepseek"
     ANTHROPIC = "anthropic"
     OPENROUTER = "openrouter"
     XAI = "xai"
@@ -67,6 +68,7 @@ class ModelProvider(StrEnum):
             "vertexai": cls.VERTEX_AI,
             "vertex": cls.VERTEX_AI,
             "openai": cls.OPENAI,
+            "deepseek": cls.DEEPSEEK,
             "anthropic": cls.ANTHROPIC,
             "claude": cls.ANTHROPIC,
             "openrouter": cls.OPENROUTER,
@@ -279,6 +281,27 @@ class ModelFactory:
                 },
             }
             return ChatVertexAI(**{k: v for k, v in kwargs.items() if v is not None})
+
+        elif provider == ModelProvider.DEEPSEEK:
+            from langchain_openai import ChatOpenAI
+
+            configured_key = settings.get_api_key("deepseek")
+            api_key = endpoint.api_key or (
+                configured_key.get_secret_value() if configured_key else None
+            )
+            if not api_key:
+                raise ValueError("DeepSeek requires DEEPSEEK_API_KEY")
+            # ARTEMIS uses forced function calls for Pydantic output schemas.
+            # DeepSeek rejects those calls in its default thinking mode.
+            return ChatOpenAI(
+                model=endpoint.model_name,
+                api_key=api_key,
+                base_url=endpoint.api_base or "https://api.deepseek.com",
+                temperature=endpoint.temperature,
+                max_tokens=endpoint.max_tokens,
+                timeout=endpoint.timeout_seconds,
+                extra_body={"thinking": {"type": "disabled"}},
+            )
 
         elif provider == ModelProvider.OPENAI:
             from langchain_openai import ChatOpenAI
