@@ -31,6 +31,18 @@ from artemis.context import ArtemisContext
 from artemis.sdk.builders import Builders
 
 
+@pytest.fixture(autouse=True)
+def isolate_summarizer_model(monkeypatch):
+    """Keep real summarizer behavior without constructing a provider client."""
+    model = Mock()
+    model.ainvoke = AsyncMock(
+        side_effect=AssertionError("Configure a model response before invoking the summarizer")
+    )
+    factory = Mock(return_value=model)
+    monkeypatch.setattr("artemis.agents.flash.summarizer.get_llm", factory)
+    monkeypatch.setattr("artemis.agents.flash.summarizer.get_google_llm", factory)
+
+
 @pytest.fixture
 def mock_context():
     ctx = Mock(spec=ArtemisContext)
@@ -834,13 +846,14 @@ def test_build_focus_context_drops_blank_fields_and_caps_reasoning_tail_intact()
 
 def test_flash_config_and_builder():
     """Verify Flash profile configuration model and SDK builder fluent API."""
+    # This checks configuration values, not external provider credentials.
     cfg = Builders.AgentConfig.with_flash_config(
         max_turns=25,
         explorer_mode="flash",
         step_summarizer=True,
         step_summarizer_model="gemini-2.5-flash-lite",
         prune_history_xml=True,
-    ).build()
+    ).build(validate_profiles=False)
 
     assert cfg.flash.max_turns == 25
     assert cfg.flash.explorer_mode == "flash"

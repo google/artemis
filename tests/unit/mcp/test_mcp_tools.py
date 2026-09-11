@@ -18,6 +18,7 @@ import inspect
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 from types import SimpleNamespace
 import uuid
@@ -32,6 +33,14 @@ from mcp_server.tools import (
     mobile_run_task,
 )
 from artemis.runtime import trace_store
+
+
+@pytest.fixture(autouse=True)
+def mock_spawn_watchdog(monkeypatch):
+    """Fake runner processes must not leave live watchdogs after fixture teardown."""
+    watchdog = MagicMock()
+    monkeypatch.setattr("mcp_server.tools.task_runner._start_spawn_watchdog", watchdog)
+    return watchdog
 
 
 @pytest.fixture
@@ -88,7 +97,9 @@ def test_mobile_run_task_invalid_model():
         mobile_run_task(task_desc="test", conversation_id="conv-1", model="invalid_model")
 
 
-def test_mobile_run_task_reserves_and_passes_global_queue_ticket(temp_trace_env):
+def test_mobile_run_task_reserves_and_passes_global_queue_ticket(
+    temp_trace_env, mock_spawn_watchdog
+):
     process = MagicMock(pid=43210)
     with (
         patch(
@@ -117,11 +128,14 @@ def test_mobile_run_task_reserves_and_passes_global_queue_ticket(temp_trace_env)
     assert popen.call_args.kwargs["env"]["ARTEMIS_DEVICE_QUEUE_TICKET"] == "queue-ticket-1"
     assert popen.call_args.kwargs["env"]["ARTEMIS_TASK_INGRESS"] == "mcp"
     status = trace_store.read_status(result["trace_id"])
+    mock_spawn_watchdog.assert_called_once_with(
+        result["trace_id"], 43210, "queue-ticket-1", "conv-1"
+    )
     assert status["queue_ticket"] == "queue-ticket-1"
     assert status["device_serial"] is None
 
 
-def test_mobile_run_task_with_device_serial(temp_trace_env):
+def test_mobile_run_task_with_device_serial(temp_trace_env, mock_spawn_watchdog):
     process = MagicMock(pid=54321)
     with (
         patch(
@@ -157,6 +171,9 @@ def test_mobile_run_task_with_device_serial(temp_trace_env):
         session_id=result["trace_id"],
         ingress="mcp",
         device_id="pixel-11-pro-001",
+    )
+    mock_spawn_watchdog.assert_called_once_with(
+        result["trace_id"], 54321, "queue-ticket-dev", "conv-2"
     )
     assert result["device_serial"] == "pixel-11-pro-001"
     cmd = popen.call_args.args[0]
@@ -370,7 +387,9 @@ async def test_mobile_get_device_state_hierarchy_without_ocr():
 
 
 @pytest.mark.asyncio
-async def test_mobile_inspect_trace_invalid_action():
+async def test_mobile_inspect_trace_invalid_action(temp_trace_env):
+    # The database precondition must not depend on a previous local task run.
+    sqlite3.connect(os.path.join(temp_trace_env, "data_engine.db")).close()
     res = await mobile_inspect_trace(action="invalid_action", trace_id="trace-123")
     assert "error" in res
     assert "not supported" in res["message"]
