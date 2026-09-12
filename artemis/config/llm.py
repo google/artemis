@@ -74,6 +74,22 @@ class LLM(BaseModel):
     model_config = {"ignored_types": (CyFunctionDetector,)}
     provider: LLMProvider
     model: str
+    # Per-endpoint base URL (jsonc key: "api_base"). Closes the gap where a
+    # custom endpoint (corporate gateway, LiteLLM proxy, local server) could
+    # only be configured process-wide through the protocol-scoped environment
+    # variables (OPENAI_BASE_URL / ANTHROPIC_BASE_URL): with this field two
+    # nodes can talk to two different endpoints in the same run — e.g. the
+    # planner through a corporate gateway while a util node uses the official
+    # API. Resolution order in ModelFactory:
+    #   endpoint.api_base  >  settings/env base URL  >  provider default.
+    # The value is provider-shaped, not host-shaped: the OpenAI driver expects
+    # the /v1 prefix in the URL while the Anthropic driver appends /v1/messages
+    # itself, so the same gateway host is spelled differently per provider —
+    # which is also why api_base must never survive a provider switch (see
+    # _drop_foreign_api_base below). Credentials deliberately stay OUT of this
+    # schema: keys and Bearer tokens belong in .env (ANTHROPIC_AUTH_TOKEN,
+    # OPENAI_API_KEY, ...), keeping model configs shareable and secret-free.
+    api_base: str | None = None
     temperature: float | None = None
     thinking_budget: int | None = None
     thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
@@ -92,8 +108,22 @@ class LLM(BaseModel):
         elif self.provider == "vertexai":
             validate_vertex_ai_credentials()
         elif self.provider == "anthropic":
-            if not (settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")):
-                raise Exception(f"{name} requires ANTHROPIC_API_KEY in .env")
+            # "anthropic" selects the wire protocol, not necessarily
+            # api.anthropic.com: Bearer-only gateways authenticate with
+            # ANTHROPIC_AUTH_TOKEN and never hold a real x-api-key, so
+            # requiring ANTHROPIC_API_KEY alone would reject valid gateway
+            # setups at startup and force users to mirror the token into
+            # ANTHROPIC_API_KEY as a workaround. Either credential satisfies
+            # this check; ModelFactory decides which one is actually sent.
+            if not (
+                settings.ANTHROPIC_API_KEY
+                or settings.get_anthropic_auth_token()
+                or os.environ.get("ANTHROPIC_API_KEY")
+            ):
+                raise Exception(
+                    f"{name} requires ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN"
+                    " for Bearer-only gateways) in .env"
+                )
         elif self.provider == "openrouter":
             if not settings.OPEN_ROUTER_API_KEY:
                 raise Exception(f"{name} requires OPEN_ROUTER_API_KEY in .env")
@@ -228,6 +258,25 @@ class LLMConfig(BaseModel):
         return value
 
 
+def _drop_foreign_api_base(cfg: dict, base: dict, override: dict) -> None:
+    """Drop an inherited ``api_base`` when the merged config switched provider.
+
+    ``api_base`` is provider-shaped (see the field's comment on :class:`LLM`),
+    so a node that overrides only ``provider``/``model`` must not inherit the
+    default's endpoint URL: a Google node under an Anthropic-gateway default
+    would otherwise aim its Gemini calls at the gateway. An ``api_base``
+    written explicitly in the node override always wins; the same rule is
+    applied one level down to the merged ``fallback`` dict.
+    """
+    if cfg.get("provider") != base.get("provider") and "api_base" not in override:
+        cfg.pop("api_base", None)
+    fb, fb_base = cfg.get("fallback"), base.get("fallback")
+    fb_override = override.get("fallback") or {}
+    if isinstance(fb, dict) and isinstance(fb_base, dict):
+        if fb.get("provider") != fb_base.get("provider") and "api_base" not in fb_override:
+            fb.pop("api_base", None)
+
+
 def _expand_default_into_nodes(config_dict: dict) -> dict:
     """Expand unified config format with 'default' and 'nodes' into full LLMConfig schema."""
     if "planner" in config_dict and "utils" in config_dict:
@@ -278,6 +327,7 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
                     node_cfg[k] = {**node_cfg[k], **v}
                 else:
                     node_cfg[k] = v
+        _drop_foreign_api_base(node_cfg, default_model_cfg, nodes_override.get(node, {}))
         result[node] = node_cfg
 
     utils_dict: dict[str, Any] = {}
@@ -289,6 +339,7 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
                     util_cfg[k] = {**util_cfg[k], **v}
                 else:
                     util_cfg[k] = v
+        _drop_foreign_api_base(util_cfg, default_model_cfg, nodes_override.get(util, {}))
         utils_dict[util] = util_cfg
     result["utils"] = utils_dict
 
@@ -336,11 +387,13 @@ def deep_merge_llm_config(base: LLMConfig, overrides: dict) -> LLMConfig:
     base_dict = base.model_dump()
 
     def merge(d1: dict, d2: dict) -> None:
+        previous = dict(d1)
         for k, v in d2.items():
             if k in d1 and isinstance(d1[k], dict) and isinstance(v, dict):
                 merge(d1[k], v)
             else:
                 d1[k] = v
+        _drop_foreign_api_base(d1, previous, d2)
 
     merge(base_dict, overrides)
     return LLMConfig.model_validate(base_dict)

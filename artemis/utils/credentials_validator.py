@@ -14,6 +14,8 @@
 
 """Validation utility to verify LLM and Vision API keys against live provider endpoints."""
 
+from typing import Literal
+
 import httpx
 
 from artemis.llm.google.provider import is_google_family_provider
@@ -61,6 +63,8 @@ async def validate_api_key(
     api_key: str,
     base_url: str | None = None,
     timeout: float = 12.0,
+    *,
+    auth_mode: Literal["api_key", "bearer"] = "api_key",
 ) -> tuple[bool, str]:
     """Tests if the provided API key is valid and usable with the corresponding provider.
 
@@ -69,6 +73,7 @@ async def validate_api_key(
         api_key: Secret API key string.
         base_url: Optional custom endpoint URL.
         timeout: Request timeout in seconds.
+        auth_mode: Anthropic authentication method; ignored by other providers.
 
     Returns:
         tuple[bool, str]: (is_valid, descriptive_message)
@@ -136,13 +141,15 @@ async def validate_api_key(
                 return False, f"OpenAI API verification failed ({resp.status_code}): {err_msg}"
 
             elif clean_provider in ("anthropic", "claude"):
-                url = "https://api.anthropic.com/v1/models"
+                url = f"{(base_url or 'https://api.anthropic.com').rstrip('/')}/v1/models"
+                headers = {"anthropic-version": "2023-06-01"}
+                if auth_mode == "bearer":
+                    headers["Authorization"] = f"Bearer {clean_key}"
+                else:
+                    headers["x-api-key"] = clean_key
                 resp = await client.get(
                     url,
-                    headers={
-                        "x-api-key": clean_key,
-                        "anthropic-version": "2023-06-01",
-                    },
+                    headers=headers,
                 )
                 if resp.status_code == 200:
                     return True, "Anthropic Claude API key verified successfully."

@@ -376,15 +376,19 @@ async def _verify_credentials(cred_result: ProbeResult | None) -> list[dict[str,
         return []
     metadata = cred_result.metadata
     api_keys = metadata.get("api_keys") or {}
-    targets: list[tuple[str, str, str]] = []
+    targets: list[tuple[str, str, str, dict[str, Any]]] = []
     for entry in metadata.get("providers") or []:
         provider = str(entry.get("provider") or "").strip()
         raw_key = entry.get("raw_key") or api_keys.get(provider) or ""
         if not provider or not raw_key:
             continue
-        targets.append((provider, str(entry.get("label") or provider), str(raw_key)))
+        options: dict[str, Any] = {}
+        if provider in ("anthropic", "claude"):
+            options["base_url"] = entry.get("base_url")
+            options["auth_mode"] = entry.get("auth_mode", "api_key")
+        targets.append((provider, str(entry.get("label") or provider), str(raw_key), options))
     if api_keys.get("ocr"):
-        targets.append(("ocr", "Vision OCR", str(api_keys["ocr"])))
+        targets.append(("ocr", "Vision OCR", str(api_keys["ocr"]), {}))
     if not targets:
         return []
 
@@ -397,13 +401,15 @@ async def _verify_credentials(cred_result: ProbeResult | None) -> list[dict[str,
                 timeout=CREDENTIAL_CHECK_TIMEOUT_SECONDS,
             )
             if provider in _ENDPOINT_PROVIDERS
-            else validate_api_key(provider, key, timeout=CREDENTIAL_CHECK_TIMEOUT_SECONDS)
-            for provider, _label, key in targets
+            else validate_api_key(
+                provider, key, timeout=CREDENTIAL_CHECK_TIMEOUT_SECONDS, **options
+            )
+            for provider, _label, key, options in targets
         ),
         return_exceptions=True,
     )
     verified: list[dict[str, Any]] = []
-    for (provider, label, key), outcome in zip(targets, outcomes):
+    for (provider, label, key, _options), outcome in zip(targets, outcomes):
         if isinstance(outcome, BaseException):
             valid, message = False, f"verification raised {outcome.__class__.__name__}: {outcome}"
         else:

@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: SecretStr | None = None
     GCP_API_KEY: SecretStr | None = None
     ANTHROPIC_API_KEY: SecretStr | None = None
+    # Bearer token for Anthropic-compatible gateways (LiteLLM, corporate
+    # proxies) that reject the SDK's default `x-api-key` header.
+    ANTHROPIC_AUTH_TOKEN: SecretStr | None = None
     XAI_API_KEY: SecretStr | None = None
     OPEN_ROUTER_API_KEY: SecretStr | None = None
 
@@ -106,8 +109,15 @@ class Settings(BaseSettings):
     VISION_API_KEY: SecretStr | None = None
     API_KEY: SecretStr | None = None
 
-    # Custom Provider Endpoints
+    # Custom Provider Endpoints — protocol-scoped defaults. The vendor prefix
+    # names which DRIVER reads the value, not who owns the server (an
+    # OpenAI-compatible or Anthropic-compatible gateway such as LiteLLM may
+    # serve any vendor's models). Per-endpoint "api_base" in the LLM config
+    # overrides these. The two drivers spell the same host differently:
+    # OPENAI_BASE_URL must include the /v1 prefix, ANTHROPIC_BASE_URL must
+    # not (the anthropic SDK appends /v1/messages itself).
     OPENAI_BASE_URL: str | None = None
+    ANTHROPIC_BASE_URL: str | None = None
 
     # Android ADB Connectivity
     ADB_HOST: str | None = Field(default=DEFAULT_ADB_HOST)
@@ -162,6 +172,7 @@ class Settings(BaseSettings):
             "GEMINI_API_KEY",
             "GCP_API_KEY",
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
             "XAI_API_KEY",
             "OPEN_ROUTER_API_KEY",
             "OCR_API_KEY",
@@ -182,6 +193,13 @@ class Settings(BaseSettings):
         if not self.OCR_API_KEY and self.VISION_API_KEY:
             self.OCR_API_KEY = self.VISION_API_KEY
         return self
+
+    def get_anthropic_auth_token(self) -> SecretStr | None:
+        """Resolve the gateway token without reviving sanitized placeholders."""
+        for token in (self.ANTHROPIC_AUTH_TOKEN, os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+            if token and not is_placeholder_key(token):
+                return token if isinstance(token, SecretStr) else SecretStr(token)
+        return None
 
     def get_api_key(self, provider: str) -> SecretStr | None:
         """Get API key for a specified provider.

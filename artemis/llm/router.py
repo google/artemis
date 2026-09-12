@@ -306,21 +306,46 @@ class ModelFactory:
         elif provider == ModelProvider.ANTHROPIC:
             from langchain_anthropic import ChatAnthropic
 
-            api_key = (
-                endpoint.api_key
-                or (
-                    settings.ANTHROPIC_API_KEY.get_secret_value()
-                    if settings.ANTHROPIC_API_KEY
-                    else None
-                )
-                or os.environ.get("ANTHROPIC_API_KEY")
+            # "Anthropic" names the wire protocol, not the vendor: the target
+            # may be api.anthropic.com or any Anthropic-compatible gateway
+            # (LiteLLM, corporate proxies) serving arbitrary models — Claude
+            # or otherwise — under admin-defined, dynamic route aliases.
+            # Base URL resolution: per-endpoint api_base (LLM config) >
+            # ANTHROPIC_BASE_URL (settings/env; the SDK-standard name; do NOT
+            # include /v1 — the SDK appends /v1/messages itself, unlike the
+            # OpenAI driver whose base URL carries the /v1 prefix) > the SDK's
+            # api.anthropic.com default (base_url=None is filtered out below).
+            base_url = (
+                endpoint.api_base
+                or settings.ANTHROPIC_BASE_URL
+                or os.environ.get("ANTHROPIC_BASE_URL")
             )
+            auth_token = settings.get_anthropic_auth_token()
+            model_class = ChatAnthropic
             kwargs = {
                 "model": endpoint.model_name,
                 "temperature": endpoint.temperature,
-                "api_key": api_key,
                 "timeout": endpoint.timeout_seconds,
+                "base_url": base_url,
             }
+            if auth_token and not endpoint.api_key:
+                from artemis.llm.anthropic_gateway import BearerChatAnthropic
+
+                # Scoped API keys win over the global token; otherwise use
+                # native SDK Bearer auth, with no X-Api-Key header at all.
+                model_class = BearerChatAnthropic
+                kwargs["auth_token"] = auth_token
+                kwargs["api_key"] = ""  # Prevent LangChain's env-key lookup.
+            else:
+                kwargs["api_key"] = (
+                    endpoint.api_key
+                    or (
+                        settings.ANTHROPIC_API_KEY.get_secret_value()
+                        if settings.ANTHROPIC_API_KEY
+                        else None
+                    )
+                    or os.environ.get("ANTHROPIC_API_KEY")
+                )
             budget = endpoint.thinking_budget
             if not budget and endpoint.reasoning_effort:
                 effort_map = {"low": 2048, "medium": 8192, "high": 32768}
@@ -328,7 +353,7 @@ class ModelFactory:
             if budget:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 kwargs["temperature"] = 1.0
-            return ChatAnthropic(**{k: v for k, v in kwargs.items() if v is not None})
+            return model_class(**{k: v for k, v in kwargs.items() if v is not None})
 
         elif provider == ModelProvider.OPENROUTER:
             from langchain_openai import ChatOpenAI

@@ -54,6 +54,7 @@ class LLMCredentialsProbe(BaseProbe):
         gemini_key = settings.get_api_key("google")
         openai_key = settings.get_api_key("openai")
         claude_key = settings.get_api_key("anthropic")
+        anthropic_auth_token = settings.get_anthropic_auth_token()
         openrouter_key = settings.get_api_key("openrouter")
         xai_key = settings.get_api_key("xai")
         ocr_key = settings.get_api_key("ocr")
@@ -85,15 +86,25 @@ class LLMCredentialsProbe(BaseProbe):
                 }
             )
             api_keys_map["openai"] = o_val
-        if claude_key and not is_placeholder_key(claude_key):
-            c_val = claude_key.get_secret_value()
+        # Use the same token-over-key precedence as ModelFactory, and carry
+        # the destination/auth mode through to live credential verification.
+        anthropic_credential = anthropic_auth_token or claude_key
+        if anthropic_credential:
+            c_val = anthropic_credential.get_secret_value()
             configured_providers.append(
                 {
                     "provider": "anthropic",
-                    "label": "Claude",
+                    "label": "Anthropic-Compatible Gateway" if anthropic_auth_token else "Claude",
                     "masked": self._mask_key(c_val),
                     "raw_key": c_val,
                     "key": c_val,
+                    "base_url": (
+                        settings.ANTHROPIC_BASE_URL
+                        or os.environ.get("ANTHROPIC_BASE_URL")
+                        or os.environ.get("ANTHROPIC_API_URL")
+                        or "https://api.anthropic.com"
+                    ),
+                    "auth_mode": "bearer" if anthropic_auth_token else "api_key",
                 }
             )
             api_keys_map["anthropic"] = c_val
@@ -212,7 +223,7 @@ class LLMCredentialsProbe(BaseProbe):
             status=ProbeStatus.FAIL,
             is_blocker=self.is_blocker,
             summary="Key Missing",
-            description="No Multimodal LLM credential (e.g. GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY) found in environment or .env file.",
+            description="No Multimodal LLM credential (e.g. GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN) found in environment or .env file.",
             metadata=metadata,
             actions=[
                 ProbeAction(

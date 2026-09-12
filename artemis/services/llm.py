@@ -1067,6 +1067,10 @@ def _resolve_endpoint(
     return ModelEndpoint(
         provider=ModelProvider.from_string(provider_val),
         model_name=str(model_val),
+        # Per-node endpoint override from the LLM config (jsonc "api_base");
+        # ModelFactory prefers it over the protocol-scoped env/settings base
+        # URLs, so different nodes may target different gateways in one run.
+        api_base=_get_val(cfg, "api_base", str),
         temperature=_get_val(cfg, "temperature", (int, float)) or 0.0,
         timeout_seconds=_get_val(cfg, "timeout", (int, float)) or 60.0,
         thinking_budget=_get_val(cfg, "thinking_budget", int),
