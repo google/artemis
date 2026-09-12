@@ -658,8 +658,23 @@ class UnifiedMobileController:
 
             # Start scrcpy in background
             cmd = build_scrcpy_record_command("scrcpy", device_id, local_video_path)
+            try:
+                process = await self._spawn_scrcpy(cmd)
+            except Exception as spawn_err:
+                logger.info(
+                    f"scrcpy spawn failed on {device_id}: {spawn_err}; falling back to driver native screen recording..."
+                )
+                if hasattr(self._driver, "start_video_recording"):
+                    await self._driver.start_video_recording(output_dir)
+                    return VideoRecordingResult(
+                        success=True,
+                        message=f"Fallback native recording started on {device_id}",
+                    )
+                return VideoRecordingResult(
+                    success=False,
+                    message=f"scrcpy failed to start: {spawn_err}",
+                )
 
-            process = await self._spawn_scrcpy(cmd)
             spawned_at = time.time()
 
             session.process = process
@@ -674,7 +689,16 @@ class UnifiedMobileController:
             if process.returncode is not None:
                 stderr = await process.stderr.read()
                 err_msg = stderr.decode()
-                logger.error(f"scrcpy failed to start on {device_id}: {err_msg}")
+                logger.warning(
+                    f"scrcpy failed to start on {device_id}: {err_msg}; falling back to driver native screen recording..."
+                )
+                remove_active_session(device_id)
+                if hasattr(self._driver, "start_video_recording"):
+                    await self._driver.start_video_recording(output_dir)
+                    return VideoRecordingResult(
+                        success=True,
+                        message=f"Fallback native recording started on {device_id}",
+                    )
                 if self.ctx and self.ctx.data_engine:
                     self.ctx.data_engine.record_video_start(
                         video_id=video_id,
@@ -683,7 +707,6 @@ class UnifiedMobileController:
                         start_time=session.start_time,
                     )
                 self._record_recording_failure(session, f"scrcpy failed to start: {err_msg}")
-                remove_active_session(device_id)
                 return VideoRecordingResult(
                     success=False,
                     message=f"scrcpy failed to start: {err_msg}",
@@ -749,6 +772,14 @@ class UnifiedMobileController:
 
         session = get_active_session(device_id)
         if not session:
+            if hasattr(self._driver, "stop_video_recording"):
+                driver_p = await self._driver.stop_video_recording()
+                if driver_p:
+                    return VideoRecordingResult(
+                        success=True,
+                        video_path=Path(driver_p),
+                        message="Fallback native recording stopped",
+                    )
             return VideoRecordingResult(
                 success=False,
                 message=f"No active recording for device {device_id}",

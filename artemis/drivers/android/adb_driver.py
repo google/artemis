@@ -27,7 +27,7 @@ from artemis.clients.ui_automator_client import (
 )
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
-from artemis.toolchain import find_ffmpeg, find_scrcpy
+from artemis.toolchain import find_adb, find_ffmpeg, find_scrcpy
 from artemis.utils.video import build_scrcpy_record_command
 from artemis.utils.ui_filter import filter_ui_hierarchy
 from artemis.utils.logger import get_logger
@@ -436,12 +436,16 @@ class AndroidAdbDriver(BaseDeviceDriver):
             return f"Error: {e}"
 
     async def start_video_recording(self, output_dir: Path | None = None) -> None:
-        """Starts screen recording via scrcpy in background."""
+        """Starts screen recording via scrcpy or native adb screenrecord in background."""
         out_dir = output_dir or get_temp_dir("recordings")
         out_dir.mkdir(parents=True, exist_ok=True)
         self._recording_mkv_path = out_dir / "recording.mkv"
         self._recording_output_path = out_dir / "recording.mp4"
-        logger.info(f"Starting scrcpy video recording to {self._recording_mkv_path}...")
+        self._remote_video_path = "/sdcard/artemis_record.mp4"
+        self._scrcpy_process = None
+        self._adb_record_process = None
+
+        scrcpy_success = False
         try:
             scrcpy_bin = find_scrcpy()
             cmd = build_scrcpy_record_command(
@@ -450,14 +454,40 @@ class AndroidAdbDriver(BaseDeviceDriver):
                 self._recording_mkv_path,
                 lock_capture_orientation=False,
             )
-            self._scrcpy_process = await asyncio.create_subprocess_exec(
+            logger.info(f"Starting scrcpy video recording to {self._recording_mkv_path}...")
+            proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             await asyncio.sleep(0.5)
+            if proc.returncode is None:
+                self._scrcpy_process = proc
+                scrcpy_success = True
         except Exception as e:
             logger.warning(f"Failed to start scrcpy subprocess: {e}")
+
+        if not scrcpy_success:
+            logger.info(
+                f"scrcpy unavailable or failed to start; falling back to native adb screenrecord on {self.device_id}..."
+            )
+            try:
+                adb_bin = find_adb()
+                cmd = [
+                    adb_bin,
+                    "-s",
+                    self.device_id,
+                    "shell",
+                    f"screenrecord --time-limit 1800 {self._remote_video_path}",
+                ]
+                self._adb_record_process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.error(f"Failed to start native adb screenrecord fallback: {e}")
 
     async def stop_video_recording(self) -> str | None:
         """Stops background video capture and returns local recording file path."""
@@ -466,15 +496,66 @@ class AndroidAdbDriver(BaseDeviceDriver):
                 self._scrcpy_process.terminate()
                 await asyncio.wait_for(self._scrcpy_process.wait(), timeout=5.0)
             except (TimeoutError, ProcessLookupError, OSError) as e:
-                # Already exited, or did not stop within the timeout; a lingering
-                # scrcpy may keep the MKV file locked on Windows.
                 logger.debug(f"scrcpy process did not terminate cleanly: {e}")
             self._scrcpy_process = None
+
+        if hasattr(self, "_adb_record_process") and self._adb_record_process:
+            try:
+                adb_bin = find_adb()
+                # Stop screenrecord gracefully with SIGINT (2) so remote MP4 headers finalize
+                pkill_proc = await asyncio.create_subprocess_exec(
+                    adb_bin,
+                    "-s",
+                    self.device_id,
+                    "shell",
+                    "pkill -2 screenrecord",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await pkill_proc.wait()
+                await asyncio.sleep(1.0)
+
+                mp4 = getattr(self, "_recording_output_path", None)
+                remote_path = getattr(self, "_remote_video_path", "/sdcard/artemis_record.mp4")
+                if mp4:
+                    mp4.parent.mkdir(parents=True, exist_ok=True)
+                    pull_proc = await asyncio.create_subprocess_exec(
+                        adb_bin,
+                        "-s",
+                        self.device_id,
+                        "pull",
+                        remote_path,
+                        str(mp4),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    await pull_proc.wait()
+
+                # Clean up remote video file
+                rm_proc = await asyncio.create_subprocess_exec(
+                    adb_bin,
+                    "-s",
+                    self.device_id,
+                    "shell",
+                    f"rm -f {remote_path}",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await rm_proc.wait()
+            except Exception as e:
+                logger.warning(f"Failed to stop/pull native adb screenrecord: {e}")
+            finally:
+                if self._adb_record_process and self._adb_record_process.returncode is None:
+                    try:
+                        self._adb_record_process.terminate()
+                    except Exception:
+                        pass
+                self._adb_record_process = None
 
         mkv = getattr(self, "_recording_mkv_path", None)
         mp4 = getattr(self, "_recording_output_path", None)
 
-        if mkv and mkv.exists() and mp4:
+        if mkv and mkv.exists() and mp4 and not mp4.exists():
             try:
                 proc = await asyncio.create_subprocess_exec(
                     find_ffmpeg(),
@@ -494,7 +575,6 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     try:
                         mkv.unlink()
                     except OSError:
-                        # Best-effort cleanup of the intermediate MKV file.
                         pass
                     return str(mp4)
             except Exception as e:

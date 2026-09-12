@@ -197,11 +197,11 @@ async def tap(
 ) -> str:
     """Taps on the screen at coordinates.
 
-    'coordinates' is a list [x, y].
-    'times' is the number of consecutive clicks (default 1).
-    'delay_ms' is the delay in milliseconds between consecutive clicks (default
-    100).
-    """
+'coordinates' is a list [x, y].
+'times' is the number of consecutive clicks (default 1).
+'delay_ms' is the delay in milliseconds between consecutive clicks (default
+100).
+"""
     try:
         controller = _get_controller()
     except Exception as e:
@@ -227,9 +227,9 @@ async def long_press_on(
 ) -> str:
     """Long presses on the screen at coordinates.
 
-    'coordinates' is a list [x, y].
-    'duration' is in milliseconds (default 1000).
-    """
+'coordinates' is a list [x, y].
+'duration' is in milliseconds (default 1000).
+"""
     try:
         controller = _get_controller()
     except Exception as e:
@@ -258,12 +258,12 @@ async def swipe(
 ) -> str:
     """Swipes from start coordinates to end coordinates.
 
-    'coordinates' is a list [start_x, start_y, end_x, end_y].
-    'duration' is in milliseconds (default 400).
+'coordinates' is a list [start_x, start_y, end_x, end_y].
+'duration' is in milliseconds (default 400).
 
-    Set duration >= 1000 to drag-and-drop. Drag slightly past the target
-    position to trigger reordering.
-    """
+Set duration >= 1000 to drag-and-drop. Drag slightly past the target
+position to trigger reordering.
+"""
     try:
         controller = _get_controller()
     except Exception as e:
@@ -341,10 +341,10 @@ async def focus_and_input_text(
 ) -> str:
     """Focuses on a UI element at coordinates and inputs text.
 
-    'coordinates' is a list [x, y] to tap first to gain focus.
-    'clear_before_input' if True, clears all existing text before typing. If False, appends text at the end of existing content.
-    'text' supports multi-line content with '\\n'.
-    """
+'coordinates' is a list [x, y] to tap first to gain focus.
+'clear_before_input' if True, clears all existing text before typing. If False, appends text at the end of existing content.
+'text' supports multi-line content with '\\n'.
+"""
     try:
         controller = _get_controller()
     except Exception as e:
@@ -376,8 +376,8 @@ async def focus_and_clear_text(
 ) -> str:
     """Focuses on a UI element at coordinates and clears its text content.
 
-    'coordinates' is a list [x, y] to tap first to gain focus.
-    """
+'coordinates' is a list [x, y] to tap first to gain focus.
+"""
     try:
         controller = _get_controller()
     except Exception as e:
@@ -425,8 +425,8 @@ async def press_key(ctx: Context, keycode: str) -> str:
 async def take_screenshot(ctx: Context) -> str:
     """Takes a screenshot of the device screen.
 
-    Returns the screenshot as a base64 encoded JPEG string.
-    """
+Returns the screenshot as a base64 encoded JPEG string.
+"""
     try:
         controller = _get_controller()
     except Exception as e:

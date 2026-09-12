@@ -662,9 +662,15 @@ def is_scrcpy_installed() -> bool:
     return shutil.which("scrcpy") is not None
 
 
+def is_adb_installed() -> bool:
+    """Check if adb is available in the system PATH."""
+
+    return shutil.which("adb") is not None
+
+
 def detect_video_tools_enabled() -> bool:
-    """Check if both scrcpy and ffmpeg are available to enable automated video features."""
-    return is_ffmpeg_installed() and is_scrcpy_installed()
+    """Check if video recording tools (scrcpy or native adb) are available."""
+    return is_scrcpy_installed() or is_adb_installed()
 
 
 class FFmpegNotInstalledError(Exception):
