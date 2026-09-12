@@ -30,6 +30,13 @@ from artemis.clients import ui_automator_client
 from artemis.runtime.awake_lease import ScreenAwakeLease
 from artemis.runtime.awake_service import _run_awake_adb_command
 from artemis.utils.logger import get_logger
+from mcp_server.notifiers.agentapi import AgentApiNotifier
+from mcp_server.notifiers.desktop import (
+    DesktopNotifier,
+    escape_applescript_string,
+    escape_powershell_string,
+)
+from mcp_server.notifiers.script import ScriptNotifier
 from mcp_server.utils import device_utils, env_utils
 
 
@@ -156,7 +163,10 @@ def test_mcp_stdio_handshake_immediate_input():
 
 def test_awake_service_adb_command_isolates_stdin():
     """Verify _run_awake_adb_command always sets stdin=subprocess.DEVNULL."""
-    with patch("artemis.runtime.awake_service.subprocess.run") as mock_run:
+    with (
+        patch("artemis.runtime.adb_endpoint.toolchain.resolve", return_value="/mock/adb"),
+        patch("artemis.runtime.awake_service.subprocess.run") as mock_run,
+    ):
         mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         _run_awake_adb_command("test-dev-1", ["shell", "date"], "test command")
 
@@ -170,7 +180,10 @@ def test_awake_service_adb_command_isolates_stdin():
 def test_awake_lease_run_isolates_stdin():
     """Verify ScreenAwakeLease._run always sets stdin=subprocess.DEVNULL."""
     lease = ScreenAwakeLease("test-dev-1")
-    with patch("artemis.runtime.awake_lease.subprocess.run") as mock_run:
+    with (
+        patch("artemis.runtime.adb_endpoint.toolchain.resolve", return_value="/mock/adb"),
+        patch("artemis.runtime.awake_lease.subprocess.run") as mock_run,
+    ):
         mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         lease._run(["shell", "date"], "test lease command")
 
@@ -203,12 +216,125 @@ def test_device_utils_isolates_stdin():
 def test_ui_automator_client_isolates_stdin():
     """Verify ui_automator_client screencap commands isolate stdin."""
     client = ui_automator_client.UIAutomatorClient("dev-1")
-    with patch("artemis.clients.ui_automator_client.subprocess.run") as mock_run:
+    with (
+        patch(
+            "artemis.clients.ui_automator_client.adb_command", return_value=["adb", "-s", "dev-1"]
+        ),
+        patch("artemis.clients.ui_automator_client.subprocess.run") as mock_run,
+    ):
         mock_run.return_value = MagicMock(returncode=0, stdout=b"", stderr="")
         with patch("artemis.clients.ui_automator_client.Image.open"):
             client.get_screenshot()
         assert mock_run.called
         assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+
+
+def test_agentapi_notifier_isolates_stdin():
+    """Verify AgentApiNotifier subprocess calls always set stdin=subprocess.DEVNULL."""
+    notifier = AgentApiNotifier()
+    with (
+        patch.object(notifier, "_find_agentapi_path", return_value="/usr/local/bin/agentapi"),
+        patch.object(
+            notifier, "_get_candidate_envs", return_value=[("127.0.0.1:1234", "dummy_token")]
+        ),
+        patch.object(notifier, "_save_shared_env"),
+        patch("mcp_server.notifiers.agentapi.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
+        res = notifier.notify("test-conv-id", "Hello from Artemis", title="Test Header")
+        assert res is True
+        assert mock_run.called
+        assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+
+
+def test_desktop_notifier_isolates_stdin_linux():
+    """Verify DesktopNotifier on Linux sets stdin=subprocess.DEVNULL."""
+    notifier = DesktopNotifier()
+    with (
+        patch("mcp_server.notifiers.desktop.os.getenv", return_value="1"),
+        patch("mcp_server.notifiers.desktop.sys.platform", "linux"),
+        patch("mcp_server.notifiers.desktop.shutil.which", return_value="/usr/bin/notify-send"),
+        patch("mcp_server.notifiers.desktop.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        res = notifier.notify("cid", "Hello Linux", title="Test Linux")
+        assert res is True
+        assert mock_run.called
+        assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+
+
+def test_desktop_notifier_isolates_stdin_darwin():
+    """Verify DesktopNotifier on macOS sets stdin=subprocess.DEVNULL and invokes osascript."""
+    notifier = DesktopNotifier()
+    with (
+        patch("mcp_server.notifiers.desktop.os.getenv", return_value="1"),
+        patch("mcp_server.notifiers.desktop.sys.platform", "darwin"),
+        patch("mcp_server.notifiers.desktop.shutil.which", return_value="/usr/bin/osascript"),
+        patch("mcp_server.notifiers.desktop.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        res = notifier.notify(
+            "cid", 'Notification with "quotes" and \\backslashes\\', title="macOS Title"
+        )
+        assert res is True
+        assert mock_run.called
+        assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+        # Verify script escaping in command arguments
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "osascript"
+        assert cmd[1] == "-e"
+        assert '\\"quotes\\"' in cmd[2]
+        assert "\\\\backslashes\\\\" in cmd[2]
+
+
+def test_desktop_notifier_isolates_stdin_windows():
+    """Verify DesktopNotifier on Windows sets stdin=subprocess.DEVNULL."""
+    notifier = DesktopNotifier()
+    with (
+        patch("mcp_server.notifiers.desktop.os.getenv", return_value="1"),
+        patch("mcp_server.notifiers.desktop.sys.platform", "win32"),
+        patch("mcp_server.notifiers.desktop.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        res = notifier.notify("cid", "Hello Windows", title="Test Windows")
+        assert res is True
+        assert mock_run.called
+        assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+
+
+def test_script_notifier_isolates_stdin():
+    """Verify ScriptNotifier executes commands with stdin=subprocess.DEVNULL."""
+    notifier = ScriptNotifier()
+    with (
+        patch.object(notifier, "_get_command_template", return_value="echo {message}"),
+        patch("mcp_server.notifiers.script.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        res = notifier.notify("cid", "Hello Script")
+        assert res is True
+        assert mock_run.called
+        assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+
+
+def test_escape_applescript_string():
+    """Verify AppleScript string sanitization preserves apostrophes, escapes quotes and backslashes, and normalizes newlines."""
+    # Quotes and backslashes
+    assert escape_applescript_string('Hello "World" \\ Path') == 'Hello \\"World\\" \\\\ Path'
+    # Apostrophes should NOT be touched (valid in AppleScript double-quoted string literals)
+    assert escape_applescript_string("It's a test") == "It's a test"
+    # Newlines normalized to spaces to prevent syntax breakage
+    assert (
+        escape_applescript_string("Line 1\r\nLine 2\nLine 3\rLine 4")
+        == "Line 1 Line 2 Line 3 Line 4"
+    )
+    # Unicode preserved
+    assert escape_applescript_string("☕ Artemis 🚀") == "☕ Artemis 🚀"
+
+
+def test_escape_powershell_string():
+    """Verify PowerShell string sanitization escapes quotes and backticks, and normalizes newlines."""
+    assert escape_powershell_string('Hello "World" ` Path') == 'Hello `"World`" `` Path'
+    assert escape_powershell_string("Line 1\r\nLine 2\nLine 3") == "Line 1 Line 2 Line 3"
 
 
 def test_logger_header_does_not_pollute_stdout():
