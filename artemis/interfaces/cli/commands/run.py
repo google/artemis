@@ -26,6 +26,7 @@ from artemis.config import checker_overrides_for_level, initialize_llm_config, s
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
 from artemis.sdk.types.task import AgentProfile
+from artemis.utils.cli_helpers import display_device_status
 from artemis.utils.logger import get_logger
 from artemis.utils.video import check_ffmpeg_available
 import signal
@@ -34,23 +35,6 @@ from rich.panel import Panel
 import typer
 
 logger = get_logger(__name__)
-
-
-def _display_device_status(console: Console, adb_client: AdbClient | None = None) -> None:
-    """Checks for connected devices and displays the status."""
-    console.print("\n[bold]📱 Device Status[/bold]")
-    devices = None
-    if adb_client is not None:
-        try:
-            devices = adb_client.device_list()
-        except Exception:
-            devices = None
-    if devices:
-        console.print("✅ [bold green]Android device(s) connected:[/bold green]")
-        for device in devices:
-            console.print(f"  - {device.serial}")
-    else:
-        console.print("❌ [bold red]No Android device found.[/bold red]")
 
 
 async def execute_task(
@@ -467,7 +451,7 @@ def run_command(
         # Optional cosmetic device-status display; run continues without it.
         logger.debug(f"Could not create ADB client for device status display: {exc}")
 
-    _display_device_status(console, adb_client=adb_client)
+    display_device_status(console, adb_client=adb_client)
 
     cancelled = False
     original_sigterm = None

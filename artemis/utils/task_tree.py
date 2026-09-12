@@ -739,7 +739,7 @@ def _render_step_detailed(
     INTERNAL_SYSTEM_TOOLS = {
         "safety_net_validation",
         "safety_net_pixel_validation",
-        "entity_extractor",
+        "hopper",
     }
 
     if interleaved:

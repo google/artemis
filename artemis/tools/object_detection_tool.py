@@ -35,6 +35,7 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
+from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,6 +44,8 @@ logger = get_logger(__name__)
 # pylint: disable=too-few-public-methods
 class ObjectDetectionArgs(BaseModel):
     """Arguments schema for object detection with explicit screenshot path."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     image_path: str = Field(..., description="Absolute path to the screenshot file.")
     queries: list[str] = Field(..., description="A list of single query strings to find.")
 
@@ -50,6 +53,8 @@ class ObjectDetectionArgs(BaseModel):
 # pylint: disable=too-few-public-methods
 class OperatorObjectDetectionArgs(BaseModel):
     """Arguments schema for operator object detection using latest screenshot from state."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     queries: list[str] = Field(..., description="A list of single query strings to find.")
 
 

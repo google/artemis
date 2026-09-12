@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import AliasChoices, Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 from artemis.config.constants import (
@@ -32,7 +32,6 @@ from artemis.config.constants import (
     ENV_GEMINI_API_KEY,
     ENV_GOOGLE_API_KEY,
     ENV_OCR_API_KEY,
-    ENV_OPENROUTER_API_KEY,
     ENV_OPEN_ROUTER_API_KEY,
     ENV_OPENAI_API_KEY,
     ENV_VISION_API_KEY,
@@ -100,10 +99,6 @@ class Settings(BaseSettings):
     GCP_API_KEY: SecretStr | None = None
     ANTHROPIC_API_KEY: SecretStr | None = None
     XAI_API_KEY: SecretStr | None = None
-    OPENROUTER_API_KEY: SecretStr | None = Field(
-        default=None,
-        validation_alias=AliasChoices("OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY"),
-    )
     OPEN_ROUTER_API_KEY: SecretStr | None = None
 
     # Google Cloud Vision OCR Authentication
@@ -168,7 +163,6 @@ class Settings(BaseSettings):
             "GCP_API_KEY",
             "ANTHROPIC_API_KEY",
             "XAI_API_KEY",
-            "OPENROUTER_API_KEY",
             "OPEN_ROUTER_API_KEY",
             "OCR_API_KEY",
             "VISION_API_KEY",
@@ -177,12 +171,6 @@ class Settings(BaseSettings):
             val = getattr(self, attr, None)
             if val and is_placeholder_key(val):
                 setattr(self, attr, None)
-
-        # Synchronize OpenRouter keys
-        if not self.OPENROUTER_API_KEY and self.OPEN_ROUTER_API_KEY:
-            self.OPENROUTER_API_KEY = self.OPEN_ROUTER_API_KEY
-        elif not self.OPEN_ROUTER_API_KEY and self.OPENROUTER_API_KEY:
-            self.OPEN_ROUTER_API_KEY = self.OPENROUTER_API_KEY
 
         if not self.GOOGLE_API_KEY:
             if self.GEMINI_API_KEY:
@@ -216,8 +204,8 @@ class Settings(BaseSettings):
             key = self.OPENAI_API_KEY
         elif provider_lower in ("anthropic", "claude"):
             key = self.ANTHROPIC_API_KEY
-        elif provider_lower in ("openrouter", "open_router"):
-            key = self.OPENROUTER_API_KEY or self.OPEN_ROUTER_API_KEY
+        elif provider_lower == "openrouter":
+            key = self.OPEN_ROUTER_API_KEY
         elif provider_lower in ("xai", "grok"):
             key = self.XAI_API_KEY
 
@@ -255,11 +243,9 @@ class Settings(BaseSettings):
             self.ANTHROPIC_API_KEY = secret
             env_key_name = ENV_ANTHROPIC_API_KEY
             os.environ[ENV_ANTHROPIC_API_KEY] = key
-        elif provider_lower in ("openrouter", "open_router"):
-            self.OPENROUTER_API_KEY = secret
+        elif provider_lower == "openrouter":
             self.OPEN_ROUTER_API_KEY = secret
-            env_key_name = ENV_OPENROUTER_API_KEY
-            os.environ[ENV_OPENROUTER_API_KEY] = key
+            env_key_name = ENV_OPEN_ROUTER_API_KEY
             os.environ[ENV_OPEN_ROUTER_API_KEY] = key
         elif provider_lower == "xai":
             self.XAI_API_KEY = secret

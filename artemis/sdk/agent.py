@@ -11,9 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
-# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
 import asyncio
 import inspect
@@ -140,6 +137,7 @@ class Agent:
 
     _current_task: asyncio.Task | None = None
     _task_lock: asyncio.Lock
+    _cloud_mobile_id: str | None = None
 
     def __init__(
         self,

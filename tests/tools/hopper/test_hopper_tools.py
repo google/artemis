@@ -14,6 +14,6 @@
 
 """This file is intentionally empty.
 
-The entity_extractor agent does not expose any tools directly. It is invoked
+The hopper agent does not expose any tools directly. It is invoked
 programmatically by other tools (e.g., launch_app_tool) as an LLM utility.
 """

@@ -11,9 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
-# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
 """Utilities for handling app locking and initial app launch logic."""
 
@@ -219,7 +216,7 @@ async def _poll_for_app_ready(
     Only fails if we get a different (non-null) package or timeout.
 
     Args:
-        ctx: ArtemisContext
+        ctx: Mobile use context
         app_package: Expected package name
         max_poll_seconds: Maximum time to poll (default: 15s)
         poll_interval: Time between polls (default: 1s)
@@ -275,7 +272,7 @@ async def launch_app_with_retries(
     """Launch an app with retry logic and smart polling.
 
     Args:
-        ctx: ArtemisContext
+        ctx: Mobile use context
         app_package: Package name (Android) to launch
         max_retries: Maximum number of launch attempts (default: 3)
         max_poll_seconds: Maximum time to wait for app to load per attempt
@@ -348,7 +345,7 @@ async def _handle_initial_app_launch(
     3. Return status with success/error information
 
     Args:
-        ctx: ArtemisContext
+        ctx: Mobile use context
         locked_app_package: Package name (Android) to lock to
 
     Returns:

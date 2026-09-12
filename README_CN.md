@@ -312,14 +312,3 @@ ARTEMIS 提供两种运行模式以适应不同的自动化需求：
 ## 开源许可证
 
 本项目基于 [Apache License 2.0](LICENSE) 协议开源。
-
-## 致谢
-
-本项目包含由 [Minitap, Inc.](https://github.com/minitap-ai/mobile-use)（`mobile-use`）团队开发的部分源代码与工具组件，遵循 Apache License 2.0 开源许可。我们感谢其团队及开源社区在移动端自动化领域的贡献。
-
-同时感谢 [Finalrun](https://github.com/final-run/finalrun-agent) 在智能滑动与自适应手势机制理念上的启发。
-
-关于完整的第三方开源软件版权与归属声明，请参阅根目录的 [NOTICE](NOTICE) 文件。
-
-
-

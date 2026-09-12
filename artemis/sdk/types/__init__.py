@@ -16,6 +16,7 @@
 
 from artemis.sdk.types.agent import (
     AgentConfig,
+    ApiBaseUrl,
     DevicePlatform,
     ServerConfig,
 )
@@ -36,10 +37,10 @@ from artemis.sdk.types.task import (
     TaskRequest,
     TaskRequestCommon,
     TaskResult,
-    TaskRunStatus,
 )
 
 __all__ = [
+    "ApiBaseUrl",
     "AgentConfig",
     "DevicePlatform",
     "AgentProfile",
@@ -47,7 +48,6 @@ __all__ = [
     "TaskRequest",
     "TaskResult",
     "TaskRequestCommon",
-    "TaskRunStatus",
     "Task",
     "AgentProfileNotFoundError",
     "AgentTaskRequestError",

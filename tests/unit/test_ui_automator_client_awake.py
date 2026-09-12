@@ -11,14 +11,16 @@ from artemis.drivers.android.adb_driver import AndroidAdbDriver
     "artemis.clients.ui_automator_client.ensure_device_awake",
     return_value="host_heartbeat",
 )
+@patch("artemis.clients.ui_automator_client._ensure_maestro_not_installed")
 def test_new_ui_connection_enrolls_device_in_shared_awake_strategy(
-    mock_ensure_awake, mock_connect
+    mock_remove_maestro, mock_ensure_awake, mock_connect
 ):
     client = UIAutomatorClient("device-123")
 
     client.connect()
     client.connect()
 
+    mock_remove_maestro.assert_called_once_with("device-123")
     mock_ensure_awake.assert_called_once_with("device-123")
     mock_connect.assert_called_once_with("device-123")
 
@@ -28,8 +30,9 @@ def test_new_ui_connection_enrolls_device_in_shared_awake_strategy(
     "artemis.clients.ui_automator_client.ensure_device_awake",
     return_value="host_heartbeat",
 )
+@patch("artemis.clients.ui_automator_client._ensure_maestro_not_installed")
 def test_failed_ui_connection_does_not_stop_process_awake_service(
-    mock_ensure_awake, _mock_connect
+    _mock_remove_maestro, mock_ensure_awake, _mock_connect
 ):
     client = UIAutomatorClient("device-123")
 
@@ -45,8 +48,9 @@ def test_failed_ui_connection_does_not_stop_process_awake_service(
     "artemis.clients.ui_automator_client.ensure_device_awake",
     return_value="host_heartbeat",
 )
+@patch("artemis.clients.ui_automator_client._ensure_maestro_not_installed")
 def test_client_disconnect_does_not_send_power_cleanup_commands(
-    mock_ensure_awake, _mock_connect
+    _mock_remove_maestro, mock_ensure_awake, _mock_connect
 ):
     client = UIAutomatorClient("device-123")
     client.connect()
