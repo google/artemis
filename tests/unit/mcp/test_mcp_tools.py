@@ -370,7 +370,14 @@ async def test_mobile_get_device_state_hierarchy_without_ocr():
 
 
 @pytest.mark.asyncio
-async def test_mobile_inspect_trace_invalid_action():
+async def test_mobile_inspect_trace_invalid_action(temp_trace_env):
+    # mobile_inspect_trace returns "Database not found" before it even looks at
+    # `action` if data_engine.db doesn't exist, so this needs an isolated trace
+    # env with the db file present to actually exercise the action-validation
+    # branch this test is meant to check.
+    db_path = os.path.join(temp_trace_env, "data_engine.db")
+    open(db_path, "a").close()
+
     res = await mobile_inspect_trace(action="invalid_action", trace_id="trace-123")
     assert "error" in res
     assert "not supported" in res["message"]
