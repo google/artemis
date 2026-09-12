@@ -43,6 +43,7 @@ from artemis.clients.screen_client_factory import create_screen_client
 from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.platform import platform
+from artemis.utils.android_validation import is_valid_package_name, quote_url_for_adb
 from artemis.utils.app_launch_utils import launch_app_with_retries
 
 
@@ -299,30 +300,42 @@ async def back(ctx: Context) -> str:
 @mcp.tool()
 async def launch_app(ctx: Context, package_name: str) -> str:
     """Launches an application by its Android package name with retries and smart polling."""
+    if not is_valid_package_name(
+        package_name.strip() if isinstance(package_name, str) else package_name
+    ):
+        return f"Error: Invalid Android package name: {package_name!r}"
     try:
         controller = _get_controller()
     except Exception as e:
         return f"Error: Controller lazy initialization failed: {e}"
 
-    success, error_msg = await launch_app_with_retries(controller.ctx, package_name)
+    success, error_msg = await launch_app_with_retries(controller.ctx, package_name.strip())
     return "Success" if success else f"Failed: {error_msg}"
 
 
 @mcp.tool()
 async def stop_app(ctx: Context, package_name: str) -> str:
     """Force stops an application by its Android package name."""
+    if not is_valid_package_name(
+        package_name.strip() if isinstance(package_name, str) else package_name
+    ):
+        return f"Error: Invalid Android package name: {package_name!r}"
     try:
         controller = _get_controller()
     except Exception as e:
         return f"Error: Controller lazy initialization failed: {e}"
 
-    success = await controller.terminate_app(package_name)
+    success = await controller.terminate_app(package_name.strip())
     return "Success" if success else "Failed"
 
 
 @mcp.tool()
 async def open_link(ctx: Context, url: str) -> str:
     """Opens a URL or deep link on the device."""
+    try:
+        quote_url_for_adb(url)
+    except ValueError:
+        return f"Error: Invalid URL: {url!r}"
     try:
         controller = _get_controller()
     except Exception as e:

@@ -28,6 +28,11 @@ from artemis.clients.ui_automator_client import (
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
 from artemis.toolchain import find_ffmpeg, find_scrcpy
+from artemis.utils.android_validation import (
+    coerce_coord,
+    coerce_keycode,
+    is_valid_package_name,
+)
 from artemis.utils.video import build_scrcpy_record_command
 from artemis.utils.ui_filter import filter_ui_hierarchy
 from artemis.utils.logger import get_logger
@@ -235,6 +240,12 @@ class AndroidAdbDriver(BaseDeviceDriver):
         delay_ms: int = 100,
     ) -> bool:
         try:
+            safe_x = coerce_coord(x)
+            safe_y = coerce_coord(y)
+            if safe_x is None or safe_y is None:
+                logger.warning(f"Refusing tap with non-integer coordinates: ({x!r}, {y!r})")
+                return False
+            x, y = safe_x, safe_y
             if duration_ms >= 500:
                 cmd = f"input swipe {x} {y} {x} {y} {duration_ms}"
             else:
@@ -263,6 +274,14 @@ class AndroidAdbDriver(BaseDeviceDriver):
         duration_ms: int = 800,
     ) -> bool:
         try:
+            coords = [coerce_coord(v) for v in (start_x, start_y, end_x, end_y)]
+            if any(v is None for v in coords):
+                logger.warning(
+                    "Refusing swipe with non-integer coordinates: "
+                    f"({start_x!r}, {start_y!r}) -> ({end_x!r}, {end_y!r})"
+                )
+                return False
+            start_x, start_y, end_x, end_y = coords  # type: ignore[misc]
             cmd = f"input swipe {start_x} {start_y} {end_x} {end_y} {duration_ms}"
             logger.info(f"[ADB] {cmd}")
             await asyncio.to_thread(self.device.shell, cmd)
@@ -371,10 +390,10 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def press_key(self, key: KeyCode | str | int) -> bool:
         try:
-            keycode_val = key
-            if isinstance(key, (KeyCode, str)):
-                key_name = str(key).lower().replace("keycode.", "")
-                keycode_val = ANDROID_KEYCODE_MAP.get(key_name, key)
+            keycode_val = coerce_keycode(key, ANDROID_KEYCODE_MAP)
+            if keycode_val is None:
+                logger.warning(f"Refusing press_key with unsafe key value: {key!r}")
+                return False
 
             await asyncio.to_thread(self.device.shell, f"input keyevent {keycode_val}")
             return True
@@ -384,7 +403,12 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def launch_app(self, package_name: str) -> bool:
         try:
-            cmd = f"monkey -p {package_name} -c android.intent.category.LAUNCHER 1"
+            if not is_valid_package_name(
+                package_name.strip() if isinstance(package_name, str) else package_name
+            ):
+                logger.warning(f"Refusing launch_app with invalid package name: {package_name!r}")
+                return False
+            cmd = f"monkey -p {package_name.strip()} -c android.intent.category.LAUNCHER 1"
             await asyncio.to_thread(self.device.shell, cmd)
             return True
         except Exception as e:
@@ -393,7 +417,12 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def stop_app(self, package_name: str) -> bool:
         try:
-            await asyncio.to_thread(self.device.shell, f"am force-stop {package_name}")
+            if not is_valid_package_name(
+                package_name.strip() if isinstance(package_name, str) else package_name
+            ):
+                logger.warning(f"Refusing stop_app with invalid package name: {package_name!r}")
+                return False
+            await asyncio.to_thread(self.device.shell, f"am force-stop {package_name.strip()}")
             return True
         except Exception as e:
             logger.error(f"Stop app failed for '{package_name}': {e}")
