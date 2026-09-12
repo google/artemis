@@ -78,6 +78,7 @@ class ScriptNotifier(BaseNotifier):
             )
             subprocess.run(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 shell=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

@@ -26,6 +26,30 @@ from mcp_server.notifiers.base import BaseNotifier
 logger = logging.getLogger("mcp_server.notifiers.desktop")
 
 
+def escape_applescript_string(text: str) -> str:
+    """Escapes a string for safe inclusion in an AppleScript double-quoted literal.
+
+    - Escapes backslashes (\\ -> \\\\)
+    - Escapes double quotes (" -> \\")
+    - Replaces newlines and carriage returns with spaces
+    - Preserves single quotes/apostrophes, Unicode, and punctuation safely
+    """
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return escaped.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
+def escape_powershell_string(text: str) -> str:
+    """Escapes a string for safe inclusion in a PowerShell double-quoted string.
+
+    - Escapes backticks (` -> ``)
+    - Escapes double quotes (" -> `")
+    - Escapes dollar signs ($ -> `$)
+    - Replaces newlines and carriage returns with spaces
+    """
+    escaped = text.replace("`", "``").replace('"', '`"').replace("$", "`$")
+    return escaped.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
 class DesktopNotifier(BaseNotifier):
     """Notifier that displays native desktop notifications across macOS, Linux, and Windows."""
 
@@ -71,6 +95,7 @@ class DesktopNotifier(BaseNotifier):
                 if shutil.which("notify-send"):
                     subprocess.run(
                         ["notify-send", header, clean_body],
+                        stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         timeout=3,
@@ -78,26 +103,32 @@ class DesktopNotifier(BaseNotifier):
                     return True
             elif sys.platform == "darwin":
                 if shutil.which("osascript"):
-                    script = f'display notification "{clean_body}" with title "{header}"'
+                    esc_body = escape_applescript_string(clean_body)
+                    esc_header = escape_applescript_string(header)
+                    script = f'display notification "{esc_body}" with title "{esc_header}"'
                     subprocess.run(
                         ["osascript", "-e", script],
+                        stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         timeout=3,
                     )
                     return True
             elif sys.platform == "win32":
+                esc_header = escape_powershell_string(header)
+                esc_body = escape_powershell_string(clean_body)
                 ps_cmd = (
                     f"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; "
                     f"$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
                     f'$textNodes = $template.GetElementsByTagName("text"); '
-                    f'$textNodes.Item(0).AppendChild($template.CreateTextNode("{header}")) > $null; '
-                    f'$textNodes.Item(1).AppendChild($template.CreateTextNode("{clean_body}")) > $null; '
+                    f'$textNodes.Item(0).AppendChild($template.CreateTextNode("{esc_header}")) > $null; '
+                    f'$textNodes.Item(1).AppendChild($template.CreateTextNode("{esc_body}")) > $null; '
                     f"$toast = [Windows.UI.Notifications.ToastNotification]::new($template); "
                     f'[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Artemis").Show($toast);'
                 )
                 subprocess.run(
                     ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,

@@ -217,7 +217,8 @@ def test_agentapi_notifier_candidate_recovery_and_retry(monkeypatch, tmp_path):
 
     calls = []
 
-    def mock_run(cmd, capture_output, text, check, timeout, env):
+    def mock_run(cmd, capture_output=True, text=True, check=True, timeout=10, env=None, **kwargs):
+        env = env or {}
         calls.append(env.get("ANTIGRAVITY_LS_ADDRESS"))
         if env.get("ANTIGRAVITY_LS_ADDRESS") == "localhost:9999":
             raise subprocess.CalledProcessError(1, cmd)

@@ -242,6 +242,7 @@ class AgentApiNotifier(BaseNotifier):
                 try:
                     subprocess.run(
                         cmd,
+                        stdin=subprocess.DEVNULL,
                         capture_output=True,
                         text=True,
                         check=True,
@@ -267,6 +268,7 @@ class AgentApiNotifier(BaseNotifier):
                 try:
                     subprocess.run(
                         cmd,
+                        stdin=subprocess.DEVNULL,
                         capture_output=True,
                         text=True,
                         check=True,
