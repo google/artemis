@@ -310,6 +310,10 @@ async def test_submission_probe_falls_back_to_unlocked_device(monkeypatch):
     """When the first device is locked but a second device is unlocked, submission probe falls back."""
     probe = AdbDeviceProbe()
     monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve",
+        lambda name: "adb",
+    )
+    monkeypatch.setattr(
         probe,
         "_get_device_states",
         AsyncMock(return_value=[("device-locked", "device"), ("device-unlocked", "device")]),
