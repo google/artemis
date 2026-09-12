@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 import logging
 import uuid
 from app.config import settings
@@ -49,7 +49,7 @@ class SessionManagerService:
         while True:
             try:
                 await asyncio.sleep(settings.REAPER_CHECK_INTERVAL_SECONDS)
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 active_sessions = await bigquery_service.list_all_active_sessions()
 
                 for s in active_sessions:
@@ -78,7 +78,7 @@ class SessionManagerService:
     async def create_session(self, user_id: str, request: CreateSessionRequest) -> SessionResponse:
         """Provision a new Cuttlefish emulator + Artemis container and link them via ADB."""
         session_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = now + timedelta(minutes=request.ttl_minutes)
 
         logger.info(
@@ -164,7 +164,7 @@ class SessionManagerService:
         if not record or record.user_id != user_id or record.status == SessionStatus.TERMINATED:
             return None
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         record.last_heartbeat_at = now
         record.expires_at = now + timedelta(minutes=settings.SESSION_TTL_MINUTES)
         await bigquery_service.save_session(record)

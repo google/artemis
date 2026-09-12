@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 import logging
 import secrets
 from app.config import settings
@@ -38,7 +38,7 @@ class OTPService:
         else:
             code = f"{secrets.randbelow(900000) + 100000}"
 
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=settings.OTP_EXPIRE_SECONDS)
+        expires_at = datetime.now(UTC) + timedelta(seconds=settings.OTP_EXPIRE_SECONDS)
         self._store[ident] = {
             "code": code,
             "expires_at": expires_at,
@@ -65,7 +65,7 @@ class OTPService:
             logger.warning(f"[OTP Service] No active OTP found for {ident}")
             return False
 
-        if datetime.now(timezone.utc) > record["expires_at"]:
+        if datetime.now(UTC) > record["expires_at"]:
             logger.warning(f"[OTP Service] OTP for {ident} has expired")
             self._store.pop(ident, None)
             return False
