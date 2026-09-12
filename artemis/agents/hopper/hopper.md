@@ -1,3 +1,8 @@
+<!--
+Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
+Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
+-->
+
 ## Hopper
 
 Extract relevant information from batch data. **Keep extracted data exactly as-is** - no reformatting.

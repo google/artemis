@@ -312,3 +312,5 @@ ARTEMIS 提供两种运行模式以适应不同的自动化需求：
 ## 开源许可证
 
 本项目基于 [Apache License 2.0](LICENSE) 协议开源。
+
+本项目包含由 [Minitap, Inc.](https://github.com/minitap-ai/mobile-use) 开发的源代码。
