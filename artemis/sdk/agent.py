@@ -299,15 +299,33 @@ class Agent:
                 )
                 return
 
+            warmup_model = "gemini-3.8-flash"
+            is_google_provider = True
+            if hasattr(self, "_context") and self._context and hasattr(self._context, "llm_config"):
+                default_cfg = getattr(self._context.llm_config, "default", None)
+                if default_cfg:
+                    provider = getattr(default_cfg, "provider", "google")
+                    if isinstance(provider, str) and provider.lower() not in ("google", "gemini"):
+                        is_google_provider = False
+                    if getattr(default_cfg, "model", None):
+                        warmup_model = default_cfg.model
+
+            if not is_google_provider:
+                logger.info("Skipping Gemini pre-warming: non-Google provider configured.")
+                publish_startup_progress(
+                    "model_ready", "Model connection is ready", session_id=self._session_id
+                )
+                return
+
             # 1. Pre-warm Native SDK client
             client = genai.Client(api_key=key)
 
             # 2. Pre-warm LangChain client
-            chat = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=key)
+            chat = ChatGoogleGenerativeAI(model=warmup_model, google_api_key=key)
 
             # Fire both calls concurrently in the background
             await asyncio.gather(
-                client.aio.models.count_tokens(model="gemini-3.8-flash", contents="ping"),
+                client.aio.models.count_tokens(model=warmup_model, contents="ping"),
                 chat.ainvoke("ping"),
                 return_exceptions=True,
             )
