@@ -322,7 +322,12 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
             )
         except Exception as e:
             # Fail-open: release, but the verdict value stays inconclusive.
-            logger.warning(f"Final check errored ({e}); releasing fail-open.")
+            err_reason = (
+                f"timed out after {checkpoint_timeout}s"
+                if isinstance(e, TimeoutError)
+                else (str(e) or type(e).__name__)
+            )
+            logger.warning(f"Final check errored ({err_reason}); releasing fail-open.")
             error_verdicts: list[dict] = []
             for ci in snapshot.all_check_items:
                 append_ledger_record(
@@ -336,7 +341,7 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
                         "kind": ci.kind,
                         "when": ci.when,
                         "status": "inconclusive",
-                        "evidence": f"final check error: {e}",
+                        "evidence": f"final check error: {err_reason}",
                         "anchor_step_id": None,
                     },
                 )
@@ -345,11 +350,11 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
                         "item_text": ci.text,
                         "kind": ci.kind,
                         "status": "inconclusive",
-                        "evidence": f"final check error: {e}",
+                        "evidence": f"final check error: {err_reason}",
                         "suggestion": "",
                     }
                 )
-            _final_event("error", error_verdicts, error=str(e), route="end")
+            _final_event("error", error_verdicts, error=err_reason, route="end")
             report = None
 
         if report is not None:
