@@ -1,0 +1,14 @@
+// Merge these top-level default/nodes settings into config/artemis.jsonc.
+// Set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN in .env.
+// Replace model names with aliases configured on your gateway.
+{
+  "default": {
+    "provider": "anthropic",
+    "model": "gateway-primary",
+    "fallback": {
+      "provider": "anthropic",
+      "model": "gateway-fallback"
+    }
+  },
+  "nodes": {}
+}

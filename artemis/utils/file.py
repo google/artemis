@@ -18,9 +18,16 @@ from typing import IO
 
 
 def strip_json_comments(text: str) -> str:
-    text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    return text
+    """Remove comments while preserving JSON strings and source positions."""
+    # Consume strings first so URLs, escaped quotes and comment-like string
+    # values remain intact. Whitespace also prevents comments joining tokens.
+    pattern = r'"(?:\\.|[^"\\])*"|//[^\r\n]*|/\*.*?\*/'
+    return re.sub(
+        pattern,
+        lambda match: match[0] if match[0].startswith('"') else re.sub(r"[^\r\n]", " ", match[0]),
+        text,
+        flags=re.DOTALL,
+    )
 
 
 def load_jsonc(file: IO) -> dict:

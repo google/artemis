@@ -148,11 +148,16 @@ def test_placeholder_api_key_filtering(monkeypatch):
     assert placeholder_settings.get_api_key("ocr") is None
 
 
-def test_llm_config_parsing_and_merging():
+def test_llm_config_parsing_and_merging(monkeypatch):
     """Test LLMConfig parsing, agent querying, and deep merging."""
+    from artemis.config import llm as llm_config
+
+    # Use a shipped example rather than the developer's active configuration.
+    example = Path(__file__).resolve().parents[2] / "config/examples/anthropic-gateway.jsonc"
+    monkeypatch.setattr(llm_config, "get_config_path", lambda *args: example)
     llm_cfg = get_default_llm_config()
     assert isinstance(llm_cfg, LLMConfig)
-    assert llm_cfg.planner.provider in ("google", "openai", "openrouter", "xai", "vertexai")
+    assert llm_cfg.planner.provider == "anthropic"
     assert llm_cfg.get_agent("planner") is not None
     assert llm_cfg.get_utils("hopper") is not None
 

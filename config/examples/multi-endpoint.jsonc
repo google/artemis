@@ -1,0 +1,27 @@
+// Merge these top-level default/nodes settings into config/artemis.jsonc.
+// Replace example hosts and model aliases before use.
+{
+  "default": {
+    "provider": "openai",
+    "model": "gateway-primary",
+    "api_base": "https://primary.example.com/v1",
+    "fallback": {
+      "provider": "openai",
+      "model": "gateway-fallback",
+      "api_base": "https://backup.example.com/v1"
+    }
+  },
+  "nodes": {
+    "operator": {
+      "api_base": "https://vision.example.com/v1"
+    },
+    "outputter": {
+      "provider": "anthropic",
+      "model": "gateway-primary",
+      "fallback": {
+        "provider": "anthropic",
+        "model": "gateway-fallback"
+      }
+    }
+  }
+}

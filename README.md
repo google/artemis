@@ -130,6 +130,9 @@ uv run artemis mcp --install all
 
 ### 2. Manual Configuration (Optional)
 
+For Bearer-authenticated gateways and per-node model endpoints, see the short
+[LLM gateway configuration examples](./docs/llm-gateways.md).
+
 If you prefer to configure manually, run `uv run artemis mcp --generate-config <client>` (for example, `codex` or `antigravity`) to output the appropriate TOML or JSON snippet. Replace `/path/to/artemis` with your actual repo path and point `command` to your `.venv` Python executable:
 
 * **Codex** (`~/.codex/config.toml`):
