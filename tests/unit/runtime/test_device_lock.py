@@ -150,15 +150,24 @@ def test_device_lock_waits_and_runs_next_owner_in_fifo_order():
         second.acquire()
         acquired.set()
 
-    thread = threading.Thread(target=acquire_second)
-    thread.start()
-    time.sleep(0.15)
-    assert not acquired.is_set()
+    thread = threading.Thread(target=acquire_second, daemon=True)
+    try:
+        thread.start()
+        time.sleep(0.15)
+        assert not acquired.is_set()
 
-    first.release()
-    assert acquired.wait(timeout=2.0)
-    second.release()
-    thread.join(timeout=2.0)
+        first.release()
+        assert acquired.wait(timeout=2.0)
+        second.release()
+        thread.join(timeout=2.0)
+    finally:
+        for lock in (first, second):
+            if lock._acquired:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+        thread.join(timeout=1.0)
 
 
 def test_submission_reservations_preserve_order_before_workers_start():
@@ -171,18 +180,29 @@ def test_submission_reservations_preserve_order_before_workers_start():
         second.acquire()
         second_acquired.set()
 
-    thread = threading.Thread(target=acquire_second)
-    thread.start()
-    time.sleep(0.15)
-    assert not second_acquired.is_set()
-
+    thread = threading.Thread(target=acquire_second, daemon=True)
     first = DeviceExecutionLock("emulator-5554", "first task", first_ticket)
-    first.acquire()
-    first.release()
+    try:
+        thread.start()
+        time.sleep(0.15)
+        assert not second_acquired.is_set()
 
-    assert second_acquired.wait(timeout=2.0)
-    second.release()
-    thread.join(timeout=2.0)
+        first.acquire()
+        first.release()
+
+        assert second_acquired.wait(timeout=2.0)
+        second.release()
+        thread.join(timeout=2.0)
+    finally:
+        for lock in (first, second):
+            if lock._acquired:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+        DeviceExecutionLock.cancel_reservation(first_ticket)
+        DeviceExecutionLock.cancel_reservation(second_ticket)
+        thread.join(timeout=1.0)
 
 
 def test_pending_reservation_at_queue_head_does_not_block_other_devices():
@@ -223,36 +243,55 @@ def test_pending_reservation_is_served_with_original_fifo_position_after_claim()
     order = []
     claimed_acquired = threading.Event()
     youngest_acquired = threading.Event()
+    cancel_event = threading.Event()
 
     def run_claimed():
-        claimed.acquire()
-        order.append("claimed")
-        claimed_acquired.set()
+        try:
+            claimed.acquire(cancel_event=cancel_event)
+            order.append("claimed")
+            claimed_acquired.set()
+        except Exception:
+            pass
 
     def run_youngest():
-        youngest.acquire()
-        order.append("youngest")
-        youngest_acquired.set()
+        try:
+            youngest.acquire(cancel_event=cancel_event)
+            order.append("youngest")
+            youngest_acquired.set()
+        except Exception:
+            pass
 
-    t1 = threading.Thread(target=run_claimed)
-    t2 = threading.Thread(target=run_youngest)
+    t1 = threading.Thread(target=run_claimed, daemon=True)
+    t2 = threading.Thread(target=run_youngest, daemon=True)
     t1.start()
     t2.start()
-    time.sleep(0.2)
-    assert not claimed_acquired.is_set()
-    assert not youngest_acquired.is_set()
+    try:
+        time.sleep(0.2)
+        assert not claimed_acquired.is_set()
+        assert not youngest_acquired.is_set()
 
-    holder.release()
-    # The claimed pending ticket kept its original (oldest) FIFO timestamp and
-    # must win the device before the younger concrete ticket.
-    assert claimed_acquired.wait(timeout=2.0)
-    assert not youngest_acquired.is_set()
-    claimed.release()
-    assert youngest_acquired.wait(timeout=2.0)
-    youngest.release()
-    t1.join(timeout=2.0)
-    t2.join(timeout=2.0)
-    assert order == ["claimed", "youngest"]
+        holder.release()
+        # The claimed pending ticket kept its original (oldest) FIFO timestamp and
+        # must win the device before the younger concrete ticket.
+        assert claimed_acquired.wait(timeout=2.0)
+        assert not youngest_acquired.is_set()
+        claimed.release()
+        assert youngest_acquired.wait(timeout=2.0)
+        youngest.release()
+        t1.join(timeout=2.0)
+        t2.join(timeout=2.0)
+        assert order == ["claimed", "youngest"]
+    finally:
+        cancel_event.set()
+        for lock in (holder, claimed, youngest):
+            if lock._acquired:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+        DeviceExecutionLock.cancel_reservation(first_ticket)
+        t1.join(timeout=1.0)
+        t2.join(timeout=1.0)
 
 
 def test_cancelled_reservation_cannot_execute():
@@ -282,23 +321,28 @@ def test_waiting_acquire_can_be_cancelled_without_leaving_a_ticket():
     errors = []
     owner.acquire()
 
-    def wait_for_device():
-        try:
-            waiter.acquire(cancel_event=cancel_event)
-        except DeviceBusyError as exc:
-            errors.append(str(exc))
-
-    thread = threading.Thread(target=wait_for_device)
-    thread.start()
-    time.sleep(0.15)
-    cancel_event.set()
-    thread.join(timeout=2.0)
-
     try:
+
+        def wait_for_device():
+            try:
+                waiter.acquire(cancel_event=cancel_event)
+            except DeviceBusyError as exc:
+                errors.append(str(exc))
+
+        thread = threading.Thread(target=wait_for_device, daemon=True)
+        thread.start()
+        time.sleep(0.15)
+        cancel_event.set()
+        thread.join(timeout=2.0)
+
         assert errors == ["Waiting for the Artemis device queue was cancelled."]
         assert list(waiter.queue_dir.glob("*.wait")) == []
     finally:
-        owner.release()
+        if owner._acquired:
+            try:
+                owner.release()
+            except Exception:
+                pass
 
 
 def test_active_owner_is_discoverable_and_can_be_annotated(monkeypatch):
