@@ -100,7 +100,10 @@ def mock_context():
 
 
 def _runner(mock_context, observations):
-    with patch("artemis.controllers.unified_controller.get_driver"):
+    with (
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch("artemis.agents.flash.runner.VisualStepSummarizer"),
+    ):
         runner = FlashRunner(mock_context, goal="Open Wi-Fi and Display")
     runner.summarizer = None
     runner.executor._session = _FakeSession(observations)
