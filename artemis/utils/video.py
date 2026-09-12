@@ -625,6 +625,8 @@ async def render_timeline_clip(
             ";".join(filter_parts),
             "-map",
             "[outv]",
+            "-r",
+            str(fps),
             "-c:v",
             "libx264",
             "-preset",
