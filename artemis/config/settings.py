@@ -46,7 +46,34 @@ from artemis.config.paths import (
 )
 from artemis.utils.logger import get_logger
 
+def _clear_blank_credential_env_vars() -> None:
+    """Drop credential env vars that are present but blank, before .env is loaded.
+
+    `load_dotenv` never overrides a variable that already exists in the process
+    environment. A parent process started with `GOOGLE_API_KEY=` (blank) — e.g.
+    the ARTEMIS daemon launched before the key was filled in — therefore passes
+    that blank down to every child runner, and the child's `.env` value is
+    silently ignored for the lifetime of the parent. A blank value carries no
+    information, so let the dotenv file win.
+    """
+    for _name in (
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "GCP_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "XAI_API_KEY",
+        "OPEN_ROUTER_API_KEY",
+        "OCR_API_KEY",
+        "VISION_API_KEY",
+    ):
+        _val = os.environ.get(_name)
+        if _val is not None and not _val.strip():
+            del os.environ[_name]
+
+
 # Installed wheels load .env from the user directory, outside site-packages.
+_clear_blank_credential_env_vars()
 _canonical_env = get_env_file()
 load_dotenv(dotenv_path=_canonical_env, verbose=True)
 _global_env = GLOBAL_APP_DIR / ".env"
@@ -169,7 +196,11 @@ class Settings(BaseSettings):
             "API_KEY",
         ):
             val = getattr(self, attr, None)
-            if val and is_placeholder_key(val):
+            # NOTE: an empty value in .env (e.g. `GOOGLE_API_KEY=`) parses to
+            # SecretStr("") which is falsy, so `if val and ...` skipped it and the
+            # attribute stayed a non-None empty secret. Normalize on `is not None`
+            # so an empty/placeholder credential always becomes None.
+            if val is not None and is_placeholder_key(val):
                 setattr(self, attr, None)
 
         if not self.GOOGLE_API_KEY:
