@@ -29,6 +29,7 @@ from artemis.config.paths import get_temp_dir
 from artemis.context import ArtemisContext
 from artemis.drivers.factory import get_driver
 from artemis.drivers.base import BaseDeviceDriver
+from artemis.utils.android_validation import is_valid_package_name, quote_url_for_adb
 from artemis.controllers.device_controller import ScreenDataResponse
 from artemis.controllers.types import (
     SwipeRequest,
@@ -213,15 +214,39 @@ class UnifiedMobileController:
         return screen_data.screenshot_base64
 
     async def launch_app(self, package_or_bundle_id: str) -> bool:
-        return await self._driver.launch_app(package_or_bundle_id)
+        if not is_valid_package_name(
+            package_or_bundle_id.strip()
+            if isinstance(package_or_bundle_id, str)
+            else package_or_bundle_id
+        ):
+            logger.warning(f"Refusing launch_app with invalid package: {package_or_bundle_id!r}")
+            return False
+        return await self._driver.launch_app(package_or_bundle_id.strip())
 
     async def terminate_app(self, package_or_bundle_id: str | None) -> bool:
         if not package_or_bundle_id:
             return False
-        return await self._driver.stop_app(package_or_bundle_id)
+        if not is_valid_package_name(
+            package_or_bundle_id.strip()
+            if isinstance(package_or_bundle_id, str)
+            else package_or_bundle_id
+        ):
+            logger.warning(f"Refusing terminate_app with invalid package: {package_or_bundle_id!r}")
+            return False
+        return await self._driver.stop_app(package_or_bundle_id.strip())
 
     async def open_url(self, url: str) -> bool:
-        await self._driver.execute_shell(f"am start -a android.intent.action.VIEW -d '{url}'")
+        try:
+            quoted = quote_url_for_adb(url)
+        except ValueError as e:
+            logger.warning(f"Refusing open_url with invalid URL: {e}")
+            return False
+        result = await self._driver.execute_shell(
+            f"am start -a android.intent.action.VIEW -d {quoted}"
+        )
+        if isinstance(result, str) and result.startswith("Error:"):
+            logger.warning(f"open_url failed for {url!r}: {result}")
+            return False
         return True
 
     async def go_back(self) -> bool:

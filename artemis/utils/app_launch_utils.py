@@ -28,6 +28,7 @@ from artemis.controllers.platform_specific_commands_controller import (
 )
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import TraceSpan
+from artemis.utils.android_validation import is_valid_package_name
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -284,6 +285,13 @@ async def launch_app_with_retries(
     Returns:
         Tuple of (success: bool, error_message: str | None)
     """
+    if not is_valid_package_name(
+        app_package.strip() if isinstance(app_package, str) else app_package
+    ):
+        error_msg = f"Invalid Android package name: {app_package!r}"
+        logger.error(error_msg)
+        return False, error_msg
+    app_package = app_package.strip()
 
     for attempt in range(1, max_retries + 1):
         logger.info(f"Launch attempt {attempt}/{max_retries} for app {app_package}")
