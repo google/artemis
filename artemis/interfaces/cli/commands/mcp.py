@@ -481,10 +481,13 @@ def install_rules(client: str, project_root: str) -> list[str]:
         if target in ("antigravity", "jetski"):
             gemini_md = Path.home() / ".gemini" / "GEMINI.md"
             global_rule = Path.home() / ".gemini" / "rules" / "artemis.md"
+            antigravity_rule = Path.home() / ".gemini" / "antigravity" / "rules" / "artemis.md"
             if _inject_rules_block(gemini_md, raw_rules):
                 installed_paths.append(str(gemini_md))
             if _write_rule_file(global_rule, raw_rules):
                 installed_paths.append(str(global_rule))
+            if _write_rule_file(antigravity_rule, raw_rules):
+                installed_paths.append(str(antigravity_rule))
         elif target == "cursor":
             cursor_rules_file = Path.home() / ".cursorrules"
             global_mdc = Path.home() / ".cursor" / "rules" / "artemis.mdc"
@@ -586,12 +589,12 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
                 "mcpServers"
             ]["artemis"]
             jetski_path = Path.home() / ".gemini" / "jetski" / "mcp_config.json"
-            antigravity_legacy_path = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
+            antigravity_path = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
             config_path = Path.home() / ".gemini" / "config" / "mcp_config.json"
             if _merge_json_file(jetski_path, "artemis", legacy_server_cfg):
                 installed_paths.append(str(jetski_path))
-            if _merge_json_file(antigravity_legacy_path, "artemis", current_server_cfg):
-                installed_paths.append(str(antigravity_legacy_path))
+            if _merge_json_file(antigravity_path, "artemis", current_server_cfg):
+                installed_paths.append(str(antigravity_path))
             if _merge_json_file(config_path, "artemis", current_server_cfg):
                 installed_paths.append(str(config_path))
         elif target in ("claude", "claude_code", "claude_desktop"):
@@ -780,7 +783,7 @@ def mcp_command(
         client = generate_config.lower()
         if client == "all":
             all_configs = {
-                "antigravity (~/.gemini/jetski/mcp_config.json)": _get_config_snippet(
+                "antigravity (~/.gemini/antigravity/mcp_config.json)": _get_config_snippet(
                     "antigravity", python_exe, project_root
                 ),
                 "cursor (.cursor/mcp.json)": _get_config_snippet(
