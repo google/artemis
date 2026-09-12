@@ -21,7 +21,26 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 
+class _CyFunctionDetectorMeta(type):
+    def __instancecheck__(self, instance):
+        name = type(instance).__name__
+        return (
+            name
+            in (
+                "cyfunction",
+                "cython_function_or_method",
+                "builtin_function_or_method",
+            )
+            or "cyfunction" in name.lower()
+        )
+
+
+class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
+    pass
+
+
 class SpawnLogReaderArgs(BaseModel):
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     specific_query: str = Field(
         ...,
         description=(
@@ -35,6 +54,7 @@ from langgraph.prebuilt import InjectedState
 from artemis.core.tool_failure import ToolFailure, is_tool_failure
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import (
+    CURRENT_TRACE_ID,
     TraceSpan,
     trace,
 )

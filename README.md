@@ -314,7 +314,3 @@ Contributions are warmly welcomed!
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
-
-This project includes source code developed by [Minitap, Inc.](https://github.com/minitap-ai/mobile-use).
-
-

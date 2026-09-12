@@ -48,11 +48,30 @@ def validate_vertex_ai_credentials() -> None:
         )
 
 
+class _CyFunctionDetectorMeta(type):
+    def __instancecheck__(self, instance):
+        name = type(instance).__name__
+        return (
+            name
+            in (
+                "cyfunction",
+                "cython_function_or_method",
+                "builtin_function_or_method",
+            )
+            or "cyfunction" in name.lower()
+        )
+
+
+class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
+    """Utility type detector for Cython and C-extension functions in Pydantic."""
+
     pass
 
 
 class LLM(BaseModel):
     """Base model representing an LLM model provider and runtime parameters."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     provider: LLMProvider
     model: str
     temperature: float | None = None
@@ -76,8 +95,8 @@ class LLM(BaseModel):
             if not (settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")):
                 raise Exception(f"{name} requires ANTHROPIC_API_KEY in .env")
         elif self.provider == "openrouter":
-            if not (settings.OPENROUTER_API_KEY or settings.OPEN_ROUTER_API_KEY):
-                raise Exception(f"{name} requires OPENROUTER_API_KEY in .env")
+            if not settings.OPEN_ROUTER_API_KEY:
+                raise Exception(f"{name} requires OPEN_ROUTER_API_KEY in .env")
         elif self.provider == "xai":
             if not settings.XAI_API_KEY:
                 raise Exception(f"{name} requires XAI_API_KEY in .env")
@@ -114,14 +133,18 @@ def lightweight_judge_default() -> "LLMWithFallback":
 
 class LLMConfigUtils(BaseModel):
     """Configuration container for auxiliary utility agents/nodes."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     outputter: LLMWithFallback
-    entity_extractor: LLMWithFallback
+    hopper: LLMWithFallback
     video_analyzer: LLMWithFallback | None = None
     object_detector: LLMWithFallback | None = None
 
 
 class LLMConfig(BaseModel):
     """Comprehensive LLM configuration mapping every node to primary/fallback models."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     planner: LLMWithFallback
     utils: LLMConfigUtils
     summarizer: LLMWithFallback
@@ -144,7 +167,7 @@ class LLMConfig(BaseModel):
         """Validate credentials across all configured agent nodes."""
         self.planner.validate_provider("Planner")
         self.utils.outputter.validate_provider("Outputter")
-        self.utils.entity_extractor.validate_provider("EntityExtractor")
+        self.utils.hopper.validate_provider("Hopper")
         if self.utils.video_analyzer:
             self.utils.video_analyzer.validate_provider("VideoAnalyzer")
         if self.utils.object_detector:
@@ -173,7 +196,7 @@ class LLMConfig(BaseModel):
         return f"""
 📃 Planner: {self.planner}
 🧩 Utils:
-    🔍 Entity Extractor: {self.utils.entity_extractor}
+    🔽 Hopper: {self.utils.hopper}
     📝 Outputter: {self.utils.outputter}
     🎬 Video Analyzer: {self.utils.video_analyzer or "Not configured"}
     👁️ Object Detector: {self.utils.object_detector or "Not configured"}
@@ -196,7 +219,7 @@ class LLMConfig(BaseModel):
 
     def get_utils(self, item: LLMUtilsNode) -> LLMWithFallback:
         """Retrieve model configuration for a specific utility node."""
-        value = getattr(self.utils, item, None)
+        value = getattr(self.utils, item)
         if value is None:
             raise ValueError(
                 f"Utils '{item}' is not configured. Please add it to your LLM "
@@ -241,7 +264,7 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
 
     all_utils_nodes = [
         "outputter",
-        "entity_extractor",
+        "hopper",
         "video_analyzer",
         "object_detector",
     ]

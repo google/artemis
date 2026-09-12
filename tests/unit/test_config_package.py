@@ -154,7 +154,7 @@ def test_llm_config_parsing_and_merging():
     assert isinstance(llm_cfg, LLMConfig)
     assert llm_cfg.planner.provider in ("google", "openai", "openrouter", "xai", "vertexai")
     assert llm_cfg.get_agent("planner") is not None
-    assert llm_cfg.get_utils("entity_extractor") is not None
+    assert llm_cfg.get_utils("hopper") is not None
 
     # Deep merge overrides
     overrides = {

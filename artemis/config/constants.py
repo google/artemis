@@ -62,7 +62,6 @@ ENV_API_KEY = "API_KEY"
 ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
 ENV_OPENAI_BASE_URL = "OPENAI_BASE_URL"
 ENV_ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY"
-ENV_OPENROUTER_API_KEY = "OPENROUTER_API_KEY"
 ENV_OPEN_ROUTER_API_KEY = "OPEN_ROUTER_API_KEY"
 ENV_XAI_API_KEY = "XAI_API_KEY"
 
@@ -126,7 +125,7 @@ ExplorerVersion = Literal["flash", "pro", "ultra"]
 
 LLMUtilsNode = Literal[
     "outputter",
-    "entity_extractor",
+    "hopper",
     "video_analyzer",
     "object_detector",
 ]

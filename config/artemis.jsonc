@@ -93,8 +93,8 @@
     // 📋 Summarizer: Aggregates step history and generates structured outcome
     "summarizer": {},
 
-    // 🔍 Entity Extractor: Fast lightweight package name locator and entity extractor
-    "entity_extractor": {
+    // 🔽 Hopper: Fast lightweight package name locator
+    "hopper": {
       "model": "gemini-3.5-flash-lite",
       "fallback": {
         "provider": "google",

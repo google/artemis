@@ -25,6 +25,7 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
+from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import (
     APPEND_NOTE_ARG_CONTENT_DESC,
@@ -56,18 +57,24 @@ logger = get_logger(__name__)
 
 class SaveNoteArgs(BaseModel):
     """Arguments schema for saving notes."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     key: str = Field(..., description=SAVE_NOTE_ARG_KEY_DESC)
     content: str = Field(..., description=SAVE_NOTE_ARG_CONTENT_DESC)
 
 
 class AppendNoteArgs(BaseModel):
     """Arguments schema for appending notes."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     key: str = Field(..., description=APPEND_NOTE_ARG_KEY_DESC)
     content: str = Field(..., description=APPEND_NOTE_ARG_CONTENT_DESC)
 
 
 class UpdateNoteArgs(BaseModel):
     """Arguments schema for updating notes."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     key: str = Field(..., description=UPDATE_NOTE_ARG_KEY_DESC)
     target: str = Field(..., description=UPDATE_NOTE_ARG_TARGET_DESC)
     replacement: str = Field(..., description=UPDATE_NOTE_ARG_REPLACEMENT_DESC)
@@ -75,6 +82,8 @@ class UpdateNoteArgs(BaseModel):
 
 class ReadNoteArgs(BaseModel):
     """Arguments schema for reading notes."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     key: str = Field(..., description=READ_NOTE_ARG_KEY_DESC)
     start_line: int | None = Field(None, description="Start line to read (1-indexed, inclusive)")
     end_line: int | None = Field(None, description="End line to read (1-indexed, inclusive)")
@@ -82,6 +91,10 @@ class ReadNoteArgs(BaseModel):
 
 class ListNotesArgs(BaseModel):
     """Arguments schema for listing notes."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
+
+
 class SaveNoteTool(ArtemisTool):
     """Universal tool for saving notes to persistent memory."""
 

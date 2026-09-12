@@ -11,9 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
-# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
 """Builder for AgentConfig objects using a fluent interface."""
 
@@ -72,6 +69,7 @@ class AgentConfigBuilder:
         self._video_recording_tools_enabled: bool = detect_video_tools_enabled()
         self._force_web_accessibility: bool = False
         self._disable_checker: bool = False
+        self._cloud_mobile_id_or_ref: str | None = None
         self._concurrency_mode: str = "per_device"
         self._max_concurrency: int | None = None
 
@@ -154,6 +152,12 @@ class AgentConfigBuilder:
             platform_or_device_id: DevicePlatform or unique identifier for the device
             device_id: The unique identifier for the device (if platform was passed first)
         """
+        if self._cloud_mobile_id_or_ref is not None:
+            raise ValueError(
+                "Device ID cannot be set when a cloud mobile is already"
+                " configured.\n> for_device() and for_cloud_mobile() are"
+                " mutually exclusive"
+            )
         if isinstance(platform_or_device_id, DevicePlatform):
             self._device_platform = platform_or_device_id
             self._device_id = device_id

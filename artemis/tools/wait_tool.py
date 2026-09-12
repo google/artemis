@@ -23,6 +23,7 @@ from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
+from artemis.tools.types import CyFunctionDetector
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,6 +31,8 @@ logger = get_logger(__name__)
 
 class WaitArgs(BaseModel):
     """Arguments schema for wait tool."""
+
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     seconds: int = Field(
         ...,
         description=("The duration to wait/sleep in seconds. Minimum is 1, maximum is 60."),

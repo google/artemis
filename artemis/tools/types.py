@@ -12,47 +12,61 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Multi-strategy target element descriptors for ARTEMIS actions.
-
-Encapsulates semantic identifiers, textual queries, and spatial bounding boxes
-into a prioritized target resolution contract.
-"""
-
-from __future__ import annotations
-
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from artemis.utils.ui_hierarchy import ElementBounds
 
 
+class _CyFunctionDetectorMeta(type):
+    """Metaclass for detecting cython compiled functions."""
+
+    def __instancecheck__(cls, instance):
+        name = type(instance).__name__
+        return (
+            name
+            in (
+                "cyfunction",
+                "cython_function_or_method",
+                "builtin_function_or_method",
+            )
+            or "cyfunction" in name.lower()
+        )
+
+
+# pylint: disable=too-few-public-methods
+class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
+    """Detector for cython compiled functions."""
+
+
 class Target(BaseModel):
-    """Composite locator descriptor resolving UI nodes across dynamic and visual channels."""
+    """A comprehensive locator for a UI element, supporting a fallback mechanism."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = {"ignored_types": (CyFunctionDetector,)}
 
-    resource_id: str | None = Field(default=None, description="Android resource identifier token.")
+    resource_id: str | None = Field(None, description="The resource-id of the element.")
     resource_id_index: int | None = Field(
-        default=None,
-        description="Zero-based ordinal index when multiple nodes match resource_id.",
+        None,
+        description=("The zero-based index if multiple elements share the same resource-id."),
     )
     text: str | None = Field(
-        default=None,
-        description="Exact or case-insensitive element label or content descriptor.",
+        None,
+        description=("The text content of the element (e.g., a label or placeholder)."),
     )
     text_index: int | None = Field(
-        default=None,
-        description="Zero-based ordinal index when multiple nodes match text query.",
+        None,
+        description=("The zero-based index if multiple elements share the same text."),
     )
     bounds: ElementBounds | None = Field(
-        default=None,
-        description="Spatial boundary metrics (x, y, width, height) of the element.",
+        None, description="The x, y, width, and height of the element."
     )
 
     @model_validator(mode="after")
-    def _normalize_indices(self) -> Target:
-        """Coerce missing indices to zero if primary selector string is populated."""
-        if self.resource_id and self.resource_id.strip() and self.resource_id_index is None:
+    def _default_indices(self):
+        # Treat empty strings like “not provided”
+        if (
+            self.resource_id is not None and self.resource_id != ""
+        ) and self.resource_id_index is None:
             self.resource_id_index = 0
-        if self.text and self.text.strip() and self.text_index is None:
+        if (self.text is not None and self.text != "") and self.text_index is None:
             self.text_index = 0
         return self

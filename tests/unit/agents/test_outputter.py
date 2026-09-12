@@ -26,7 +26,26 @@ from artemis.utils.logger import get_logger  # noqa: E402
 logger = get_logger(__name__)
 
 
+class _CyFunctionDetectorMeta(type):
+    def __instancecheck__(self, instance):
+        name = type(instance).__name__
+        return (
+            name
+            in (
+                "cyfunction",
+                "cython_function_or_method",
+                "builtin_function_or_method",
+            )
+            or "cyfunction" in name.lower()
+        )
+
+
+class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
+    pass
+
+
 class MockPydanticSchema(BaseModel):
+    model_config = {"ignored_types": (CyFunctionDetector,)}
     color: str
     price: float
     currency_symbol: str
