@@ -19,6 +19,9 @@ description = "Autonomous AI Assistant for Mobile Automation"
 
 authors = [
     { name = "Farley Wang", email="farleyw@google.com" },
+    { name = "Pierre-Louis Favreau" },
+    { name = "Jean-Pierre Lo" },
+    { name = "Nicolas Dehandschoewercker" },
 ]
 
 requires-python = ">=3.12"
