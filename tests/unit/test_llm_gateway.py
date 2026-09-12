@@ -239,3 +239,17 @@ async def test_mid_stream_failure_records_stream_reset_payload(monkeypatch):
     assert payload["reason"] == "mid_stream_failure"
     assert "stream_exec_id" in payload
     assert "lower API priority" in payload["message"]
+
+
+def test_resolve_endpoint_falls_back_when_provider_or_model_is_not_string():
+    from unittest.mock import MagicMock
+    from artemis.llm.router import ModelProvider
+
+    ctx = MagicMock()
+    # Mock an agent config where provider and model return MagicMocks (non-strings)
+    mock_agent_cfg = MagicMock()
+    ctx.llm_config.get_agent.return_value = mock_agent_cfg
+
+    ep = llm_service._resolve_endpoint(ctx, "operator")
+    assert ep.provider == ModelProvider.GOOGLE
+    assert ep.model_name == "gemini-2.5-flash"
