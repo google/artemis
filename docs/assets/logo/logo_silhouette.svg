@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240">
+  <defs>
+    <!-- Radial Glows for Mesh effect -->
+    <radialGradient id="redGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#EA4335" stop-opacity="1" />
+      <stop offset="40%" stop-color="#EA4335" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#EA4335" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="yellowGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FBBC05" stop-opacity="1" />
+      <stop offset="40%" stop-color="#FBBC05" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#FBBC05" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="greenGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#34A853" stop-opacity="1" />
+      <stop offset="40%" stop-color="#34A853" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#34A853" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Robot Silhouette Mask -->
+    <mask id="robotMeshMask">
+      <rect width="240" height="240" fill="black" />
+      
+      <!-- Antennae -->
+      <path d="M 90 60 Q 75 35 65 28" stroke="white" stroke-width="10" stroke-linecap="round" />
+      <circle cx="62" cy="24" r="10" fill="white" />
+      <path d="M 150 60 Q 165 35 175 28" stroke="white" stroke-width="10" stroke-linecap="round" />
+      <circle cx="178" cy="24" r="10" fill="white" />
+
+      <!-- Ears -->
+      <rect x="28" y="100" width="16" height="48" rx="8" fill="white" />
+      <rect x="196" y="100" width="16" height="48" rx="8" fill="white" />
+
+      <!-- Head -->
+      <rect x="44" y="58" width="152" height="132" rx="40" fill="white" />
+
+      <!-- Visor Cutout -->
+      <rect x="64" y="88" width="112" height="52" rx="22" fill="black" />
+
+      <!-- Eyes (Inside Visor) -->
+      <path d="M 82 118 Q 92 106 102 118" stroke="white" stroke-width="6" stroke-linecap="round" fill="none" />
+      <path d="M 138 118 Q 148 106 158 118" stroke="white" stroke-width="6" stroke-linecap="round" fill="none" />
+
+      <!-- Smile Cutout -->
+      <path d="M 104 158 Q 120 172 136 158" stroke="black" stroke-width="6" stroke-linecap="round" fill="none" />
+    </mask>
+  </defs>
+
+  <!-- Mesh Gradient applied to Mask -->
+  <g mask="url(#robotMeshMask)">
+    <rect width="240" height="240" fill="#4285F4" />
+    <circle cx="160" cy="50" r="100" fill="url(#redGlow)" />
+    <circle cx="60" cy="120" r="95" fill="url(#yellowGlow)" />
+    <circle cx="110" cy="200" r="95" fill="url(#greenGlow)" />
+  </g>
+</svg>

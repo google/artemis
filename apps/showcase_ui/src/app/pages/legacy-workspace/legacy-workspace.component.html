@@ -1,0 +1,39 @@
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<div class="workspace-container" [class.is-resizing]="isDragging">
+  <!-- Aurora Background Glow Elements -->
+  <div class="aurora-background">
+    <div class="glow glow-1"></div>
+    <div class="glow glow-2"></div>
+    <div class="glow glow-3"></div>
+  </div>
+
+  <!-- Left Main Panel: Legacy Card-based Agent Log Stream -->
+  <main class="left-panel glass-panel">
+    <app-legacy-agent-stream></app-legacy-agent-stream>
+  </main>
+
+  <!-- Split Pane Drag Resizer -->
+  <div class="resizer" (mousedown)="onDragStart($event)">
+    <div class="resizer-handle"></div>
+  </div>
+
+  <!-- Right Sidebar Panel: Chat Interface Mock -->
+  <aside class="right-panel" [style.width.px]="rightPanelWidth">
+    <app-chat-interface></app-chat-interface>
+  </aside>
+</div>

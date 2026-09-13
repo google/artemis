@@ -1,0 +1,1064 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import base64
+from functools import lru_cache
+import io
+import json
+from pathlib import Path
+from typing import NamedTuple
+
+from jinja2 import Environment, StrictUndefined, Template
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from artemis.tools.history import HISTORY_TOOL_NAMES
+from PIL import Image
+
+from artemis.context import ArtemisContext
+from artemis.graph.state import State
+from artemis.tools.command_tool import (
+    _format_long_output_response,
+    _is_output_long,
+)
+from artemis.utils.logger import get_logger
+from artemis.utils.plan_grammar import parse_plan, render_plan_grammar_spec
+from artemis.utils.task_tree import SELF_DESCRIBED_MARKER, action_intent_phrase
+
+logger = get_logger(__name__)
+
+
+from artemis.agents.prompt_assembly import render_tool_enum, resolve_available
+from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER
+
+
+@lru_cache(maxsize=1)
+def load_operator_prompts() -> dict[str, str]:
+    """Load and cache the Operator templates from operator.json."""
+    prompts_path = Path(__file__).with_name("operator.json")
+    return json.loads(prompts_path.read_text(encoding="utf-8"))
+
+
+# --- Assembled tool references -------------------------------------------------------
+# The operator.json templates carry availability slots rendered by
+# ``apply_operator_prompt_contract``: ``[[ tool_enum(...) ]]`` expands an ordered,
+# backticked enumeration limited to the available tool set, and
+# ``[% if "x" in available_tools %]...[% endif %]`` gates a self-contained teaching
+# segment. An unavailable tool therefore leaves no trace in the prompt at all. The
+# slot delimiters are square-bracketed so the standard ``{{ ... }}`` context
+# variables (initial_goal, plan_and_history, plan_grammar, ...) pass through
+# untouched for the later context render.
+#
+# The orderings below reproduce the historical prompt wording exactly; with the full
+# tool set the rendered output is byte-identical to the pre-assembly literals. See
+# artemis/agents/prompt_assembly.py for the assembly rationale.
+
+_PRE_DECISION_HELPER_TOOLS = ("ask_explorer", "ask_diagnoser", "video_analyzer")
+_PRE_DECISION_ADB_TOOLS = ("run_adb_command", "manage_task")
+_PRE_DECISION_MEMORY_TOOLS = (
+    "read_note",
+    "list_notes",
+    "search_history",
+    "replay_steps",
+    "get_step_screenshot",
+)
+_PRE_DECISION_ALL_TOOLS = (
+    _PRE_DECISION_HELPER_TOOLS + _PRE_DECISION_ADB_TOOLS + _PRE_DECISION_MEMORY_TOOLS
+)
+
+# The two device-action enumeration slots in operator.json (identical in both
+# templates), in their historical orders. The physical order is the canonical
+# manifest's shell-binding order; the turn-ending order is a prompt property.
+_PHYSICAL_ACTIONS_ORDER = OPERATOR_SHELL_ORDER
+_TURN_ENDING_ORDER = (
+    "click",
+    "swipe",
+    "input_text",
+    "long_press",
+    "press_key",
+    "manage_app",
+    "wait_for_delay",
+)
+
+#: Tool-loop ceiling per Operator turn (recited in the template, enforced in
+#: ``OperatorNode._invoke_llm_loop``).
+OPERATOR_MAX_TOOL_ITERATIONS = 20
+
+#: Every tool name the operator prompt slots can reference. ``available_tools=None``
+#: resolves to this set, preserving the historical output.
+OPERATOR_PROMPT_TOOLSET: frozenset[str] = frozenset(
+    _PRE_DECISION_ALL_TOOLS + _PHYSICAL_ACTIONS_ORDER
+)
+
+#: Renders the availability slots in operator.json. Square-bracket delimiters keep
+#: the standard ``{{ ... }}`` context placeholders inert during this phase.
+_CONTRACT_ENV = Environment(
+    block_start_string="[%",
+    block_end_string="%]",
+    variable_start_string="[[",
+    variable_end_string="]]",
+    comment_start_string="[#",
+    comment_end_string="#]",
+    keep_trailing_newline=True,
+    undefined=StrictUndefined,
+)
+
+
+def apply_operator_prompt_contract(
+    prompt_template: str,
+    available_tools: frozenset[str] | None = None,
+) -> str:
+    """Renders a template's availability slots against the actually-available tools.
+
+    Args:
+        prompt_template: One of the raw operator.json templates.
+        available_tools: Tools that actually exist this run. ``None`` renders with the
+            full historical tool set, producing byte-identical output to the
+            pre-assembly contract. Unavailable tools disappear from every enumeration
+            slot, and instruction segments teaching them are removed wholesale.
+    """
+    available = frozenset(resolve_available(available_tools, OPERATOR_PROMPT_TOOLSET))
+
+    def tool_enum(names, final_sep: str | None = None) -> str:
+        return render_tool_enum(tuple(names), available, final_sep=final_sep)
+
+    return _CONTRACT_ENV.from_string(prompt_template).render(
+        available_tools=available,
+        tool_enum=tool_enum,
+        pre_decision_tools=_PRE_DECISION_ALL_TOOLS,
+        helper_tools=_PRE_DECISION_HELPER_TOOLS,
+        adb_tools=_PRE_DECISION_ADB_TOOLS,
+        memory_tools=_PRE_DECISION_MEMORY_TOOLS,
+        physical_actions=_PHYSICAL_ACTIONS_ORDER,
+        turn_ending_actions=_TURN_ENDING_ORDER,
+    )
+
+
+class PromptBuilder:
+    def __init__(self):
+        self.system_parts = []
+        self.human_parts = []
+        self.human_footer = None
+        #: Indices into ``human_parts`` of blocks that only matter this turn (see
+        #: ``artemis.memory.transcript.EPHEMERAL_BLOCKS_KEY``).
+        self.ephemeral_indices: list[int] = []
+
+    def add_system_text(self, text: str):
+        self.system_parts.append(text)
+
+    def add_human_content(self, content: str | dict, *, ephemeral: bool = False):
+        """Append a block to the observation. ``ephemeral=True`` marks it as valid
+        for this turn only: the transcript scrub edge deletes it at depth K, so it
+        never reaches the frozen history or a chunk capsule."""
+        if ephemeral:
+            self.ephemeral_indices.append(len(self.human_parts))
+        self.human_parts.append(content)
+
+    def set_human_footer(self, content: str):
+        self.human_footer = content
+
+    def build(self) -> list[SystemMessage | HumanMessage]:
+        system_content = "".join(self.system_parts)
+        human_content = []
+        for p in self.human_parts:
+            if isinstance(p, str):
+                human_content.append({"type": "text", "text": p})
+            else:
+                human_content.append(p)
+
+        if self.human_footer:
+            human_content.append({"type": "text", "text": self.human_footer})
+
+        human = HumanMessage(content=human_content)
+        if self.ephemeral_indices:
+            from artemis.memory.transcript import mark_ephemeral
+
+            mark_ephemeral(human, self.ephemeral_indices)
+        return [SystemMessage(content=system_content), human]
+
+
+class PromptComponent:
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        raise NotImplementedError
+
+
+def resolve_operator_prompt_tools(ctx: ArtemisContext) -> frozenset[str]:
+    """The tool set the operator prompt may advertise for this run.
+
+    Extracted verbatim from the template component so the transcript static
+    prefix (M2) and the legacy per-turn render assemble against the identical
+    availability set.
+    """
+    # video_analyzer is bound conditionally (graph.py gates it on
+    # video_recording_tools_enabled); the prompt must not advertise it when the
+    # tool is not actually available this run.
+    available = set(OPERATOR_PROMPT_TOOLSET)
+    setup = getattr(ctx, "execution_setup", None)
+    if not (setup and getattr(setup, "video_recording_tools_enabled", False)):
+        available.discard("video_analyzer")
+
+    # The history tools need a DataEngine to read, and search_history is also
+    # config-gated; the prompt must not advertise a tool that is not bound.
+    if getattr(ctx, "data_engine", None) is None:
+        available.difference_update(HISTORY_TOOL_NAMES)
+    elif not _recall_enabled():
+        available.discard("search_history")
+
+    # Device actions the installed actuator backend does not implement disappear
+    # from the prompt in lockstep with their tool declarations.
+    actuator = getattr(ctx, "actuator", None)
+    if actuator is not None and callable(getattr(actuator, "capabilities", None)):
+        try:
+            from artemis.mcp.action_manifest import (
+                DEVICE_ACTIONS,
+                available_device_actions,
+            )
+
+            available -= DEVICE_ACTIONS - available_device_actions(actuator)
+        except Exception as e:
+            logger.warning(f"Failed to assemble prompt against actuator: {e}")
+
+    return frozenset(available)
+
+
+def _operator_grammar_flags(ctx: ArtemisContext) -> tuple[bool, bool, bool]:
+    """(midway_checks, final_check, verification_active) for the template render.
+
+    The two check gates are read separately so the grammar and the check-line
+    guidance are worded for what actually runs: with midway checks off there is
+    no repair loop to teach, and with both off the check-line grammar never
+    enters any prompt.
+    """
+    setup = getattr(ctx, "execution_setup", None)
+    midway = bool(setup and getattr(setup, "midway_checks_enabled", False))
+    final = bool(setup and getattr(setup, "final_check_enabled", False))
+    # The rejection/finding diagnosis trigger only exists while a mechanism
+    # that can produce rejections or findings is active.
+    verification_active = (
+        midway or final or bool(setup and not getattr(setup, "disable_planner_validation", True))
+    )
+    return midway, final, verification_active
+
+
+def _checkpoint_max_repairs(ctx: ArtemisContext) -> int:
+    """The midway repair budget recited in the static prompt."""
+    setup = getattr(ctx, "execution_setup", None)
+    max_repairs = getattr(setup, "checkpoint_max_repairs", None)
+    return max_repairs if isinstance(max_repairs, int) else 2
+
+
+def _grammar_render_context(ctx: ArtemisContext) -> dict:
+    """Template variables shared by the static and legacy system renders."""
+    midway, final, verification_active = _operator_grammar_flags(ctx)
+    return {
+        "plan_grammar": render_plan_grammar_spec(midway=midway, final=final),
+        "verification_active": verification_active,
+        "checks_active": midway or final,
+        "midway_checks_active": midway,
+        "checkpoint_max_repairs": _checkpoint_max_repairs(ctx),
+    }
+
+
+# --- M2 template split -----------------------------------------------------------
+# The only volatile span of operator.json's main_template is the plan+history
+# section below. The transcript path replaces it with a static pointer so the
+# whole system message becomes a byte-stable S region; the legacy path renders
+# the untouched template and stays byte-identical.
+
+#: The volatile section of ``main_template`` (must occur exactly once).
+PLAN_HISTORY_TEMPLATE_SECTION = "## Current Plan & Execution History\n{{ plan_and_history }}"
+
+#: Static replacement used by the transcript S region.
+PLAN_HISTORY_STATIC_POINTER = (
+    "## Current Plan & Execution History\n"
+    "Provided in the conversation that follows: earlier turns carry the raw"
+    " step-by-step execution history (a restored-history block precedes them"
+    " after a process restart), and each turn's observation message recites"
+    " the current task plan."
+)
+
+
+def render_transcript_static_system(
+    prompts: dict,
+    ctx: ArtemisContext,
+    state: State,
+    template_name: str = "main_template",
+) -> str:
+    """Render the transcript path's byte-stable static system prompt (S region).
+
+    Same template, same availability assembly, and the same render inputs as
+    the legacy path — except the volatile plan+history section is swapped for
+    a static pointer, so the output never changes across the session.
+    """
+    prompt_template = prompts.get(template_name)
+    if not prompt_template:
+        raise KeyError("Failed to format prompt, template not found in operator prompts config.")
+    if prompt_template.count(PLAN_HISTORY_TEMPLATE_SECTION) != 1:
+        # Hard dependency of the M2 split (redesign §9): without a clean
+        # section boundary the S region cannot be byte-stable.
+        raise ValueError(
+            "operator main_template no longer contains exactly one plan+history"
+            " section; the transcript static split cannot be applied."
+        )
+    static_template = prompt_template.replace(
+        PLAN_HISTORY_TEMPLATE_SECTION, PLAN_HISTORY_STATIC_POINTER
+    )
+
+    available = resolve_operator_prompt_tools(ctx)
+    static_template = apply_operator_prompt_contract(static_template, available_tools=available)
+    return Template(static_template).render(
+        initial_goal=state.initial_goal,
+        subgoals_status="",
+        plan_and_history="",
+        unified_history="",
+        transcript_history=True,
+        max_burst_actions=_max_burst_actions_for_prompt(),
+        max_tool_calls=OPERATOR_MAX_TOOL_ITERATIONS,
+        **_grammar_render_context(ctx),
+    )
+
+
+def _legacy_elapsed_suffix(ctx: ArtemisContext | None) -> str:
+    """`` [T+mm:ss]`` for the legacy observation header (empty without a session clock)."""
+    import time
+
+    from artemis.memory.transcript import format_session_offset
+
+    engine = getattr(ctx, "data_engine", None)
+    start = getattr(engine, "session_start_time", None)
+    if not isinstance(start, (int, float)):
+        return ""
+    return f" [{format_session_offset(time.time() - start)}]"
+
+
+class TemplatePromptComponent(PromptComponent):
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        prompts = kwargs.get("prompts", {})
+        template_name = kwargs.get("template_name", "main_template")
+        prompt_template = prompts.get(template_name)
+        if not prompt_template:
+            raise KeyError(
+                "Failed to format prompt, template not found in operator prompts config."
+            )
+
+        available = resolve_operator_prompt_tools(ctx)
+
+        prompt_template = apply_operator_prompt_contract(prompt_template, available_tools=available)
+
+        plan_and_history = kwargs.get("plan_and_history", "No plan or history yet.")
+
+        full_prompt = Template(prompt_template).render(
+            initial_goal=state.initial_goal,
+            subgoals_status="",
+            plan_and_history=plan_and_history,
+            unified_history="",
+            transcript_history=False,
+            max_burst_actions=_max_burst_actions_for_prompt(),
+            max_tool_calls=OPERATOR_MAX_TOOL_ITERATIONS,
+            **_grammar_render_context(ctx),
+        )
+
+        parts = full_prompt.split("# CURRENT OBSERVATION")
+        builder.add_system_text(parts[0] + f"# CURRENT OBSERVATION{_legacy_elapsed_suffix(ctx)}\n")
+
+        if len(parts) > 1:
+            builder.set_human_footer(parts[1])
+
+
+class ObservationPromptComponent(PromptComponent):
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        latest_screenshot_b64 = kwargs.get("latest_screenshot_b64")
+        minimal_list = kwargs.get("minimal_list")
+
+        builder.add_human_content("--- Current Screenshot ---")
+        builder.add_human_content(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{latest_screenshot_b64}"},
+            }
+        )
+        builder.add_human_content(f"--- Visible UI Elements ---\n{minimal_list}")
+
+
+class PlanRecitationPromptComponent(PromptComponent):
+    """Per-turn task-plan recitation for the transcript tail (M2).
+
+    With the plan+history section moved out of the (now static) system
+    message, every observation recites the live task plan; the scrub edge
+    strips the copies from older turns at depth 1.
+    """
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        from artemis.memory.transcript import PLAN_RECITATION_MARKER
+
+        task_plan = kwargs.get("task_plan") or "No task plan yet."
+        builder.add_human_content(f"{PLAN_RECITATION_MARKER}\n{task_plan}")
+
+
+class FeedbackPromptComponent(PromptComponent):
+    """Append-only injection of source-tagged findings.
+
+    Reads ``state.operator_feedback`` (written by ``execution_check_node`` at
+    harvest / planner rejection and by exit settlement on a bounce-back).
+    Renders nothing when there are no findings — the prompt template itself
+    is never switched.
+    """
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        findings = getattr(state, "operator_feedback", None)
+        if not findings:
+            return
+        lines = "\n".join(f"- {f}" for f in findings)
+        builder.add_human_content(
+            "--- Verification Findings ---\n"
+            f"{lines}\n"
+            "Each finding is tagged with its source. Checker verdicts"
+            " ([verify failed], [final check], [unmet subgoal]) are independent judgments —"
+            " address any reverted subgoal accordingly; do not re-litigate"
+            " them. [planner] findings are advisory: a lightweight reviewer"
+            " had a concern about a plan change that stayed applied — weigh"
+            " the reason against your own observations.",
+            ephemeral=True,
+        )
+
+
+#: Header of the execution-incident block in the observation tail.
+EXECUTION_INCIDENT_MARKER = "--- Execution Incident (OPEN) ---"
+
+
+def _max_burst_actions_for_prompt() -> int:
+    """The configured fast-action burst ceiling, recited in the operator template."""
+    try:
+        from artemis.config import load_agent_config
+
+        return int(load_agent_config().pro.execution.max_burst_actions)
+    except Exception:
+        return 4
+
+
+def _last_successful_action_before(steps: list, step_number: int | None) -> tuple[str, int] | None:
+    """The most recent step before ``step_number`` whose terminal action was dispatched.
+
+    Returns ``(clean action description, step number)`` or None. This is the
+    Operator's best candidate for the *trigger* of a transient state: the
+    action that summoned the UI the failed target belonged to.
+    """
+    from artemis.utils.task_tree import format_actions_clean
+
+    candidates = []
+    for step in steps or []:
+        number = step.get("step_number")
+        if not isinstance(number, int):
+            continue
+        if step_number is not None and number >= step_number:
+            continue
+        action = step.get("action_taken")
+        if not action:
+            continue
+        result = step.get("last_execution_result")
+        if isinstance(result, dict) and result.get("status") not in (None, "dispatched"):
+            continue
+        candidates.append((number, format_actions_clean(action)))
+    if not candidates:
+        return None
+    number, description = max(candidates, key=lambda c: c[0])
+    return description, number
+
+
+def _incident_target_label(incident: dict) -> str:
+    action = incident.get("action") or {}
+    # The Operator only ever sees 0–1000 coordinates: the recorded pixel
+    # target is the controller's business and is never rendered here.
+    normalized = action.get("normalized_coordinates")
+    parts = []
+    if normalized:
+        parts.append(f"normalized {list(normalized)}")
+    if action.get("target_text"):
+        parts.append(f'"{action["target_text"]}"')
+    elif action.get("target_description"):
+        parts.append(f'"{action["target_description"]}" {SELF_DESCRIBED_MARKER}')
+    return " ".join(parts) if parts else "the recorded target"
+
+
+def render_execution_incident(incident: dict, steps: list) -> str:
+    """The Operator-facing explanation of an open execution incident.
+
+    Structure (deliberately the same every turn so it reads as one continuing
+    incident, not a new alarm): facts -> category-specific evidence. The
+    response protocol is stated once, in the static system prompt.
+    """
+    kind = incident.get("kind") or "exec_error"
+    category = str(incident.get("category") or "general")
+    consecutive = int(incident.get("consecutive_failures") or 1)
+    # Intent form ("launch app 'X'"): the action did not happen, so the
+    # past-tense outcome phrase would misreport it as done.
+    description = action_intent_phrase(incident.get("action_description") or "the planned action")
+    reason = str(incident.get("reason") or "").strip()
+    burst_size = int(incident.get("burst_size") or 1)
+    index = int(incident.get("action_index") or 0)
+    evidence = incident.get("evidence") or {}
+    step_number = incident.get("step_number")
+    target_label = _incident_target_label(incident)
+    prior = _last_successful_action_before(steps, step_number)
+
+    lines = [EXECUTION_INCIDENT_MARKER]
+    opened = f"Opened at Step {step_number}" if step_number else "Opened last turn"
+    lines.append(f"{opened}; consecutive failed turns: {consecutive}.")
+
+    # --- What happened -------------------------------------------------------------
+    if burst_size > 1:
+        remaining = burst_size - index - 1
+        skipped = (
+            f" The {remaining} action(s) after it were NOT executed, so the device may"
+            " be mid-sequence."
+            if remaining > 0
+            else ""
+        )
+        lines.append(
+            f"What happened: action {index + 1} of your {burst_size}-action fast burst,"
+            f" `{description}`, failed: {reason}.{skipped}"
+        )
+    elif kind == "safety_net":
+        lines.append(
+            f"What happened: your planned action `{description}` was NOT executed. The"
+            f" pre-execution safety net refused it: {reason}"
+        )
+    else:
+        lines.append(
+            f"What happened: your planned action `{description}` could"
+            f" not be executed; the device/executor reported: {reason}"
+        )
+
+    # --- Category-specific evidence -------------------------------------------------
+    if category == "target_shifted":
+        location = evidence.get("new_location")
+        bounds = evidence.get("new_bounds")
+        where = f" at normalized {location}" if location else ""
+        bounds_str = f" (bounds {bounds})" if bounds else ""
+        lines.append(
+            f"Evidence: the same element still exists but has moved{where}{bounds_str};"
+            " the shift exceeded the safety net's auto-correction tolerance."
+        )
+    elif category == "target_occupied":
+        occupant = evidence.get("occupant") or "a different element"
+        lines.append(
+            f"Evidence: the target position is now covered by {occupant}. Something"
+            " appeared on top of your target (dialog, sheet, banner, keyboard, or a"
+            " re-laid-out screen)."
+        )
+    elif category in ("target_disappeared", "pixel_target_disappeared"):
+        prior_str = (
+            f" Your last dispatched action was `{prior[0]}` (Step {prior[1]});"
+            " if the vanished target belonged to a state that action summoned, that action"
+            " is the trigger."
+            if prior
+            else ""
+        )
+        lines.append(
+            "Evidence: the element you saw in the previous screenshot is no longer on"
+            f" screen. Its recorded target was {target_label}.{prior_str}"
+        )
+
+    # The response protocol lives in the static system prompt (Execution Incident).
+    return "\n".join(lines)
+
+
+def render_closed_incident(closed: dict) -> str:
+    """One-turn notice after an incident closes: settle the original intent."""
+    opened = closed.get("step_number")
+    closed_at = closed.get("closed_at_step")
+    description = action_intent_phrase(closed.get("action_description") or "the blocked action")
+    header = (
+        f"--- Execution Incident (CLOSED at Step {closed_at}) ---"
+        if closed_at
+        else "--- Execution Incident (CLOSED) ---"
+    )
+    opened_str = f" opened at Step {opened}" if opened else ""
+    return (
+        f"{header}\n"
+        f"The incident{opened_str} on `{description}` closed because your last Turn-Ending"
+        " Action executed. Settle its original intent against the plan and the live screen:"
+        " already served, still pending, or no longer needed."
+    )
+
+
+class ExecutionIncidentPromptComponent(PromptComponent):
+    """Renders the open execution incident until a terminal action succeeds,
+    then a one-turn CLOSED notice asking the Operator to settle the intent.
+
+    Reads ``state.open_incident`` / ``state.last_closed_incident`` (both written
+    by the Validator). Both blocks are ephemeral: the open block is re-rendered
+    every turn the incident stays open, and the step record already carries the
+    failed execution result, so older copies add nothing to the history.
+    """
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        incident = getattr(state, "open_incident", None)
+        if isinstance(incident, dict) and incident.get("reason"):
+            builder.add_human_content(
+                render_execution_incident(incident, kwargs.get("steps") or []),
+                ephemeral=True,
+            )
+            return
+        closed = getattr(state, "last_closed_incident", None)
+        if isinstance(closed, dict) and closed.get("kind"):
+            builder.add_human_content(render_closed_incident(closed), ephemeral=True)
+
+
+class BackgroundTasksPromptComponent(PromptComponent):
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        active_tasks = kwargs.get("active_background_tasks", [])
+        if active_tasks:
+            lines = [
+                "--- Active Background ADB Tasks ---",
+            ]
+            for task in active_tasks:
+                lines.append(
+                    f"- TaskId: {task['task_id']}\n  Command:"
+                    f" `{task['command']}`\n  Cwd: `{task['cwd']}`\n "
+                    f" TerminalID: `{task['terminal_id']}`\n  Accumulated"
+                    f" Output: {task['output_line_count']} lines of logs"
+                )
+            builder.add_human_content("\n".join(lines) + "\n")
+
+        newly_finished_tasks = kwargs.get("newly_finished_tasks", [])
+        if newly_finished_tasks:
+            lines = [
+                "--- NEWLY FINISHED ADB TASKS (Since last step) ---",
+            ]
+            for task in newly_finished_tasks:
+                task_id = task["task_id"]
+                command = task["command"]
+                status = task["status"]
+                output_text = task.get("output_text", "")
+
+                intro = f"- TaskId: {task_id}\n  Command: `{command[:60]}...`\n  Status: {status}"
+
+                if _is_output_long(output_text):
+                    formatted = _format_long_output_response(task_id, output_text, intro)
+                    # format_long_output_response is multi-line, let's indent it nicely
+                    indented = "\n".join(f"  {line}" for line in formatted.splitlines())
+                    lines.append(indented)
+                else:
+                    lines.append(f"{intro}\n  Final Output:\n  {output_text.strip()}")
+            builder.add_human_content("\n".join(lines) + "\n")
+
+
+_PLAN_NOTE_TOOLS = ("update_note", "save_note", "append_note")
+
+
+def step_updated_task_plan(step: dict) -> bool:
+    """Whether a recorded step's tool calls wrote the ``task_plan`` note."""
+    for tc in step.get("tool_calls", []):
+        if tc.get("name") not in _PLAN_NOTE_TOOLS:
+            continue
+        args = tc.get("args", {})
+        note_key = args.get("key") or args.get("name")
+        if note_key == "task_plan":
+            return True
+    return False
+
+
+def unwritten_action_streak(steps: list[dict]) -> int:
+    """Count trailing action steps since the last ``task_plan`` write."""
+    streak = 0
+    for step in reversed(steps or []):
+        if step_updated_task_plan(step):
+            break
+        if step.get("action_taken"):
+            streak += 1
+    return streak
+
+
+def _clip(text: str, limit: int = 80) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
+
+_LEDGER_BOUNCE_TAIL = (
+    " with `update_note` (key `task_plan`), then re-issue the action in the same"
+    " tool-call list (Live Sub-goal Ledger)."
+)
+
+
+#: One-line tail notice for the turn after a turn whose replies carried no visible
+#: reasoning text. Thinking-mode models satisfy "reason first" inside their thought
+#: channel and emit bare tool calls; the reminder costs no extra model call.
+REASONING_REMINDER = (
+    "--- Reminder ---\n"
+    "Your previous turn carried no visible reasoning text (internal thinking is not"
+    " shown). This turn, write one short paragraph of plain prose before calling a"
+    " Turn-Ending Action: what the screen shows, whether the last action worked, and"
+    " what you do next and why."
+)
+
+
+class ReasoningReminderPromptComponent(PromptComponent):
+    """Renders :data:`REASONING_REMINDER` when the previous turn was silent."""
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        if kwargs.get("previous_turn_silent"):
+            builder.add_human_content(REASONING_REMINDER, ephemeral=True)
+
+
+def render_plan_ledger_bounce(task_plan: str, streak: int, stale_turns: int) -> str | None:
+    """Return a plan-ledger validation error, if any."""
+    snapshot = parse_plan(task_plan or "")
+    if not snapshot.has_top_level or snapshot.all_top_level_done:
+        return None
+    milestone = snapshot.active_milestone()
+    if milestone is None:
+        return (
+            "Not executed: no milestone is marked in progress. Mark the one you are"
+            " executing `[/]` and open its `[/]` sub-goal" + _LEDGER_BOUNCE_TAIL
+        )
+    leaf = snapshot.active_leaf(milestone)
+    if leaf is None:
+        return (
+            f'Not executed: the active milestone "{_clip(milestone.text)}" has no'
+            " in-progress `[/]` sub-goal beneath it. Open one for what you are doing now"
+            + _LEDGER_BOUNCE_TAIL
+        )
+    turns = streak + 1
+    if stale_turns > 0 and turns >= stale_turns:
+        return (
+            f'Not executed: the sub-goal "{_clip(leaf.text)}" has stayed in progress for'
+            f" {turns} action turns without any plan change. Settle it (`[x]` / `[!]`) or"
+            " record its progress and open the next leaf" + _LEDGER_BOUNCE_TAIL
+        )
+    return None
+
+
+class ToolLimitWarningPromptComponent(PromptComponent):
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        if getattr(state, "operator_tool_limit_exceeded", False):
+            builder.add_human_content(
+                "\nWarning: your last turn used up its tool-call budget without a"
+                " Turn-Ending Action. Re-examine the task goal and your plan;"
+                " the current approach may not be the right path. If the cause"
+                " is unclear, ask_diagnoser can help.",
+                ephemeral=True,
+            )
+
+
+#: Header of the user-guidance block (shared by the Flash runner and the Pro
+#: operator; the operator's static prompt explains the channel once).
+USER_GUIDANCE_MARKER = "--- User Guidance ---"
+
+
+#: Prefix of the persistent user-instruction line (see :func:`render_user_guidance`).
+USER_INSTRUCTION_PREFIX = "User instruction"
+
+
+class UserGuidance(NamedTuple):
+    """The two observation blocks delivering a mid-run user instruction.
+
+    ``wrapper`` is the per-turn ``--- User Guidance ---`` framing (relay
+    notice, rank, release-loop wording): it is marked ephemeral and leaves
+    with the recent window. ``body`` is the verbatim instruction as one
+    self-contained line; it is added as a regular block so it stays in the
+    active window until the turn is chunk-compressed, at which point the
+    chunk's ``user_lines`` carry it verbatim. Standing instructions remain
+    visible after the turn in which they arrived.
+    """
+
+    body: str
+    wrapper: str
+
+
+def render_user_instruction(instruction: str, *, offset_label: str | None = None) -> str:
+    """The persistent one-line body: ``User instruction (T+mm:ss): "..."``.
+
+    ``offset_label`` is the session-relative time the instruction was
+    delivered when the call site has it; omitted otherwise.
+    """
+    when = f" ({offset_label})" if offset_label else ""
+    return f'{USER_INSTRUCTION_PREFIX}{when}: "{instruction}"'
+
+
+def render_user_guidance(
+    instruction: str,
+    *,
+    release_loop: bool = False,
+    has_plan: bool = True,
+    offset_label: str | None = None,
+) -> UserGuidance:
+    """The observation blocks delivering a mid-run user instruction.
+
+    One rendering for both profiles: the instruction is stated as what it is (an
+    external interruption from the user, relayed by the system) rather than as
+    advice to be weighed, and it explicitly outranks the plan and its check lines.
+    Returns ``(body, wrapper)``; callers add ``wrapper`` with ``ephemeral=True``
+    and ``body`` without (see :class:`UserGuidance`).
+    """
+    rank = (
+        " It outranks the task plan and its check lines: edit the plan to match,"
+        " check lines included."
+        if has_plan
+        else " It outranks your current milestones: adjust them to match."
+    )
+    lines = [
+        USER_GUIDANCE_MARKER,
+        "The user watching this run sent the instruction quoted below; the system"
+        " relays it as an external interruption, like a stop signal." + rank,
+        "Act on it from this turn: reconcile it with the current screen and recent"
+        " history, then choose the next action. The quoted line stays in your"
+        " history as a standing instruction until the user sends another.",
+    ]
+    if release_loop:
+        lines.append(
+            "The user has explicitly authorized stopping any ongoing monitoring loop;"
+            " you may now wrap up and complete the task."
+        )
+    return UserGuidance(
+        body=render_user_instruction(instruction, offset_label=offset_label),
+        wrapper=chr(10).join(lines),
+    )
+
+
+def add_user_guidance(builder: PromptBuilder, guidance: UserGuidance) -> None:
+    """Adds the two guidance blocks: the wrapper ephemeral, the body persistent."""
+    builder.add_human_content(guidance.wrapper, ephemeral=True)
+    builder.add_human_content(guidance.body)
+
+
+class InjectedInstructionPromptComponent(PromptComponent):
+    """The mid-run user instruction: an ephemeral wrapper plus the persistent
+    verbatim body (:class:`UserGuidance`).
+
+    The step record also keeps the instruction verbatim (``extra_metadata``),
+    which is what the chunk ledger renders once the turn is compressed.
+    """
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        injected = getattr(state, "injected_instruction", None)
+        if injected:
+            release_loop = bool(getattr(state, "user_stop_requested", False))
+            add_user_guidance(
+                builder,
+                render_user_guidance(
+                    injected,
+                    release_loop=release_loop,
+                    has_plan=True,
+                    offset_label=_session_offset_label(ctx),
+                ),
+            )
+
+
+def _session_offset_label(ctx: ArtemisContext | None) -> str | None:
+    """The transcript ledger's ``T+mm:ss`` label when a ledger is attached."""
+    ledger = getattr(ctx, "transcript_ledger", None) if ctx is not None else None
+    elapsed_label = getattr(ledger, "elapsed_label", None)
+    if ledger is None or not callable(elapsed_label):
+        return None
+    try:
+        label = elapsed_label()
+    except Exception:
+        return None
+    return label if isinstance(label, str) and label else None
+
+
+class ScreenshotSimilarityPromptComponent(PromptComponent):
+    """Background check: compare current screen against post-action screenshots of the last few steps.
+
+    Inject a note if any are identical. This helps detect if the same screen
+    keeps reappearing unexpectedly.
+    """
+
+    NUM_STEPS_BACK: int = 3
+    MAX_ALLOWED_DIFF_PIXELS: int = 3
+    COLOR_TOLERANCE: int = 8
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        if not ctx or not ctx.data_engine:
+            return
+        latest_screenshot_b64 = kwargs.get("latest_screenshot_b64")
+        steps = kwargs.get("steps") or []
+        if not latest_screenshot_b64 or not steps:
+            return
+        # 1. Load current live image and re-encode to JPEG for symmetric compression matching
+        try:
+            # Strip data URI header if present
+            if "," in latest_screenshot_b64:
+                latest_screenshot_b64 = latest_screenshot_b64.split(",", 1)[1]
+            curr_img_bytes = base64.b64decode(latest_screenshot_b64)
+            raw_img = Image.open(io.BytesIO(curr_img_bytes)).convert("RGB")
+            # Symmetric in-memory re-encoding to match JPEG compression artifacts
+            jpeg_buf = io.BytesIO()
+            raw_img.save(jpeg_buf, format="JPEG", quality=75)
+            jpeg_buf.seek(0)
+            curr_img = Image.open(jpeg_buf).convert("RGB")
+        except Exception:
+            return
+        # 2. Get last steps with a recorded post_image_name or pre_image_name
+        history_steps = [s for s in steps if s.get("post_image_name") or s.get("pre_image_name")]
+        recent_steps = history_steps[-self.NUM_STEPS_BACK :]
+        matched_step_nums = []
+        images_dir = Path(ctx.data_engine.global_base_dir) / "images"
+        # 3. Compare current image with each past step's post-action screenshot
+        for step_rec in recent_steps:
+            step_num = step_rec.get("step_number")
+            if step_num is None:
+                continue
+            image_name = step_rec.get("post_image_name") or step_rec.get("pre_image_name")
+            if not image_name:
+                image_name = step_rec.get("post_image_name")
+            if not image_name:
+                continue
+            image_path = images_dir / f"{image_name}.jpg"
+            if not image_path.exists():
+                continue
+            try:
+                past_img = Image.open(image_path).convert("RGB")
+
+                # Must be same dimensions to compare pixel-by-pixel
+                if curr_img.size != past_img.size:
+                    continue
+                # Count differing pixels
+                diff_count = self._count_differing_pixels(
+                    curr_img, past_img, max_allowed=self.MAX_ALLOWED_DIFF_PIXELS
+                )
+                if diff_count <= self.MAX_ALLOWED_DIFF_PIXELS:
+                    matched_step_nums.append(str(step_num))
+            except Exception:
+                continue
+        # 4. Inject note if any identical screenshots are found
+        if matched_step_nums:
+            steps_str = ", ".join(matched_step_nums)
+            note_text = f"Note: the screen is unchanged since step {steps_str} (pixel-identical)."
+            builder.add_human_content(note_text, ephemeral=True)
+
+    def _count_differing_pixels(
+        self,
+        img1: Image.Image,
+        img2: Image.Image,
+        max_allowed: int | None = None,
+    ) -> int:
+        """Count pixels that differ between two RGB images.
+
+        Early-exits if diff_count exceeds max_allowed for performance.
+        """
+        if max_allowed is None:
+            max_allowed = self.MAX_ALLOWED_DIFF_PIXELS
+        data1 = img1.getdata()
+        data2 = img2.getdata()
+        diff_count = 0
+        tolerance = self.COLOR_TOLERANCE
+        for p1, p2 in zip(data1, data2):
+            if (
+                abs(p1[0] - p2[0]) > tolerance
+                or abs(p1[1] - p2[1]) > tolerance
+                or abs(p1[2] - p2[2]) > tolerance
+            ):
+                diff_count += 1
+                if diff_count > max_allowed:
+                    break
+        return diff_count
+
+
+def _recall_enabled() -> bool:
+    """Whether the search_history tool is enabled by configuration."""
+    try:
+        from artemis.config import load_agent_config
+
+        return bool(load_agent_config().memory.recall.enabled)
+    except Exception:
+        return True
+
+
+class HistoricalStateHintPromptComponent(PromptComponent):
+    """Local historical-state hint from stored perceptual hashes (M4).
+
+    Compares the current screenshot's dHash against the post-action hashes
+    stamped on every recorded step (``extra_metadata["post_image_dhash"]``,
+    including steps already chunk-compressed out of the visible transcript) —
+    an O(n) integer scan, no model call, no historical image bytes. On a
+    close match to a step *older* than the recent window it injects a one-line
+    hint pointing at ``search_history``.
+
+    Division of labor with :class:`ScreenshotSimilarityPromptComponent`: that
+    component's pixel-exact 3-step look-back covers "stuck on the same
+    screen"; this one covers "returned to a much earlier state". When any of
+    the last :attr:`RECENT_SILENT_STEPS` steps also matches, this hint stays
+    silent so the two never fire on the same regime.
+    """
+
+    #: Matches within this many most-recent steps stay silent (the pixel
+    #: same-screen note owns that window).
+    RECENT_SILENT_STEPS: int = 3
+    #: Upper bound on how many historical steps are scanned (most recent first).
+    SCAN_CAP: int = 500
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        latest_screenshot_b64 = kwargs.get("latest_screenshot_b64")
+        steps = kwargs.get("steps") or []
+        if not latest_screenshot_b64 or len(steps) <= self.RECENT_SILENT_STEPS:
+            return
+
+        max_distance = 8
+        try:
+            from artemis.config import load_agent_config
+
+            transcript_cfg = load_agent_config().memory.transcript
+            if not getattr(transcript_cfg, "similarity_hint", True):
+                return
+            max_distance = int(getattr(transcript_cfg, "similarity_max_distance", 8))
+        except Exception as exc:
+            logger.debug(
+                "Transcript similarity config unavailable; using max_distance=%s: %s",
+                max_distance,
+                exc,
+                exc_info=True,
+            )
+
+        try:
+            from artemis.utils.image_hash import dhash_hex, hamming_distance_hex
+
+            if "," in latest_screenshot_b64:
+                latest_screenshot_b64 = latest_screenshot_b64.split(",", 1)[1]
+            current_hash = dhash_hex(base64.b64decode(latest_screenshot_b64))
+        except Exception:
+            return
+        if not current_hash:
+            return
+
+        def _step_hash(step: dict) -> str | None:
+            meta = step.get("extra_metadata") or {}
+            return meta.get("post_image_dhash") or meta.get("pre_image_dhash")
+
+        # Silence rule first: a close match inside the recent window belongs
+        # to the pixel-level same-screen note, not this hint.
+        for step in steps[-self.RECENT_SILENT_STEPS :]:
+            distance = hamming_distance_hex(current_hash, _step_hash(step))
+            if distance is not None and distance <= max_distance:
+                return
+
+        older_steps = steps[: -self.RECENT_SILENT_STEPS][-self.SCAN_CAP :]
+        best_step_number = None
+        best_distance = None
+        for step in older_steps:
+            distance = hamming_distance_hex(current_hash, _step_hash(step))
+            if distance is None or distance > max_distance:
+                continue
+            if best_distance is None or distance <= best_distance:
+                # <= keeps the most recent step on ties.
+                best_distance = distance
+                best_step_number = step.get("step_number")
+
+        if best_step_number is not None:
+            builder.add_human_content(
+                f"Historical state hint: current screen closely resembles the"
+                f" post-action screen from Step {best_step_number}. Use"
+                " search_history / replay_steps only if its details are needed.",
+                ephemeral=True,
+            )

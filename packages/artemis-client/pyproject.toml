@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "artemis-client"
+version = "0.1.0"
+description = "Zero-runtime-dependency Python client for a remote Artemis host"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    { name = "Artemis contributors" },
+]
+dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+artemis_client = ["py.typed"]
+
+[tool.pyright]
+include = ["src", "tests", "examples"]
+extraPaths = ["src"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"

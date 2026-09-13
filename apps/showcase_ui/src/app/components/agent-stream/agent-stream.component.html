@@ -1,0 +1,1436 @@
+<!--
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+<div class="agent-stream-container">
+  <!-- VS Code Style Navigation Header (for responsive small screens) -->
+  <header class="vscode-nav-header">
+    <div class="vscode-tab-container">
+      <button
+        #taskQueueOrigin="cdkOverlayOrigin"
+        cdkOverlayOrigin
+        class="vscode-tab-btn"
+        [class.active]="isTaskDropdownOpen()"
+        (click)="toggleTaskDropdown($event)"
+        title="Task Queue"
+        aria-label="Task Queue"
+        >
+        <span class="material-symbols-outlined tab-icon">list_alt</span>
+        <span class="tab-label">Task Queue</span>
+      </button>
+      <button
+        #notesOrigin="cdkOverlayOrigin"
+        cdkOverlayOrigin
+        class="vscode-tab-btn"
+        [class.active]="isNotesDropdownOpen()"
+        (click)="toggleNotesDropdown($event)"
+        title="Notes & Plans"
+        aria-label="Notes & Plans"
+        >
+        <span class="material-symbols-outlined tab-icon">description</span>
+        <span class="tab-label">Notes & Plans</span>
+      </button>
+    </div>
+
+    <!-- Dropdown Popover Panel for Task Queue -->
+    <ng-template
+      cdkConnectedOverlay
+      [cdkConnectedOverlayOrigin]="taskQueueOrigin"
+      [cdkConnectedOverlayOpen]="isTaskDropdownOpen()"
+      [cdkConnectedOverlayHasBackdrop]="true"
+      cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
+      (backdropClick)="isTaskDropdownOpen.set(false)"
+      [cdkConnectedOverlayPositions]="dropdownPositions"
+    >
+      <div class="vscode-dropdown-menu task-dropdown">
+        <div class="popover-title-header">
+          <span class="material-symbols-outlined">list_alt</span>
+          <span>Task Queue</span>
+        </div>
+        <div class="dropdown-section-label">
+          <span class="material-symbols-outlined icon-bolt">bolt</span>
+          <span>Active Queue ({{ activeQueue().length }})</span>
+        </div>
+        @if (activeQueue().length === 0) {
+          <div class="dropdown-empty-state">
+            No active or queued tasks
+          </div>
+        }
+        @for (session of activeQueue(); track trackSession($index, session)) {
+          <div
+            class="dropdown-item-card"
+            [class.selected]="agentService.currentSessionId() === session.session_id"
+            [class.running]="getTaskStatus(session) === 'running'"
+            (click)="selectTask(session.session_id, $event)"
+            >
+            <div class="item-header">
+              <span class="task-badge" [ngClass]="getTaskStatus(session)">
+                @if (getTaskStatus(session) === 'running') {
+                  <span class="status-dot"></span>
+                }
+                {{ getTaskStatus(session) | uppercase }}
+              </span>
+              <div class="item-header-actions">
+                @if (getDeviceSerial(session)) {
+                  <span class="item-device" [title]="'Device: ' + getDeviceSerial(session)">
+                    <span class="material-symbols-outlined device-icon">phone_android</span>
+                    <span class="device-name">{{ getDeviceSerial(session) }}</span>
+                  </span>
+                }
+                @if (getDeviceSerial(session)) {
+                  <span class="item-time-divider">·</span>
+                }
+                <span class="item-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
+                @if (getTaskStatus(session) === 'running' || getTaskStatus(session) === 'paused') {
+                  <button
+                    type="button"
+                    class="btn-stop-card"
+                    (click)="stopTask(session.session_id, $event)"
+                    title="Stop this task"
+                    aria-label="Stop this task"
+                    >
+                    <span class="material-symbols-outlined">stop_circle</span>
+                  </button>
+                }
+                @if (getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused') {
+                  <button
+                    type="button"
+                    class="btn-delete-card"
+                    (click)="deleteTask(session.session_id, $event)"
+                    title="Delete this task"
+                    aria-label="Delete this task"
+                    >
+                    <span class="material-symbols-outlined">delete</span>
+                  </button>
+                }
+              </div>
+            </div>
+            <div class="item-goal" title="{{ session.initial_goal }}">
+              {{ session.initial_goal || 'Unnamed Task' }}
+            </div>
+            <div class="item-footer">
+              <span class="item-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+              <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
+            </div>
+          </div>
+        }
+        <div class="dropdown-section-label history-label">
+          <span class="material-symbols-outlined icon-history">history</span>
+          <span>Past Runs & History ({{ historyTasks().length }})</span>
+        </div>
+        @if (historyTasks().length === 0) {
+          <div class="dropdown-empty-state">
+            No past task history
+          </div>
+        }
+        <div class="dropdown-history-list">
+          @for (session of historyTasks(); track trackSession($index, session)) {
+            <div
+              class="dropdown-item-card"
+              [class.selected]="agentService.currentSessionId() === session.session_id"
+              [class.running]="getTaskStatus(session) === 'running'"
+              (click)="selectTask(session.session_id, $event)"
+              >
+              <div class="item-header">
+                <span class="task-badge" [ngClass]="getTaskStatus(session)">
+                  @if (getTaskStatus(session) === 'running') {
+                    <span class="status-dot"></span>
+                  }
+                  {{ getTaskStatus(session) | uppercase }}
+                </span>
+                <div class="item-header-actions">
+                  @if (getDeviceSerial(session)) {
+                    <span class="item-device" [title]="'Device: ' + getDeviceSerial(session)">
+                      <span class="material-symbols-outlined device-icon">phone_android</span>
+                      <span class="device-name">{{ getDeviceSerial(session) }}</span>
+                    </span>
+                  }
+                  @if (getDeviceSerial(session)) {
+                    <span class="item-time-divider">·</span>
+                  }
+                  <span class="item-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
+                  @if (getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused') {
+                    <button
+                      type="button"
+                      class="btn-delete-card"
+                      (click)="deleteTask(session.session_id, $event)"
+                      title="Delete this task"
+                      aria-label="Delete this task"
+                      >
+                      <span class="material-symbols-outlined">delete</span>
+                    </button>
+                  }
+                </div>
+              </div>
+              <div class="item-goal" title="{{ session.initial_goal }}">
+                {{ session.initial_goal || 'Unnamed Task' }}
+              </div>
+              <div class="item-footer">
+                <span class="item-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+                <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
+              </div>
+            </div>
+          }
+        </div>
+      </div>
+    </ng-template>
+
+    <!-- Dropdown Popover Panel for Notes & Plans -->
+    <ng-template
+      cdkConnectedOverlay
+      [cdkConnectedOverlayOrigin]="notesOrigin"
+      [cdkConnectedOverlayOpen]="isNotesDropdownOpen()"
+      [cdkConnectedOverlayHasBackdrop]="true"
+      cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
+      (backdropClick)="isNotesDropdownOpen.set(false)"
+      [cdkConnectedOverlayPositions]="dropdownPositions"
+    >
+      <div class="vscode-dropdown-menu notes-dropdown">
+        <div class="popover-title-header">
+          <span class="material-symbols-outlined">description</span>
+          <span>Notes & Plans</span>
+        </div>
+        <!-- Notes Selector / Pills (Shown if there are note files) -->
+        @if (noteKeys().length > 1) {
+          <div class="notes-selector-container">
+            <div class="notes-selector-list">
+              @for (key of noteKeys(); track trackNoteKey($index, key)) {
+                <button
+                  class="note-selector-pill"
+                  [class.active]="agentService.selectedNoteKey() === key"
+                  (click)="selectNote(key, $event)"
+                  >
+                  <span class="material-symbols-outlined pill-icon">draft</span>
+                  {{ key }}
+                </button>
+              }
+            </div>
+          </div>
+        }
+        @if (noteKeys().length === 0) {
+          <div class="dropdown-empty-state">
+            <span class="material-symbols-outlined empty-icon">description</span>
+            <span>No notes available for this session.</span>
+          </div>
+        }
+        <!-- Rich Notes Content Viewer -->
+        @if (noteKeys().length > 0) {
+          <div class="dropdown-notes-content">
+            @if (parsedNote().title) {
+              <h3 class="note-title">{{ parsedNote().title }}</h3>
+            }
+            <!-- Milestones list -->
+            @if (parsedNote().milestones.length > 0) {
+              <div class="milestones-container">
+                @for (milestone of parsedNote().milestones; track trackMilestone($index, milestone)) {
+                  <div
+                    class="milestone-block"
+                    [ngClass]="milestone.type"
+                    >
+                    <div class="milestone-title-row">
+                      @switch (milestone.type) {
+                        @case ('checked') {
+                          <span class="material-symbols-outlined milestone-status-icon checked">check_box</span>
+                        }
+                        @case ('progress') {
+                          <span class="material-symbols-outlined milestone-status-icon progress">indeterminate_check_box</span>
+                        }
+                        @case ('unchecked') {
+                          <span class="material-symbols-outlined milestone-status-icon unchecked">check_box_outline_blank</span>
+                        }
+                      }
+                      <div class="milestone-text">
+                        @for (seg of milestone.segments; track seg) {
+                          <span
+                            [class.bold-segment]="seg.bold"
+                            [class.code-segment]="seg.code"
+                          >{{ seg.text }}</span>
+                        }
+                      </div>
+                    </div>
+                    <!-- Sub-steps list -->
+                    @if (milestone.subSteps.length > 0) {
+                      <div class="milestone-substeps">
+                        @for (step of milestone.subSteps; track trackMarkdownLine($index, step)) {
+                          <div
+                            class="substep-row"
+                            [ngClass]="step.type"
+                            [style.padding-left.px]="(step.indent > 2 ? (step.indent - 2) * 12 : 0)"
+                            >
+                            @switch (step.type) {
+                              @case ('checked') {
+                                <span class="material-symbols-outlined check-icon checked">check_box</span>
+                              }
+                              @case ('progress') {
+                                <span class="material-symbols-outlined check-icon progress">indeterminate_check_box</span>
+                              }
+                              @case ('unchecked') {
+                                <span class="material-symbols-outlined check-icon unchecked">check_box_outline_blank</span>
+                              }
+                              @case ('list-item') {
+                                <span class="bullet">•</span>
+                              }
+                            }
+                            @if (step.type !== 'empty') {
+                              <span class="line-text">
+                                @for (seg of step.segments; track seg) {
+                                  <span
+                                    [class.bold-segment]="seg.bold"
+                                    [class.code-segment]="seg.code"
+                                  >{{ seg.text }}</span>
+                                }
+                              </span>
+                            }
+                          </div>
+                        }
+                      </div>
+                    }
+                    <!-- Verification result -->
+                    @if (milestone.checks.length > 0) {
+                      <div class="milestone-checks-container">
+                        @for (check of milestone.checks; track trackMarkdownLine($index, check)) {
+                          <div
+                            class="verification-card"
+                            [ngClass]="check.type"
+                            [style.margin-left.px]="(check.indent > 2 ? (check.indent - 2) * 12 : 0)"
+                            >
+                            <div class="card-header">
+                              <span class="card-tag" [class.assert]="check.checkKind === 'assert'">{{ check.checkKind || 'verify' }}{{ check.atEnd ? ' @end' : '' }}</span>
+                            </div>
+                            <div class="card-body">
+                              @for (seg of check.segments; track seg) {
+                                <span
+                                  [class.bold-segment]="seg.bold"
+                                  [class.code-segment]="seg.code"
+                                >{{ seg.text }}</span>
+                              }
+                            </div>
+                          </div>
+                        }
+                      </div>
+                    }
+                  </div>
+                }
+              </div>
+            }
+            <!-- Other Markdown Lines Container -->
+            @if (parsedNote().otherLines.length > 0) {
+              <div class="other-lines-container">
+                @for (line of parsedNote().otherLines; track trackMarkdownLine($index, line)) {
+                  @if (line.type === 'verify' || line.type === 'finding') {
+                    <div class="verification-card standalone" [ngClass]="line.type" [style.margin-left.px]="line.indent * 12">
+                      <div class="card-header">
+                        <span class="card-tag" [class.assert]="line.checkKind === 'assert'">{{ line.checkKind || 'verify' }}{{ line.atEnd ? ' @end' : '' }}</span>
+                      </div>
+                      <div class="card-body">
+                        @for (seg of line.segments; track seg) {
+                          <span
+                            [class.bold-segment]="seg.bold"
+                            [class.code-segment]="seg.code"
+                          >{{ seg.text }}</span>
+                        }
+                      </div>
+                    </div>
+                  } @else {
+                    <div
+                      class="md-line"
+                      [ngClass]="line.type"
+                      [style.margin-left.px]="line.indent * 12"
+                      >
+                      @switch (line.type) {
+                        @case ('checked') {
+                          <span class="material-symbols-outlined check-icon checked">check_box</span>
+                        }
+                        @case ('progress') {
+                          <span class="material-symbols-outlined check-icon progress">indeterminate_check_box</span>
+                        }
+                        @case ('unchecked') {
+                          <span class="material-symbols-outlined check-icon unchecked">check_box_outline_blank</span>
+                        }
+                        @case ('list-item') {
+                          <span class="bullet">•</span>
+                        }
+                      }
+                      @if (line.type !== 'empty') {
+                        <span class="line-text">
+                          @for (seg of line.segments; track seg) {
+                            <span
+                              [class.bold-segment]="seg.bold"
+                              [class.code-segment]="seg.code"
+                            >{{ seg.text }}</span>
+                          }
+                        </span>
+                      }
+                    </div>
+                  }
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </ng-template>
+  </header>
+
+  <!-- Floating Top-Right Badges & Toolbar (Pinned overlay, hidden in empty/initial state) -->
+  @if (consolidatedBlocks().length > 0 || showPlanningLoader()) {
+    <div class="stream-floating-toolbar">
+      <!-- Active Architecture Chip: click opens the run info popover -->
+      @if (agentService.viewedModel(); as model) {
+        <button
+          type="button"
+          #runInfoOrigin="cdkOverlayOrigin"
+          cdkOverlayOrigin
+          class="model-info-chip"
+          [ngClass]="getModelClass(model.name)"
+          [class.active]="isRunInfoOpen()"
+          [title]="getArchitectureTooltip(model)"
+          aria-haspopup="dialog"
+          [attr.aria-expanded]="isRunInfoOpen()"
+          (click)="toggleRunInfo($event)"
+          >
+          <span class="material-symbols-outlined model-icon">{{ getModelIcon(model.name) }}</span>
+          <span class="model-label">Architecture:</span>
+          <span class="model-name">{{ getModelDisplayName(model.name) }}</span>
+        </button>
+
+        <ng-template
+          cdkConnectedOverlay
+          [cdkConnectedOverlayOrigin]="runInfoOrigin"
+          [cdkConnectedOverlayOpen]="isRunInfoOpen()"
+          [cdkConnectedOverlayHasBackdrop]="true"
+          cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
+          (backdropClick)="isRunInfoOpen.set(false)"
+          [cdkConnectedOverlayPositions]="dropdownPositions"
+        >
+          <div class="vscode-dropdown-menu run-info-dropdown" role="dialog" aria-label="Run info">
+            <div class="run-info-header">
+              <span class="material-symbols-outlined" [class.is-pro]="runInfoIsPro()">{{ getModelIcon(model.name) }}</span>
+              <span class="run-info-title">{{ getModelDisplayName(model.name) }}</span>
+              @if (model.id) {
+                <span class="run-info-model" [title]="model.id">{{ model.id }}</span>
+              }
+            </div>
+
+            <div class="run-info-row">
+              <span class="run-info-label">Elapsed</span>
+              <span class="run-info-value">{{ runInfoElapsed() }}</span>
+            </div>
+
+            <div class="run-info-row">
+              <span class="run-info-label">Tokens</span>
+              @if (runUsage(); as usage) {
+                <span class="run-info-value">
+                  {{ formatRunTokens(usage.total_tokens) }}
+                  <span class="run-info-sub">{{ formatRunTokens(usage.prompt_tokens) }} in · {{ formatRunTokens(usage.completion_tokens) }} out</span>
+                </span>
+              } @else {
+                <span class="run-info-value is-muted">—</span>
+              }
+            </div>
+
+            <div class="run-info-row is-stacked">
+              <div class="run-info-line">
+                <span class="run-info-label">Context</span>
+                @if (runInfoContextPercent() !== null) {
+                  <span class="run-info-value">
+                    {{ runInfoContextPercent() }}%
+                    <span class="run-info-sub-inline">of {{ formatRunTokens(runUsage()?.operator_context_window_tokens) }}</span>
+                  </span>
+                } @else {
+                  <span class="run-info-value is-muted">—</span>
+                }
+              </div>
+              <div
+                class="run-info-meter"
+                [class.is-high]="(runInfoContextPercent() ?? 0) >= 70"
+                [class.is-critical]="(runInfoContextPercent() ?? 0) >= 90"
+                >
+                <div class="run-info-meter-fill" [style.width.%]="runInfoContextPercent() ?? 0"></div>
+              </div>
+            </div>
+
+            @if (runInfoIsPro()) {
+              <div class="run-info-row">
+                <span class="run-info-label">Result check</span>
+                <span class="run-info-value">{{ runTuningLabel('verify', runInfoTuning()?.verification_level) }}</span>
+              </div>
+              <div class="run-info-row">
+                <span class="run-info-label">Screen reading</span>
+                <span class="run-info-value">{{ runTuningLabel('explore', runInfoTuning()?.explorer_mode) }}</span>
+              </div>
+            } @else {
+              <div class="run-info-note">No extra settings for Flash.</div>
+            }
+          </div>
+        </ng-template>
+      }
+      <!-- Screen Recording Action Button (Interactive Button) -->
+      <button
+        class="btn-screen-recording"
+        [class.active]="agentService.isVideoWindowOpen()"
+        [class.recording]="agentService.isCurrentSessionRunning()"
+        [class.processing]="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing'"
+        [class.has-video]="!agentService.isCurrentSessionRunning() && !!agentService.currentSessionVideoUrl()"
+        [class.has-steps]="!agentService.isCurrentSessionRunning() && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()"
+        [class.failed]="!agentService.isCurrentSessionRunning() && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() === 'failed'"
+        (click)="agentService.toggleVideoPlayer()"
+        [title]="getScreenRecordingButtonTitle()"
+        >
+        @if (agentService.isCurrentSessionRunning()) {
+          <span class="material-symbols-outlined video-icon">
+            videocam
+          </span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing') {
+          <span class="material-symbols-outlined video-icon spin-animation">
+            progress_activity
+          </span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && agentService.currentSessionVideoUrl()) {
+          <span class="material-symbols-outlined video-icon play-icon">
+            smart_display
+          </span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()) {
+          <span class="material-symbols-outlined video-icon steps-icon">
+            slideshow
+          </span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() === 'failed') {
+          <span class="material-symbols-outlined video-icon error-icon">
+            videocam_off
+          </span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() !== 'failed') {
+          <span class="material-symbols-outlined video-icon">
+            videocam
+          </span>
+        }
+        @if (agentService.isCurrentSessionRunning()) {
+          <span class="btn-text">Recording...</span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing') {
+          <span class="btn-text">Preparing...</span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && agentService.currentSessionVideoUrl()) {
+          <span class="btn-text">Play Recording</span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()) {
+          <span class="btn-text">Step Replay</span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() === 'failed') {
+          <span class="btn-text">Recording Failed</span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() !== 'failed') {
+          <span class="btn-text">Screen Recording</span>
+        }
+        @if (agentService.isCurrentSessionRunning()) {
+          <span class="video-pulse-dot red"></span>
+        }
+        @if (!agentService.isCurrentSessionRunning() && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()) {
+          <span class="steps-count-badge">
+            {{ agentService.currentSessionStepFrames().length }}
+          </span>
+        }
+      </button>
+    </div>
+  }
+
+  <!-- Event Logs Section -->
+  <main class="stream-logs-content">
+    @if (agentService.isSessionContentLoading()) {
+      <div class="session-loading-state" aria-live="polite">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading run history...</span>
+      </div>
+    }
+
+    @if (!agentService.isSessionContentLoading() && consolidatedBlocks().length === 0 && !showPlanningLoader() && startupWorkItems().length === 0) {
+      <div class="empty-state">
+        <div class="empty-icon"><span class="material-symbols-outlined">sensors</span></div>
+        <h3>No Stream Activity Selected</h3>
+        <p>Please select a session from the Task List on the right to view its real-time log payloads.</p>
+      </div>
+    }
+
+    <!-- The phase-based session logs list -->
+    @if (!agentService.isSessionContentLoading() && (phases().length > 0 || showPlanningLoader() || startupWorkItems().length > 0)) {
+      <div class="logs-list-container">
+        @if (startupWorkItems().length > 0) {
+          <div class="phase-container startup-phase" aria-live="polite">
+            <div class="phase-header first-phase">
+              <span class="phase-worked-time">Worked for {{ startupPreparationDuration() }}s</span>
+            </div>
+            <div class="phase-body" aria-label="Task startup progress">
+              <div class="block-item type-stream">
+                <div class="step-body">
+                  <div class="step-actions-container">
+                    <div class="llm-retry-notes">
+                      @for (item of startupWorkItems(); track item) {
+                        <div class="llm-retry-note">
+                          <span class="stream-status-dot" [class.streaming]="item.isActive"></span>
+                          <div class="llm-retry-note-text">
+                            <span class="llm-retry-status-line">
+                              {{ item.message }} · {{ item.isActive ? 'Waiting ' : 'Waited ' }}{{ item.elapsed }}
+                            </span>
+                          </div>
+                        </div>
+                      }
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        }
+        @for (phase of phases(); track trackPhase($index, phase); let first = $first) {
+          <div class="phase-container">
+            @if (hasVisibleBlocks(phase)) {
+              <div
+                class="phase-header"
+                [class.first-phase]="first && startupWorkItems().length === 0"
+                >
+                <span class="phase-worked-time">{{ isCheckerPhase(phase) ? 'Checked' : 'Worked' }} for {{ phase.durationSeconds }}s</span>
+                @if (phase.tokens) {
+                  <span class="phase-token-usage" [title]="getTokenTooltip(phase)">
+                    <span class="token-dot">·</span>
+                    <span class="token-text">{{ formatTokenCount(phase.tokens) }}</span>
+                  </span>
+                }
+              </div>
+            }
+            @if (hasVisibleBlocks(phase)) {
+              <div class="phase-body">
+                @for (block of phase.blocks; track trackBlock($index, block)) {
+                  @if (hasVisibleContent(block)) {
+                    <div
+                      class="block-item"
+                      [ngClass]="['type-' + block.type]"
+                      >
+                      <!-- Unified Step / Stream Body -->
+                      <div class="step-body">
+                        <!-- Check block (verifier lane): header, then the declared check items
+                             and how each is judged; the chronological stream follows, and the
+                             result rows close the block (see check-result below). -->
+                        @if (isCheckerBlock(block)) {
+                          <div class="check-lane" [ngClass]="'tone-' + getCheckerTone(block)">
+                            <div class="check-header">
+                              <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                              <span class="check-title">{{ getCheckerPhaseLabel(block) }}</span>
+                              @if (block.data.phase !== 'outcome' && block.data.subgoal_text) {
+                                <span class="check-subject" [title]="block.data.subgoal_text">{{ block.data.subgoal_text }}</span>
+                              }
+                              <span class="check-status">{{ getCheckerStatusLabel(block) }}</span>
+                            </div>
+                            @if (!isCheckerMuted(block) && getCheckerItems(block).length > 0) {
+                              <ol class="check-items">
+                                @for (item of getCheckerItems(block); track $index) {
+                                  <li class="check-item">
+                                    <span class="check-index">{{ $index + 1 }}</span>
+                                    <span class="check-text">{{ item.text }}</span>
+                                    <span class="check-method">{{ getCheckMethodLabel(item, block) }}</span>
+                                  </li>
+                                }
+                              </ol>
+                            }
+                          </div>
+                        }
+                        <!-- Text, tool calls, and actions share one chronological timeline. -->
+                        @if (getSortedStepEvents(block.data).length > 0) {
+                          <div class="step-actions-container">
+                            @for (item of getSortedStepEvents(block.data); track trackStepEvent(itemIdx, item); let itemIdx = $index) {
+                              <!-- Check block: one Thought / Work entry per streamed turn, in time order with its tool calls -->
+                              @if (isCheckerBlock(block) && item.type === 'thinking') {
+                                <div
+                                  class="thinking-stream-details native-thinking-details"
+                                  [class.is-running]="isCheckerSegmentRunning(block, itemIdx) && !isCheckerSegmentResetNotice(item)"
+                                  [class.is-resetting]="isCheckerSegmentResetNotice(item)"
+                                  [class.collapsed]="isCheckerSegmentCollapsed(block, itemIdx)">
+                                  <div class="details-summary" (click)="toggleCheckerSegment(block, itemIdx)">
+                                    <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx) && !isCheckerSegmentResetNotice(item)" [class.resetting]="isCheckerSegmentResetNotice(item)"></span>
+                                    <span class="header-label">{{ isCheckerSegmentResetNotice(item) ? getCheckerSegmentResetMessage(item) : 'Thought' }}</span>
+                                  </div>
+                                  @if (item.data.text && item.data.text.trim()) {
+                                    <div class="details-content-wrapper">
+                                      <div class="details-content stream-box">
+                                        <div class="stream-text" [innerHTML]="renderMarkdown(item.data.text, block.id + '-seg-' + itemIdx)"></div>
+                                      </div>
+                                    </div>
+                                  }
+                                </div>
+                              }
+                              @if (isCheckerBlock(block) && item.type === 'text' && isCheckerTextVisible(item)) {
+                                @if (item.data.isReset) {
+                                  <div class="llm-retry-notes">
+                                    <div class="llm-retry-note">
+                                      <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx)"></span>
+                                      <div class="llm-retry-note-text">
+                                        <span class="llm-retry-status-line">{{ formatResetMessage(getCheckerSegmentResetMessage(item), isCheckerSegmentRunning(block, itemIdx)) }}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                }
+                                @if (item.data.text && item.data.text.trim()) {
+                                  <div
+                                    class="step-raw-thinking-message"
+                                    [class.is-running]="isCheckerSegmentRunning(block, itemIdx)">
+                                    <div class="report-header">
+                                      <span class="stream-status-dot" [class.streaming]="isCheckerSegmentRunning(block, itemIdx)"></span>
+                                      <span class="header-label">Work</span>
+                                    </div>
+                                    <div class="report-content stream-box">
+                                      <div class="stream-text" [innerHTML]="renderMarkdown(item.data.text, block.id + '-seg-' + itemIdx)"></div>
+                                    </div>
+                                  </div>
+                                }
+                              }
+                              <!-- Native Thinking (Thought) -->
+                              @if (!isCheckerBlock(block) && item.type === 'thinking') {
+                                @if (getBlockResets(block, true).length > 0) {
+                                  <div class="llm-retry-notes">
+                                    @for (reset of getBlockResets(block, true); track reset.id || $index) {
+                                      <div class="llm-retry-note">
+                                        <span class="stream-status-dot" [class.streaming]="reset.isWaiting"></span>
+                                        <div class="llm-retry-note-text">
+                                          <span class="llm-retry-status-line">{{ formatResetMessage(reset.message, reset.isWaiting) }}</span>
+                                        </div>
+                                      </div>
+                                    }
+                                  </div>
+                                }
+                                @if (getStreamDisplayText(block.id + '-native', item.data.text) || (isBlockRunning(block) && !isStreamRewinding(block.id + '-native') && !hasWaitingReset(block, true))) {
+                                  <div
+                                    class="thinking-stream-details native-thinking-details"
+                                    [class.is-running]="isBlockRunning(block)"
+                                    [class.collapsed]="collapsedStreams().has(block.data.execution_id || block.data.step_id || block.id)">
+                                    <div class="details-summary" (click)="toggleCollapse(block.data.execution_id || block.data.step_id || block.id)">
+                                      <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                                      <span class="header-label">Thought</span>
+                                    </div>
+                                    @if (getStreamDisplayText(block.id + '-native', item.data.text)) {
+                                      <div class="details-content-wrapper">
+                                        <div class="details-content stream-box">
+                                          <div class="stream-text" [innerHTML]="renderMarkdown(getStreamDisplayText(block.id + '-native', item.data.text), block.id + '-native')"></div>
+                                        </div>
+                                      </div>
+                                    }
+                                  </div>
+                                }
+                              }
+                              <!-- Raw Thinking / Plan / Message (Work) -->
+                              @if (!isCheckerBlock(block) && item.type === 'text') {
+                                @if (getBlockResets(block, false).length > 0) {
+                                  <div class="llm-retry-notes">
+                                    @for (reset of getBlockResets(block, false); track reset.id || $index) {
+                                      <div class="llm-retry-note">
+                                        <span class="stream-status-dot" [class.streaming]="reset.isWaiting"></span>
+                                        <div class="llm-retry-note-text">
+                                          <span class="llm-retry-status-line">{{ formatResetMessage(reset.message, reset.isWaiting) }}</span>
+                                        </div>
+                                      </div>
+                                    }
+                                  </div>
+                                }
+                                @if (getStreamDisplayText(block.id, item.data.text) || (isBlockRunning(block) && !isStreamRewinding(block.id) && !hasWaitingReset(block, false))) {
+                                  <div
+                                    class="step-raw-thinking-message"
+                                    [class.is-running]="isBlockRunning(block)">
+                                    <div class="report-header">
+                                      <span class="stream-status-dot" [class.streaming]="isBlockRunning(block)"></span>
+                                      <span class="header-label">Work</span>
+                                    </div>
+                                    @if (getStreamDisplayText(block.id, item.data.text)) {
+                                      <div class="report-content stream-box">
+                                        <div class="stream-text" [innerHTML]="renderMarkdown(getStreamDisplayText(block.id, item.data.text), block.id)"></div>
+                                      </div>
+                                    }
+                                  </div>
+                                }
+                              }
+                              <!-- Task Submission / Report Card (when item is report_task_status action or tool) -->
+                              @if (isReportStatusAction(item.data)) {
+                                <div class="step-android-action-card task-report-card"
+                                  [class.is-completed]="getReportStatusValue(item.data) === 'completed' || getReportStatusValue(item.data) === 'success'"
+                                  [class.is-failed]="getReportStatusValue(item.data) === 'failed'"
+                                  [class.is-expanded]="isActionExpanded('action-' + block.id + '-' + itemIdx)"
+                                  >
+                                  <div class="action-card-header" (click)="toggleActionExpanded('action-' + block.id + '-' + itemIdx, $event)">
+                                    <span class="material-symbols-outlined action-icon report-icon" [class.is-failed]="getReportStatusValue(item.data) === 'failed'">
+                                      {{ getReportStatusValue(item.data) === 'failed' ? 'cancel' : 'task_alt' }}
+                                    </span>
+                                    <span class="action-title">
+                                      {{ getReportStatusValue(item.data) === 'failed' ? 'Task Execution Failed' : 'Task Completed' }}
+                                    </span>
+                                    <span class="action-status-badge" [class.is-failed]="getReportStatusValue(item.data) === 'failed'" [class.is-completed]="getReportStatusValue(item.data) !== 'failed'">
+                                      <span class="material-symbols-outlined status-icon">
+                                        {{ getReportStatusValue(item.data) === 'failed' ? 'error' : 'check_circle' }}
+                                      </span>
+                                      {{ getReportStatusValue(item.data) === 'failed' ? 'Failed' : 'Completed' }}
+                                    </span>
+                                    <span class="action-expand-icon material-symbols-outlined">
+                                      {{ isActionExpanded('action-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
+                                    </span>
+                                  </div>
+                                  <!-- Compact preview body (when collapsed, matches standard action card) -->
+                                  @if (!isActionExpanded('action-' + block.id + '-' + itemIdx) && getReportStatusExplanation(item.data)) {
+                                    <div class="action-card-body">
+                                      <div class="action-detail-row">
+                                        <span class="detail-label">Summary:</span>
+                                        <span class="detail-value">"{{ getReportStatusExplanation(item.data) }}"</span>
+                                      </div>
+                                    </div>
+                                  }
+                                  <!-- Detailed expanded view (when clicked, matches standard action card structure) -->
+                                  @if (isActionExpanded('action-' + block.id + '-' + itemIdx)) {
+                                    <div class="action-card-expanded-details" (click)="$event.stopPropagation()">
+                                      <div class="expanded-grid">
+                                        @if (getReportStatusExplanation(item.data); as expText) {
+                                          <div class="grid-item full-width">
+                                            <span class="grid-label">Report & Findings</span>
+                                            <span class="grid-value report-markdown-body" [innerHTML]="renderMarkdown(expText, 'report-' + block.id + '-' + itemIdx)"></span>
+                                          </div>
+                                        }
+                                      </div>
+                                      <!-- Final Verified Screenshot -->
+                                      @if (getStepPreImageUrl(block.data, item.data) || getStepPostImageUrl(block.data, item.data)) {
+                                        <div class="expanded-screenshots-container">
+                                          @if (getStepPreImageUrl(block.data, item.data)) {
+                                            <div class="screenshot-column">
+                                              <span class="screenshot-label">Final Verified State</span>
+                                              <div class="image-wrapper" (click)="openImageModal(getStepPreImageUrl(block.data, item.data)!, item.data, $event)">
+                                                <div class="img-relative-box">
+                                                  <img [src]="getStepPreImageUrl(block.data, item.data)" alt="Final Screen Screenshot" />
+                                                </div>
+                                              </div>
+                                            </div>
+                                          }
+                                          @if (getStepPostImageUrl(block.data, item.data)) {
+                                            <div class="screenshot-column">
+                                              <span class="screenshot-label">Post Verification</span>
+                                              <div class="image-wrapper" (click)="openImageModal(getStepPostImageUrl(block.data, item.data)!, null, $event)">
+                                                <div class="img-relative-box">
+                                                  <img [src]="getStepPostImageUrl(block.data, item.data)" alt="Post Screenshot" />
+                                                </div>
+                                              </div>
+                                            </div>
+                                          }
+                                        </div>
+                                      }
+                                    </div>
+                                  }
+                                </div>
+                              }
+                              <!-- Android Action Card (when item is an action) -->
+                              @if (item.type === 'action' && !isReportStatusAction(item.data) && (isAndroidAction(item.data) || item.data?.type === 'action')) {
+                                <div class="step-android-action-card"
+                                  [class.is-running]="isItemRunning(item, block)"
+                                  [class.is-failed]="isActionFailed(item.data, block.data)"
+                                  [class.is-expanded]="isActionExpanded('action-' + block.id + '-' + itemIdx)"
+                                  >
+                                  <div class="action-card-header" (click)="toggleActionExpanded('action-' + block.id + '-' + itemIdx, $event)">
+                                    <span class="material-symbols-outlined action-icon" [class.is-failed]="isActionFailed(item.data, block.data)">{{ getActionIcon(item.data) }}</span>
+                                    <span class="action-title">{{ getActionTitle(item.data) }}</span>
+                                    @if (isActionFailed(item.data, block.data)) {
+                                      <span class="action-status-badge is-failed">
+                                        <span class="material-symbols-outlined status-icon">error</span>
+                                        Failed
+                                      </span>
+                                    }
+                                    <span class="action-expand-icon material-symbols-outlined">
+                                      {{ isActionExpanded('action-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
+                                    </span>
+                                  </div>
+                                  <!-- Compact preview body (when collapsed) -->
+                                  @if (!isActionExpanded('action-' + block.id + '-' + itemIdx) && (getActionTargetText(item.data) || getActionInputText(item.data) || getActionCoords(item.data))) {
+                                    <div class="action-card-body">
+                                      @if (getActionTargetText(item.data)) {
+                                        <div class="action-detail-row">
+                                          <span class="detail-label">Target:</span>
+                                          <span class="detail-value">"{{ getActionTargetText(item.data) }}"</span>
+                                        </div>
+                                      }
+                                      @if (getActionInputText(item.data)) {
+                                        <div class="action-detail-row">
+                                          <span class="detail-label">{{ getActionInputLabel(item.data) }}:</span>
+                                          <span class="detail-value">"{{ getActionInputText(item.data) }}"</span>
+                                        </div>
+                                      }
+                                      @if (getActionCoords(item.data)) {
+                                        <div class="action-detail-row">
+                                          <span class="detail-label">Coordinates:</span>
+                                          <span class="detail-value coordinate-badge">{{ getActionCoords(item.data) }}</span>
+                                        </div>
+                                      }
+                                    </div>
+                                  }
+                                  <!-- Detailed expanded view (when clicked) -->
+                                  @if (isActionExpanded('action-' + block.id + '-' + itemIdx)) {
+                                    <div class="action-card-expanded-details" (click)="$event.stopPropagation()">
+                                      <div class="expanded-grid">
+                                        @if (getActionTargetText(item.data)) {
+                                          <div class="grid-item">
+                                            <span class="grid-label">Target</span>
+                                            <span class="grid-value">"{{ getActionTargetText(item.data) }}"</span>
+                                          </div>
+                                        }
+                                        @if (getActionInputText(item.data)) {
+                                          <div class="grid-item">
+                                            <span class="grid-label">{{ getActionInputLabel(item.data) }}</span>
+                                            <span class="grid-value">"{{ getActionInputText(item.data) }}"</span>
+                                          </div>
+                                        }
+                                        @if (getActionCoords(item.data)) {
+                                          <div class="grid-item">
+                                            <span class="grid-label">Coordinates</span>
+                                            <span class="grid-value code-pill">{{ getActionCoords(item.data) }}</span>
+                                          </div>
+                                        }
+                                        @if (getActionBounds(item.data)) {
+                                          <div class="grid-item">
+                                            <span class="grid-label">Target Bounds</span>
+                                            <span class="grid-value code-pill">[{{ getActionBounds(item.data) }}]</span>
+                                          </div>
+                                        }
+                                        @if (getActionClass(item.data)) {
+                                          <div class="grid-item">
+                                            <span class="grid-label">Target Class</span>
+                                            <span class="grid-value code-pill">{{ getActionClass(item.data) }}</span>
+                                          </div>
+                                        }
+                                        @for (param of getActionExtraParams(item.data); track trackParam($index, param)) {
+                                          <div class="grid-item">
+                                            <span class="grid-label">{{ param.key }}</span>
+                                            <span class="grid-value code-pill">{{ param.value }}</span>
+                                          </div>
+                                        }
+                                        <!-- Fallback item if all detail fields are empty -->
+                                        @if (!getActionTargetText(item.data) && !getActionInputText(item.data) && !getActionCoords(item.data) && !getActionBounds(item.data) && !getActionClass(item.data) && getActionExtraParams(item.data).length === 0) {
+                                          <div class="grid-item">
+                                            <span class="grid-label">Action</span>
+                                            <span class="grid-value">{{ getActionTitle(item.data) }}</span>
+                                          </div>
+                                        }
+                                      </div>
+                                      <!-- Action Screenshots (Pre & Post Action) -->
+                                      @if (getStepPreImageUrl(block.data, item.data) || getStepPostImageUrl(block.data, item.data)) {
+                                        <div class="expanded-screenshots-container">
+                                          @if (getStepPreImageUrl(block.data, item.data)) {
+                                            <div class="screenshot-column">
+                                              <span class="screenshot-label">Pre-Action (Before)</span>
+                                              <div class="image-wrapper" (click)="openImageModal(getStepPreImageUrl(block.data, item.data)!, item.data, $event)">
+                                                <div class="img-relative-box">
+                                                  <img #preImg [src]="getStepPreImageUrl(block.data, item.data)" (load)="onImageLoad(preImg, preOverlay, item.data)" alt="Pre-Action Screenshot" />
+                                                  <div #preOverlay class="overlay-layer"></div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          }
+                                          @if (getStepPostImageUrl(block.data, item.data)) {
+                                            <div class="screenshot-column">
+                                              <span class="screenshot-label">Post-Action (After)</span>
+                                              <div class="image-wrapper" (click)="openImageModal(getStepPostImageUrl(block.data, item.data)!, null, $event)">
+                                                <div class="img-relative-box">
+                                                  <img [src]="getStepPostImageUrl(block.data, item.data)" alt="Post-Action Screenshot" />
+                                                </div>
+                                              </div>
+                                            </div>
+                                          }
+                                        </div>
+                                      }
+                                      @if (isActionFailed(item.data, block.data)) {
+                                        <div class="expanded-error-banner">
+                                          <span class="material-symbols-outlined icon">error</span>
+                                          <span class="error-text">{{ getActionErrorMessage(item.data, block.data) }}</span>
+                                        </div>
+                                      }
+                                    </div>
+                                  }
+                                </div>
+                              }
+                              <!-- Generic Tools & LLM Calls (when item is a tool) -->
+                              @if (item.type === 'tool') {
+                                <!-- UI-hierarchy source changed mid-run (helper <-> UIAutomator2). -->
+                                @if (isBackendSwitchNote(item.data)) {
+                                  <div class="llm-retry-notes">
+                                    <div class="llm-retry-note">
+                                      <span class="stream-status-dot"></span>
+                                      <div class="llm-retry-note-text">
+                                        <span class="llm-retry-status-line">{{ getBackendSwitchMessage(item.data) }}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                }
+                                <!-- Only SDK-observed Gemini retries are shown as quiet stream notes. -->
+                                @if (isLLMRetry(item.data)) {
+                                  <div class="llm-retry-notes">
+                                    @for (retry of getLLMRetryEntries(item.data); track retry; let retryIndex = $index) {
+                                      <div class="llm-retry-note">
+                                        <span class="stream-status-dot"
+                                        [class.streaming]="retryIndex === getLLMRetryEntries(item.data).length - 1 && isLLMRetryEntryWaiting(retry)"></span>
+                                        <div class="llm-retry-note-text">
+                                          @if (isLLMRetryEntryWaiting(retry)) {
+                                            <span class="llm-retry-status-line">
+                                              LLM temporarily unavailable
+                                              @if (getLLMRetryEntryDelay(retry); as retryDelay) {
+                                                · Retrying in {{ retryDelay }}…
+                                              }
+                                            </span>
+                                            <span class="llm-retry-guidance">
+                                              Frequent retries may indicate a low API rate limit. Consider increasing the limit or reducing request concurrency.
+                                            </span>
+                                          }
+                                          @if (!isLLMRetryEntryWaiting(retry)) {
+                                            <span class="llm-retry-status-line">
+                                              Retrying LLM request · Waited {{ getLLMRetryEntryWaited(retry) }}
+                                            </span>
+                                          }
+                                        </div>
+                                      </div>
+                                    }
+                                  </div>
+                                }
+                                <!-- Failed LLM Calls (Permanently maintain Action Card format in red) -->
+                                @if (isDisplayableLLMFailure(item.data)) {
+                                  <div class="llm-failure-stack">
+                                    <div class="step-android-action-card tool-action-card is-failed"
+                                      [class.has-details]="hasLLMFailureRetryEntries(item.data)"
+                                      [class.is-expanded]="isActionExpanded('llm-failure-' + block.id + '-' + itemIdx)"
+                                      (click)="hasLLMFailureRetryEntries(item.data) && toggleActionExpanded('llm-failure-' + block.id + '-' + itemIdx, $event)">
+                                      <div class="action-card-header llm-failure-header">
+                                        <span class="material-symbols-outlined action-icon is-failed">error</span>
+                                        <span class="action-title">LLM Request Failed</span>
+                                        @if (isTerminalLLMFailure(item.data)) {
+                                          <span class="action-status-badge is-paused">
+                                            <span class="material-symbols-outlined status-icon">pause_circle</span>
+                                            Paused
+                                          </span>
+                                        } @else {
+                                          <span class="action-status-badge is-failed">
+                                            <span class="material-symbols-outlined status-icon">warning</span>
+                                            Failed
+                                          </span>
+                                        }
+                                        @if (hasLLMFailureRetryEntries(item.data)) {
+                                          <span class="action-expand-icon material-symbols-outlined">
+                                            {{ isActionExpanded('llm-failure-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
+                                          </span>
+                                        }
+                                      </div>
+                                      <div class="action-card-body">
+                                        <div class="action-detail-row">
+                                          <span class="detail-label">What happened:</span>
+                                          <span class="detail-value">The AI request could not be completed after automatic retries.</span>
+                                        </div>
+                                        <div class="action-detail-row">
+                                          <span class="detail-label">Failure reason:</span>
+                                          <span class="detail-value">{{ getLLMErrorText(item.data) }}</span>
+                                        </div>
+                                        @if (getLLMFailureWaited(item.data); as waited) {
+                                          <div class="action-detail-row">
+                                            <span class="detail-label">Waited:</span>
+                                            <span class="detail-value">{{ waited }}</span>
+                                          </div>
+                                        }
+                                        @if (isActionExpanded('llm-failure-' + block.id + '-' + itemIdx)) {
+                                          <div class="failure-retry-details">
+                                            <div class="failure-retry-title">Retry details</div>
+                                            @for (retry of getLLMFailureRetryEntries(item.data); track retry; let retryIndex = $index) {
+                                              <div class="failure-retry-row">
+                                                <span>Retry {{ retryIndex + 1 }}</span>
+                                                <span>
+                                                  Planned {{ getLLMRetryEntryDelay(retry) || '0s' }}
+                                                  · Waited {{ getLLMRetryEntryWaited(retry) }}
+                                                </span>
+                                              </div>
+                                            }
+                                          </div>
+                                        }
+                                      </div>
+                                    </div>
+                                    @if (isTerminalLLMFailure(item.data)) {
+                                      <div class="llm-resume-row">
+                                        <button
+                                          type="button"
+                                          class="btn-continue-task"
+                                          (click)="resumePausedTask($event)"
+                                          title="Continue the paused task"
+                                          aria-label="Continue the paused task"
+                                          >
+                                          <span class="material-symbols-outlined continue-icon">play_arrow</span>
+                                          <span>Continue task</span>
+                                          <span class="material-symbols-outlined continue-arrow">arrow_forward</span>
+                                        </button>
+                                        <span class="llm-resume-hint">Task paused · no steps are running</span>
+                                      </div>
+                                    }
+                                  </div>
+                                }
+                                <!-- Generic Tool Calls (Text format for note tools, video analyzer, and other sub-agents) -->
+                                @if (shouldShowTool(item.data, block.data) && !isDeviceActionTool(item.data)) {
+                                  <div class="step-generic-tool"
+                                    [class.is-running]="isToolLineRunning(item, block)"
+                                    [class.is-note-tool]="isNoteTool(item.data)"
+                                    [class.is-video-tool]="isVideoTool(item.data)"
+                                    [class.is-video-attention]="isVideoTool(item.data) && isVideoAnalysisAttention(item.data)"
+                                    [attr.title]="getCompressionPhaseTitle(item.data)"
+                                    >
+                                    <div class="tool-call-label">
+                                      <span class="stream-status-dot" [class.streaming]="isToolLineRunning(item, block)"></span>
+                                      <div class="tool-call-text">
+                                        <span>{{ isVideoTool(item.data) ? getVideoAnalysisLabel(item.data) : getToolDisplayLabel(item.data) }}{{ ((isNoteTool(item.data) && getToolKey(item.data)) || isVideoTool(item.data)) ? ':' : '' }}</span>
+                                        <!-- Note Tool Pill -->
+                                        @if (isNoteTool(item.data) && getToolKey(item.data); as key) {
+                                          <span
+                                            class="tool-key-pill"
+                                            (click)="onToolKeyClick(key)"
+                                            title="Click to view note content"
+                                            >
+                                            <span class="material-symbols-outlined pill-icon">draft</span>
+                                            {{ key }}
+                                          </span>
+                                        }
+                                        <!-- Video Tool Pill -->
+                                        @if (isVideoTool(item.data)) {
+                                          <span
+                                            class="tool-key-pill"
+                                            (click)="onVideoToolClick(item.data)"
+                                            [title]="'Open recording at ' + getVideoAnalysisRangeLabel(item.data)"
+                                            >
+                                            <span class="material-symbols-outlined pill-icon">videocam</span>
+                                            {{ getVideoAnalysisRangeLabel(item.data) }}
+                                          </span>
+                                          @if (getVideoAnalysisDetail(item.data); as detail) {
+                                            <span class="video-status-detail">· {{ detail }}</span>
+                                          }
+                                        }
+                                      </div>
+                                    </div>
+                                  </div>
+                                }
+                                <!-- Action Card format (For Device Actions & ADB Commands) -->
+                                @if (shouldShowTool(item.data, block.data) && isDeviceActionTool(item.data)) {
+                                  <div class="step-android-action-card tool-action-card"
+                                    [class.is-running]="isItemRunning(item, block)"
+                                    [class.has-no-details]="isAdbCommandTool(item.data) ? !getAdbCommandLine(item.data) : (!getToolTargetText(item.data) && !getToolInputText(item.data) && !getToolCoords(item.data) && !getToolAnalysisText(item.data) && !getToolGenericDetails(item.data) && getToolExtraParams(item.data).length === 0)"
+                                    [class.is-failed]="isToolFailed(item.data)"
+                                    [class.is-expanded]="isActionExpanded('tool-' + block.id + '-' + itemIdx)"
+                                    >
+                                    <div class="action-card-header" (click)="toggleActionExpanded('tool-' + block.id + '-' + itemIdx, $event)">
+                                      <span class="material-symbols-outlined action-icon" [class.is-failed]="isToolFailed(item.data)">{{ getToolIcon(item.data) }}</span>
+                                      <span class="action-title">{{ getToolTitle(item.data) }}</span>
+                                      @if (isToolFailed(item.data)) {
+                                        <span class="action-status-badge is-failed">
+                                          <span class="material-symbols-outlined status-icon">error</span>
+                                          Failed
+                                        </span>
+                                      }
+                                      <span class="action-expand-icon material-symbols-outlined">
+                                        {{ isActionExpanded('tool-' + block.id + '-' + itemIdx) ? 'expand_less' : 'expand_more' }}
+                                      </span>
+                                    </div>
+                                    <!-- Compact preview body (when collapsed) -->
+                                    @if (!isActionExpanded('tool-' + block.id + '-' + itemIdx) && (isAdbCommandTool(item.data) ? getAdbCommandLine(item.data) : (getToolTargetText(item.data) || getToolInputText(item.data) || getToolCoords(item.data) || getToolAnalysisText(item.data) || getToolGenericDetails(item.data)))) {
+                                      <div class="action-card-body">
+                                        <!-- ADB command details -->
+                                        @if (isAdbCommandTool(item.data)) {
+                                          @if (getAdbCommandLine(item.data)) {
+                                            <div class="action-detail-row">
+                                              <span class="detail-label">Command:</span>
+                                              <span class="detail-value command-value"><code>{{ getAdbCommandLine(item.data) }}</code></span>
+                                            </div>
+                                          }
+                                          @if (getAdbCwd(item.data)) {
+                                            <div class="action-detail-row">
+                                              <span class="detail-label">Cwd:</span>
+                                              <span class="detail-value">"{{ getAdbCwd(item.data) }}"</span>
+                                            </div>
+                                          }
+                                          @if (getAdbTerminalId(item.data)) {
+                                            <div class="action-detail-row">
+                                              <span class="detail-label">Terminal ID:</span>
+                                              <span class="detail-value">"{{ getAdbTerminalId(item.data) }}"</span>
+                                            </div>
+                                          }
+                                        }
+                                        <!-- Standard details -->
+                                        @if (!isAdbCommandTool(item.data)) {
+                                          @if (getToolTargetText(item.data)) {
+                                            <div class="action-detail-row">
+                                              <span class="detail-label">Target:</span>
+                                              <span class="detail-value">"{{ getToolTargetText(item.data) }}"</span>
+                                            </div>
+                                          }
+                                          @if (getToolInputText(item.data)) {
+                                            <div class="action-detail-row">
+                                              <span class="detail-label">{{ getToolInputLabel(item.data) }}:</span>
+                                              <span class="detail-value">"{{ getToolInputText(item.data) }}"</span>
+                                            </div>
+                                          }
+                                          @if (getToolCoords(item.data)) {
+                                            <div class="action-detail-row">
+                                              <span class="detail-label">Coordinates:</span>
+                                              <span class="detail-value coordinate-badge">{{ getToolCoords(item.data) }}</span>
+                                            </div>
+                                          }
+                                          @if (getToolAnalysisText(item.data)) {
+                                            <div class="action-detail-row">
+                                              <span class="detail-label">Analysis:</span>
+                                              <span class="detail-value">"{{ getToolAnalysisText(item.data) }}"</span>
+                                            </div>
+                                          }
+                                          @if (getToolGenericDetails(item.data)) {
+                                            <div class="action-detail-row">
+                                              <span class="detail-label">Details:</span>
+                                              <span class="detail-value">"{{ getToolGenericDetails(item.data) }}"</span>
+                                            </div>
+                                          }
+                                        }
+                                      </div>
+                                    }
+                                    <!-- Detailed expanded view (when clicked) -->
+                                    @if (isActionExpanded('tool-' + block.id + '-' + itemIdx)) {
+                                      <div class="action-card-expanded-details" (click)="$event.stopPropagation()">
+                                        <div class="expanded-grid">
+                                          @if (isAdbCommandTool(item.data)) {
+                                            @if (getAdbCommandLine(item.data)) {
+                                              <div class="grid-item full-width">
+                                                <span class="grid-label">Command</span>
+                                                <span class="grid-value command-value"><code>{{ getAdbCommandLine(item.data) }}</code></span>
+                                              </div>
+                                            }
+                                            @if (getAdbCwd(item.data)) {
+                                              <div class="grid-item">
+                                                <span class="grid-label">Working Directory</span>
+                                                <span class="grid-value">"{{ getAdbCwd(item.data) }}"</span>
+                                              </div>
+                                            }
+                                            @if (getAdbTerminalId(item.data)) {
+                                              <div class="grid-item">
+                                                <span class="grid-label">Terminal ID</span>
+                                                <span class="grid-value code-pill">{{ getAdbTerminalId(item.data) }}</span>
+                                              </div>
+                                            }
+                                          }
+                                          @if (!isAdbCommandTool(item.data)) {
+                                            @if (getToolTargetText(item.data)) {
+                                              <div class="grid-item">
+                                                <span class="grid-label">Target</span>
+                                                <span class="grid-value">"{{ getToolTargetText(item.data) }}"</span>
+                                              </div>
+                                            }
+                                            @if (getToolInputText(item.data)) {
+                                              <div class="grid-item">
+                                                <span class="grid-label">{{ getToolInputLabel(item.data) }}</span>
+                                                <span class="grid-value">"{{ getToolInputText(item.data) }}"</span>
+                                              </div>
+                                            }
+                                            @if (getToolCoords(item.data)) {
+                                              <div class="grid-item">
+                                                <span class="grid-label">Coordinates</span>
+                                                <span class="grid-value code-pill">{{ getToolCoords(item.data) }}</span>
+                                              </div>
+                                            }
+                                            @if (getToolAnalysisText(item.data)) {
+                                              <div class="grid-item">
+                                                <span class="grid-label">Analysis</span>
+                                                <span class="grid-value">"{{ getToolAnalysisText(item.data) }}"</span>
+                                              </div>
+                                            }
+                                            @if (getToolGenericDetails(item.data)) {
+                                              <div class="grid-item">
+                                                <span class="grid-label">Details</span>
+                                                <span class="grid-value">"{{ getToolGenericDetails(item.data) }}"</span>
+                                              </div>
+                                            }
+                                            @for (param of getToolExtraParams(item.data); track trackParam($index, param)) {
+                                              <div class="grid-item">
+                                                <span class="grid-label">{{ param.key }}</span>
+                                                <span class="grid-value code-pill">{{ param.value }}</span>
+                                              </div>
+                                            }
+                                          }
+                                        </div>
+                                        <!-- Action Screenshots (Pre & Post Action) -->
+                                        @if (getStepPreImageUrl(block.data, item.data) || getStepPostImageUrl(block.data, item.data)) {
+                                          <div class="expanded-screenshots-container">
+                                            @if (getStepPreImageUrl(block.data, item.data)) {
+                                              <div class="screenshot-column">
+                                                <span class="screenshot-label">Pre-Action (Before)</span>
+                                                <div class="image-wrapper" (click)="openImageModal(getStepPreImageUrl(block.data, item.data)!, item.data, $event)">
+                                                  <div class="img-relative-box">
+                                                    <img #preImgTool [src]="getStepPreImageUrl(block.data, item.data)" (load)="onImageLoad(preImgTool, preOverlayTool, item.data)" alt="Pre-Action Screenshot" />
+                                                    <div #preOverlayTool class="overlay-layer"></div>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            }
+                                            @if (getStepPostImageUrl(block.data, item.data)) {
+                                              <div class="screenshot-column">
+                                                <span class="screenshot-label">Post-Action (After)</span>
+                                                <div class="image-wrapper" (click)="openImageModal(getStepPostImageUrl(block.data, item.data)!, null, $event)">
+                                                  <div class="img-relative-box">
+                                                    <img [src]="getStepPostImageUrl(block.data, item.data)" alt="Post-Action Screenshot" />
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            }
+                                          </div>
+                                        }
+                                        @if (isToolFailed(item.data)) {
+                                          <div class="expanded-error-banner">
+                                            <span class="material-symbols-outlined icon">error</span>
+                                            <span class="error-text">{{ getToolErrorMessage(item.data) }}</span>
+                                          </div>
+                                        }
+                                      </div>
+                                    }
+                                  </div>
+                                }
+                              }
+                            }
+                          </div>
+                        }
+                        <!-- Check block result: one row per check item, keyed by its number above -->
+                        @if (hasCheckerResult(block)) {
+                          <div class="check-result" [ngClass]="'tone-' + getCheckerTone(block)">
+                            @for (verdict of getCheckerVerdicts(block); track $index) {
+                              <div class="check-verdict" [ngClass]="verdict.status">
+                                <span class="check-index">{{ getVerdictItemNumber(block, verdict, $index) }}</span>
+                                <span class="material-symbols-outlined verdict-icon">{{ getVerdictIcon(verdict.status) }}</span>
+                                <span class="verdict-body">
+                                  <span class="verdict-evidence">{{ verdict.evidence || getVerdictStatusText(verdict.status) }}</span>
+                                  @if (verdict.suggestion) {
+                                    <span class="verdict-suggestion">{{ verdict.suggestion }}</span>
+                                  }
+                                </span>
+                              </div>
+                            }
+                            @for (note of getCheckerNotes(block); track note) {
+                              <div class="check-note">{{ note }}</div>
+                            }
+                          </div>
+                        }
+                      </div>
+                    </div>
+                  }
+                }
+              </div>
+            }
+          </div>
+        }
+        <!-- Outputter Post-Execution Synthesis Card (Rendered ONCE at the end of stream) -->
+        @if (outputterReport(); as outReport) {
+          <div class="outputter-synthesis-stream-card">
+            <div class="synthesis-card-header">
+              <div class="header-left">
+                <span class="material-symbols-outlined icon-sparkle">assignment_turned_in</span>
+                <span class="main-title">Task Report</span>
+              </div>
+              <div class="header-right">
+                <button type="button" class="btn-open-note" (click)="openOutputterNote($event)">
+                  <span class="material-symbols-outlined">visibility</span>
+                  <span>View in Notes</span>
+                </button>
+              </div>
+            </div>
+            <div class="synthesis-card-preview">
+              @if (parsedOutputReport(); as parsedOut) {
+                <div class="parsed-note-container">
+                  @if (parsedOut.title) {
+                    <h3 class="parsed-note-title">{{ parsedOut.title }}</h3>
+                  }
+                  @if (parsedOut.milestones.length > 0) {
+                    <div class="parsed-milestones">
+                      @for (m of parsedOut.milestones; track trackMilestone($index, m)) {
+                        <div class="milestone-item" [class]="'status-' + m.type">
+                          <span class="material-symbols-outlined status-icon">
+                            {{ m.type === 'checked' ? 'check_circle' : (m.type === 'progress' ? 'pending' : 'radio_button_unchecked') }}
+                          </span>
+                          <span class="milestone-text">
+                            @for (seg of m.segments; track seg) {
+                              @if (seg.bold) {
+                                <strong>{{ seg.text }}</strong>
+                              }
+                              @if (seg.code) {
+                                <code>{{ seg.text }}</code>
+                              }
+                              @if (!seg.bold && !seg.code) {
+                                <span>{{ seg.text }}</span>
+                              }
+                            }
+                          </span>
+                        </div>
+                      }
+                    </div>
+                  }
+                  @if (parsedOut.otherLines.length > 0) {
+                    <div class="parsed-other-lines">
+                      @for (line of parsedOut.otherLines; track trackMarkdownLine($index, line)) {
+                        <p class="other-line" [class]="'line-' + line.type">
+                          @if (line.type === 'verify') {
+                            <span class="verify-badge" [class.assert]="line.checkKind === 'assert'">{{ line.checkKind || 'verify' }}{{ line.atEnd ? '@end' : '' }}</span>
+                          }
+                          @if (line.type === 'finding') {
+                            <span class="finding-badge">finding</span>
+                          }
+                          @for (seg of line.segments; track seg) {
+                            @if (seg.bold) {
+                              <strong>{{ seg.text }}</strong>
+                            }
+                            @if (seg.code) {
+                              <code>{{ seg.text }}</code>
+                            }
+                            @if (!seg.bold && !seg.code) {
+                              <span>{{ seg.text }}</span>
+                            }
+                          }
+                        </p>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          </div>
+        }
+        <!-- Planning Loader -->
+        @if (showPlanningLoader() && (startupWorkItems().length === 0 || startupPreparationIsComplete() || consolidatedBlocks().length > 0)) {
+          <div class="planning-loader-container">
+            <div class="planning-loader">
+              <span class="material-symbols-outlined spin-animation">progress_activity</span>
+              <span class="loader-text">{{ currentPlanningText() }}</span>
+            </div>
+          </div>
+        }
+      </div>
+    }
+  </main>
+
+  <!-- Fullscreen Image Zoom Lightbox Modal -->
+  @if (selectedZoomImage()) {
+    <div class="image-modal-backdrop" (click)="closeImageModal($event)">
+      <div class="image-modal-content" (click)="$event.stopPropagation()">
+        <button class="image-modal-close" (click)="closeImageModal($event)" aria-label="Close image preview">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+        <div class="img-relative-box">
+          <img #modalImg [src]="selectedZoomImage()" (load)="onImageLoad(modalImg, modalOverlay, selectedZoomAction())" alt="Zoomed Screenshot" />
+          <div #modalOverlay class="overlay-layer"></div>
+        </div>
+      </div>
+    </div>
+  }
+</div>

@@ -1,0 +1,223 @@
+{
+  "tap": {
+    "description": "Taps on the screen at coordinates.\n\n'coordinates' is a list [x, y].\n'times' is the number of consecutive clicks (default 1).\n'delay_ms' is the delay in milliseconds between consecutive clicks (default\n100).\n",
+    "inputSchema": {
+      "properties": {
+        "coordinates": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Coordinates",
+          "type": "array"
+        },
+        "times": {
+          "default": 1,
+          "title": "Times",
+          "type": "integer"
+        },
+        "delay_ms": {
+          "default": 100,
+          "title": "Delay Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "coordinates"
+      ],
+      "title": "tapArguments",
+      "type": "object"
+    }
+  },
+  "long_press_on": {
+    "description": "Long presses on the screen at coordinates.\n\n'coordinates' is a list [x, y].\n'duration' is in milliseconds (default 1000).\n",
+    "inputSchema": {
+      "properties": {
+        "coordinates": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Coordinates",
+          "type": "array"
+        },
+        "duration": {
+          "default": 1000,
+          "title": "Duration",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "coordinates"
+      ],
+      "title": "long_press_onArguments",
+      "type": "object"
+    }
+  },
+  "swipe": {
+    "description": "Swipes from start coordinates to end coordinates.\n\n'coordinates' is a list [start_x, start_y, end_x, end_y].\n'duration' is in milliseconds (default 400).\n\nSet duration >= 1000 to drag-and-drop. Drag slightly past the target\nposition to trigger reordering.\n",
+    "inputSchema": {
+      "properties": {
+        "coordinates": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Coordinates",
+          "type": "array"
+        },
+        "duration": {
+          "default": 400,
+          "title": "Duration",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "coordinates"
+      ],
+      "title": "swipeArguments",
+      "type": "object"
+    }
+  },
+  "back": {
+    "description": "Simulates pressing the system back button.",
+    "inputSchema": {
+      "properties": {},
+      "title": "backArguments",
+      "type": "object"
+    }
+  },
+  "launch_app": {
+    "description": "Launches an application by its Android package name with retries and smart polling.",
+    "inputSchema": {
+      "properties": {
+        "package_name": {
+          "title": "Package Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_name"
+      ],
+      "title": "launch_appArguments",
+      "type": "object"
+    }
+  },
+  "stop_app": {
+    "description": "Force stops an application by its Android package name.",
+    "inputSchema": {
+      "properties": {
+        "package_name": {
+          "title": "Package Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_name"
+      ],
+      "title": "stop_appArguments",
+      "type": "object"
+    }
+  },
+  "open_link": {
+    "description": "Opens a URL or deep link on the device.",
+    "inputSchema": {
+      "properties": {
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "open_linkArguments",
+      "type": "object"
+    }
+  },
+  "focus_and_input_text": {
+    "description": "Focuses on a UI element at coordinates and inputs text.\n\n'coordinates' is a list [x, y] to tap first to gain focus.\n'clear_before_input' if True, clears all existing text before typing. If False, appends text at the end of existing content.\n'text' supports multi-line content with '\\n'.\n",
+    "inputSchema": {
+      "properties": {
+        "coordinates": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Coordinates",
+          "type": "array"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "clear_before_input": {
+          "default": false,
+          "title": "Clear Before Input",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "coordinates",
+        "text"
+      ],
+      "title": "focus_and_input_textArguments",
+      "type": "object"
+    }
+  },
+  "focus_and_clear_text": {
+    "description": "Focuses on a UI element at coordinates and clears its text content.\n\n'coordinates' is a list [x, y] to tap first to gain focus.\n",
+    "inputSchema": {
+      "properties": {
+        "coordinates": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Coordinates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "coordinates"
+      ],
+      "title": "focus_and_clear_textArguments",
+      "type": "object"
+    }
+  },
+  "erase_one_char": {
+    "description": "Erases a single character (simulates Backspace).",
+    "inputSchema": {
+      "properties": {},
+      "title": "erase_one_charArguments",
+      "type": "object"
+    }
+  },
+  "press_key": {
+    "description": "Presses a specific Android key event (e.g., KEYCODE_ENTER, KEYCODE_HOME).",
+    "inputSchema": {
+      "properties": {
+        "keycode": {
+          "title": "Keycode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keycode"
+      ],
+      "title": "press_keyArguments",
+      "type": "object"
+    }
+  },
+  "take_screenshot": {
+    "description": "Takes a screenshot of the device screen.\n\nReturns the screenshot as a base64 encoded JPEG string.\n",
+    "inputSchema": {
+      "properties": {},
+      "title": "take_screenshotArguments",
+      "type": "object"
+    }
+  },
+  "get_ui_hierarchy": {
+    "description": "Retrieves the current UI elements hierarchy from the device.",
+    "inputSchema": {
+      "properties": {},
+      "title": "get_ui_hierarchyArguments",
+      "type": "object"
+    }
+  }
+}

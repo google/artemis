@@ -1,0 +1,377 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
+# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
+
+import json
+from pathlib import Path
+
+from jinja2 import Template
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from artemis.core.tool_failure import ToolFailure, is_tool_failure
+from artemis.config import OutputConfig
+from artemis.context import ArtemisContext
+from artemis.data_engine.trace import trace
+from artemis.graph.state import State
+from artemis.llm.structured import ParseFailure, parse_structured
+from artemis.services.llm import get_llm, invoke_llm_with_timeout_message, with_fallback
+from artemis.tools.scratchpad import (
+    get_append_note_tool_pure,
+    get_list_notes_tool_pure,
+    get_read_note_tool_pure,
+    get_save_note_tool_pure,
+    get_update_note_tool_pure,
+)
+from artemis.tools.video_tool import get_video_analyzer_tool_pure
+from artemis.tools.history import get_history_tools
+from artemis.tools.tool_wrapper import (
+    invoke_tool_with_injection,
+    split_multimodal_result,
+    tool_result_messages,
+)
+from artemis.utils.logger import get_logger
+from artemis.memory.context_policy import build_history_for
+from artemis.utils.task_tree import get_active_subgoal_hashes
+from pydantic import BaseModel
+
+logger = get_logger(__name__)
+
+
+@trace(type="agent", name="outputter")
+async def outputter(
+    ctx: ArtemisContext,
+    output_config: OutputConfig,
+    graph_output: State,
+    plan_and_history: str | None = None,
+) -> dict:
+    logger.info("Starting Outputter Agent")
+
+    # Fetch plan and history if not provided
+    if plan_and_history is None and ctx.data_engine:
+        try:
+            history = ctx.data_engine.get_agent_friendly_steps()
+
+            # Read current plan if it exists and base_dir is valid
+            current_plan = ""
+            base_dir = getattr(ctx.data_engine, "base_dir", None)
+            if base_dir and isinstance(base_dir, (str, Path)):
+                notes_dir = Path(base_dir) / "notes"
+                current_path = notes_dir / "task_plan.md"
+                if current_path.exists():
+                    try:
+                        current_plan = current_path.read_text(encoding="utf-8")
+                    except Exception as e:
+                        logger.error(f"Failed to read current plan for outputter: {e}")
+
+            if history:
+                active_subgoal_hash = "default"
+                if current_plan:
+                    try:
+                        active_subgoal_hash, _ = get_active_subgoal_hashes(current_plan)
+                    except Exception as e:
+                        logger.error(f"Failed to parse active subgoal in outputter: {e}")
+
+                plan_and_history = build_history_for(
+                    "outputter",
+                    current_plan,
+                    history,
+                    active_subgoal_hash,
+                    engine=ctx.data_engine,
+                )
+        except Exception as e:
+            logger.error(f"Failed to resolve plan and history in outputter: {e}")
+
+    system_message = (
+        "You are the Output Synthesis Agent for an Android UI automation"
+        " system. Your sole objective is to verify whether the user's initial"
+        " goal was achieved and synthesize the final report.\n\n## Core"
+        " Principles\n1. STRICTLY EVIDENCE-BASED & NO HALLUCINATION: Rely ONLY"
+        " on the actual observed execution history and successful tool outputs."
+        " Do not assume, reconstruct, or hallucinate any actions, elements, or"
+        " steps that did not actually occur during this specific run. If a step"
+        " was skipped or not observed (e.g., because the device was already in"
+        " the target state), you must explicitly state that it was 'Not"
+        " Observed / Already in State' rather than fabricating the interaction."
+        " If a tool call (like `video_analyzer`) fails or returns an error, you"
+        " must report the failure and the resulting lack of evidence, rather"
+        " than assuming success or guessing the details. If the user requests a"
+        " step-by-step guide, you must only include steps that were actually"
+        " executed and observed; do not invent 'standard' steps to fill in"
+        " gaps.\n2. NO JARGON IN FINAL ANSWER: The 'Final Answer' must be"
+        " written in clear, user-friendly language, completely free of"
+        " agent-specific jargon (e.g., do not mention 'nodes', 'XPath',"
+        " 'selectors', 'ReAct', or 'tools').\n\n## Tool Usage Guidelines\n-"
+        " LAZY VERIFICATION: If the execution history and the final screenshot"
+        " already in your context provide undeniable proof of the outcome, do"
+        " not call tools. Directly output your conclusion.\n- ACTIVE RETRIEVAL:"
+        " You should only call tools (e.g., `search_history` to locate the"
+        " step, `replay_steps` for its full record, `get_step_screenshot` for"
+        " its image) if you need to extract specific hidden data (like"
+        " verification codes, tracking numbers) or if the final state is"
+        " ambiguous.\n- VIDEO ANALYSIS COST:"
+        " The `video_analyzer` tool is expensive. Use it only when necessary"
+        " (e.g., to verify video playback or motion).\n- PERSISTENT WRITE: If"
+        " you extract important information requested by the user (such as a"
+        " verification code, tracking number, or a text summary), you should"
+        " use `save_note` or `update_note` to write it directly into persistent"
+        " notes so it can be retrieved by other agents or the system."
+    )
+
+    render_kwargs = {
+        "initial_goal": graph_output.initial_goal,
+        "structured_output": output_config.structured_output,
+        "output_description": output_config.output_description,
+        "plan_and_history": plan_and_history,
+    }
+
+    human_message = Template(
+        Path(__file__).parent.joinpath("outputter.md").read_text(encoding="utf-8")
+    ).render(**render_kwargs)
+
+    screenshot_b64 = (
+        graph_output.operator_raw_data.get("screenshot_b64")
+        if graph_output.operator_raw_data
+        else None
+    )
+
+    human_message_content = [{"type": "text", "text": human_message}]
+
+    # Verification material (only present when the run declared check items):
+    # the full append-only verdict sequence plus the four-state test summary.
+    if ctx.data_engine:
+        try:
+            from artemis.graph.checkpoints import read_ledger, read_run_outcome
+
+            ledger_records = read_ledger(ctx.data_engine.base_dir)
+            run_outcome = read_run_outcome(ctx.data_engine.base_dir) or getattr(
+                graph_output, "run_outcome", None
+            )
+            if ledger_records or run_outcome:
+                lines = ["--- Verification Verdict Ledger (append-only) ---"]
+                for r in ledger_records:
+                    lines.append(
+                        f"- attempt {r.get('attempt_id')} [{r.get('kind')}]"
+                        f" '{r.get('item_text')}' -> {r.get('status')}:"
+                        f" {r.get('evidence', '')}"
+                    )
+                if run_outcome:
+                    tests = run_outcome.get("tests") or {}
+                    lines.append(
+                        "--- Test Summary ---\n"
+                        f"task_status={run_outcome.get('task_status')},"
+                        f" passed={tests.get('passed', 0)},"
+                        f" failed={tests.get('failed', 0)},"
+                        f" inconclusive={tests.get('inconclusive', 0)},"
+                        f" unchecked={tests.get('unchecked', 0)}"
+                    )
+                lines.append(
+                    "Report every declared check item with its final state"
+                    " (passed / failed / inconclusive / unchecked) and include"
+                    " the complete verdict sequence above. A failed assertion"
+                    " is a test result to report verbatim, not something to"
+                    " explain away. Items reported unchecked were never"
+                    " judged — never present them as passed."
+                )
+                human_message_content.append({"type": "text", "text": "\n".join(lines)})
+        except Exception as e:
+            logger.error(f"Failed to attach verdict ledger to outputter: {e}")
+
+    # Run environment facts the model must not guess: which UI-hierarchy source
+    # served the run and whether it switched mid-way (a fallback to UIAutomator2
+    # explains slower steps and possible conflicts with other automation tools).
+    from artemis.clients.screen_client_factory import hierarchy_backend_sentence
+
+    relative = ctx.data_engine.get_relative_time if ctx.data_engine else None
+    environment_line = hierarchy_backend_sentence(
+        getattr(ctx, "ui_adb_client", None), relative_time=relative
+    )
+    if environment_line:
+        human_message_content.append(
+            {
+                "type": "text",
+                "text": (
+                    "## Run Environment (facts, include verbatim under a short "
+                    "'Environment' note only if the source changed mid-run or the "
+                    "user asked about it)" + chr(10) + environment_line
+                ),
+            }
+        )
+
+    if screenshot_b64:
+        human_message_content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
+            }
+        )
+
+    messages: list[BaseMessage] = [
+        SystemMessage(content=system_message),
+        HumanMessage(content=human_message_content),
+    ]
+
+    # Setup tools (the shared history tools plus notes and video)
+    search_tool, replay_tool, screenshot_tool = get_history_tools(ctx)
+    list_notes_tool = get_list_notes_tool_pure(ctx)
+    read_note_tool = get_read_note_tool_pure(ctx)
+    save_note_tool = get_save_note_tool_pure(ctx)
+    update_note_tool = get_update_note_tool_pure(ctx)
+    append_note_tool = get_append_note_tool_pure(ctx)
+    video_analyzer_tool = get_video_analyzer_tool_pure(ctx)
+
+    tools = [
+        search_tool,
+        replay_tool,
+        screenshot_tool,
+        list_notes_tool,
+        read_note_tool,
+        save_note_tool,
+        update_note_tool,
+        append_note_tool,
+        video_analyzer_tool,
+    ]
+
+    llm = get_llm(ctx=ctx, name="outputter", is_utils=True)
+    llm_fallback = get_llm(ctx=ctx, name="outputter", is_utils=True, use_fallback=True)
+
+    llm_with_tools = llm.bind_tools(tools=tools)
+    llm_fallback_with_tools = llm_fallback.bind_tools(tools=tools)
+
+    # ReAct Loop
+    max_turns = 20
+    raw_answer = None
+    for turn in range(max_turns):
+        logger.info(f"Outputter ReAct turn {turn + 1}")
+
+        response = await with_fallback(
+            main_call=lambda: invoke_llm_with_timeout_message(llm_with_tools.ainvoke(messages)),
+            fallback_call=lambda: invoke_llm_with_timeout_message(
+                llm_fallback_with_tools.ainvoke(messages)
+            ),
+        )
+
+        messages.append(response)
+
+        if not response.tool_calls:
+            raw_answer = response.content
+            break
+
+        for tc in response.tool_calls:
+            tool_name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
+            args = tc["args"]
+
+            logger.info(f"Outputter executing tool {tool_name} with args: {args}")
+            tool_map = {
+                "search_history": search_tool,
+                "replay_steps": replay_tool,
+                "get_step_screenshot": screenshot_tool,
+                "list_notes": list_notes_tool,
+                "read_note": read_note_tool,
+                "save_note": save_note_tool,
+                "update_note": update_note_tool,
+                "append_note": append_note_tool,
+                "video_analyzer": video_analyzer_tool,
+            }
+
+            try:
+                selected_tool = tool_map.get(tool_name)
+                if selected_tool:
+                    result = await invoke_tool_with_injection(
+                        tool=selected_tool,
+                        args=args,
+                        tool_call_id=tc["id"],
+                        state=graph_output,
+                        record_trace=True,
+                    )
+                else:
+                    result = ToolFailure(f"Error: Tool {tool_name} is not supported.")
+                text, _ = split_multimodal_result(result)
+                status = "error" if is_tool_failure(result) else "success"
+            except Exception as e:
+                logger.error(f"Error running tool {tool_name}: {e}")
+                result = f"Error running tool {tool_name}: {e}"
+                status = "error"
+
+            # Step screenshots enter the conversation in the carrier the
+            # model's provider accepts; text results stay a plain ToolMessage.
+            messages.extend(
+                tool_result_messages(tc["id"], result, name=tool_name, status=status, llm=llm)
+            )
+
+    if raw_answer is None:
+        raw_answer = "Error: Outputter failed to resolve the query within maximum turns."
+        logger.error(raw_answer)
+
+    # Final Formatting if structured output is requested
+    if output_config.structured_output:
+        logger.info("Formatting raw output to structured format...")
+        schema = None
+        so = output_config.structured_output
+        if isinstance(so, dict):
+            schema = so
+        elif isinstance(so, BaseModel):
+            schema = type(so)
+        elif isinstance(so, type) and issubclass(so, BaseModel):
+            schema = so
+
+        if schema is not None:
+            structured_llm = llm.with_structured_output(schema)
+            structured_llm_fallback = llm_fallback.with_structured_output(schema)
+
+            format_messages = [
+                SystemMessage(
+                    content=(
+                        "You are a helpful assistant. Your task is to take the"
+                        " raw execution summary and format it into the"
+                        " requested structured output schema. Do not invent any"
+                        " information. If the raw summary does not contain the"
+                        " required info, leave those fields empty or null."
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        f"Initial Goal: {graph_output.initial_goal}\nRaw Summary:\n{raw_answer}"
+                    )
+                ),
+            ]
+
+            response = await with_fallback(
+                main_call=lambda: invoke_llm_with_timeout_message(
+                    structured_llm.ainvoke(format_messages)
+                ),
+                fallback_call=lambda: invoke_llm_with_timeout_message(
+                    structured_llm_fallback.ainvoke(format_messages)
+                ),
+            )
+
+            if isinstance(response, BaseModel):
+                return response.model_dump()
+            return response
+
+    # Fallback to old behavior if it didn't match the template
+    if isinstance(raw_answer, str):
+        raw_answer_stripped = raw_answer.strip()
+        if raw_answer_stripped.startswith(("{", "[", "```")):
+            parsed = parse_structured(raw_answer_stripped)
+            if not isinstance(parsed, ParseFailure):
+                return parsed
+            # The raw text is a legitimate final answer; the miss is only
+            # noteworthy because the answer *looked* like JSON.
+            logger.warning(
+                "Outputter answer looked like JSON but could not be parsed"
+                f" ({parsed.error}); returning it as plain text."
+            )
+
+    return raw_answer

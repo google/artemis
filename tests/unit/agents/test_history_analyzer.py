@@ -1,0 +1,437 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import StructuredTool
+from artemis.agents.history_analyzer.history_analyzer import HistoryAnalyzer
+from artemis.context import ArtemisContext
+from artemis.core.tool_failure import ToolFailure
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_history_analyzer_no_history():
+    # Mock context with a data engine that has no steps
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.data_engine = MagicMock()
+    mock_ctx.data_engine.get_agent_friendly_steps.return_value = []
+
+    analyzer = HistoryAnalyzer(mock_ctx)
+    result = await analyzer.run("What happened?")
+    assert result == "No history recorded for this session yet."
+
+
+@pytest.mark.asyncio
+async def test_history_analyzer_simple_query_no_tool_call():
+    # Mock context and data engine
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.data_engine = MagicMock()
+    mock_ctx.data_engine.base_dir = "/tmp/fake_traces"
+
+    steps = [
+        {
+            "step_number": 1,
+            "relative_time": "1.2s",
+            "summary": "Opened the settings app",
+        },
+        {
+            "step_number": 2,
+            "relative_time": "4.5s",
+            "summary": "Toggled the wifi switch",
+        },
+    ]
+    mock_ctx.data_engine.get_agent_friendly_steps.return_value = steps
+
+    # Mock LLM to return a direct text response (no tool calls)
+    mock_response = MagicMock()
+    mock_response.content = "First you opened settings, then you toggled wifi."
+    mock_response.tool_calls = []
+
+    mock_llm = MagicMock()
+    mock_llm.bind_tools.return_value = mock_llm
+
+    async def mock_astream(*args, **kwargs):
+        yield mock_response
+
+    mock_llm.astream.side_effect = mock_astream
+
+    with (
+        patch(
+            "artemis.agents.history_analyzer.history_analyzer.get_llm",
+            return_value=mock_llm,
+        ),
+        patch("pathlib.Path.exists", return_value=False),  # Force system prompt fallback
+    ):
+        analyzer = HistoryAnalyzer(mock_ctx)
+        result = await analyzer.run("Summarize the session")
+
+        assert result == "First you opened settings, then you toggled wifi."
+        assert mock_llm.astream.called
+
+
+@pytest.mark.asyncio
+async def test_history_analyzer_detailed_query_with_tool_call():
+    # Mock context and data engine with full details
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.data_engine = MagicMock()
+    mock_ctx.data_engine.base_dir = "/tmp/fake_traces"
+
+    steps = [
+        {
+            "step_number": 1,
+            "relative_time": "1.2s",
+            "summary": "Opened the settings app",
+            "action_taken": {"action": "tap", "coordinates": [500, 600]},
+            "operator_raw_thinking": "Need to open settings to configure wifi",
+            "last_execution_result": {"status": "success"},
+        },
+        {
+            "step_number": 2,
+            "relative_time": "4.5s",
+            "summary": "Toggled the wifi switch",
+            "action_taken": {"action": "tap", "coordinates": [100, 200]},
+            "operator_raw_thinking": "Toggle the switch to turn wifi on",
+            "last_execution_result": {"status": "success"},
+        },
+    ]
+    mock_ctx.data_engine.get_agent_friendly_steps.return_value = steps
+    mock_ctx.data_engine.get_agent_friendly_steps_in_range.side_effect = lambda s, e: [
+        st for st in steps if s <= st["step_number"] <= e
+    ]
+
+    # Turn 1 LLM response: Tool call to replay_steps for step 2
+    mock_response_turn_1 = MagicMock()
+    mock_response_turn_1.content = ""
+    mock_tool_call = {
+        "name": "replay_steps",
+        "args": {"start_step": 2, "end_step": 2},
+        "id": "call_123456",
+    }
+    mock_response_turn_1.tool_calls = [mock_tool_call]
+
+    # Turn 2 LLM response: Final answer using the details
+    mock_response_turn_2 = MagicMock()
+    mock_response_turn_2.content = (
+        "In step 2, the operator was thinking: 'Toggle the switch to turn wifi on'."
+    )
+    mock_response_turn_2.tool_calls = []
+
+    mock_llm = MagicMock()
+    mock_llm.bind_tools.return_value = mock_llm
+    responses = [mock_response_turn_1, mock_response_turn_2]
+    call_count = 0
+
+    async def mock_astream(*args, **kwargs):
+        nonlocal call_count
+        if call_count < len(responses):
+            yield responses[call_count]
+            call_count += 1
+
+    mock_llm.astream.side_effect = mock_astream
+
+    with (
+        patch(
+            "artemis.agents.history_analyzer.history_analyzer.get_llm",
+            return_value=mock_llm,
+        ),
+        patch("pathlib.Path.exists", return_value=False),  # Force fallback prompt
+    ):
+        analyzer = HistoryAnalyzer(mock_ctx)
+        result = await analyzer.run("What was the operator thinking in step 2?")
+
+        assert (
+            result == "In step 2, the operator was thinking: 'Toggle the switch to turn wifi on'."
+        )
+        assert mock_llm.astream.call_count == 2
+
+        # Verify the tool was invoked with correct parameters internally
+        tool_msg = mock_llm.astream.call_args_list[1][0][0][
+            -2
+        ]  # ToolMessage is second to last after final response is appended
+        assert isinstance(tool_msg, ToolMessage)
+        assert tool_msg.tool_call_id == "call_123456"
+        assert tool_msg.name == "replay_steps"
+
+        # The shared replay renderer: step header, screen description, thinking.
+        mock_ctx.data_engine.get_agent_friendly_steps_in_range.assert_called_once_with(2, 2)
+        assert "- **Step 2 (Start: 4.5s)**" in tool_msg.content
+        assert "[Screen]: Toggled the wifi switch" in tool_msg.content
+        assert "Toggle the switch to turn wifi on" in tool_msg.content
+        assert "**Step 1" not in tool_msg.content
+
+
+@pytest.mark.asyncio
+async def test_history_analyzer_read_note_tool_call():
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.data_engine = MagicMock()
+    mock_ctx.data_engine.base_dir = "/tmp/fake_traces"
+
+    steps = [{"step_number": 1, "relative_time": "1.0s", "summary": "Initiated"}]
+    mock_ctx.data_engine.get_agent_friendly_steps.return_value = steps
+
+    # Turn 1 LLM response: Tool call to list_notes
+    mock_response_turn_1 = MagicMock()
+    mock_response_turn_1.content = ""
+    mock_tool_call_list = {"name": "list_notes", "args": {}, "id": "call_list"}
+    mock_response_turn_1.tool_calls = [mock_tool_call_list]
+
+    # Turn 2 LLM response: Tool call to read_note for tactical_plan
+    mock_response_turn_2 = MagicMock()
+    mock_response_turn_2.content = ""
+    mock_tool_call_read = {
+        "name": "read_note",
+        "args": {"key": "tactical_plan"},
+        "id": "call_read",
+    }
+    mock_response_turn_2.tool_calls = [mock_tool_call_read]
+
+    # Turn 3 LLM response: Final answer
+    mock_response_turn_3 = MagicMock()
+    mock_response_turn_3.content = "The plan was to toggle wifi."
+    mock_response_turn_3.tool_calls = []
+
+    mock_llm = MagicMock()
+    mock_llm.bind_tools.return_value = mock_llm
+    responses = [
+        mock_response_turn_1,
+        mock_response_turn_2,
+        mock_response_turn_3,
+    ]
+    call_count = 0
+
+    async def mock_astream(*args, **kwargs):
+        nonlocal call_count
+        if call_count < len(responses):
+            yield responses[call_count]
+            call_count += 1
+
+    mock_llm.astream.side_effect = mock_astream
+
+    # Mock the file system read using patch
+    fake_plan_content = "Goal: Toggle wifi"
+
+    def mock_exists(path):
+        # Let Path("/tmp/fake_traces/notes").exists() and notes/tactical_plan.md exist
+        return True
+
+    def mock_read_text(self, encoding="utf-8"):
+        return fake_plan_content
+
+    def mock_glob(self, pattern):
+        return [Path("/tmp/fake_traces/notes/tactical_plan.md")]
+
+    with (
+        patch(
+            "artemis.agents.history_analyzer.history_analyzer.get_llm",
+            return_value=mock_llm,
+        ),
+        patch("pathlib.Path.exists", mock_exists),
+        patch("pathlib.Path.read_text", mock_read_text),
+        patch("pathlib.Path.glob", mock_glob),
+    ):
+        analyzer = HistoryAnalyzer(mock_ctx)
+        result = await analyzer.run("What is the saved tactical plan?")
+
+        assert result == "The plan was to toggle wifi."
+        assert mock_llm.astream.call_count == 3
+
+        # Verify list_notes response
+        list_msg = mock_llm.astream.call_args_list[1][0][0][
+            3
+        ]  # Index 3 contains the ToolMessage for list_notes
+        assert isinstance(list_msg, ToolMessage)
+        assert list_msg.tool_call_id == "call_list"
+        assert list_msg.content == "Here are all the notes:\n- tactical_plan (1 lines)"
+
+        # Verify read_note response
+        read_msg = mock_llm.astream.call_args_list[2][0][0][
+            5
+        ]  # Index 5 contains the ToolMessage for read_note
+        assert isinstance(read_msg, ToolMessage)
+        assert read_msg.tool_call_id == "call_read"
+        assert read_msg.content == (
+            f"Note 'tactical_plan' ({len(fake_plan_content.splitlines())} lines):"
+            f"\n{fake_plan_content}"
+        )
+
+
+def test_history_analyzer_robust_tools_behavior():
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.data_engine = MagicMock()
+    mock_ctx.data_engine.base_dir = "/tmp/fake_traces"
+
+    steps = [
+        {
+            "step_number": 1,
+            "relative_time": "1.0s",
+            "summary": "Action 1",
+            "action_taken": {"action": "tap"},
+        }
+    ]
+
+    analyzer = HistoryAnalyzer(mock_ctx)
+    mock_ctx.data_engine.get_agent_friendly_steps_in_range.return_value = steps
+
+    # 1. The shared replay tool coerces string step numbers
+    replay_tool = next(t for t in analyzer._build_tools() if t.name == "replay_steps")
+    result_details = replay_tool.invoke({"start_step": "1", "end_step": "1"})
+    mock_ctx.data_engine.get_agent_friendly_steps_in_range.assert_called_once_with(1, 1)
+    assert "- **Step 1 (Start: 1.0s)**" in result_details
+    assert "[Screen]: Action 1" in result_details
+
+    # 2. Test read_note with .md suffix
+    from artemis.tools.scratchpad import get_read_note_tool_pure
+
+    read_tool = get_read_note_tool_pure(analyzer.ctx)
+
+    def mock_exists(path):
+        return "tactical_plan.md" in str(path)
+
+    with (
+        patch("pathlib.Path.exists", mock_exists),
+        patch("pathlib.Path.read_text", return_value="Tactical plan content"),
+    ):
+        result_read = read_tool.invoke({"key": "tactical_plan.md"})
+        assert result_read == "Note 'tactical_plan.md' (1 lines):\nTactical plan content"
+
+
+@pytest.mark.asyncio
+async def test_history_analyzer_integration_with_task_tree():
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.data_engine = MagicMock()
+    mock_ctx.data_engine.base_dir = "/tmp/fake_traces"
+
+    steps = [
+        {
+            "step_id": "step_1",
+            "step_number": 1,
+            "relative_time": "1.0s",
+            "summary": "Step 1",
+        },
+    ]
+    mock_ctx.data_engine.get_agent_friendly_steps.return_value = steps
+
+    mock_response = MagicMock()
+    mock_response.content = "Answer"
+    mock_response.tool_calls = []
+
+    mock_llm = MagicMock()
+    mock_llm.bind_tools.return_value = mock_llm
+
+    async def mock_astream(*args, **kwargs):
+        yield mock_response
+
+    mock_llm.astream.side_effect = mock_astream
+
+    fake_plan = """- [/] Active Subgoal
+- [ ] Pending Subgoal"""
+
+    mock_path = MagicMock()
+    mock_path.exists.return_value = True
+    mock_path.read_text.return_value = fake_plan
+
+    # Mock the policy-table compiled-history renderer (M4)
+    with (
+        patch(
+            "artemis.agents.history_analyzer.history_analyzer.get_llm",
+            return_value=mock_llm,
+        ),
+        patch(
+            "artemis.agents.history_analyzer.history_analyzer.get_note_file_path",
+            return_value=mock_path,
+        ),
+        patch("artemis.agents.history_analyzer.history_analyzer.build_history_for") as mock_build,
+    ):
+        mock_build.return_value = "Mocked operation history"
+        analyzer = HistoryAnalyzer(mock_ctx)
+        await analyzer.run("query")
+
+        # Verify build_history_for call args
+        mock_build.assert_called_once()
+        args, kwargs = mock_build.call_args
+        assert args[0] == "history_analyzer"
+        assert args[1] == fake_plan
+        assert args[2] == steps
+
+        import hashlib
+
+        expected_hash = hashlib.md5(b"Active Subgoal").hexdigest()
+        assert args[3] == expected_hash
+
+        assert kwargs.get("engine") is mock_ctx.data_engine
+
+
+# --- tool results: status is structural, never sniffed from the words -----------------
+
+
+# A helper tool reports failure structurally (``ToolFailure``); free-form text
+# that merely starts with "Error" is an ordinary answer.
+_STATUS_CASES = [
+    pytest.param(ToolFailure("Error: note 'progress' not found"), "error", id="tool_failure"),
+    pytest.param("Error 404 was typed into the search box", "success", id="plain_error_text"),
+]
+
+
+def _text_tool(name: str, result):
+    async def _run(key: str) -> str:
+        return result
+
+    return StructuredTool.from_function(coroutine=_run, name=name, description=name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result, expected_status", _STATUS_CASES)
+async def test_history_analyzer_tool_message_status_is_structural(result, expected_status):
+    mock_ctx = MagicMock(spec=ArtemisContext)
+    mock_ctx.data_engine = MagicMock()
+    mock_ctx.data_engine.base_dir = "/tmp/fake_traces"
+    mock_ctx.data_engine.get_agent_friendly_steps.return_value = [
+        {"step_number": 1, "relative_time": "1.2s", "summary": "Opened the settings app"}
+    ]
+
+    tool_turn = MagicMock(content="")
+    tool_turn.tool_calls = [{"name": "read_note", "args": {"key": "progress"}, "id": "c1"}]
+    final_turn = MagicMock(content="done")
+    final_turn.tool_calls = []
+    responses = [tool_turn, final_turn]
+
+    async def mock_astream(*args, **kwargs):
+        yield responses.pop(0)
+
+    mock_llm = MagicMock()
+    mock_llm.bind_tools.return_value = mock_llm
+    mock_llm.astream.side_effect = mock_astream
+
+    with (
+        patch(
+            "artemis.agents.history_analyzer.history_analyzer.get_llm",
+            return_value=mock_llm,
+        ),
+        patch.object(
+            HistoryAnalyzer, "_build_tools", return_value=[_text_tool("read_note", result)]
+        ),
+        patch("pathlib.Path.exists", return_value=False),
+    ):
+        answer = await HistoryAnalyzer(mock_ctx).run("What did the note say?")
+
+    assert answer == "done"
+    second_turn_messages = mock_llm.astream.call_args_list[1][0][0]
+    tool_msgs = [m for m in second_turn_messages if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].tool_call_id == "c1"
+    assert tool_msgs[0].status == expected_status
+    assert tool_msgs[0].content == str(result)

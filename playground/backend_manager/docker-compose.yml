@@ -1,0 +1,51 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+version: '3.8'
+
+services:
+  backend-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount host Docker socket for spawning ephemeral Artemis containers
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - APP_ENV=production
+      - PORT=8000
+      - DOCKER_SOCKET_PATH=unix://var/run/docker.sock
+      - DOCKER_NETWORK=artemis-net
+      - ARTEMIS_IMAGE=artemis:latest
+      - CLOUD_ORCHESTRATOR_URL=http://cloud-orchestrator:2081
+      - CUTTLEFISH_HOST_GATEWAY=cloud-orchestrator
+      - USE_LOCAL_FALLBACK_DB=true
+    networks:
+      - artemis-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+networks:
+  artemis-net:
+    name: artemis-net
+    driver: bridge

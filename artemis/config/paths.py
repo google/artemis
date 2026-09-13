@@ -1,0 +1,244 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Centralized workspace, configuration, temporary files, and directory management."""
+
+import os
+from pathlib import Path
+import sys
+
+from artemis.config.constants import (
+    DATA_ENGINE_DB_FILENAME,
+    ENV_ANTIGRAVITY_APP_DIR,
+    ENV_ARTEMIS_APP_DIR,
+    ENV_ARTEMIS_TRACES_DIR,
+    ENV_ARTEMIS_USE_USER_DIR,
+    IMAGES_DIRNAME,
+    IPC_PORT_FILENAME,
+    LS_ADDRESS_FILENAME,
+    PAUSE_FILENAME,
+    REPLAY_DIRNAME,
+    SERVER_INFO_FILENAME,
+    TEST_DATA_DIRNAME,
+    TEST_OUTPUTS_DIRNAME,
+)
+from artemis.platform import platform
+from artemis.resources import get_bundled_config_path
+
+# Project root directory (3 levels up from artemis/config/paths.py)
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+CONFIG_DIR = ROOT_DIR / "config"
+
+
+def is_frozen_bundle() -> bool:
+    """Check if running inside a PyInstaller / Nuitka standalone compiled binary."""
+    return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+
+
+def is_source_checkout() -> bool:
+    """Return whether ``ROOT_DIR`` is an Artemis source checkout.
+
+    Installed wheels also contain an ``artemis`` directory, so the repository
+    metadata file is the important discriminator.  Runtime code must not treat
+    a wheel's ``site-packages`` directory as writable application state.
+    """
+    return (ROOT_DIR / "pyproject.toml").is_file() and (ROOT_DIR / "artemis").is_dir()
+
+
+def _use_user_app_dir() -> bool:
+    """Return whether mutable runtime state belongs in the PAL user directory."""
+    return (
+        is_frozen_bundle()
+        or not is_source_checkout()
+        or os.getenv(ENV_ARTEMIS_USE_USER_DIR) == "true"
+        or bool(os.getenv(ENV_ARTEMIS_APP_DIR))
+        or bool(os.getenv(ENV_ANTIGRAVITY_APP_DIR))
+    )
+
+
+def get_app_dir() -> Path:
+    """Returns the central application directory for ARTEMIS configurations, DBs, and traces.
+
+    Order of precedence:
+    1. ARTEMIS_APP_DIR or ANTIGRAVITY_APP_DIR environment variable.
+    2. Legacy ~/.gemini/jetski or ~/.artemis directory if it exists.
+    3. OS-standard data directory via Platform Abstraction Layer (PAL).
+    """
+    return platform.paths.resolve_app_dir()
+
+
+def get_env_file() -> Path:
+    """Return the canonical writable dotenv file for this installation mode."""
+    return get_app_dir() / ".env" if _use_user_app_dir() else ROOT_DIR / ".env"
+
+
+def get_default_traces_path() -> Path:
+    """Returns default traces directory.
+
+    Uses user app dir when running as a frozen binary or when app dir env is set.
+    """
+    env_traces = os.getenv(ENV_ARTEMIS_TRACES_DIR)
+    if env_traces:
+        traces_dir = Path(env_traces)
+    elif _use_user_app_dir():
+        traces_dir = get_app_dir() / "traces"
+    else:
+        traces_dir = ROOT_DIR / "traces"
+
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    return traces_dir
+
+
+def get_traces_dir() -> Path:
+    """Alias for get_default_traces_path."""
+    return get_default_traces_path()
+
+
+def get_temp_dir(subfolder: str | None = None) -> Path:
+    """Returns a unified temporary directory for ARTEMIS runtime operations (e.g., screenshots, recordings).
+
+    Args:
+        subfolder: Optional subfolder name under the temp directory.
+
+    Returns:
+        Path object pointing to the initialized temporary directory.
+    """
+    return platform.paths.temp_dir(subfolder)
+
+
+def get_data_engine_db_path() -> Path:
+    """Returns the unified SQLite database path for ARTEMIS DataEngine."""
+    return get_default_traces_path() / DATA_ENGINE_DB_FILENAME
+
+
+def get_ipc_port_file() -> Path:
+    """Returns the location of the IPC port synchronization file."""
+    app_dir_file = get_app_dir() / IPC_PORT_FILENAME
+    if _use_user_app_dir() or app_dir_file.exists():
+        return app_dir_file
+    return ROOT_DIR / IPC_PORT_FILENAME
+
+
+def get_ls_address_file() -> Path:
+    """Returns the location of the Language Server address synchronization file."""
+    app_dir_file = get_app_dir() / LS_ADDRESS_FILENAME
+    if _use_user_app_dir() or app_dir_file.exists():
+        return app_dir_file
+    return ROOT_DIR / LS_ADDRESS_FILENAME
+
+
+def get_server_info_file() -> Path:
+    """Returns the location of the Artemis server metadata file."""
+    app_dir_file = get_app_dir() / SERVER_INFO_FILENAME
+    if _use_user_app_dir() or app_dir_file.exists():
+        return app_dir_file
+    return ROOT_DIR / SERVER_INFO_FILENAME
+
+
+def get_config_path(filename: str, default_bundled_path: Path | None = None) -> Path:
+    """Resolve a configuration file path across env vars, config dir, project dir, app dir, and bundles.
+
+    Resolution Order:
+    1. Environment variable override: `ARTEMIS_<FILENAME_UPPER>`
+    2. Central `config/` directory: `<ROOT_DIR>/config/<filename>`
+    3. Project root directory: `<ROOT_DIR>/<filename>`
+    4. User application/config directory via PAL: `<CONFIG_DIR>/<filename>` or `<APP_DIR>/<filename>`
+    5. Custom bundled path, then the immutable template included in the wheel
+    """
+    env_var = f"ARTEMIS_{filename.upper().replace('.', '_').replace('-', '_')}"
+    env_path_str = os.getenv(env_var)
+    if env_path_str:
+        env_path = Path(env_path_str)
+        if env_path.exists():
+            return env_path
+
+    # Check config/ directory
+    config_dir_path = CONFIG_DIR / filename
+    if config_dir_path.exists():
+        return config_dir_path
+
+    # Check project root directory
+    project_path = ROOT_DIR / filename
+    if project_path.exists():
+        return project_path
+
+    # Check user PAL config directory
+    pal_config_path = platform.paths.config_dir / filename
+    if pal_config_path.exists():
+        return pal_config_path
+
+    # Check user app directory
+    app_dir_path = get_app_dir() / filename
+    if app_dir_path.exists():
+        return app_dir_path
+
+    # Explicit and wheel-bundled defaults are immutable last-resort templates.
+    if default_bundled_path and default_bundled_path.exists():
+        return default_bundled_path
+    bundled_path = get_bundled_config_path(filename)
+    if bundled_path is not None:
+        return bundled_path
+
+    raise FileNotFoundError(
+        f"Configuration file '{filename}' not found in config dir ({config_dir_path}), "
+        f"project root ({project_path}), app dir ({app_dir_path}), or bundled resources."
+    )
+
+
+GLOBAL_APP_DIR = get_app_dir()
+GLOBAL_JETSKI_DIR = GLOBAL_APP_DIR  # Backward-compatibility alias
+
+
+def get_pause_file() -> Path:
+    """Returns the central pause signal file path."""
+    return get_app_dir() / PAUSE_FILENAME if _use_user_app_dir() else ROOT_DIR / PAUSE_FILENAME
+
+
+def get_replay_dir() -> Path:
+    """Returns the central step replay directory."""
+    replay_dir = get_default_traces_path() / REPLAY_DIRNAME
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    return replay_dir
+
+
+def get_test_data_dir() -> Path:
+    """Returns the test replay data directory."""
+    d = get_replay_dir() / TEST_DATA_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_test_outputs_dir() -> Path:
+    """Returns the test replay outputs directory."""
+    d = get_replay_dir() / TEST_OUTPUTS_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_images_dir() -> Path:
+    """Returns the traces images directory."""
+    d = get_default_traces_path() / IMAGES_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# Module-level convenience constants & backward-compatible aliases
+WORKSPACE_ROOT = ROOT_DIR
+TRACES_PATH = get_default_traces_path()
+DB_PATH = get_data_engine_db_path()
+PAUSE_FILE = get_pause_file()
+REPLAY_BASE_DIR = get_replay_dir()
+TEST_DATA_DIR = get_test_data_dir()
+TEST_OUTPUTS_DIR = get_test_outputs_dir()
+IMAGES_DIR = get_images_dir()

@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Artemis Accessibility Helper</string>
+    <string name="accessibility_service_description">Lightweight non-exclusive accessibility helper for Artemis UI automation and testing.</string>
+</resources>
