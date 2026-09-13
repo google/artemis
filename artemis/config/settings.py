@@ -306,6 +306,37 @@ class Settings(BaseSettings):
                 except Exception as e:
                     logger.warning(f"Could not persist {env_key_name} to {env_file}: {e}")
 
+    def reload_managed_env(self) -> None:
+        """Apply managed credentials from the canonical .env file."""
+        from dotenv import dotenv_values
+
+        from artemis.config.paths import get_env_file as resolve_env_file
+
+        env_path = resolve_env_file()
+        parsed = dotenv_values(dotenv_path=env_path, encoding="utf-8") if env_path.exists() else {}
+
+        def first_assigned(*names: str) -> str | None:
+            if not any(name in parsed for name in names):
+                return None
+            for name in names:
+                raw = parsed.get(name)
+                if raw and not is_placeholder_key(raw):
+                    return raw.strip()
+            return ""
+
+        providers: tuple[tuple[str, tuple[str, ...]], ...] = (
+            ("google", (ENV_GEMINI_API_KEY, ENV_GOOGLE_API_KEY)),
+            ("openai", (ENV_OPENAI_API_KEY,)),
+            ("anthropic", (ENV_ANTHROPIC_API_KEY,)),
+            ("openrouter", (ENV_OPEN_ROUTER_API_KEY,)),
+            ("xai", (ENV_XAI_API_KEY,)),
+            ("ocr", (ENV_OCR_API_KEY, ENV_VISION_API_KEY)),
+        )
+        for provider, names in providers:
+            value = first_assigned(*names)
+            if value is not None:
+                self.set_api_key(provider, value, persist_to_env=False)
+
 
 # Singleton instance
 settings = Settings()

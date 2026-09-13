@@ -576,6 +576,23 @@ export class SystemService {
       })
     );
   }
+
+  /** Reload managed credentials from .env on the server. */
+  public reloadEnv(): Observable<any> {
+    return this.http.post<any>('/api/system/reload-env', {}).pipe(
+      tap({
+        next: (res) => {
+          if (res?.report) {
+            this.applyReadinessReport(res.report);
+          }
+          this.fetchModelConfigEnv().subscribe();
+        },
+        error: (err) => {
+          console.error('Failed to reload .env:', err);
+        }
+      })
+    );
+  }
 }
 
 export interface ModelConfigEnvResponse {

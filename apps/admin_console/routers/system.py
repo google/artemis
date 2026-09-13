@@ -493,6 +493,25 @@ async def get_model_config_and_env():
     }
 
 
+@router.post("/reload-env")
+async def reload_env_from_file():
+    """Re-read managed credentials from .env into the running process."""
+    from artemis.config import settings
+
+    try:
+        settings.reload_managed_env()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read .env: {exc}") from exc
+
+    readiness_engine.invalidate_cache()
+    updated_report = await readiness_engine.run_all(force_refresh=True)
+    return {
+        "status": "success",
+        "message": "Reloaded credentials from .env.",
+        "report": updated_report,
+    }
+
+
 @router.get("/server-status")
 async def get_server_runtime_status():
     """Retrieve runtime status, PID, port, and uptime of the Artemis server."""
