@@ -27,7 +27,10 @@ try:
     from admin_console.schemas.task_schema import RunRequest
     from admin_console.services.ipc_service import ipc_service
     from admin_console.services.model_service import model_service
-    from admin_console.services.task_preset_catalog import task_recommendation_engine
+    from admin_console.services.task_preset_catalog import (
+        APP_REGISTRY,
+        task_recommendation_engine,
+    )
     from admin_console.services.task_queue_service import task_queue_service
 except ImportError:
     from apps.admin_console.core.state import state
@@ -35,7 +38,10 @@ except ImportError:
     from apps.admin_console.schemas.task_schema import RunRequest
     from apps.admin_console.services.ipc_service import ipc_service
     from apps.admin_console.services.model_service import model_service
-    from apps.admin_console.services.task_preset_catalog import task_recommendation_engine
+    from apps.admin_console.services.task_preset_catalog import (
+        APP_REGISTRY,
+        task_recommendation_engine,
+    )
     from apps.admin_console.services.task_queue_service import task_queue_service
 
 
@@ -61,8 +67,8 @@ async def get_task_presets(
 async def get_task_catalog():
     """Retrieve full catalog of predefined tasks and app package registry."""
     return {
-        "tasks": [t.model_dump() for t in task_recommendation_engine.get_all_tasks()],
-        "app_registry": task_recommendation_engine.get_app_registry(),
+        "tasks": task_recommendation_engine.get_all_tasks(),
+        "app_registry": APP_REGISTRY,
     }
 
 
