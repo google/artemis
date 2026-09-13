@@ -8,8 +8,9 @@ The central orchestration, API gateway, authentication, and container lifecycle 
 
 1. **Authentication & OTP Callbacks**:
    - Manages user verification (`POST /api/v1/auth/otp/send` and `POST /api/v1/auth/otp/verify`).
-   - Issues signed JWT access tokens for secure tenant separation.
-   - Provides session validation hooks for Nginx ingress (`/api/v1/auth/validate-session`).
+   - Issues signed JWT access tokens for secure tenant separation, plus an `HttpOnly` `artemis_session_token` cookie scoped to `/session/` for browser requests that cannot send headers (iframe, img, EventSource).
+   - Provides the session ownership check that Nginx `auth_request` calls for every `/session/{id}/` route (`/api/v1/auth/validate-session`).
+   - OTP delivery is not wired to an SMS or email provider yet. Codes are never logged, so production sign-in requires adding a delivery provider in `app/auth/otp_service.py`.
 
 2. **Docker Socket Container Orchestration**:
    - Communicates with `/var/run/docker.sock` to dynamically spawn `artemis-session-<session_id>` containers on the shared `artemis-net` bridge network.
@@ -73,7 +74,7 @@ playground/backend_manager/
 * `POST /api/v1/auth/otp/send` — Request a 6-digit OTP code (`{"identifier": "user@example.com"}`).
 * `POST /api/v1/auth/otp/verify` — Verify OTP code and receive signed JWT token (`{"identifier": "...", "code": "123456"}`).
 * `GET /api/v1/auth/me` — Return profile of the current authenticated user (`Authorization: Bearer <jwt>`).
-* `GET /api/v1/auth/validate-session?session_id=...` — Validate user authorization for a specific session.
+* `GET /api/v1/auth/validate-session?session_id=...` — Validate that the caller (Bearer token or session cookie) owns the session. Returns `200`, `401`, or `403`.
 
 ### Sessions & Container Management
 * `POST /api/v1/sessions/create` — Provision Cuttlefish AVD + Artemis container, link ADB, and register mapping.
@@ -93,7 +94,10 @@ playground/backend_manager/
 | :--- | :--- | :--- |
 | `PORT` | `8000` | HTTP port to listen on |
 | `APP_ENV` | `development` | Environment mode (`development` / `production`) |
-| `JWT_SECRET_KEY` | `artemis-...` | Secret key for signing JWT session tokens |
+| `JWT_SECRET_KEY` | **required** | Secret key for signing JWT session tokens, at least 32 characters (`openssl rand -hex 32`). The service refuses to start without it. |
+| `DEV_MOCK_OTP` | *(empty)* | Fixed OTP code issued instead of a random one, for local development only. Rejected when `APP_ENV=production`. |
+| `OTP_MAX_ATTEMPTS` | `5` | Wrong codes allowed before the issued OTP is locked |
+| `OTP_RESEND_COOLDOWN_SECONDS` | `60` | Minimum wait before `/otp/send` replaces the current code (earlier requests get `429` with `Retry-After`) |
 | `DOCKER_SOCKET_PATH` | `unix://var/run/docker.sock` | Path to host Docker daemon socket |
 | `DOCKER_NETWORK` | `artemis-net` | Shared bridge network for dynamic container routing |
 | `ARTEMIS_IMAGE` | `artemis:latest` | Docker image to spawn for Artemis instances |
@@ -114,6 +118,7 @@ docker build -t artemis-backend-manager:latest .
 
 ### 2. Run with Docker Compose
 ```bash
+export JWT_SECRET_KEY="$(openssl rand -hex 32)"
 docker-compose up -d
 ```
 
@@ -125,6 +130,21 @@ docker run -d \
   --network artemis-net \
   --add-host host.docker.internal:host-gateway \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  -e JWT_SECRET_KEY="$(openssl rand -hex 32)" \
   -p 8000:8000 \
   artemis-backend-manager:latest
 ```
+
+`playground/deploy_to_cos.sh` generates the secret once per VM in `~/.artemis-playground/backend.env` and reuses it on every redeploy.
+
+### 4. Local Development Sign-in
+Without a delivery provider, run the service directly (not through the Compose file, which sets `APP_ENV=production`) with a fixed development code in `playground/backend_manager/.env`:
+```bash
+JWT_SECRET_KEY=<output of: openssl rand -hex 32>
+DEV_MOCK_OTP=123456
+```
+```bash
+cd playground/backend_manager
+uvicorn app.main:app --port 8000
+```
+Request a code with `POST /api/v1/auth/otp/send` first, then verify with the fixed code. The session cookie is `Secure`, so the `/session/` routes need HTTPS through the Nginx proxy.

@@ -1,0 +1,6 @@
+{
+  "status": 401,
+  "error": "unauthorized",
+  "message": "Sign in to access this Artemis session. The session routes require a valid access token or session cookie.",
+  "timestamp": "auto"
+}

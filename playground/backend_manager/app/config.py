@@ -14,10 +14,16 @@
 
 import os
 from pathlib import Path
-from pydantic_settings import BaseSettings
+from typing import Self
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PRODUCTION_ENV = "production"
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="allow")
+
     # Application & Server Settings
     APP_NAME: str = "Artemis Backend Manager"
     APP_ENV: str = "development"
@@ -26,13 +32,21 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # Security & JWT Token Config
-    JWT_SECRET_KEY: str = "artemis-cos-production-super-secret-key-change-in-prod"
+    # Required: the empty default is validated and rejected, so every deployment must set
+    # its own secret. (A default keeps `Settings()` well-typed for static type checkers.)
+    JWT_SECRET_KEY: str = Field(default="", min_length=32, validate_default=True)
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
 
     # OTP Authentication Config
     OTP_EXPIRE_SECONDS: int = 300  # 5 minutes
-    DEV_MOCK_OTP: str = "123456"  # Bypass code for dev/test environments
+    OTP_MAX_ATTEMPTS: int = 5  # Wrong guesses allowed before the issued code is locked
+    # Minimum wait before a new code replaces the current one. Without it, requesting a
+    # fresh code after every lockout would reset OTP_MAX_ATTEMPTS indefinitely.
+    OTP_RESEND_COOLDOWN_SECONDS: int = 60
+    # Fixed code issued instead of a random one, for local development only.
+    # Leave empty in any shared deployment; it is rejected when APP_ENV=production.
+    DEV_MOCK_OTP: str = ""
 
     # Docker Socket & Ephemeral Container Settings
     DOCKER_SOCKET_PATH: str = "unix://var/run/docker.sock"
@@ -64,9 +78,14 @@ class Settings(BaseSettings):
     # Paths
     STATIC_DIR: Path = Path(__file__).resolve().parent / "static"
 
-    class Config:
-        env_file = ".env"
-        extra = "allow"
+    @model_validator(mode="after")
+    def _reject_mock_otp_in_production(self) -> Self:
+        if self.APP_ENV.strip().lower() == PRODUCTION_ENV and self.DEV_MOCK_OTP:
+            raise ValueError(
+                "DEV_MOCK_OTP must be empty when APP_ENV=production: "
+                "a fixed code would let anyone sign in as any user."
+            )
+        return self
 
 
 settings = Settings()

@@ -17,6 +17,8 @@ The proxy acts as the single TLS/SSL termination gateway on standard ports (`80`
 | `/session/{id}/artemis/*` | `http://artemis-session-{id}:8080/*` | HTTP/1.1 / WS | Artemis REST API and task execution endpoints |
 | `/session/{id}/cuttlefish/*` | `http://host.docker.internal:8443/*` | **WebRTC / WS** | Cuttlefish WebRTC signaling & interactive device controls |
 
+Every `/session/{id}/` route is protected by `auth_request`: Nginx asks the backend (`/api/v1/auth/validate-session`) whether the caller owns session `{id}` before proxying. Callers authenticate with `Authorization: Bearer <jwt>` or the `artemis_session_token` cookie set at OTP verification. Denied requests receive `401.json` or `403.json`.
+
 ---
 
 ## 📁 File Structure
@@ -42,6 +44,8 @@ playground/nginx_container/
 │       └── sse_params.conf      # SSE streaming parameters (proxy_buffering off)
 └── html/
     ├── index.html               # Fallback landing page
+    ├── 401.json                 # JSON error response for unauthenticated session access
+    ├── 403.json                 # JSON error response for sessions owned by another user
     ├── 502.json                 # JSON error response for provisioning containers
     └── 504.json                 # JSON error response for timeouts
 ```
@@ -116,12 +120,15 @@ If a requested session container is still booting or unavailable, Nginx returns 
    # Output: OK
    ```
 
-2. **Test Dynamic Routing**:
+2. **Test Session Authorization**:
    ```bash
-   # Launch a mock session container
-   docker run -d --name artemis-session-test123 --network artemis-net hashicorp/http-echo -text="Hello from Session test123" -listen=:8080
-
-   # Test via Nginx proxy
+   # Without credentials, every session route is rejected before reaching a container
    curl -k https://localhost/session/test123/artemis/
-   # Output: Hello from Session test123
+   # Output: 401.json
+
+   # With a token for a user who does not own the session
+   curl -k -H "Authorization: Bearer <jwt>" https://localhost/session/test123/artemis/
+   # Output: 403.json
    ```
+
+3. **Test Dynamic Routing**: create a session through `POST /api/v1/sessions/create`, then request `https://localhost/session/<session_id>/artemis/` with that user's token. The request is proxied to `artemis-session-<session_id>:8080`.

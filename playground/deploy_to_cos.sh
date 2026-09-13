@@ -94,6 +94,20 @@ set -euo pipefail
 echo "  [COS] Ensuring shared Docker network (artemis-net)..."
 docker network create artemis-net 2>/dev/null || true
 
+echo "  [COS] Ensuring persistent Backend Manager secrets..."
+# JWT_SECRET_KEY has no default. Generate it once per VM and reuse it on every
+# redeploy so issued tokens stay valid. To rotate it, delete the file and redeploy.
+SECRETS_DIR="${HOME}/.artemis-playground"
+BACKEND_ENV_FILE="${SECRETS_DIR}/backend.env"
+if [ ! -s "$BACKEND_ENV_FILE" ]; then
+    mkdir -p "$SECRETS_DIR"
+    chmod 700 "$SECRETS_DIR"
+    JWT_SECRET_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    (umask 077 && printf 'JWT_SECRET_KEY=%s\n' "$JWT_SECRET_KEY" > "$BACKEND_ENV_FILE")
+    unset JWT_SECRET_KEY
+    echo "  [COS] Generated a new JWT secret at ${BACKEND_ENV_FILE}."
+fi
+
 echo "  [COS] Stopping previous container instances if running..."
 docker rm -f backend artemis-nginx-proxy 2>/dev/null || true
 
@@ -104,6 +118,7 @@ docker run -d \
   --network artemis-net \
   --add-host host.docker.internal:host-gateway \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  --env-file "$BACKEND_ENV_FILE" \
   -e APP_ENV=production \
   -e PORT=8000 \
   -e DOCKER_NETWORK=artemis-net \
