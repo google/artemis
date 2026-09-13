@@ -221,8 +221,11 @@ class UnifiedMobileController:
         return await self._driver.stop_app(package_or_bundle_id)
 
     async def open_url(self, url: str) -> bool:
-        await self._driver.execute_shell(f"am start -a android.intent.action.VIEW -d '{url}'")
-        return True
+        # ``AndroidAdbDriver.open_url`` validates ``url`` against the
+        # shell-metacharacter set and forwards it to ``adb`` as a discrete
+        # argv list, closing the historical injection path in
+        # ``am start -d '...''``.
+        return await self._driver.open_url(url)
 
     async def go_back(self) -> bool:
         return await self._driver.press_key("back")

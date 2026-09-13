@@ -174,6 +174,17 @@ class BaseDeviceDriver(ABC):
         """Executes a system shell command directly on the device."""
         ...
 
+    async def open_url(self, url: str) -> bool:
+        """Open ``url`` in the device's default browser.
+
+        The base implementation forwards to ``execute_shell``; Android
+        drivers are expected to override this with a shell-injection-safe
+        implementation that validates ``url`` against the
+        shell-metacharacter set before forwarding it to ``adb``.
+        """
+        await self.execute_shell(f"am start -a android.intent.action.VIEW -d '{url}'")
+        return True
+
     @abstractmethod
     async def start_video_recording(self, output_dir: Path | None = None) -> None:
         """Starts dynamic screen video capture in the background."""

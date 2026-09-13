@@ -289,6 +289,44 @@ async def test_analyzer_clip_keeps_timeline_time_across_restart_gap(tmp_path):
     assert is_blue(frames2[20])
 
 
+@pytest.mark.asyncio
+async def test_render_timeline_clip_uses_explicit_output_framerate(tmp_path):
+    """Issue #52: the analyzer clip must encode at the requested ``fps``.
+
+    Before the fix the ``-r`` flag was missing, so ffmpeg fell back to its
+    internal default (25 fps) and emitted duplicated frames when the
+    requested fps differed. This test intercepts the ffmpeg argv to lock
+    the explicit ``-r <fps>`` placement: it must precede ``-c:v
+    libx264`` so the encoder receives the right framerate hint.
+    """
+    ffmpeg = get_ffmpeg_path()
+    portrait = tmp_path / "recording.mkv"
+    _make_solid_clip(ffmpeg, "red", "108x242", 0.5, portrait)
+    segments = [{"path": portrait, "start": 0.0, "end": 0.5}]
+    output = tmp_path / "agent_clip.mp4"
+
+    captured: dict[str, list[str]] = {}
+
+    real_create_subprocess_exec = __import__(
+        "asyncio", fromlist=["create_subprocess_exec"]
+    ).create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        captured["args"] = [str(a) for a in args]
+        return await real_create_subprocess_exec(*args, **kwargs)
+
+    with patch("asyncio.create_subprocess_exec", side_effect=spy):
+        assert await render_timeline_clip(
+            segments, 0.0, 0.5, output, canvas_width=120, canvas_height=240, fps=15
+        )
+
+    argv = captured["args"]
+    # ``-r 15`` is present and immediately precedes the encoder selection.
+    r_index = argv.index("-r")
+    assert argv[r_index + 1] == "15"
+    assert argv[r_index + 2 : r_index + 4] == ["-c:v", "libx264"]
+
+
 @pytest.fixture
 def mock_ctx(tmp_path):
     ctx = MagicMock(spec=ArtemisContext)

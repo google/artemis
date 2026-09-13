@@ -31,6 +31,7 @@ from mcp_server.tools import (
     mobile_manage_task,
     mobile_run_task,
 )
+from mcp_server.utils import env_utils
 from artemis.runtime import trace_store
 
 
@@ -370,10 +371,44 @@ async def test_mobile_get_device_state_hierarchy_without_ocr():
 
 
 @pytest.mark.asyncio
-async def test_mobile_inspect_trace_invalid_action():
-    res = await mobile_inspect_trace(action="invalid_action", trace_id="trace-123")
-    assert "error" in res
-    assert "not supported" in res["message"]
+async def test_mobile_inspect_trace_invalid_action(temp_trace_env):
+    """Issue #62: this test must not rely on a sibling test having leaked a
+    ``data_engine.db`` onto the host filesystem.
+
+    ``mobile_inspect_trace`` short-circuits with ``"Database not found"``
+    whenever neither ``$TRACES_DIR/data_engine.db`` nor
+    ``<project_root>/traces/data_engine.db`` exists; that branch never
+    reaches the action handler the test wants to exercise, so a clean
+    host leaves the test failing or, worse, passing only by coincidence
+    when some other test happens to seed the DB.
+
+    Create an empty SQLite file inside the temp trace dir, force the
+    reader to look there, and confirm the ``else`` branch produces the
+    expected "not supported" message.
+    """
+    # Empty ``data_engine.db`` is enough to pass the ``os.path.exists``
+    # gate; the action is rejected before the reader opens any tables.
+    db_path = os.path.join(temp_trace_env, "data_engine.db")
+    with open(db_path, "wb"):
+        pass
+
+    # ``inspect_trace`` falls back to ``<project_root>/traces`` if the
+    # trace-store path is missing the file. Make sure the fallback is
+    # absent in this test environment so the trace-store lookup wins.
+    project_root = env_utils.get_project_root()
+    fallback_db = os.path.join(project_root, "traces", "data_engine.db")
+    backup: str | None = None
+    if os.path.exists(fallback_db):
+        # Rename rather than delete so we never mutate the repo.
+        backup = fallback_db + ".bak"
+        os.replace(fallback_db, backup)
+    try:
+        res = await mobile_inspect_trace(action="invalid_action", trace_id="trace-123")
+        assert "error" in res
+        assert "not supported" in res["message"]
+    finally:
+        if backup is not None:
+            os.replace(backup, fallback_db)
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,7 @@
 
 import base64
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -198,3 +198,89 @@ async def test_find_element_prefers_fresh_bounds_over_stale_center():
 
     assert error is None
     assert center == [140, 1820]
+
+
+@pytest.mark.asyncio
+async def test_android_driver_launch_app_rejects_shell_injection_in_package_name():
+    """Issue #55: a malicious ``package_name`` must never reach ``/bin/sh``.
+
+    The wrapper refuses the value before any ``adb`` invocation is made, so
+    the legacy ``device.shell(string)`` path can no longer be reached with
+    a hostile payload.
+    """
+    mock_adb_client = MagicMock()
+    mock_adb_client.device.return_value = MagicMock()
+    driver = AndroidAdbDriver(
+        device_id="emulator-5554",
+        adb_client=mock_adb_client,
+    )
+
+    # The shell metacharacter makes this an unsafe package id.
+    assert await driver.launch_app("com.android.settings; rm -rf /") is False
+    # The legacy path must not have been touched.
+    mock_adb_client.device.return_value.shell.assert_not_called()
+
+    assert await driver.stop_app("com.android.settings; rm -rf /") is False
+    mock_adb_client.device.return_value.shell.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_android_driver_launch_app_invokes_adb_with_safe_argv():
+    """A safe ``package_name`` is forwarded as a discrete argv list to ``adb``."""
+    mock_adb_client = MagicMock()
+    mock_adb_client.device.return_value = MagicMock()
+    driver = AndroidAdbDriver(
+        device_id="emulator-5554",
+        adb_client=mock_adb_client,
+    )
+
+    with patch("artemis.drivers.android.adb_driver.run_adb_shell") as run:
+        run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        assert await driver.launch_app("com.android.settings") is True
+
+    argv = run.call_args.args[0]
+    assert argv == [
+        "monkey",
+        "-p",
+        "com.android.settings",
+        "-c",
+        "android.intent.category.LAUNCHER",
+        "1",
+    ]
+    assert run.call_args.kwargs["device_id"] == "emulator-5554"
+
+
+@pytest.mark.asyncio
+async def test_android_driver_open_url_rejects_shell_metacharacters():
+    """Issue #55: a malicious ``url`` must not be forwarded to ``adb``."""
+    mock_adb_client = MagicMock()
+    mock_adb_client.device.return_value = MagicMock()
+    driver = AndroidAdbDriver(
+        device_id="emulator-5554",
+        adb_client=mock_adb_client,
+    )
+
+    assert await driver.open_url("https://example.com; rm -rf /") is False
+    mock_adb_client.device.return_value.shell.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_android_driver_open_url_forwards_safe_url_as_argv():
+    driver = AndroidAdbDriver(
+        device_id="emulator-5554",
+        adb_client=MagicMock(),
+    )
+
+    with patch("artemis.drivers.android.adb_driver.run_adb_shell") as run:
+        run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        assert await driver.open_url("https://example.com/path") is True
+
+    argv = run.call_args.args[0]
+    assert argv == [
+        "am",
+        "start",
+        "-a",
+        "android.intent.action.VIEW",
+        "-d",
+        "https://example.com/path",
+    ]

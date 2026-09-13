@@ -36,6 +36,7 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.mcp.action_manifest import DEVICE_ACTIONS, ExtensionTool
 from artemis.mcp.action_types import ActionCode, ActionResult
 from artemis.utils.logger import get_logger
+from artemis.utils.safe_adb import UnsafeShellArgumentError, validate_url
 
 logger = get_logger(__name__)
 
@@ -372,6 +373,18 @@ class AdbActuator:
         )
 
     async def open_link(self, url: str) -> ActionResult:
+        # Defence in depth: the controller's ``open_url`` validates ``url``
+        # before forwarding it to ``adb``, but reject obviously malformed
+        # values here too so the MCP caller sees a clean error rather than
+        # a silent fallback.
+        try:
+            validate_url(url)
+        except UnsafeShellArgumentError as e:
+            return ActionResult.failure(
+                "open_link",
+                f"Invalid url: {e}",
+                code=ActionCode.INVALID_ARGS,
+            )
         success = await self.controller.open_url(url)
         if success:
             return ActionResult.success("open_link", f"Opened link '{url}'.")

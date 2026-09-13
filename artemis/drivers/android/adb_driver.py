@@ -16,6 +16,7 @@
 
 import asyncio
 import base64
+import shlex
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
@@ -28,6 +29,12 @@ from artemis.clients.ui_automator_client import (
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
 from artemis.toolchain import find_ffmpeg, find_scrcpy
+from artemis.utils.safe_adb import (
+    UnsafeShellArgumentError,
+    run_adb_shell,
+    validate_package_name,
+    validate_url,
+)
 from artemis.utils.video import build_scrcpy_record_command
 from artemis.utils.ui_filter import filter_ui_hierarchy
 from artemis.utils.logger import get_logger
@@ -384,19 +391,63 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def launch_app(self, package_name: str) -> bool:
         try:
-            cmd = f"monkey -p {package_name} -c android.intent.category.LAUNCHER 1"
-            await asyncio.to_thread(self.device.shell, cmd)
+            safe_pkg = validate_package_name(package_name)
+        except UnsafeShellArgumentError as e:
+            logger.error(f"Launch app refused: {e}")
+            return False
+        try:
+            # ``subprocess.run`` with an argv list (no shell) — the package name
+            # is one argv token to the local ``adb`` binary, never interpolated
+            # into a shell command line. ``adb`` itself concatenates ``shell``
+            # args into a single remote command on the device.
+            completed = await asyncio.to_thread(
+                run_adb_shell,
+                [
+                    "monkey",
+                    "-p",
+                    safe_pkg,
+                    "-c",
+                    "android.intent.category.LAUNCHER",
+                    "1",
+                ],
+                device_id=self._device_id,
+                timeout_seconds=15.0,
+            )
+            if completed.returncode != 0:
+                logger.error(
+                    f"Launch app failed for '{safe_pkg}' (exit"
+                    f" {completed.returncode}):"
+                    f" {completed.stderr.strip() or completed.stdout.strip()}"
+                )
+                return False
             return True
         except Exception as e:
-            logger.error(f"Launch app failed for '{package_name}': {e}")
+            logger.error(f"Launch app failed for '{safe_pkg}': {e}")
             return False
 
     async def stop_app(self, package_name: str) -> bool:
         try:
-            await asyncio.to_thread(self.device.shell, f"am force-stop {package_name}")
+            safe_pkg = validate_package_name(package_name)
+        except UnsafeShellArgumentError as e:
+            logger.error(f"Stop app refused: {e}")
+            return False
+        try:
+            completed = await asyncio.to_thread(
+                run_adb_shell,
+                ["am", "force-stop", safe_pkg],
+                device_id=self._device_id,
+                timeout_seconds=15.0,
+            )
+            if completed.returncode != 0:
+                logger.error(
+                    f"Stop app failed for '{safe_pkg}' (exit"
+                    f" {completed.returncode}):"
+                    f" {completed.stderr.strip() or completed.stdout.strip()}"
+                )
+                return False
             return True
         except Exception as e:
-            logger.error(f"Stop app failed for '{package_name}': {e}")
+            logger.error(f"Stop app failed for '{safe_pkg}': {e}")
             return False
 
     async def get_current_package(self) -> str | None:
@@ -428,12 +479,72 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def execute_shell(self, command: str, timeout_seconds: float = 15.0) -> str:
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(self.device.shell, command),
-                timeout=timeout_seconds,
+            # Parse the legacy "command line" string into argv tokens with
+            # POSIX shell quoting so ``dumpsys window displays | grep -E
+            # 'foo|bar'`` still works. ``shlex.split`` is the documented way
+            # to tokenise shell-formatted strings for ``subprocess``-style
+            # invocation; it does *not* evaluate metacharacters and never
+            # touches the filesystem. The tokens are then forwarded to
+            # ``adb shell`` as a discrete argv list — ``adb`` itself joins
+            # them into a single remote command line. That is the
+            # shell-injection path closed by Issue #55: nothing reaches a
+            # local shell, so hostile payloads like ``"; rm -rf /"`` cannot
+            # execute.
+            try:
+                argv = shlex.split(command)
+            except ValueError as e:
+                return f"Error: malformed shell command line: {e}"
+            if not argv:
+                return ""
+            completed = await asyncio.to_thread(
+                run_adb_shell,
+                argv,
+                device_id=self._device_id,
+                timeout_seconds=timeout_seconds,
             )
+            if completed.returncode != 0:
+                message = (
+                    (completed.stderr or "").strip()
+                    or (completed.stdout or "").strip()
+                    or f"adb shell exited with code {completed.returncode}"
+                )
+                return f"Error: {message}"
+            return completed.stdout
         except Exception as e:
             return f"Error: {e}"
+
+    async def open_url(self, url: str) -> bool:
+        """Open ``url`` via ``am start`` without invoking the local shell."""
+        try:
+            safe_url = validate_url(url)
+        except UnsafeShellArgumentError as e:
+            logger.error(f"open_url refused: {e}")
+            return False
+        try:
+            completed = await asyncio.to_thread(
+                run_adb_shell,
+                [
+                    "am",
+                    "start",
+                    "-a",
+                    "android.intent.action.VIEW",
+                    "-d",
+                    safe_url,
+                ],
+                device_id=self._device_id,
+                timeout_seconds=15.0,
+            )
+            if completed.returncode != 0:
+                logger.error(
+                    f"open_url failed for '{safe_url}' (exit"
+                    f" {completed.returncode}):"
+                    f" {completed.stderr.strip() or completed.stdout.strip()}"
+                )
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"open_url failed for '{safe_url}': {e}")
+            return False
 
     async def start_video_recording(self, output_dir: Path | None = None) -> None:
         """Starts screen recording via scrcpy in background."""
