@@ -12,24 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime, timedelta, timezone
-from fastapi import Depends, HTTPException, Security, status
+from datetime import UTC, datetime, timedelta
+from fastapi import HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from app.config import settings
 
 security = HTTPBearer(auto_error=False)
 
+# Browsers cannot attach an Authorization header to <iframe>, <img>, or EventSource
+# requests, so the Nginx session routes authenticate with this cookie instead. It is
+# scoped to /session/ so the Bearer-only management API never accepts it (no CSRF).
+SESSION_COOKIE_NAME = "artemis_session_token"
+SESSION_COOKIE_PATH = "/session/"
+
 
 def create_access_token(user_id: str, extra_claims: dict | None = None) -> str:
     """Generate a signed JWT access token."""
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+    expire = datetime.now(UTC) + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode = {
         "sub": user_id,
         "exp": expire,
-        "iat": datetime.now(timezone.utc),
+        "iat": datetime.now(UTC),
         "iss": "artemis-backend-manager",
     }
     if extra_claims:
@@ -50,6 +54,18 @@ def decode_access_token(token: str) -> dict:
         )
 
 
+def _user_id_from_token(token: str) -> str:
+    """Decode a JWT access token and return its subject (user_id)."""
+    payload = decode_access_token(token)
+    user_id: str | None = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Malformed token payload (missing subject)",
+        )
+    return user_id
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Security(security),
 ) -> str:
@@ -60,11 +76,19 @@ async def get_current_user(
             detail="Missing Authorization Header",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_access_token(credentials.credentials)
-    user_id: str | None = payload.get("sub")
-    if not user_id:
+    return _user_id_from_token(credentials.credentials)
+
+
+async def get_session_ingress_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Security(security),
+) -> str:
+    """FastAPI dependency for Nginx session ingress: accepts a Bearer token or the session cookie."""
+    token = credentials.credentials if credentials else request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Malformed token payload (missing subject)",
+            detail="Missing Authorization Header or session cookie",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    return user_id
+    return _user_id_from_token(token)

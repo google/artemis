@@ -28,6 +28,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - APP_ENV=production
+      # Required, at least 32 characters. Generate one with: openssl rand -hex 32
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?Set JWT_SECRET_KEY (at least 32 characters, e.g. openssl rand -hex 32)}
       - PORT=8000
       - DOCKER_SOCKET_PATH=unix://var/run/docker.sock
       - DOCKER_NETWORK=artemis-net

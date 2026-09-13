@@ -1,0 +1,6 @@
+{
+  "status": 403,
+  "error": "forbidden",
+  "message": "This Artemis session does not exist or belongs to another user.",
+  "timestamp": "auto"
+}
