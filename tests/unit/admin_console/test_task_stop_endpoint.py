@@ -50,6 +50,18 @@ async def test_stop_task_string_true_clears_all(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stop_task_clear_all_alias_overrides_legacy_query_value(monkeypatch):
+    request = AsyncMock()
+    request.json.return_value = {"clear_all": "false"}
+    stop_tasks = MagicMock(return_value=True)
+    monkeypatch.setattr(tasks.task_queue_service, "stop_tasks", stop_tasks)
+
+    await tasks.stop_task(request, all=True)
+
+    stop_tasks.assert_called_once_with(clear_all=False, session_id=None, device_id=None)
+
+
+@pytest.mark.asyncio
 async def test_stop_task_rejects_unrecognized_boolean(monkeypatch):
     request = AsyncMock()
     request.json.return_value = {"all": "not-a-boolean"}

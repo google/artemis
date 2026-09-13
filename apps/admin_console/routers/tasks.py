@@ -223,18 +223,21 @@ async def list_devices():
 async def stop_task(
     request: Request,
     all: bool = False,
+    clear_all: bool | None = None,
     session_id: str | None = None,
     device_id: str | None = None,
 ):
-    target_all = all
+    target_all = clear_all if clear_all is not None else all
     target_sid = session_id
     target_dev = device_id
 
     try:
         body = await request.json()
         if isinstance(body, dict):
-            if "all" in body:
-                target_all = _parse_boolean_body_field(body["all"], "all") or target_all
+            if "clear_all" in body:
+                target_all = _parse_boolean_body_field(body["clear_all"], "clear_all")
+            elif "all" in body:
+                target_all = _parse_boolean_body_field(body["all"], "all")
             if body.get("session_id"):
                 target_sid = str(body["session_id"])
             if body.get("device_id"):
