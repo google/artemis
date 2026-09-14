@@ -136,6 +136,11 @@ class TaskResult:
         if output is None:
             output = payload.get("summary")
 
+        turns = payload.get("turns")
+        # Retain numeric zero without changing the fallback for False or empty values.
+        if not turns and (turns != 0 or isinstance(turns, bool)):
+            turns = payload.get("current_turn")
+
         return cls(
             task_id=resolved_id,
             status=(_string(payload.get("status")) or "unknown").lower(),
@@ -144,7 +149,7 @@ class TaskResult:
             device_serial=_device_from_payload(payload),
             output=output,
             error=_string(payload.get("error") or payload.get("error_message")),
-            turns=_integer(payload.get("turns") or payload.get("current_turn")),
+            turns=_integer(turns),
             raw=dict(payload),
         )
 
