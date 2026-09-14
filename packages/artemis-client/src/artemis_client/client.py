@@ -275,7 +275,15 @@ class ArtemisClient:
         timeout: float = 1800.0,
         poll_interval: float | None = None,
     ) -> TaskResult:
-        """Wait until a task reaches a terminal state."""
+        """Wait until a task reaches a terminal state.
+
+        Observe the task immediately, then poll until ``timeout`` seconds
+        have elapsed. Do not start another poll after a sleep exhausts that
+        budget. An observation already in flight may finish later and return
+        a terminal result; requests use their separate transport timeout.
+        Timing out or cancelling this wait does not stop the remote task or
+        an in-flight transport thread.
+        """
         if timeout <= 0:
             raise ValueError("timeout must be greater than zero")
         interval = self.poll_interval if poll_interval is None else float(poll_interval)
@@ -291,6 +299,8 @@ class ArtemisClient:
             if elapsed >= timeout:
                 raise TaskTimeoutError(task_id, timeout)
             await asyncio.sleep(min(interval, max(0.0, timeout - elapsed)))
+            if time.monotonic() - started >= timeout:
+                raise TaskTimeoutError(task_id, timeout)
 
     async def run(
         self,
