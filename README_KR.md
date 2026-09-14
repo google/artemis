@@ -313,3 +313,5 @@ ARTEMIS는 서로 다른 자동화 요구에 맞춘 두 가지 실행 프로필�
 ## 라이선스
 
 이 프로젝트는 [Apache License 2.0](LICENSE)에 따라 라이선스가 부여됩니다.
+
+이 프로젝트에는 [Minitap, Inc.](https://github.com/minitap-ai/mobile-use)에서 개발한 소스 코드가 포함되어 있습니다.
