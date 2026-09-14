@@ -1,6 +1,7 @@
 """Tests for the LLM gateway: complete(), classified recovery, and fallback."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 import pytest
@@ -11,6 +12,7 @@ from artemis.services.llm import (
     RobustChatModelWrapper,
     acomplete,
     acomplete_structured,
+    get_llm_for_model,
     with_fallback,
 )
 
@@ -239,3 +241,67 @@ async def test_mid_stream_failure_records_stream_reset_payload(monkeypatch):
     assert payload["reason"] == "mid_stream_failure"
     assert "stream_exec_id" in payload
     assert "lower API priority" in payload["message"]
+
+
+def test_get_llm_for_model_uses_explicit_provider():
+    """An explicit `provider` always wins, regardless of the configured default."""
+    with (
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+        patch.object(llm_service, "get_default_node", return_value=("google", "gemini-3.8-flash")),
+    ):
+        mock_create_model.return_value = Mock()
+        get_llm_for_model("gpt-4o-mini", provider="openai")
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "openai"
+    assert endpoint.model_name == "gpt-4o-mini"
+
+
+def test_get_llm_for_model_defaults_to_configured_default_node_provider():
+    """With no explicit provider, the configured 'default' node's provider is used."""
+    with (
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+        patch.object(llm_service, "get_default_node", return_value=("anthropic", "claude-x")),
+    ):
+        mock_create_model.return_value = Mock()
+        get_llm_for_model("claude-x")
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "anthropic"
+
+
+def test_get_llm_for_model_falls_back_to_google_when_no_config_loaded():
+    """Historical hardcoded-Google behavior is preserved when config can't load at all."""
+    with (
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+        patch("artemis.config.llm.get_default_llm_config", side_effect=OSError("no config")),
+    ):
+        mock_create_model.return_value = Mock()
+        get_llm_for_model("gemini-2.5-flash")
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "google"
+
+
+def test_get_llm_for_model_matches_get_google_llm_defaults_for_gemini():
+    """Regression: for an unchanged Google config, get_llm_for_model must
+    build the exact same endpoint get_google_llm did (provider, temperature,
+    timeout, and — critically — thinking_level="medium"), so background
+    lenses keep running at the same cost/latency tier as before."""
+    with (
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+        patch.object(llm_service, "get_default_node", return_value=("google", "gemini-3.8-flash")),
+    ):
+        mock_create_model.return_value = Mock()
+        get_llm_for_model("gemini-3.5-flash-lite", temperature=0.0)
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "google"
+    assert endpoint.model_name == "gemini-3.5-flash-lite"
+    assert endpoint.temperature == 0.0
+    assert endpoint.timeout_seconds == 60.0
+    assert endpoint.thinking_level == "medium"

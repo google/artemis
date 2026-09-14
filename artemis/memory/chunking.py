@@ -45,7 +45,7 @@ from uuid import uuid4
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from artemis.llm.google import is_google_provider
+from artemis.llm.router import ModelProvider
 from artemis.memory.step_memory import JobKey, StepLens, StepMemoryService
 from artemis.memory.transcript import format_session_offset
 from artemis.utils.logger import get_logger
@@ -295,12 +295,14 @@ class StepCapsuleLens(StepLens):
         llm: Any | None = None,
         *,
         ctx: Any = None,
+        provider: str | None = None,
         fallback_model_name: str | None = None,
         fallback_llm: Any | None = None,
     ):
         self._model_name = model_name or "gemini-3.8-flash"
         self._llm = llm
         self._ctx = ctx
+        self._provider = provider
         # Availability hardening: `chunking.model` is a dedicated model with no
         # gateway behind it — when that one endpoint is down (e.g. a day-long
         # 503), every capsule dies and chunk headers stay pending forever. A
@@ -321,19 +323,39 @@ class StepCapsuleLens(StepLens):
                 " must cover the full step range without gaps or overlaps. Return only JSON."
             )
 
+    def _resolve_llm_config(self):
+        """The run's loaded LLMConfig, if `self._ctx` carries a real one.
+
+        Guards against a test double or other duck-typed stand-in leaking a
+        bogus provider past get_default_node's own None-based "no config"
+        fallback.
+        """
+        from artemis.config import LLMConfig
+
+        candidate = getattr(self._ctx, "llm_config", None) if self._ctx is not None else None
+        return candidate if isinstance(candidate, LLMConfig) else None
+
     def _get_llm(self):
         if self._llm is None:
-            from artemis.services.llm import get_google_llm
+            from artemis.services.llm import get_llm_for_model
 
-            self._llm = get_google_llm(model_name=self._model_name, temperature=0.0)
+            self._llm = get_llm_for_model(
+                self._model_name,
+                provider=self._provider,
+                llm_config=self._resolve_llm_config(),
+                temperature=0.0,
+            )
         return self._llm
 
     def _get_fallback_llm(self):
         if self._fallback_llm is None and self._fallback_model_name:
-            from artemis.services.llm import get_google_llm
+            from artemis.services.llm import get_llm_for_model
 
-            self._fallback_llm = get_google_llm(
-                model_name=self._fallback_model_name, temperature=0.0
+            self._fallback_llm = get_llm_for_model(
+                self._fallback_model_name,
+                provider=self._provider,
+                llm_config=self._resolve_llm_config(),
+                temperature=0.0,
             )
         return self._fallback_llm
 
@@ -892,6 +914,7 @@ class HistoryChunkManager:
         self._min_steps = max(1, min(self._max_steps, int(getattr(cc, "min_steps", 3) or 3)))
         self._target_source_tokens = int(getattr(cc, "target_source_tokens", 2000) or 2000)
         self._model_name = getattr(cc, "model", None) or "gemini-3.8-flash"
+        self._provider = getattr(cc, "provider", None)
         self._max_chunks = int(getattr(cc, "max_chunks", 8) or 8)
         # None uses max_chunks as the era cap.
         self._max_eras = int(getattr(cc, "max_eras", None) or self._max_chunks)
@@ -945,6 +968,7 @@ class HistoryChunkManager:
         lens = StepCapsuleLens(
             self._model_name,
             ctx=ctx,
+            provider=self._provider,
             fallback_model_name=self._resolve_capsule_fallback_model(ctx),
         )
         return ChunkCapsuleService(ctx, lens, **kwargs)
@@ -953,8 +977,9 @@ class HistoryChunkManager:
         """Fallback model for capsule generation when `chunking.model` is down.
 
         Resolved from the LLM config's summarizer role (which inherits the
-        global default fallback unless overridden). Only same-provider (google)
-        fallbacks apply — the capsule lens rides the raw google model path.
+        global default fallback unless overridden). Only a fallback on the
+        same provider as the primary capsule model applies — the capsule
+        lens instantiates a single-provider raw model path.
         """
         try:
             llm_cfg = getattr(ctx, "llm_config", None) if ctx is not None else None
@@ -963,9 +988,19 @@ class HistoryChunkManager:
 
                 llm_cfg = get_default_llm_config()
             fallback = getattr(getattr(llm_cfg, "summarizer", None), "fallback", None)
-            provider = str(getattr(fallback, "provider", "") or "")
+            fallback_provider = str(getattr(fallback, "provider", "") or "")
             model = getattr(fallback, "model", None)
-            if model and is_google_provider(provider) and model != self._model_name:
+
+            from artemis.config.llm import get_default_node
+
+            effective_provider = self._provider or get_default_node(llm_cfg)[0]
+            if (
+                model
+                and fallback_provider
+                and ModelProvider.from_string(fallback_provider)
+                == ModelProvider.from_string(effective_provider)
+                and model != self._model_name
+            ):
                 return str(model)
         except Exception as exc:
             logger.debug(f"Capsule fallback model resolution skipped: {exc}", exc_info=True)

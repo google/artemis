@@ -146,6 +146,8 @@
       "step_summarizer": {
         "enabled": true, // Whether background step summarization is active
         "model": "gemini-3.5-flash-lite", // Lightweight model for fast background inference
+        // "provider": "openai", // Optional provider override; defaults to the top-level "default" node's provider.
+        // If that default is not "google", "model" above must be one served by that provider (or set "provider": "google" here to keep Gemini for this lens).
         "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
       }
     },
@@ -247,6 +249,8 @@
         "min_steps": 3,
         "target_source_tokens": 2000,
         "model": "gemini-3.8-flash",
+        // "provider": "openai", // Optional provider override; defaults to the top-level "default" node's provider.
+        // If that default is not "google", "model" above must be one served by that provider (or set "provider": "google" here to keep Gemini for this lens).
         "max_chunks": 8
         // "max_eras": 8 // independent era cap; omitted = follows max_chunks
       },
