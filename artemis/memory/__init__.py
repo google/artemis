@@ -49,11 +49,13 @@ def ensure_step_memory(ctx):
 
     kwargs: dict = {}
     model_name = None
+    provider = None
     try:
         from artemis.config import load_agent_config
 
         cfg = load_agent_config()
         model_name = cfg.flash.step_summarizer.model
+        provider = cfg.flash.step_summarizer.provider
         kwargs = {
             "retry_limit": cfg.memory.runtime.retry_limit,
             "max_concurrency": cfg.memory.runtime.max_concurrency,
@@ -65,7 +67,7 @@ def ensure_step_memory(ctx):
             exc_info=True,
         )
 
-    service = VisualStepSummarizer(ctx, model_name=model_name, **kwargs)
+    service = VisualStepSummarizer(ctx, model_name=model_name, provider=provider, **kwargs)
     try:
         ctx.step_memory = service
     except (AttributeError, TypeError, ValueError):
