@@ -85,7 +85,10 @@ from artemis.utils.logger import get_logger
 logger = get_logger(__name__)
 
 PACKAGE_NAME = "com.artemis.helper"
-SERVICE_NAME = f"{PACKAGE_NAME}/.ArtemisAccessibilityService"
+SERVICE_CLASS = "ArtemisAccessibilityService"
+# Short ComponentName written into secure settings. Some Android versions store
+# the flattened form (``pkg/pkg.Class``) instead; comparisons accept both.
+SERVICE_NAME = f"{PACKAGE_NAME}/.{SERVICE_CLASS}"
 TOKEN_RECEIVER = f"{PACKAGE_NAME}/.TokenReceiver"
 TOKEN_ACTION = f"{PACKAGE_NAME}.SET_TOKEN"
 #: Loopback port the service binds on the device. Never used as a host port.
@@ -129,6 +132,41 @@ MANUAL_ENABLE_PATH = (
     "Artemis Accessibility Helper > turn it on"
 )
 ACCESSIBILITY_SETTINGS_INTENT = "android.settings.ACCESSIBILITY_SETTINGS"
+
+
+def _parse_component_name(entry: str) -> tuple[str, str] | None:
+    """Return ``(package, fully-qualified class)`` for a settings ComponentName.
+
+    Android stores accessibility services as ``pkg/.Class`` (short) or
+    ``pkg/pkg.Class`` (flattened). A leading ``.`` on the class is expanded
+    against the package, matching ``android.content.ComponentName``.
+    """
+    package, sep, cls = entry.partition("/")
+    if not sep or not package or not cls:
+        return None
+    if cls.startswith("."):
+        cls = f"{package}{cls}"
+    return package, cls
+
+
+def _is_helper_service(entry: str) -> bool:
+    """True when ``entry`` names the Artemis helper under either notation."""
+    parsed = _parse_component_name(entry.strip())
+    if parsed is None:
+        return False
+    package, cls = parsed
+    return package == PACKAGE_NAME and cls == f"{PACKAGE_NAME}.{SERVICE_CLASS}"
+
+
+def _split_enabled_services(raw: str) -> list[str]:
+    text = (raw or "").strip()
+    if not text or text == "null":
+        return []
+    return [part for part in text.split(":") if part]
+
+
+def _without_helper_service(entries: list[str]) -> list[str]:
+    return [entry for entry in entries if not _is_helper_service(entry)]
 
 
 class HelperUnavailable(RuntimeError):
@@ -407,8 +445,9 @@ class AccessibilityHelperManager:
         result = self._adb(
             serial, "shell", "settings", "get", "secure", "enabled_accessibility_services"
         )
-        enabled = (result.stdout or "").strip()
-        return SERVICE_NAME in enabled.split(":") if enabled and enabled != "null" else False
+        return any(
+            _is_helper_service(entry) for entry in _split_enabled_services(result.stdout or "")
+        )
 
     def existing_forward(self, serial: str) -> int | None:
         """Host port of an adb forward that already targets the helper on ``serial``."""
@@ -601,8 +640,8 @@ class AccessibilityHelperManager:
                 serial, "shell", "settings", "get", "secure", "enabled_accessibility_services"
             )
             current = (result.stdout or "").strip()
-            services = [s for s in current.split(":") if s and s != "null"] if current else []
-            if SERVICE_NAME in services:
+            services = _split_enabled_services(current)
+            if any(_is_helper_service(entry) for entry in services):
                 # Already enabled (the common, up-to-date case): no settle wait.
                 self._adb(
                     serial, "shell", "settings", "put", "secure", "accessibility_enabled", "1"
@@ -640,7 +679,7 @@ class AccessibilityHelperManager:
             serial, "shell", "settings", "get", "secure", "enabled_accessibility_services"
         )
         current = (result.stdout or "").strip()
-        others = [s for s in current.split(":") if s and s != "null" and s != SERVICE_NAME]
+        others = _without_helper_service(_split_enabled_services(current))
         self._adb(
             serial,
             "shell",
@@ -793,7 +832,7 @@ class AccessibilityHelperManager:
             serial, "shell", "settings", "get", "secure", "enabled_accessibility_services"
         )
         current = (result.stdout or "").strip()
-        services = [s for s in current.split(":") if s and s != "null" and s != SERVICE_NAME]
+        services = _without_helper_service(_split_enabled_services(current))
         self._adb(
             serial,
             "shell",

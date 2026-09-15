@@ -48,6 +48,8 @@ class FakeAdb:
         # Process table lines (PID ARGS) of UiAutomation holders, per serial.
         self.holders: dict[str, list[str]] = {SERIAL: [], OTHER: []}
         self.killed: list[tuple[str, int]] = []
+        # When True, settings put stores the helper as pkg/pkg.Class (Android 11).
+        self.flatten_helper_component = False
 
     def __call__(self, args: list[str]) -> subprocess.CompletedProcess:
         self.calls.append(list(args))
@@ -82,9 +84,19 @@ class FakeAdb:
                         self.enabled_services[serial] = ""
                     else:
                         before = self.enabled_services.get(serial, "")
-                        self.enabled_services[serial] = rest[5]
+                        value = rest[5]
+                        if self.flatten_helper_component:
+                            value = ":".join(
+                                f"{hm.PACKAGE_NAME}/{hm.PACKAGE_NAME}.{hm.SERVICE_CLASS}"
+                                if hm._is_helper_service(part)
+                                else part
+                                for part in value.split(":")
+                            )
+                        self.enabled_services[serial] = value
                         # AccessibilityManager binds the service when it is (re)added.
-                        if SERVICE_NAME in rest[5] and SERVICE_NAME not in before:
+                        wrote_helper = any(hm._is_helper_service(part) for part in value.split(":"))
+                        had_helper = any(hm._is_helper_service(part) for part in before.split(":"))
+                        if wrote_helper and not had_helper:
                             self.revived.add(serial)
             elif rest[0] == "install":
                 if self.install_result == "Success":
@@ -152,7 +164,8 @@ class FakePing:
                     return None  # suppressed by UiAutomation
                 if self.adb.installed.get(serial) is None:
                     return None
-                if SERVICE_NAME not in (self.adb.enabled_services.get(serial) or ""):
+                enabled = self.adb.enabled_services.get(serial) or ""
+                if not any(hm._is_helper_service(part) for part in enabled.split(":")):
                     return None
                 return {
                     "success": True,
@@ -456,6 +469,101 @@ def test_status_is_read_only(env):
     assert status["transport_id"] == "3"
     assert not _calls(adb, ["-s", SERIAL, "install"])
     assert not _calls(adb, ["-s", SERIAL, "forward"])
+
+
+# --------------------------------------------------------------------------- #
+# ComponentName short vs flattened notation (issue #109)
+# --------------------------------------------------------------------------- #
+
+
+def _flattened_helper_name() -> str:
+    return f"{hm.PACKAGE_NAME}/{hm.PACKAGE_NAME}.{hm.SERVICE_CLASS}"
+
+
+def test_is_helper_service_accepts_short_and_flattened_names():
+    flattened = _flattened_helper_name()
+    assert hm._is_helper_service(SERVICE_NAME)
+    assert hm._is_helper_service(flattened)
+    assert hm._is_helper_service(f"  {flattened}  ")
+    assert not hm._is_helper_service("com.android.talkback/.TalkBackService")
+    assert not hm._is_helper_service(f"{hm.PACKAGE_NAME}/.OtherService")
+    assert not hm._is_helper_service("com.other.helper/.ArtemisAccessibilityService")
+    assert not hm._is_helper_service("")
+    assert not hm._is_helper_service("not-a-component")
+    assert not hm._is_helper_service("null")
+
+
+def test_is_service_enabled_accepts_flattened_component_name(env):
+    adb, _, manager = env
+    adb.installed[SERIAL] = 2
+    adb.enabled_services[SERIAL] = (
+        f"com.ayaneo.home/com.ayaneo.gamewindow.service.WindowKeyEventService:"
+        f"{_flattened_helper_name()}"
+    )
+    assert manager.is_service_enabled(SERIAL) is True
+    status = manager.status(SERIAL)
+    assert status["enabled"] is True
+
+    adb.enabled_services[SERIAL] = SERVICE_NAME
+    assert manager.is_service_enabled(SERIAL) is True
+
+    adb.enabled_services[SERIAL] = "com.android.talkback/.TalkBackService"
+    assert manager.is_service_enabled(SERIAL) is False
+
+    adb.enabled_services[SERIAL] = "null"
+    assert manager.is_service_enabled(SERIAL) is False
+
+
+def test_provision_does_not_duplicate_when_platform_stored_flattened_name(env):
+    adb, _, manager = env
+    adb.installed[SERIAL] = 2
+    flattened = _flattened_helper_name()
+    adb.enabled_services[SERIAL] = flattened
+    result = manager.provision(SERIAL)
+    assert result.ok and result.enabled
+    assert adb.enabled_services[SERIAL] == flattened
+    assert not _calls(
+        adb, ["-s", SERIAL, "shell", "settings", "put", "secure", "enabled_accessibility_services"]
+    )
+
+
+def test_enable_confirms_success_when_platform_flattens_the_component(env):
+    adb, _, manager = env
+    adb.flatten_helper_component = True
+    result = manager.provision(SERIAL)
+    assert result.ok and result.enabled
+    assert adb.enabled_services[SERIAL] == _flattened_helper_name()
+    assert manager.is_service_enabled(SERIAL) is True
+
+
+def test_uninstall_removes_flattened_helper_entry(env):
+    adb, _, manager = env
+    adb.installed[SERIAL] = 2
+    adb.enabled_services[SERIAL] = (
+        f"com.android.talkback/.TalkBackService:{_flattened_helper_name()}"
+    )
+    assert manager.uninstall(SERIAL)
+    assert adb.installed[SERIAL] is None
+    assert adb.enabled_services[SERIAL] == "com.android.talkback/.TalkBackService"
+
+
+def test_revive_strips_flattened_helper_entry(env):
+    adb, ping, manager = env
+    adb.installed[SERIAL] = 2
+    flattened = _flattened_helper_name()
+    adb.enabled_services[SERIAL] = flattened
+    manager.attach(SERIAL, provision=False)
+    ping.dead.add(SERIAL)
+    adb.revived.discard(SERIAL)
+    adb.calls.clear()
+
+    manager.reattach(SERIAL)
+    puts = _calls(
+        adb, ["-s", SERIAL, "shell", "settings", "put", "secure", "enabled_accessibility_services"]
+    )
+    assert [p[-1] for p in puts] == ["null", SERVICE_NAME]
+    assert flattened not in adb.enabled_services[SERIAL]
+    assert SERVICE_NAME in adb.enabled_services[SERIAL]
 
 
 def test_uninstall_disables_service_and_removes_package(env):
