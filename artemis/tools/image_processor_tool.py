@@ -63,7 +63,7 @@ class AskImageProcessorTool(ArtemisTool):
             name="ask_image_processor",
             description=(
                 "Call this tool to ask the image processor agent to run"
-                " complex image transformations or modifications."
+                " complex image transformations, modifications, or pixel/color measurements."
             ),
             args_schema=AskVisionCoderArgs,
             category="custom",

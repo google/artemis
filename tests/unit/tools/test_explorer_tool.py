@@ -24,6 +24,7 @@ from artemis.agents.explorer.constants import (
     ASK_EXPLORER_CONTEXT_FEEDBACK_DESCRIPTION,
     ASK_EXPLORER_DESCRIPTION,
     ASK_EXPLORER_QUERY_DESCRIPTION,
+    ASK_EXPLORER_ULTRA_DESCRIPTION,
 )
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
@@ -118,7 +119,12 @@ def test_tool_contract_is_tier_agnostic():
 @pytest.mark.parametrize("version", [None, "flash", "pro", "ultra"])
 def test_description_does_not_depend_on_the_tier(version):
     tool = AskExplorerTool(version=version)
-    assert tool.description == ASK_EXPLORER_DESCRIPTION
+    expected = (
+        ASK_EXPLORER_ULTRA_DESCRIPTION
+        if version == "ultra"
+        else ASK_EXPLORER_DESCRIPTION
+    )
+    assert tool.description == expected
     assert tool.version == version
 
 

@@ -29,7 +29,7 @@
     "**Finalization**: Submit coordinates using `submit_answer`. In your final turn all other tools are stripped away, leaving only `submit_answer`, so never postpone the submission past the point where you are reasonably confident.",
     "**Tool Classes**: `Perception` tools extract and locate elements, coordinates and text on the screen; the `Finalization` tool (`submit_answer`) submits your ranked candidates and terminates the search.",
     {
-      "text": "**Transformation Tool**: `ask_image_processor` performs pixel-level image editing (cropping, upscaling, masking, contrast changes) and registers the resulting images in the Image Pool. It is slow and expensive; use it only when perception on the original screenshot is insufficient, and call it sequentially because later perception steps depend on its output.",
+      "text": "**Transformation Tool**: `ask_image_processor` performs pixel-level image editing and analysis (cropping, upscaling, masking, color/contrast adjustments, or pixel sampling) and registers the resulting images in the Image Pool. It is slow and expensive; use it only when perception on the original screenshot is insufficient, and call it sequentially because later perception steps depend on its output.",
       "requires": ["ask_image_processor"]
     },
     {

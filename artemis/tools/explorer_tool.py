@@ -44,6 +44,7 @@ from artemis.agents.explorer.constants import (
     ASK_EXPLORER_DESCRIPTION,
     ASK_EXPLORER_QUERY_DESCRIPTION,
     ASK_EXPLORER_TOOL_NAME,
+    ASK_EXPLORER_ULTRA_DESCRIPTION,
 )
 from artemis.agents.explorer.explorer import Explorer
 from artemis.agents.explorer.geometry import (
@@ -516,9 +517,15 @@ class AskExplorerTool(ArtemisTool):
     ):
         self.version = version
         self.agent_name = agent_name
+        if description is None:
+            description = (
+                ASK_EXPLORER_ULTRA_DESCRIPTION
+                if version == "ultra"
+                else ASK_EXPLORER_DESCRIPTION
+            )
         super().__init__(
             name=ASK_EXPLORER_TOOL_NAME,
-            description=description or ASK_EXPLORER_DESCRIPTION,
+            description=description,
             args_schema=AskExplorerArgs,
             category=category,
         )
@@ -558,7 +565,10 @@ def get_ask_explorer_tool(
     agent_name: str = "operator",
 ) -> BaseTool:
     """Exports ``ask_explorer`` as a LangChain tool bound to ``ctx``."""
-    return AskExplorerTool(version=version, agent_name=agent_name).to_langchain_tool(ctx)
+    resolved_version = resolve_explorer_version(
+        ctx, explicit_version=version, agent_or_profile_name=agent_name
+    )
+    return AskExplorerTool(version=resolved_version, agent_name=agent_name).to_langchain_tool(ctx)
 
 
 ask_explorer_wrapper = ToolWrapper(
