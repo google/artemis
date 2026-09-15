@@ -380,14 +380,15 @@ fi
 
 if [[ "${INSTALL_MCP}" =~ ^[Yy]$ ]]; then
     echo -e "   ${CYAN}Installing MCP server configuration & testing rules...${NC}"
-    if uv run artemis mcp --install all; then
+    # Explicit module execution avoids older uv treating the artemis directory as a script.
+    if uv run python -m artemis mcp --install all; then
         echo -e "   ${GREEN}✔ MCP configuration and rules installed successfully.${NC}"
-        echo -e "   ${CYAN}💡 Tip: You can update or re-install anytime with: ${BOLD}uv run artemis mcp --install all${NC}"
+        echo -e "   ${CYAN}💡 Tip: You can update or re-install anytime with: ${BOLD}uv run python -m artemis mcp --install all${NC}"
     else
-        echo -e "   ${YELLOW}⚠ MCP installation failed. Review the error above and retry with: ${BOLD}uv run artemis mcp --install all${NC}"
+        echo -e "   ${YELLOW}⚠ MCP installation failed. Review the error above and retry with: ${BOLD}uv run python -m artemis mcp --install all${NC}"
     fi
 else
-    echo -e "   ${YELLOW}⏭️  Skipped. You can install MCP anytime later with: ${BOLD}uv run artemis mcp --install all${NC}"
+    echo -e "   ${YELLOW}⏭️  Skipped. You can install MCP anytime later with: ${BOLD}uv run python -m artemis mcp --install all${NC}"
 fi
 echo ""
 
