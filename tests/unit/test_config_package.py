@@ -168,6 +168,84 @@ def test_llm_config_parsing_and_merging():
     assert merged.planner.temperature == 0.7
 
 
+def test_get_default_node_reads_the_top_level_default_node():
+    """get_default_node() exposes the raw 'default' node's provider/model,
+    which provider-agnostic call sites (background lenses, best-effort
+    fallbacks) resolve to instead of hardcoding Google."""
+    from artemis.config.llm import get_default_node
+
+    llm_cfg = get_default_llm_config()
+    provider, model = get_default_node(llm_cfg)
+    assert provider == llm_cfg.default_provider
+    assert model == llm_cfg.default_model
+    # The shipped config.jsonc defaults to Gemini.
+    assert provider == "google"
+
+
+def test_get_default_node_falls_back_to_gemini_when_config_unloadable():
+    """When no LLM config can be loaded at all, historical Gemini defaults apply."""
+    from artemis.config.llm import get_default_node
+
+    with patch("artemis.config.llm.get_default_llm_config", side_effect=OSError("boom")):
+        provider, model = get_default_node()
+    assert provider == "google"
+    assert model == "gemini-3.8-flash"
+
+
+def test_expand_default_into_nodes_captures_non_google_default_provider():
+    """A non-Google top-level 'default' node is captured on LLMConfig so
+    provider-agnostic call sites can inherit it instead of hardcoding Google."""
+    from artemis.config.llm import _expand_default_into_nodes
+
+    config_dict = {
+        "default": {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "fallback": {"provider": "openai", "model": "gpt-4o-mini"},
+        }
+    }
+    expanded = LLMConfig.model_validate(_expand_default_into_nodes(config_dict))
+    assert expanded.default_provider == "openai"
+    assert expanded.default_model == "gpt-4o"
+    assert expanded.planner.provider == "openai"
+
+
+def test_lightweight_judge_default_inherits_non_google_default_provider():
+    """The pixel-safety-net / planner-validation judge nodes fall back to a
+    provider-matched model when the configured default is not Google, since
+    there is no equivalent Gemini flash-lite tier on other providers."""
+    from artemis.config.llm import lightweight_judge_default
+
+    google_default = lightweight_judge_default(None, None)
+    assert google_default.provider == "google"
+    assert google_default.model == "gemini-3.5-flash-lite"
+    assert google_default.fallback.provider == "google"
+
+    openai_default = lightweight_judge_default("openai", "gpt-4o")
+    assert openai_default.provider == "openai"
+    assert openai_default.model == "gpt-4o"
+    assert openai_default.fallback.provider == "openai"
+    assert openai_default.fallback.model == "gpt-4o"
+
+
+def test_get_agent_lightweight_judge_honors_configured_default_provider():
+    """LLMConfig.get_agent() wires the configured default provider through to
+    the lightweight judge nodes it synthesizes."""
+    from artemis.config.llm import _expand_default_into_nodes
+
+    config_dict = {
+        "default": {
+            "provider": "anthropic",
+            "model": "claude-haiku",
+            "fallback": {"provider": "anthropic", "model": "claude-haiku"},
+        }
+    }
+    cfg = LLMConfig.model_validate(_expand_default_into_nodes(config_dict))
+    judge = cfg.get_agent("validator_pixel_safety_net")
+    assert judge.provider == "anthropic"
+    assert judge.model == "claude-haiku"
+
+
 def test_agent_config_loading():
     """Test AgentGlobalConfig parsing from agent_config.json / artemis.jsonc."""
     agent_cfg = load_agent_config()

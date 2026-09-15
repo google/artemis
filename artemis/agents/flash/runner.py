@@ -66,9 +66,11 @@ from artemis.agents.validator.tool_declarations import (
     prune_intermediate_screenshots,
 )
 from artemis.config import (
+    LLMConfig,
     MemoryRuntimeConfig,
     MemoryTranscriptConfig,
     StepSummarizerConfig,
+    get_default_node,
     load_agent_config,
 )
 from artemis.context import ArtemisContext
@@ -83,8 +85,8 @@ from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger, mark
 from artemis.services.llm import (
     RobustChatModelWrapper,
     acomplete,
-    get_google_llm,
     get_llm,
+    get_llm_for_model,
     invoke_llm_with_timeout_message,
 )
 from artemis.tools.history import history_tool_declarations
@@ -164,6 +166,7 @@ class FlashRunner:
             VisualStepSummarizer(
                 ctx,
                 model_name=self.step_summarizer_cfg.model,
+                provider=self.step_summarizer_cfg.provider,
                 retry_limit=self.memory_runtime_cfg.retry_limit,
                 max_concurrency=self.memory_runtime_cfg.max_concurrency,
                 flush_timeout_s=self.memory_runtime_cfg.flush_timeout_s,
@@ -284,7 +287,19 @@ class FlashRunner:
         except Exception as e:
             logger.warning(f"Failed to get operator LLM from config, using default: {e}")
 
-            return RobustChatModelWrapper(get_google_llm(model_name="gemini-2.5-flash"), self.ctx)
+            # Config-driven resolution above failed, so fall back to the
+            # configured top-level 'default' node's provider/model directly.
+            # get_default_node() only falls back to hardcoded Gemini values
+            # when no LLM config can be loaded at all. Guard against a
+            # ctx.llm_config that isn't a real LLMConfig (e.g. a test double)
+            # so it can't leak a bogus provider past get_default_node's
+            # own None-based "no config" fallback.
+            raw_llm_config = getattr(self.ctx, "llm_config", None)
+            llm_config = raw_llm_config if isinstance(raw_llm_config, LLMConfig) else None
+            provider, model = get_default_node(llm_config)
+            return RobustChatModelWrapper(
+                get_llm_for_model(model, provider=provider, llm_config=llm_config), self.ctx
+            )
 
     def _render_system_prompt(self, tools_declaration: list) -> str:
         """Renders the system prompt from the flash_runner.md template.

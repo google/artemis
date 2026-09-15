@@ -30,6 +30,7 @@ step addressability (step number + ``T+mm:ss``) after every compression level
 import json
 import re
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -1031,6 +1032,106 @@ def test_capsule_fallback_model_resolution_google_only_and_not_primary():
     assert mgr._resolve_capsule_fallback_model(ctx_with("openai", "gpt-4o-mini")) is None
     # A fallback identical to the primary adds nothing.
     assert mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.7-flash")) is None
+
+
+def test_capsule_fallback_model_resolution_honors_configured_non_google_provider():
+    """When `chunking.provider` is set, a same-provider fallback applies too."""
+    mgr = HistoryChunkManager(
+        capsule_service=StubCapsuleService(),
+        chunking_config=SimpleNamespace(
+            max_steps=12,
+            target_source_tokens=2000,
+            model="gpt-4o",
+            provider="openai",
+            max_chunks=8,
+        ),
+    )
+    assert mgr._provider == "openai"
+
+    ctx = SimpleNamespace(
+        llm_config=SimpleNamespace(
+            summarizer=SimpleNamespace(
+                fallback=SimpleNamespace(provider="openai", model="gpt-4o-mini")
+            )
+        )
+    )
+    assert mgr._resolve_capsule_fallback_model(ctx) == "gpt-4o-mini"
+
+    # A Google fallback does not apply when the configured provider is OpenAI.
+    ctx_google = SimpleNamespace(
+        llm_config=SimpleNamespace(
+            summarizer=SimpleNamespace(
+                fallback=SimpleNamespace(provider="google", model="gemini-3.6-flash")
+            )
+        )
+    )
+    assert mgr._resolve_capsule_fallback_model(ctx_google) is None
+
+
+def test_memory_chunking_config_parses_optional_provider():
+    """`agent.memory.chunking.provider` is an optional override field."""
+    from pydantic import ValidationError
+
+    from artemis.config.agent import MemoryChunkingConfig
+
+    cfg = MemoryChunkingConfig(model="gpt-4o", provider="openai")
+    assert cfg.provider == "openai"
+    # Omitted provider defaults to None (inherit the configured 'default' node).
+    assert MemoryChunkingConfig().provider is None
+    # A typo'd provider fails fast at config load instead of raising deep
+    # inside StepCapsuleLens._get_llm() via ModelProvider.from_string.
+    with pytest.raises(ValidationError):
+        MemoryChunkingConfig(provider="gogle")
+
+
+def test_step_capsule_lens_honors_explicit_non_google_provider():
+    """An explicit `provider` never builds a Google model for the capsule lens."""
+    with patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model:
+        mock_create_model.return_value = Mock()
+        lens = StepCapsuleLens(model_name="gpt-4o", provider="openai")
+        lens._get_llm()
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "openai"
+    assert endpoint.model_name == "gpt-4o"
+
+
+def test_step_capsule_lens_honors_configured_non_google_default_provider():
+    """With no explicit provider, the configured 'default' node's provider is used."""
+    with (
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+        patch("artemis.services.llm.get_default_node", return_value=("anthropic", "claude-x")),
+    ):
+        mock_create_model.return_value = Mock()
+        lens = StepCapsuleLens(model_name="claude-x")
+        lens._get_llm()
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "anthropic"
+
+
+def test_step_capsule_lens_endpoint_matches_the_old_get_google_llm_defaults():
+    """Regression: for the shipped Google default, the capsule lens's endpoint
+    must be byte-identical to the old get_google_llm(model_name=..., temperature=0.0)
+    path — including thinking_level="medium" — so unchanged Gemini configs
+    keep running chunk capsules at the same cost/latency tier."""
+    with (
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+        patch("artemis.services.llm.get_default_node", return_value=("google", "gemini-3.8-flash")),
+    ):
+        mock_create_model.return_value = Mock()
+        lens = StepCapsuleLens(model_name="gemini-3.8-flash")
+        lens._get_llm()
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "google"
+    assert endpoint.model_name == "gemini-3.8-flash"
+    assert endpoint.temperature == 0.0
+    assert endpoint.timeout_seconds == 60.0
+    assert endpoint.thinking_level == "medium"
 
 
 @pytest.mark.asyncio

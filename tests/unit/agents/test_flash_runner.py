@@ -556,3 +556,48 @@ async def test_final_report_persists_native_thinking(mock_context):
     assert kwargs["operator_raw_thinking"] == "final text"
     assert kwargs["operator_native_thinking"] == "native summary"
     assert isinstance(messages[-1], ToolMessage)
+
+
+def test_operator_llm_fallback_honors_configured_non_google_provider(mock_context):
+    """When config-driven ``get_llm`` fails, the last-resort fallback must
+    still honor the configured 'default' node's provider instead of
+    hardcoding Google (regression for provider-agnostic LLM resolution)."""
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+
+    with (
+        patch("artemis.agents.flash.runner.get_llm", side_effect=RuntimeError("no config")),
+        patch(
+            "artemis.agents.flash.runner.get_default_node",
+            return_value=("anthropic", "claude-x"),
+        ),
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+    ):
+        mock_create_model.return_value = Mock()
+        runner._init_llm()
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "anthropic"
+    assert endpoint.model_name == "claude-x"
+
+
+def test_operator_llm_fallback_keeps_gemini_last_resort_when_no_config(mock_context):
+    """When no LLM config can be loaded at all, the fallback uses the
+    historical default-node model (google/gemini-3.8-flash), not the
+    old hardcoded gemini-2.5-flash."""
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = FlashRunner(mock_context, goal="g")
+
+    with (
+        patch("artemis.agents.flash.runner.get_llm", side_effect=RuntimeError("no config")),
+        patch("artemis.config.llm.get_default_llm_config", side_effect=OSError("no config")),
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+    ):
+        mock_create_model.return_value = Mock()
+        runner._init_llm()
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "google"
+    assert endpoint.model_name == "gemini-3.8-flash"

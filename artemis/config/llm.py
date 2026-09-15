@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 import google.auth
 from google.auth.exceptions import DefaultCredentialsError
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from artemis.config.constants import (
     LLM_CONFIG_FILENAME,
@@ -116,9 +116,36 @@ class LLMWithFallback(LLM):
         return f"{self.provider}/{self.model} (fallback: {self.fallback})"
 
 
-def lightweight_judge_default() -> "LLMWithFallback":
+#: Historical hardcoded values, kept as the last-resort fallback for callers
+#: that cannot load any LLM config at all (see get_default_node()).
+_FALLBACK_DEFAULT_PROVIDER = "google"
+_FALLBACK_DEFAULT_MODEL = "gemini-3.8-flash"
+
+
+def lightweight_judge_default(
+    default_provider: str | None = None, default_model: str | None = None
+) -> "LLMWithFallback":
     """Factory default for the lightweight judge nodes (pixel safety net and
-    planner validation): a flash-lite model at temperature 0."""
+    planner validation): a flash-lite model at temperature 0.
+
+    When the configured top-level 'default' node uses a non-Google provider,
+    that provider (and its model) is reused here instead of hardcoding
+    Gemini flash-lite, since there is no equivalent lightweight tier to pick
+    across arbitrary providers. Google configs keep the original flash-lite
+    primary/fallback pair unchanged.
+    """
+    if default_provider and default_provider != "google":
+        model = default_model or _FALLBACK_DEFAULT_MODEL
+        return LLMWithFallback(
+            provider=default_provider,
+            model=model,
+            temperature=0.0,
+            fallback=LLM(
+                provider=default_provider,
+                model=model,
+                temperature=0.0,
+            ),
+        )
     return LLMWithFallback(
         provider="google",
         model="gemini-3.5-flash-lite",
@@ -145,6 +172,18 @@ class LLMConfig(BaseModel):
     """Comprehensive LLM configuration mapping every node to primary/fallback models."""
 
     model_config = {"ignored_types": (CyFunctionDetector,)}
+    default_provider: str | None = Field(
+        default=None,
+        description=(
+            "Provider of the top-level 'default' node in artemis.jsonc, kept"
+            " around so provider-agnostic call sites (e.g. background lenses)"
+            " can honor the configured provider instead of hardcoding Google."
+        ),
+    )
+    default_model: str | None = Field(
+        default=None,
+        description="Model of the top-level 'default' node in artemis.jsonc.",
+    )
     planner: LLMWithFallback
     utils: LLMConfigUtils
     summarizer: LLMWithFallback
@@ -212,7 +251,7 @@ class LLMConfig(BaseModel):
                 # Both are cheap, high-frequency judges: the pixel safety net
                 # runs before actions, the planner validator after every
                 # milestone edit. They share one lightweight default.
-                return lightweight_judge_default()
+                return lightweight_judge_default(self.default_provider, self.default_model)
             elif item == "output_analyzer":
                 return self.log_analyzer
         return val
@@ -230,20 +269,23 @@ class LLMConfig(BaseModel):
 
 def _expand_default_into_nodes(config_dict: dict) -> dict:
     """Expand unified config format with 'default' and 'nodes' into full LLMConfig schema."""
-    if "planner" in config_dict and "utils" in config_dict:
-        return config_dict
-
     default_model_cfg = config_dict.get(
         "default",
         {
-            "provider": "google",
-            "model": "gemini-3.8-flash",
+            "provider": _FALLBACK_DEFAULT_PROVIDER,
+            "model": _FALLBACK_DEFAULT_MODEL,
             "fallback": {
                 "provider": "google",
                 "model": "gemini-3.7-flash",
             },
         },
     )
+
+    if "planner" in config_dict and "utils" in config_dict:
+        result = dict(config_dict)
+        result.setdefault("default_provider", default_model_cfg.get("provider"))
+        result.setdefault("default_model", default_model_cfg.get("model"))
+        return result
 
     nodes_override = config_dict.get("nodes", {})
 
@@ -291,6 +333,8 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
                     util_cfg[k] = v
         utils_dict[util] = util_cfg
     result["utils"] = utils_dict
+    result["default_provider"] = default_model_cfg.get("provider")
+    result["default_model"] = default_model_cfg.get("model")
 
     return result
 
@@ -329,6 +373,27 @@ def initialize_llm_config() -> LLMConfig:
 def get_default_llm_config() -> LLMConfig:
     """Returns default LLMConfig parsed from standard configuration file."""
     return parse_llm_config()
+
+
+def get_default_node(llm_config: LLMConfig | None = None) -> tuple[str, str]:
+    """Return the (provider, model) configured on the top-level 'default' node.
+
+    Used by provider-agnostic call sites (background lenses, best-effort
+    fallbacks) that need to honor the configured provider instead of
+    hardcoding Google. When no config can be loaded at all, falls back to
+    the historical Gemini defaults so callers keep their previous behavior.
+    """
+    if llm_config is None:
+        try:
+            llm_config = get_default_llm_config()
+        except (OSError, ValueError):
+            # Missing config file, malformed JSON(C), or a schema validation
+            # error (pydantic's ValidationError subclasses ValueError) — no
+            # usable config, so fall back to the historical Gemini defaults.
+            return _FALLBACK_DEFAULT_PROVIDER, _FALLBACK_DEFAULT_MODEL
+    provider = getattr(llm_config, "default_provider", None) or _FALLBACK_DEFAULT_PROVIDER
+    model = getattr(llm_config, "default_model", None) or _FALLBACK_DEFAULT_MODEL
+    return provider, model
 
 
 def deep_merge_llm_config(base: LLMConfig, overrides: dict) -> LLMConfig:

@@ -37,10 +37,12 @@ from artemis.config import (
     PAUSE_FILE,
     AgentNode,
     AgentNodeWithFallback,
+    LLMConfig,
     LLMUtilsNode,
     LLMUtilsNodeWithFallback,
     LLMWithFallback,
     get_default_llm_config,
+    get_default_node,
     settings,
 )
 from artemis.context import ArtemisContext
@@ -918,6 +920,48 @@ def get_google_llm(
 ) -> BaseChatModel:
     ep = ModelEndpoint(
         provider=ModelProvider.GOOGLE,
+        model_name=model_name,
+        temperature=temperature or 0.0,
+        timeout_seconds=timeout or 60.0,
+        thinking_budget=thinking_budget,
+        thinking_level=thinking_level,
+        include_thoughts=include_thoughts,
+        enable_grounding=enable_grounding,
+    )
+    return ModelFactory.create_model(ep)
+
+
+def get_llm_for_model(
+    model_name: str,
+    *,
+    provider: str | None = None,
+    llm_config: LLMConfig | None = None,
+    temperature: float | None = 0.0,
+    timeout: float | None = None,
+    thinking_budget: int | None = None,
+    thinking_level: str | None = "medium",
+    include_thoughts: bool | None = None,
+    enable_grounding: bool = False,
+) -> BaseChatModel:
+    """Build a raw chat model honoring the configured provider, not just Google.
+
+    Intended for call sites (background lenses, best-effort fallbacks) that
+    only carry a model name and can't always run through the full
+    context-driven ``get_llm``. When ``provider`` is omitted it is resolved
+    from the loaded LLM config's top-level 'default' node (see
+    ``artemis.config.llm.get_default_node``), falling back to Google only
+    when no config can be loaded at all — preserving prior hardcoded-Google
+    behavior for that edge case. ``llm_config`` lets a caller pass the run's
+    already-loaded config (e.g. ``ctx.llm_config``) instead of re-parsing
+    artemis.jsonc on every call.
+
+    ``thinking_level`` defaults to "medium" to mirror ``get_google_llm``'s
+    prior default; only the GOOGLE branch of ``ModelFactory.create_model``
+    reads it, so it is a no-op for every other provider.
+    """
+    resolved_provider = provider or get_default_node(llm_config)[0]
+    ep = ModelEndpoint(
+        provider=ModelProvider.from_string(resolved_provider),
         model_name=model_name,
         temperature=temperature or 0.0,
         timeout_seconds=timeout or 60.0,

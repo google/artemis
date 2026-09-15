@@ -14,7 +14,7 @@
 
 """Unit tests for VisualStepSummarizer and Context Compressor in Flash profile."""
 
-from unittest.mock import ANY, AsyncMock, Mock, call
+from unittest.mock import ANY, AsyncMock, Mock, call, patch
 from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -927,3 +927,67 @@ def test_draw_action_overlay_rendering():
         action_args={"target": [100, 100]},
     )
     assert corrupt_result == b"invalid_bytes"
+
+
+def test_step_summarizer_config_parses_optional_provider():
+    """`agent.flash.step_summarizer.provider` is an optional override field."""
+    from pydantic import ValidationError
+
+    from artemis.config.agent import StepSummarizerConfig
+
+    cfg = StepSummarizerConfig(model="gpt-4o-mini", provider="openai")
+    assert cfg.provider == "openai"
+    # Omitted provider defaults to None (inherit the configured 'default' node).
+    assert StepSummarizerConfig().provider is None
+    # A typo'd provider fails fast at config load instead of raising deep
+    # inside VisualStepSummarizer.__init__ via ModelProvider.from_string.
+    with pytest.raises(ValidationError):
+        StepSummarizerConfig(provider="gogle")
+
+
+def test_step_summarizer_honors_explicit_non_google_provider(mock_context):
+    """An explicit `provider` never builds a Google model, even for a Gemini-looking name."""
+    with patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model:
+        mock_create_model.return_value = Mock()
+        VisualStepSummarizer(mock_context, model_name="gpt-4o-mini", provider="openai")
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "openai"
+    assert endpoint.model_name == "gpt-4o-mini"
+
+
+def test_step_summarizer_honors_configured_non_google_default_provider(mock_context):
+    """With no explicit provider, the configured 'default' node's provider is used."""
+    with (
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+        patch("artemis.services.llm.get_default_node", return_value=("anthropic", "claude-x")),
+    ):
+        mock_create_model.return_value = Mock()
+        VisualStepSummarizer(mock_context, model_name="claude-x")
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "anthropic"
+    assert endpoint.model_name == "claude-x"
+
+
+def test_step_summarizer_endpoint_matches_the_old_get_google_llm_defaults(mock_context):
+    """Regression: for the shipped Google default, the summarizer's endpoint
+    must be byte-identical to the old get_google_llm(model_name=..., temperature=0.0)
+    path — including thinking_level="medium" — so unchanged Gemini configs
+    keep running background summaries at the same cost/latency tier."""
+    with (
+        patch("artemis.llm.router.ModelFactory.create_model") as mock_create_model,
+        patch("artemis.services.llm.get_default_node", return_value=("google", "gemini-3.8-flash")),
+    ):
+        mock_create_model.return_value = Mock()
+        VisualStepSummarizer(mock_context, model_name="gemini-3.5-flash-lite")
+
+    mock_create_model.assert_called_once()
+    endpoint = mock_create_model.call_args[0][0]
+    assert endpoint.provider == "google"
+    assert endpoint.model_name == "gemini-3.5-flash-lite"
+    assert endpoint.temperature == 0.0
+    assert endpoint.timeout_seconds == 60.0
+    assert endpoint.thinking_level == "medium"
