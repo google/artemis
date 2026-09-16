@@ -97,7 +97,8 @@ class JsonTransport:
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise ProtocolError(f"Artemis host returned invalid JSON from {path}") from exc
         except urllib.error.HTTPError as exc:
-            payload = self._decode_error_payload(exc)
+            with exc:
+                payload = self._decode_error_payload(exc)
             detail = self._error_detail(payload, exc.reason)
             error_type = {
                 401: AuthenticationError,
