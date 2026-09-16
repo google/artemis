@@ -27,6 +27,35 @@ from artemis_client.errors import (
 )
 
 
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        def origin(url: str) -> tuple[str, str | None, int]:
+            parsed = urlsplit(url)
+            if parsed.username is not None or parsed.password is not None:
+                raise ValueError("Redirect URL contains user information")
+            return (
+                parsed.scheme,
+                parsed.hostname,
+                parsed.port
+                if parsed.port is not None
+                else (443 if parsed.scheme == "https" else 80),
+            )
+
+        try:
+            allowed = req.get_method() in {"GET", "HEAD"} and origin(req.full_url) == origin(newurl)
+        except ValueError:
+            allowed = False
+        if not allowed:
+            fp.close()
+            raise ProtocolError(
+                "Artemis redirects must stay on the same origin and use GET or HEAD"
+            )
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and req.get_method() == "HEAD":
+            redirected.method = "HEAD"
+        return redirected
+
+
 class JsonTransport:
     """Synchronous transport used internally by the async client.
 
@@ -53,6 +82,9 @@ class JsonTransport:
         self.base_url = normalized
         self.timeout = float(timeout)
         self.ssl_context = ssl_context
+        self._opener = urllib.request.build_opener(
+            _SameOriginRedirectHandler(), urllib.request.HTTPSHandler(context=ssl_context)
+        )
         self.headers = {
             "Accept": "application/json",
             "User-Agent": "artemis-client/0.1",
@@ -84,10 +116,9 @@ class JsonTransport:
             method=method.upper(),
         )
         try:
-            with urllib.request.urlopen(
+            with self._opener.open(
                 request,
                 timeout=self.timeout,
-                context=self.ssl_context,
             ) as response:
                 data = response.read()
                 if not data:
