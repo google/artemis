@@ -33,9 +33,43 @@ class FakeResponse:
 
 
 class JsonTransportTests(unittest.TestCase):
-    def test_rejects_non_http_base_url(self) -> None:
-        with self.assertRaises(ValueError):
-            JsonTransport("file:///tmp/artemis")
+    @patch("urllib.request.urlopen")
+    def test_rejects_invalid_base_urls_before_network(self, urlopen) -> None:
+        invalid_urls = (
+            "file:///tmp/artemis",
+            "http://",
+            "http://:8000",
+            "http://host.example?query",
+            "http://host.example?",
+            "http://host.example#fragment",
+            "http://host.example#",
+            "http://user:secret@host.example",
+            "http://host.example:invalid-port",
+            "http://host.example:65536",
+            "http://[::1",
+        )
+
+        for base_url in invalid_urls:
+            with self.subTest(base_url=base_url):
+                with self.assertRaises(ValueError):
+                    JsonTransport(base_url)
+
+        urlopen.assert_not_called()
+
+    @patch("urllib.request.urlopen")
+    def test_preserves_valid_path_prefixes_trailing_slashes_and_ipv6(self, urlopen) -> None:
+        urlopen.return_value = FakeResponse(b"{}")
+        controls = (
+            ("http://host.example/api/", "http://host.example/api/status"),
+            ("https://[::1]:8000/artemis/", "https://[::1]:8000/artemis/status"),
+            ("http://localhost:8000/", "http://localhost:8000/status"),
+        )
+
+        for base_url, expected_url in controls:
+            with self.subTest(base_url=base_url):
+                JsonTransport(base_url).request("GET", "status")
+                request = urlopen.call_args.args[0]
+                self.assertEqual(request.full_url, expected_url)
 
     @patch("urllib.request.urlopen")
     def test_sends_json_and_bearer_token(self, urlopen) -> None:
