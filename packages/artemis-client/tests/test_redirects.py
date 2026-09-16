@@ -119,9 +119,14 @@ class RedirectTests(unittest.TestCase):
 
     def test_head_redirect_preserves_method(self):
         with server() as (base, sent, routes):
-            routes["/start"] = (302, "/finish")
-            self.assertIsNone(JsonTransport(base).request("HEAD", "/start"))
-            self.assertEqual([item[0] for item in sent], ["HEAD", "HEAD"])
+            for method in ("GET", "HEAD"):
+                for status in (301, 302, 303, 307, 308):
+                    with self.subTest(method=method, status=status):
+                        sent.clear()
+                        routes["/start"] = (status, "/finish")
+                        result = JsonTransport(base).request(method, "/start")
+                        self.assertEqual(result, None if method == "HEAD" else {"ok": True})
+                        self.assertEqual([item[0] for item in sent], [method, method])
 
     def test_post_redirect_is_not_replayed_or_converted_to_get(self):
         with server() as (base, sent, routes):
