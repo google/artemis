@@ -39,6 +39,32 @@ def _client(**transport_kwargs) -> AsyncClient:
     )
 
 
+async def _websocket_messages(*, host: str, origin: str) -> list[dict]:
+    messages = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        messages.append(message)
+
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "scheme": "ws",
+        "path": "/api/stream/device-live",
+        "raw_path": b"/api/stream/device-live",
+        "query_string": b"",
+        "headers": [(b"host", host.encode("ascii")), (b"origin", origin.encode("ascii"))],
+        "client": ("127.0.0.1", 54321),
+        "server": ("localhost", 8000),
+        "subprotocols": [],
+    }
+    await app(scope, receive, send)
+    return messages
+
+
 # ---------------------------------------------------------------------------
 # Secret exposure
 # ---------------------------------------------------------------------------
@@ -161,6 +187,48 @@ async def test_cross_origin_browser_request_is_rejected_without_cors_grant():
 
     assert res.status_code == 403
     assert "access-control-allow-origin" not in {k.lower() for k in res.headers}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ("http://[", "http://[not-an-ip]"))
+async def test_malformed_http_origin_is_rejected_before_endpoint_execution(origin):
+    with patch("apps.admin_console.routers.system.readiness_engine.get_emulator_status") as status:
+        async with _client() as ac:
+            res = await ac.get(
+                "/api/system/emulator/status",
+                headers={"Origin": origin},
+            )
+
+    assert res.status_code == 403
+    status.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ("http://[", "http://[not-an-ip]"))
+async def test_malformed_websocket_origin_closes_with_policy_violation(origin):
+    messages = await _websocket_messages(host="localhost:8000", origin=origin)
+
+    assert messages == [{"type": "websocket.close", "code": 1008}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base_url",
+    ("http://localhost:8000", "http://127.0.0.1:8000", "http://[::1]:8000"),
+)
+async def test_same_origin_localhost_ipv4_and_ipv6_requests_are_allowed(base_url):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url=base_url) as ac:
+        res = await ac.get("/api/system/emulator/status", headers={"Origin": base_url})
+
+    assert res.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_missing_origin_allows_nonbrowser_clients():
+    async with _client() as ac:
+        res = await ac.get("/api/system/emulator/status")
+
+    assert res.status_code == 200
 
 
 @pytest.mark.asyncio
