@@ -15,8 +15,8 @@
 """Custom Script / Command Hook Notifier for universal IDE and editor integration."""
 
 import logging
-import shlex
 import os
+import shlex
 import subprocess
 from typing import Any
 
@@ -67,26 +67,57 @@ class ScriptNotifier(BaseNotifier):
 
         trace_id = (payload or {}).get("trace_id", "")
         formatted_title = title or f"Artemis Task {event_type.capitalize()}"
+        values = {
+            "{title}": str(formatted_title),
+            "{message}": str(message),
+            "{conversation_id}": str(conversation_id),
+            "{event_type}": str(event_type),
+            "{trace_id}": str(trace_id),
+        }
 
-        # Shell-escape every substituted value so task/result content that
-        # contains quotes, backticks, `$( )`, `;`, etc. cannot break out of
-        # the configured command template and inject additional commands.
+        # Tokenize the *template* (trusted: set by whoever configures
+        # ARTEMIS_NOTIFY_CMD/MCP_NOTIFY_COMMAND on their own machine) with shlex
+        # so quoting like 'my-script --message "{message}"' resolves to argv
+        # boundaries the way the operator intended. Placeholders are then
+        # substituted as literal text *within* each resulting token and the
+        # argv list is executed with shell=False. Untrusted values (message,
+        # title, ...; ultimately derived from task text and on-device content
+        # an agent read) are never interpreted by a shell, so quotes,
+        # backticks, `$()`, `;`, `&&`, etc. embedded in them can't break out
+        # into additional commands - there's no shell parser in the loop for
+        # them to break out of.
+        #
+        # Trade-off: this intentionally drops any implicit shell features the
+        # template itself relied on (pipelines, redirection, `&&`, `$VAR`
+        # expansion). Templates that explicitly re-invoke a shell (`sh -c ...`,
+        # `cmd /c ...`) or call a `.bat`/`.cmd` file directly are unaffected by
+        # this fix - those hand the whole assembled string back to a shell
+        # themselves and remain the operator's responsibility to write safely.
         try:
-            cmd = (
-                cmd_template.replace("{title}", shlex.quote(str(formatted_title)))
-                .replace("{message}", shlex.quote(str(message)))
-                .replace("{conversation_id}", shlex.quote(str(conversation_id)))
-                .replace("{event_type}", shlex.quote(str(event_type)))
-                .replace("{trace_id}", shlex.quote(str(trace_id)))
-            )
+            try:
+                tokens = shlex.split(cmd_template, posix=(os.name != "nt"))
+            except ValueError as e:
+                logger.warning(f"Invalid ARTEMIS_NOTIFY_CMD/MCP_NOTIFY_COMMAND template: {e}")
+                return False
+
+            if not tokens:
+                logger.warning("Empty command template after tokenization")
+                return False
+
+            argv = []
+            for token in tokens:
+                for placeholder, value in values.items():
+                    token = token.replace(placeholder, value)
+                argv.append(token)
+
             subprocess.run(
-                cmd,
-                shell=True,
+                argv,
+                shell=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
             )
-            logger.info(f"Custom script notification command executed: {cmd[:60]}...")
+            logger.info(f"Custom script notification command executed: {argv[0]!r} (+{len(argv) - 1} args)")
             return True
         except Exception as e:
             logger.warning(f"Failed to execute custom script notification: {e}")
