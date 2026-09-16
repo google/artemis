@@ -12,6 +12,7 @@ import asyncio
 import threading
 import unittest
 from collections.abc import Mapping
+from contextlib import ExitStack
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -39,10 +40,12 @@ class WaitDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.clock = PollClock()
         self.transport = FakeTransport()
         self.client = ArtemisClient(transport=self.transport)
-        self.enterContext(
+        contexts = ExitStack()
+        self.addCleanup(contexts.close)
+        contexts.enter_context(
             patch("artemis_client.client.time", SimpleNamespace(monotonic=self.clock.monotonic))
         )
-        self.enterContext(
+        contexts.enter_context(
             patch(
                 "artemis_client.client.asyncio",
                 SimpleNamespace(sleep=self.clock.sleep, to_thread=asyncio.to_thread),
