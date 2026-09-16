@@ -28,6 +28,8 @@ from artemis_client.errors import (
 
 
 class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    http_error_308 = urllib.request.HTTPRedirectHandler.http_error_302
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         def origin(url: str) -> tuple[str, str | None, int]:
             parsed = urlsplit(url)
@@ -50,10 +52,18 @@ class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
             raise ProtocolError(
                 "Artemis redirects must stay on the same origin and use GET or HEAD"
             )
-        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if redirected is not None and req.get_method() == "HEAD":
-            redirected.method = "HEAD"
-        return redirected
+        redirected_headers = {
+            name: value
+            for name, value in req.headers.items()
+            if name.lower() not in {"content-length", "content-type"}
+        }
+        return urllib.request.Request(
+            newurl,
+            headers=redirected_headers,
+            origin_req_host=req.origin_req_host,
+            unverifiable=True,
+            method=req.get_method(),
+        )
 
 
 class JsonTransport:
