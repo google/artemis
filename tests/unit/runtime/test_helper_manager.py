@@ -8,6 +8,8 @@ port so "the service answers" is a switch the test flips.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 
@@ -20,6 +22,7 @@ from artemis.runtime.helper_manager import (
     AccessibilityHelperManager,
     BundledHelper,
     HelperUnavailable,
+    load_bundled_helper,
 )
 
 SERIAL = "pixel-1"
@@ -169,7 +172,12 @@ class FakePing:
 def bundled(tmp_path: Path) -> BundledHelper:
     apk = tmp_path / "helper.apk"
     apk.write_bytes(b"apk")
-    return BundledHelper(apk_path=apk, version_code=2, version_name="1.1.0", sha256="x")
+    return BundledHelper(
+        apk_path=apk,
+        version_code=2,
+        version_name="1.1.0",
+        sha256=hashlib.sha256(b"apk").hexdigest(),
+    )
 
 
 @pytest.fixture
@@ -192,6 +200,95 @@ def env(tmp_path: Path, monkeypatch, bundled):
 
 def _calls(adb: FakeAdb, prefix: list[str]) -> list[list[str]]:
     return [c for c in adb.calls if c[: len(prefix)] == prefix]
+
+
+def _write_bundle(root: Path, payload: bytes, sha256: str | None = None) -> tuple[Path, Path]:
+    bundle_dir = root / "helper bundle with spaces"
+    bundle_dir.mkdir()
+    apk_path = bundle_dir / "ArtemisAccessibilityHelper.apk"
+    manifest_path = bundle_dir / "helper_manifest.json"
+    apk_path.write_bytes(payload)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "version_code": 2,
+                "version_name": "1.1.0",
+                "sha256": sha256 if sha256 is not None else hashlib.sha256(payload).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return apk_path, manifest_path
+
+
+def test_load_bundled_helper_accepts_matching_hash_and_path_spaces(tmp_path):
+    apk_path, manifest_path = _write_bundle(tmp_path, b"complete apk")
+
+    helper = load_bundled_helper(apk_path, manifest_path)
+
+    assert helper is not None
+    assert helper.apk_path == apk_path
+    assert helper.sha256 == hashlib.sha256(b"complete apk").hexdigest()
+
+
+@pytest.mark.parametrize(
+    "payload, expected_sha256",
+    [
+        (b"apk with a different digest", "0" * 64),
+        (b"truncated", hashlib.sha256(b"complete apk").hexdigest()),
+    ],
+    ids=["mismatch", "truncated"],
+)
+def test_load_bundled_helper_rejects_mismatch_and_truncated_apk(tmp_path, payload, expected_sha256):
+    apk_path, manifest_path = _write_bundle(tmp_path, payload, expected_sha256)
+
+    assert load_bundled_helper(apk_path, manifest_path) is None
+
+
+@pytest.mark.parametrize("manifest_sha256", ["", "not-a-digest", "0" * 63, "0" * 65])
+def test_load_bundled_helper_rejects_invalid_manifest_hash(tmp_path, manifest_sha256):
+    apk_path, manifest_path = _write_bundle(tmp_path, b"complete apk", manifest_sha256)
+
+    assert load_bundled_helper(apk_path, manifest_path) is None
+
+
+def test_load_bundled_helper_rejects_missing_manifest_hash(tmp_path):
+    apk_path, manifest_path = _write_bundle(tmp_path, b"complete apk")
+    manifest_path.write_text(json.dumps({"version_code": 2}), encoding="utf-8")
+
+    assert load_bundled_helper(apk_path, manifest_path) is None
+
+
+def test_load_bundled_helper_rejects_malformed_manifest(tmp_path):
+    apk_path, manifest_path = _write_bundle(tmp_path, b"complete apk")
+    manifest_path.write_text("{", encoding="utf-8")
+
+    assert load_bundled_helper(apk_path, manifest_path) is None
+
+
+def test_load_bundled_helper_rejects_missing_apk(tmp_path):
+    apk_path, manifest_path = _write_bundle(tmp_path, b"complete apk")
+    apk_path.unlink()
+
+    assert load_bundled_helper(apk_path, manifest_path) is None
+
+
+def test_provision_does_not_install_an_unverified_apk(tmp_path, monkeypatch):
+    apk_path, manifest_path = _write_bundle(tmp_path, b"tampered apk", "0" * 64)
+    monkeypatch.setattr(hm, "get_temp_dir", lambda _name: tmp_path / "mutex")
+    adb = FakeAdb()
+    manager = AccessibilityHelperManager(
+        run_adb=adb,
+        ping=FakePing(adb),
+        bundled=lambda: load_bundled_helper(apk_path, manifest_path),
+        sleep=lambda _s: None,
+    )
+
+    result = manager.provision(SERIAL)
+
+    assert not result.ok
+    assert result.action == "failed"
+    assert not _calls(adb, ["-s", SERIAL, "install"])
 
 
 def test_status_and_session_repr_do_not_expose_token(env):
