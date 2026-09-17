@@ -16,6 +16,7 @@
 
 import logging
 import os
+import shlex
 import subprocess
 from typing import Any
 
@@ -67,23 +68,29 @@ class ScriptNotifier(BaseNotifier):
         trace_id = (payload or {}).get("trace_id", "")
         formatted_title = title or f"Artemis Task {event_type.capitalize()}"
 
-        # Replace template placeholders safely
+        # The template is operator-supplied, but every substituted value is
+        # attacker-influenced task data: a task's `goal` reaches {title}/{message}
+        # (see task_queue_service). Run the template as an argument vector instead of
+        # through a shell, so task data can never be reinterpreted as shell syntax
+        # (CWE-78). shlex.split() resolves the operator's own quoting, so a template such
+        # as `my-script --title '{title}'` still passes the title as a single argument.
         try:
-            cmd = (
-                cmd_template.replace("{title}", str(formatted_title))
+            argv = [
+                token.replace("{title}", str(formatted_title))
                 .replace("{message}", str(message))
                 .replace("{conversation_id}", str(conversation_id))
                 .replace("{event_type}", str(event_type))
                 .replace("{trace_id}", str(trace_id))
-            )
+                for token in shlex.split(cmd_template)
+            ]
             subprocess.run(
-                cmd,
-                shell=True,
+                argv,
+                shell=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
             )
-            logger.info(f"Custom script notification command executed: {cmd[:60]}...")
+            logger.info(f"Custom script notification executed: {shlex.join(argv)[:60]}...")
             return True
         except Exception as e:
             logger.warning(f"Failed to execute custom script notification: {e}")

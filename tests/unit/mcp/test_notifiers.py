@@ -132,6 +132,46 @@ def test_script_notifier(monkeypatch):
     assert res is True
 
 
+def test_script_notifier_passes_substituted_values_as_arguments(monkeypatch):
+    """Substituted values are task data, not shell syntax.
+
+    The notification text embeds single quotes around a task's goal, so letting a shell
+    reinterpret the command line would let that data inject commands of its own.
+    """
+    import subprocess as subprocess_module
+
+    from mcp_server.notifiers.script import ScriptNotifier
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(subprocess_module, "run", lambda cmd, **kwargs: captured.append(cmd))
+    monkeypatch.setenv("ARTEMIS_NOTIFY_CMD", "true --title '{title}' --message '{message}'")
+
+    goal = "check the battery level ; echo injected ; true"
+    message = f"Artemis autonomous task '{goal}' finished with status 'failed'."
+    title = f"Task Failed: {goal[:40]}"
+
+    assert ScriptNotifier().notify("conv-1", message, title=title) is True
+    # Each substituted value must arrive as exactly one literal argument.
+    assert captured == [["true", "--title", title, "--message", message]]
+
+
+def test_script_notifier_does_not_execute_injected_task_data(monkeypatch, tmp_path):
+    """End-to-end check: task data containing shell metacharacters must not execute."""
+    from mcp_server.notifiers.script import ScriptNotifier
+
+    marker = tmp_path / "injected"
+    monkeypatch.setenv(
+        "ARTEMIS_NOTIFY_CMD",
+        "true --title '{title}' --message '{message}' --trace-id '{trace_id}'",
+    )
+    goal = f"check the battery level and report back now ; touch {marker} ; true"
+    message = f"Artemis autonomous task '{goal}' finished with status 'failed'."
+    title = f"Task Failed: {goal[:40]}"
+
+    assert ScriptNotifier().notify("conv-1", message, title=title) is True
+    assert not marker.exists()
+
+
 def test_composite_notifier_dispatch():
     d1 = DummyNotifier(available=True, return_val=True)
     d2 = DummyNotifier(available=False, return_val=False)
