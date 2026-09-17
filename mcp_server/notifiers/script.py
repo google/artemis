@@ -32,6 +32,17 @@ class ScriptNotifier(BaseNotifier):
     or automation platform by allowing users to define ARTEMIS_NOTIFY_CMD or MCP_NOTIFY_COMMAND.
     Placeholders like {title}, {message}, {conversation_id}, {event_type}, and {trace_id}
     are automatically replaced before execution.
+
+    The template is executed as an argument vector, not through a shell: it is parsed with
+    ``shlex.split`` and launched with ``shell=False``. Substituted values are task data (a
+    task's ``goal`` reaches {title}/{message}), so they are never interpreted as shell
+    syntax. Two consequences to be aware of:
+
+    - Shell features in the template (pipes, ``&&``, redirection, ``$VAR`` expansion,
+      globbing) are not interpreted. Put that logic in the script itself and reference the
+      script as a single command, e.g. ``my-notify.sh --title '{title}'``.
+    - Quotes around a placeholder are no longer significant: ``--title '{title}'`` and
+      ``--title {title}`` both pass the value as a single argument.
     """
 
     ENV_VARS = [
