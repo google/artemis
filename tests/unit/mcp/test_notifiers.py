@@ -132,7 +132,6 @@ def test_script_notifier(monkeypatch):
     assert res is True
 
 
-
 def test_script_notifier_rejects_shell_injection(monkeypatch, tmp_path):
     """Regression test for the ScriptNotifier command-injection issue.
 
@@ -179,6 +178,8 @@ def test_script_notifier_multiword_value_stays_one_argument(monkeypatch, tmp_pat
     from mcp_server.notifiers.script import ScriptNotifier
 
     out_file = tmp_path / "argv.txt"
+    # %1 is what our test script echoes back; write argv[1] to a file so we can
+    # assert it arrived as exactly one argument.
     script = tmp_path / "capture.sh"
     script.write_text(f'#!/bin/sh\nprintf "%s" "$1" > "{out_file}"\n')
     script.chmod(0o755)
@@ -188,7 +189,26 @@ def test_script_notifier_multiword_value_stays_one_argument(monkeypatch, tmp_pat
     res = notifier.notify("conv-mw", "hello world with spaces", title="T", payload={"trace_id": "t-1"})
     assert res is True
     assert out_file.read_text() == "hello world with spaces"
-    
+
+
+def test_tokenize_command_template_windows_paths():
+    """Regression test for a Windows-only bug: neither of stdlib shlex's posix
+    modes tokenizes both quoted and unquoted Windows paths correctly (posix=True
+    silently strips backslashes from an unquoted path; posix=False leaves literal
+    quote characters in a quoted path, which Windows then can't resolve as an
+    executable). The hand-rolled tokenizer must get both right, on every platform,
+    with no os.name branching."""
+    from mcp_server.notifiers.script import _tokenize_command_template
+
+    quoted = _tokenize_command_template('"C:\\Program Files\\my-script.exe" --title \'{title}\'')
+    assert quoted[0] == "C:\\Program Files\\my-script.exe"
+    assert quoted[1:] == ["--title", "{title}"]
+
+    unquoted = _tokenize_command_template("C:\\Tools\\notify.exe --title '{title}'")
+    assert unquoted[0] == "C:\\Tools\\notify.exe"
+    assert unquoted[1:] == ["--title", "{title}"]
+
+
 def test_composite_notifier_dispatch():
     d1 = DummyNotifier(available=True, return_val=True)
     d2 = DummyNotifier(available=False, return_val=False)

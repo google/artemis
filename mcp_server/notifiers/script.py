@@ -16,13 +16,55 @@
 
 import logging
 import os
-import shlex
 import subprocess
 from typing import Any
 
 from mcp_server.notifiers.base import BaseNotifier
 
 logger = logging.getLogger("mcp_server.notifiers.script")
+
+
+def _tokenize_command_template(template: str) -> list[str]:
+    """Split a command template into argv tokens.
+
+    Recognizes single/double-quoted runs so a placeholder like '{message}'
+    or a quoted path like "C:\\Program Files\\x.exe" stays one token, and
+    strips the matching outer quote characters.
+
+    Deliberately does NOT treat backslash as an escape character. stdlib
+    shlex's posix=True mode does, which silently strips backslashes from any
+    *unquoted* token - corrupting an ordinary unquoted Windows path (e.g.
+    C:\\Tools\\notify.exe) with no error raised. Its posix=False mode avoids
+    that but then leaves literal quote characters inside a *quoted* path
+    token (e.g. "C:\\Program Files\\x.exe" keeps its surrounding quotes),
+    which Windows then fails to resolve as an executable (WinError 5).
+    Neither posix mode works for both quoted and unquoted Windows paths, and
+    branching on os.name to pick one just swaps which case breaks. Not
+    special-casing backslash at all avoids the whole problem on both
+    platforms.
+    """
+    tokens: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    for ch in template:
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                current.append(ch)
+        elif ch in ("'", '"'):
+            quote = ch
+        elif ch.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+        else:
+            current.append(ch)
+    if quote:
+        raise ValueError(f"unbalanced {quote!r} quote in command template")
+    if current:
+        tokens.append("".join(current))
+    return tokens
 
 
 class ScriptNotifier(BaseNotifier):
@@ -76,8 +118,8 @@ class ScriptNotifier(BaseNotifier):
         }
 
         # Tokenize the *template* (trusted: set by whoever configures
-        # ARTEMIS_NOTIFY_CMD/MCP_NOTIFY_COMMAND on their own machine) with shlex
-        # so quoting like 'my-script --message "{message}"' resolves to argv
+        # ARTEMIS_NOTIFY_CMD/MCP_NOTIFY_COMMAND on their own machine) so
+        # quoting like 'my-script --message "{message}"' resolves to argv
         # boundaries the way the operator intended. Placeholders are then
         # substituted as literal text *within* each resulting token and the
         # argv list is executed with shell=False. Untrusted values (message,
@@ -85,7 +127,8 @@ class ScriptNotifier(BaseNotifier):
         # an agent read) are never interpreted by a shell, so quotes,
         # backticks, `$()`, `;`, `&&`, etc. embedded in them can't break out
         # into additional commands - there's no shell parser in the loop for
-        # them to break out of.
+        # them to break out of. See _tokenize_command_template for why this
+        # uses a purpose-built tokenizer instead of stdlib shlex.
         #
         # Trade-off: this intentionally drops any implicit shell features the
         # template itself relied on (pipelines, redirection, `&&`, `$VAR`
@@ -95,7 +138,7 @@ class ScriptNotifier(BaseNotifier):
         # themselves and remain the operator's responsibility to write safely.
         try:
             try:
-                tokens = shlex.split(cmd_template, posix=(os.name != "nt"))
+                tokens = _tokenize_command_template(cmd_template)
             except ValueError as e:
                 logger.warning(f"Invalid ARTEMIS_NOTIFY_CMD/MCP_NOTIFY_COMMAND template: {e}")
                 return False
