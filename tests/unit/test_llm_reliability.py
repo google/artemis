@@ -43,6 +43,31 @@ def test_classifier_categories_and_recovery_decisions():
     assert unknown.retryable
 
 
+def test_classifier_recognizes_provider_connection_wrappers():
+    class APIConnectionError(Exception):
+        pass
+
+    wrapped = APIConnectionError("Connection error.")
+    wrapped.__cause__ = ConnectionRefusedError(10061, "Connection refused")
+
+    failure = classify_failure(wrapped)
+
+    assert failure.category is FailureCategory.CONNECTION
+    assert failure.retryable
+    assert failure.should_fallback
+    assert retry_policy_for(failure.category).max_attempts == 3
+
+
+def test_classifier_recognizes_api_connection_error_by_type_name():
+    class APIConnectionError(Exception):
+        pass
+
+    failure = classify_failure(APIConnectionError("Connection error."))
+
+    assert failure.category is FailureCategory.CONNECTION
+    assert failure.retryable
+
+
 def test_non_retryable_categories_get_single_attempt():
     assert retry_policy_for(FailureCategory.AUTHENTICATION).max_attempts == 1
     assert retry_policy_for(FailureCategory.BAD_REQUEST).max_attempts == 1
