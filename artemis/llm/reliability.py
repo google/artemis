@@ -80,29 +80,66 @@ _AUTH_MARKERS = ("unauthorized", "forbidden", "api key", "credential")
 # "deadline exceeded"/"deadline_exceeded" cover google-genai SDK timeouts that
 # surface without an HTTP status code attached.
 _TIMEOUT_MARKERS = ("timed out", "timeout", "deadline exceeded", "deadline_exceeded")
+_CONNECTION_EXCEPTION_NAMES = frozenset(
+    {
+        "apiconnectionerror",
+        "connecterror",
+        "connectionerror",
+        "networkerror",
+        "transporterror",
+        "remoteprotocolerror",
+    }
+)
+
+
+def _exception_chain(error: BaseException):
+    """Yield an exception and its explicit/implicit causes without looping."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
 
 
 def classify_failure(error: BaseException) -> Failure:
-    """Convert a provider/transport exception into explicit recovery decisions."""
-    if isinstance(error, KeyboardInterrupt) or type(error).__name__ == "CancelledError":
+    """Convert a provider/transport exception into explicit recovery decisions.
+
+    Provider SDKs commonly wrap transport errors (for example OpenAI
+    APIConnectionError around an httpx/httpcore connection failure). Inspect
+    the exception chain so recovery reflects the real failure instead of
+    treating the provider wrapper as an unknown error.
+    """
+    chain = tuple(_exception_chain(error))
+    if any(
+        isinstance(exc, KeyboardInterrupt) or type(exc).__name__ == "CancelledError"
+        for exc in chain
+    ):
         return Failure(FailureCategory.CANCELLED, False, False)
 
-    code = extract_status_code(error)
-    message = str(error).lower()
+    codes = {code for exc in chain if (code := extract_status_code(exc)) is not None}
+    messages = " ".join(str(exc).lower() for exc in chain if str(exc))
+    type_names = {type(exc).__name__.lower() for exc in chain}
 
-    if code == 429 or any(marker in message for marker in _RATE_LIMIT_MARKERS):
+    if 429 in codes or any(marker in messages for marker in _RATE_LIMIT_MARKERS):
         return Failure(FailureCategory.RATE_LIMIT, True, True)
-    if code in {500, 502, 503, 504} or any(marker in message for marker in _UNAVAILABLE_MARKERS):
+    if codes.intersection({500, 502, 503, 504}) or any(
+        marker in messages for marker in _UNAVAILABLE_MARKERS
+    ):
         return Failure(FailureCategory.PROVIDER_UNAVAILABLE, True, True)
-    if isinstance(error, TimeoutError) or any(marker in message for marker in _TIMEOUT_MARKERS):
+    if any(isinstance(exc, TimeoutError) for exc in chain) or any(
+        marker in messages for marker in _TIMEOUT_MARKERS
+    ):
         return Failure(FailureCategory.TIMEOUT, True, True)
-    if isinstance(error, (ConnectionError, OSError)):
+    if any(isinstance(exc, (ConnectionError, OSError)) for exc in chain) or type_names.intersection(
+        _CONNECTION_EXCEPTION_NAMES
+    ):
         return Failure(FailureCategory.CONNECTION, True, True)
-    if code in {401, 403} or any(marker in message for marker in _AUTH_MARKERS):
+    if codes.intersection({401, 403}) or any(marker in messages for marker in _AUTH_MARKERS):
         # Not retryable against the same endpoint, but a fallback endpoint may
         # use a different (working) credential.
         return Failure(FailureCategory.AUTHENTICATION, False, True)
-    if code in {400, 404, 413, 415, 422}:
+    if codes.intersection({400, 404, 413, 415, 422}):
         # Programmer/request errors: retrying is useless and falling back only
         # hides the bug inside a different model's output.
         return Failure(FailureCategory.BAD_REQUEST, False, False)
