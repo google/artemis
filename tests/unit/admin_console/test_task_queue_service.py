@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from apps.admin_console.core.state import state
+from apps.admin_console.database.repositories.session_repository import SessionRepository
 from apps.admin_console.routers.tasks import get_status
 from apps.admin_console.services.task_queue_service import TaskQueueService, task_queue_service
 from artemis.runtime.device_lock import DeviceLockOwner
@@ -150,6 +151,47 @@ def test_resolve_terminal_status_preserves_authoritative_result(
     assert (
         TaskQueueService._resolve_terminal_status(current_status, returncode, stopped) == expected
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_failure_before_session_start_is_visible_in_session_history(tmp_path):
+    repository = SessionRepository(tmp_path / "sessions.db")
+    with (
+        patch("apps.admin_console.services.task_queue_service.session_repo", repository),
+        patch(
+            "apps.admin_console.services.task_queue_service.trace_store.read_status",
+            return_value=None,
+        ),
+    ):
+        status = await TaskQueueService._persist_terminal_session_status(
+            "early-failure", returncode=1, manual_stop=False
+        )
+
+    assert status == "failed"
+    row = repository.get_session_by_id("early-failure")
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["end_time"] is not None
+
+    with (
+        patch("apps.admin_console.services.task_queue_service.session_repo", repository),
+        patch(
+            "apps.admin_console.services.task_queue_service.trace_store.read_status",
+            return_value=None,
+        ),
+    ):
+        await TaskQueueService._persist_terminal_session_status(
+            "early-with-goal",
+            returncode=1,
+            manual_stop=False,
+            initial_goal="Open Settings",
+            start_time=123.0,
+        )
+
+    row = repository.get_session_by_id("early-with-goal")
+    assert row is not None
+    assert row["initial_goal"] == "Open Settings"
+    assert row["start_time"] == 123.0
 
 
 @pytest.mark.asyncio

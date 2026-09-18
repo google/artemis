@@ -643,7 +643,12 @@ class TaskQueueService:
 
     @classmethod
     async def _persist_terminal_session_status(
-        cls, sess_id: Any, returncode: int, manual_stop: bool
+        cls,
+        sess_id: Any,
+        returncode: int,
+        manual_stop: bool,
+        initial_goal: str = "",
+        start_time: float | None = None,
     ) -> str:
         """Resolve and persist the session's terminal status in the DB and trace store."""
         current_status = session_repo.get_session_status(sess_id)
@@ -653,7 +658,13 @@ class TaskQueueService:
             manual_stop,
         )
         if should_persist:
-            if session_repo.update_session_status(sess_id, new_status, time.time()):
+            finished_at = time.time()
+            persisted = session_repo.update_session_status(sess_id, new_status, finished_at)
+            if not persisted and current_status is None:
+                persisted = session_repo.persist_terminal_session_status(
+                    sess_id, new_status, initial_goal, start_time, finished_at
+                )
+            if persisted:
                 print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
             else:
                 # The DB row is the fallback MCP pollers reconcile
@@ -873,7 +884,7 @@ class TaskQueueService:
             # 4. Perform fallback database status update and notification
             if sess_id:
                 new_status = await cls._persist_terminal_session_status(
-                    sess_id, returncode, manual_stop
+                    sess_id, returncode, manual_stop, goal, task_item.get("start_time")
                 )
                 await cls._recover_or_fail_recording(sess_id)
                 cls._announce_session_end(task_item, sess_id, goal, new_status, manual_stop)
@@ -889,7 +900,11 @@ class TaskQueueService:
             if sess_id:
                 try:
                     new_status = await cls._persist_terminal_session_status(
-                        sess_id, returncode=1, manual_stop=False
+                        sess_id,
+                        returncode=1,
+                        manual_stop=False,
+                        initial_goal=goal or "",
+                        start_time=task_item.get("start_time"),
                     )
                     cls._announce_session_end(task_item, sess_id, goal or "", new_status, False)
                 except (OSError, RuntimeError, ValueError):
