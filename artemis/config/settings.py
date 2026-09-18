@@ -27,6 +27,8 @@ from artemis.config.constants import (
     DEFAULT_MODEL,
     DEFAULT_PROFILE,
     ENV_ANTHROPIC_API_KEY,
+    ENV_CUSTOM_LLM_API_KEY,
+    ENV_CUSTOM_LLM_BASE_URL,
     ENV_DATA_ENGINE_DB_PATH,
     ENV_GCP_API_KEY,
     ENV_GEMINI_API_KEY,
@@ -108,6 +110,12 @@ class Settings(BaseSettings):
 
     # Custom Provider Endpoints
     OPENAI_BASE_URL: str | None = None
+    # Convenience fields for OpenAI-compatible endpoints (provider: "custom",
+    # "ollama", "vllm"). Falls through to OPENAI_API_KEY / OPENAI_BASE_URL when
+    # unset, so existing configs keep working without changes.
+    CUSTOM_LLM_API_KEY: SecretStr | None = None
+    CUSTOM_LLM_BASE_URL: str | None = None
+    CUSTOM_LLM_MODEL: str | None = None
 
     # Android ADB Connectivity
     ADB_HOST: str | None = Field(default=DEFAULT_ADB_HOST)
@@ -167,6 +175,7 @@ class Settings(BaseSettings):
             "OCR_API_KEY",
             "VISION_API_KEY",
             "API_KEY",
+            "CUSTOM_LLM_API_KEY",
         ):
             val = getattr(self, attr, None)
             if val and is_placeholder_key(val):
@@ -208,6 +217,11 @@ class Settings(BaseSettings):
             key = self.OPEN_ROUTER_API_KEY
         elif provider_lower in ("xai", "grok"):
             key = self.XAI_API_KEY
+        elif provider_lower in ("custom", "ollama", "vllm"):
+            # Custom / local OpenAI-compatible endpoints: prefer the dedicated
+            # CUSTOM_LLM_API_KEY when set, otherwise reuse OPENAI_API_KEY so
+            # existing OpenAI users only have to override the base URL.
+            key = self.CUSTOM_LLM_API_KEY or self.OPENAI_API_KEY
 
         if key and not is_placeholder_key(key):
             return key
@@ -257,6 +271,15 @@ class Settings(BaseSettings):
             env_key_name = ENV_OCR_API_KEY
             os.environ[ENV_OCR_API_KEY] = key
             os.environ[ENV_VISION_API_KEY] = key
+        elif provider_lower in ("custom", "ollama", "vllm"):
+            # Custom OpenAI-compatible endpoints: write to the dedicated
+            # CUSTOM_LLM_API_KEY so the value does not collide with a real
+            # OpenAI key the user may also be using for native OpenAI nodes.
+            self.CUSTOM_LLM_API_KEY = secret
+            self.OPENAI_API_KEY = secret
+            env_key_name = ENV_CUSTOM_LLM_API_KEY
+            os.environ[ENV_CUSTOM_LLM_API_KEY] = key
+            os.environ[ENV_OPENAI_API_KEY] = key
 
         if persist_to_env and env_key_name:
             target_env_files = [get_env_file()]

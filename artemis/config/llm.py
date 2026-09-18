@@ -100,6 +100,36 @@ class LLM(BaseModel):
         elif self.provider == "xai":
             if not settings.XAI_API_KEY:
                 raise Exception(f"{name} requires XAI_API_KEY in .env")
+        elif self.provider in ("custom", "ollama", "vllm"):
+            # Custom / local OpenAI-compatible providers. The runtime ModelFactory
+            # reads `OPENAI_API_KEY` (or `endpoint.api_key`) and `OPENAI_BASE_URL`
+            # (or `endpoint.api_base`), so a missing API key is tolerated when the
+            # endpoint supplies one inline. We only require an endpoint be
+            # resolvable; bare config without any base URL is the real failure mode.
+            base_url = (
+                settings.OPENAI_BASE_URL
+                or os.environ.get("OPENAI_BASE_URL")
+                or os.environ.get("CUSTOM_LLM_BASE_URL")
+            )
+            has_api_key = bool(
+                settings.OPENAI_API_KEY
+                or os.environ.get("OPENAI_API_KEY")
+                or os.environ.get("CUSTOM_LLM_API_KEY")
+            )
+            if not base_url:
+                raise Exception(
+                    f"{name} uses provider {self.provider!r} but no endpoint URL is "
+                    "configured. Set OPENAI_BASE_URL (or CUSTOM_LLM_BASE_URL) in "
+                    ".env, or add `api_base` to the node in artemis.jsonc."
+                )
+            # An API key is mandatory for hosted custom endpoints (MiniMax, OpenRouter
+            # clones, etc.) but optional for fully local Ollama / vLLM servers.
+            if self.provider == "custom" and not has_api_key:
+                raise Exception(
+                    f"{name} uses provider 'custom' but no API key is configured. "
+                    "Set OPENAI_API_KEY (or CUSTOM_LLM_API_KEY) in .env, or add "
+                    "`api_key` to the node in artemis.jsonc."
+                )
 
     def __str__(self) -> str:
         return f"{self.provider}/{self.model}"
