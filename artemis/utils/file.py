@@ -13,14 +13,45 @@
 # limitations under the License.
 
 import json
-import re
 from typing import IO
 
 
 def strip_json_comments(text: str) -> str:
-    text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    return text
+    """Remove ``//`` and ``/* */`` comments without touching string literals.
+
+    A naive regex strips ``//`` inside strings too, which corrupts values like
+    ``"http://localhost:11434/v1"``; this scanner tracks string state instead.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_string = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+        elif ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+        elif ch == "/" and i + 1 < n and text[i + 1] == "/":
+            # Line comment: skip to (but keep) the newline.
+            while i < n and text[i] not in "\r\n":
+                i += 1
+        elif ch == "/" and i + 1 < n and text[i + 1] == "*":
+            end = text.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
 
 
 def load_jsonc(file: IO) -> dict:

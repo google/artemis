@@ -301,7 +301,7 @@ ARTEMIS supports two execution profiles tailored for different automation requir
 
 - [ ] **Android Studio Integration**: Native IDE plugin and workflow integration to enable in-editor debugging, test recording, and automated device control directly within Android Studio.
 - [ ] **iOS Platform Expansion**: Extending multimodal perception and mobile automation to iOS devices and simulators.
-- [ ] **On-Device Lightweight VLMs**: Local execution with lightweight edge vision models for low-latency, privacy-first automation.
+- [ ] **On-Device Lightweight VLMs**: Local execution with lightweight edge vision models for low-latency, privacy-first automation. See [docs/design/on-device-vlm.md](docs/design/on-device-vlm.md).
 - [ ] **Real-time Duplex Voice Interaction**: Voice-driven task dispatch with real-time conversational control and interruption handling.
 
 ## Community & Contributing

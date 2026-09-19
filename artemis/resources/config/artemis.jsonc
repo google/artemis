@@ -41,10 +41,18 @@
       "model": "gemini-3.5-flash-lite",
       "fallback": { "provider": "google", "model": "gemini-3.1-flash-lite" }
     },
+    // 🏠 Local On-Device Tier: Ollama-served OpenAI-compatible VLM endpoint
+    // (no cloud API key required). Point api_base at your local/edge server
+    // and pick any multimodal model you have pulled, e.g. `ollama pull qwen2.5vl:7b`.
     "local-ollama": {
-      "provider": "openai",
-      "model": "llama3.2-vision",
-      "fallback": { "provider": "openai", "model": "llama3.2-vision" }
+      "provider": "ollama",
+      "model": "qwen2.5vl:7b",
+      "api_base": "http://localhost:11434/v1",
+      "fallback": {
+        "provider": "ollama",
+        "model": "qwen2.5vl:7b",
+        "api_base": "http://localhost:11434/v1"
+      }
     }
   },
 

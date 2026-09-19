@@ -34,7 +34,7 @@ class BigQueryMappingService:
 
     def __init__(self):
         self._local_cache: dict[str, SessionRecord] = {}
-        self._client: Optional["bigquery.Client"] = None
+        self._client: bigquery.Client | None = None
         self._table_ref: str = (
             f"{settings.GCP_PROJECT_ID}.{settings.BQ_DATASET}.{settings.BQ_TABLE}"
         )

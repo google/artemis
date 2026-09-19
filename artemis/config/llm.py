@@ -80,9 +80,18 @@ class LLM(BaseModel):
     reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
     include_thoughts: bool | None = None
     enable_grounding: bool | None = None
+    api_base: str | None = None
+    api_key: str | None = None
+    max_tokens: int | None = None
+    timeout_seconds: float | None = None
+    is_multimodal: bool | None = None
 
     def validate_provider(self, name: str) -> None:
         """Ensure the required API key or credentials exist in settings for this provider."""
+        # Local / self-hosted OpenAI-compatible providers do not use cloud API
+        # keys; connectivity is configured via api_base instead.
+        if self.provider in ("ollama", "vllm", "custom"):
+            return
         if self.provider == "openai":
             if not settings.OPENAI_API_KEY:
                 raise Exception(f"{name} requires OPENAI_API_KEY in .env")

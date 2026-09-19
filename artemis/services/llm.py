@@ -1064,16 +1064,29 @@ def _resolve_endpoint(
     provider_val = getattr(cfg, "provider", "google")
     model_val = getattr(cfg, "model", "gemini-2.5-flash")
 
+    # Endpoint-level knobs (api_base, api_key, max_tokens, timeout_seconds,
+    # is_multimodal) only exist on LLM configs that opt in to them; forward
+    # them to the ModelEndpoint so local/self-hosted endpoints (Ollama, vLLM,
+    # custom OpenAI-compatible servers) can be reached. Applies to fallback
+    # endpoints too, since cfg has already been swapped to the fallback above.
+    is_multimodal_val = _get_val(cfg, "is_multimodal", bool)
+
     return ModelEndpoint(
         provider=ModelProvider.from_string(provider_val),
         model_name=str(model_val),
         temperature=_get_val(cfg, "temperature", (int, float)) or 0.0,
-        timeout_seconds=_get_val(cfg, "timeout", (int, float)) or 60.0,
+        max_tokens=_get_val(cfg, "max_tokens", int),
+        timeout_seconds=_get_val(cfg, "timeout_seconds", (int, float))
+        or _get_val(cfg, "timeout", (int, float))
+        or 60.0,
+        api_base=_get_val(cfg, "api_base", str),
+        api_key=_get_val(cfg, "api_key", str),
         thinking_budget=_get_val(cfg, "thinking_budget", int),
         thinking_level=_get_val(cfg, "thinking_level", str),
         reasoning_effort=_get_val(cfg, "reasoning_effort", str),
         include_thoughts=_get_val(cfg, "include_thoughts", bool),
         enable_grounding=_get_val(cfg, "enable_grounding", bool) or False,
+        **({"is_multimodal": is_multimodal_val} if is_multimodal_val is not None else {}),
     )
 
 
