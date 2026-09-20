@@ -38,6 +38,7 @@ async def run_batch_tasks(
     delay_seconds: float = 5.0,
     verification_level: str | None = None,
     explorer_pro_mode: str | None = None,
+    device_serial: str | None = None,
 ) -> None:
     """Executes a list of automation tasks sequentially.
 
@@ -49,6 +50,7 @@ async def run_batch_tasks(
             'strict') for the Pro profile; ignored by Flash.
         explorer_pro_mode: Explorer tier ('flash', 'pro', 'ultra') behind
             ``ask_explorer`` under the Pro profile; ignored by Flash.
+        device_serial: ADB serial to bind every goal to; None picks the first device.
     """
     if not os.environ.get("ARTEMIS_TASK_INGRESS"):
         os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
@@ -59,6 +61,8 @@ async def run_batch_tasks(
         config_builder.with_verification_level(verification_level)
     if explorer_pro_mode is not None:
         config_builder.with_explorer(pro_mode=explorer_pro_mode)
+    if device_serial:
+        config_builder.for_device(device_serial)
     config = config_builder.build()
 
     agent = Agent(config=config)
@@ -162,6 +166,14 @@ def batch_command(
             help="Explorer tier behind ask_explorer under the Pro profile ('flash', 'pro', 'ultra').",
         ),
     ] = None,
+    device_serial: Annotated[
+        str | None,
+        typer.Option(
+            "--device-serial",
+            "-s",
+            help="Target device serial for every goal (falls back to ARTEMIS_DEVICE_ID, then ADB_DEVICE_SERIAL).",
+        ),
+    ] = None,
 ) -> None:
     """Execute multiple automation tasks in sequence."""
     task_list: list[str] = []
@@ -203,6 +215,11 @@ def batch_command(
         )
         raise typer.Exit(1)
 
+    # Same precedence as AgentConfigBuilder.build(): explicit flag, then
+    # ARTEMIS_DEVICE_ID, then ADB_DEVICE_SERIAL.
+    target_serial = (
+        device_serial or os.environ.get("ARTEMIS_DEVICE_ID") or os.environ.get("ADB_DEVICE_SERIAL")
+    )
     is_standalone = standalone or os.environ.get("ARTEMIS_STANDALONE") == "1"
     if not is_standalone:
         try:
@@ -222,6 +239,7 @@ def batch_command(
                 resp = submit_batch_to_daemon(
                     task_list,
                     profile=profile,
+                    device_serial=target_serial,
                     verification_level=verification_level,
                     explorer_mode=explorer_pro_mode,
                     base_url=base_url,
@@ -274,5 +292,6 @@ def batch_command(
             delay_seconds=delay,
             verification_level=verification_level,
             explorer_pro_mode=explorer_pro_mode,
+            device_serial=target_serial,
         )
     )

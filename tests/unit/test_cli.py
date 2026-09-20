@@ -153,6 +153,177 @@ def test_run_batch_tasks_applies_pro_tuning_to_agent_config(monkeypatch):
     fake_agent.run_task.assert_awaited_once_with(goal="Goal A", profile="pro")
 
 
+def test_cli_batch_forwards_device_serial_in_standalone_mode(monkeypatch):
+    """`artemis batch --standalone -s` threads the serial into run_batch_tasks."""
+    import artemis.interfaces.cli.commands.batch as batch_module
+
+    monkeypatch.delenv("ADB_DEVICE_SERIAL", raising=False)
+    monkeypatch.delenv("ARTEMIS_DEVICE_ID", raising=False)
+    captured: dict = {}
+
+    async def fake_run_batch_tasks(tasks, **kwargs):
+        captured["tasks"] = tasks
+        captured.update(kwargs)
+
+    monkeypatch.setattr(batch_module, "run_batch_tasks", fake_run_batch_tasks)
+    result = runner.invoke(
+        app,
+        ["batch", "--standalone", "-s", "10.0.0.8:5555", "Open Settings"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["device_serial"] == "10.0.0.8:5555"
+
+
+def test_cli_batch_forwards_device_serial_to_daemon(monkeypatch):
+    """Daemon-routed batches carry the serial so the queue does not pick a device itself."""
+    import artemis.runtime as runtime
+
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    monkeypatch.delenv("ADB_DEVICE_SERIAL", raising=False)
+    monkeypatch.delenv("ARTEMIS_DEVICE_ID", raising=False)
+    captured: dict = {}
+
+    def fake_submit_batch(goals, **kwargs):
+        captured["goals"] = goals
+        captured.update(kwargs)
+        return {"tasks": [{"session_id": "sid-1", "goal": goals[0]}]}
+
+    monkeypatch.setattr(runtime, "ensure_daemon_running", lambda **_: (True, "http://x:1"))
+    monkeypatch.setattr(runtime, "submit_batch_to_daemon", fake_submit_batch)
+    monkeypatch.setattr(runtime, "wait_for_daemon_task", lambda *_, **__: {"status": "completed"})
+
+    result = runner.invoke(app, ["batch", "--device-serial", "10.0.0.8:5555", "Goal A"])
+    assert result.exit_code == 0, result.output
+    assert captured["device_serial"] == "10.0.0.8:5555"
+
+
+def test_cli_batch_reads_device_serial_from_env(monkeypatch):
+    """Without -s, the documented ADB_DEVICE_SERIAL binds the batch to a device."""
+    import artemis.runtime as runtime
+
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    monkeypatch.delenv("ARTEMIS_DEVICE_ID", raising=False)
+    monkeypatch.setenv("ADB_DEVICE_SERIAL", "10.0.0.9:5555")
+    captured: dict = {}
+
+    def fake_submit_batch(goals, **kwargs):
+        captured.update(kwargs)
+        return {"tasks": [{"session_id": "sid-1", "goal": goals[0]}]}
+
+    monkeypatch.setattr(runtime, "ensure_daemon_running", lambda **_: (True, "http://x:1"))
+    monkeypatch.setattr(runtime, "submit_batch_to_daemon", fake_submit_batch)
+    monkeypatch.setattr(runtime, "wait_for_daemon_task", lambda *_, **__: {"status": "completed"})
+
+    result = runner.invoke(app, ["batch", "Goal A"])
+    assert result.exit_code == 0, result.output
+    assert captured["device_serial"] == "10.0.0.9:5555"
+
+
+def _fake_daemon(monkeypatch, captured: dict) -> None:
+    """Route `artemis batch` through a stubbed daemon that records the submission."""
+    import artemis.runtime as runtime
+
+    def fake_submit_batch(goals, **kwargs):
+        captured.update(kwargs)
+        return {"tasks": [{"session_id": "sid-1", "goal": goals[0]}]}
+
+    monkeypatch.setattr(runtime, "ensure_daemon_running", lambda **_: (True, "http://x:1"))
+    monkeypatch.setattr(runtime, "submit_batch_to_daemon", fake_submit_batch)
+    monkeypatch.setattr(runtime, "wait_for_daemon_task", lambda *_, **__: {"status": "completed"})
+
+
+def test_cli_batch_env_precedence_matches_agent_config_builder(monkeypatch):
+    """With both variables set, batch and AgentConfigBuilder must pick the same phone."""
+    from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
+
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    monkeypatch.setenv("ARTEMIS_DEVICE_ID", "10.0.0.1:5555")
+    monkeypatch.setenv("ADB_DEVICE_SERIAL", "10.0.0.8:5555")
+    captured: dict = {}
+    _fake_daemon(monkeypatch, captured)
+
+    result = runner.invoke(app, ["batch", "Goal A"])
+    assert result.exit_code == 0, result.output
+    assert captured["device_serial"] == AgentConfigBuilder().build().device_id == "10.0.0.1:5555"
+
+
+def test_cli_batch_explicit_serial_overrides_env_on_daemon_path(monkeypatch):
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    monkeypatch.setenv("ARTEMIS_DEVICE_ID", "10.0.0.1:5555")
+    monkeypatch.setenv("ADB_DEVICE_SERIAL", "10.0.0.8:5555")
+    captured: dict = {}
+    _fake_daemon(monkeypatch, captured)
+
+    result = runner.invoke(app, ["batch", "-s", "emulator-5554", "Goal A"])
+    assert result.exit_code == 0, result.output
+    assert captured["device_serial"] == "emulator-5554"
+
+
+def test_cli_batch_explicit_serial_overrides_env_in_standalone_mode(monkeypatch):
+    import artemis.interfaces.cli.commands.batch as batch_module
+
+    monkeypatch.setenv("ARTEMIS_DEVICE_ID", "10.0.0.1:5555")
+    monkeypatch.setenv("ADB_DEVICE_SERIAL", "10.0.0.8:5555")
+    captured: dict = {}
+
+    async def fake_run_batch_tasks(tasks, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(batch_module, "run_batch_tasks", fake_run_batch_tasks)
+    result = runner.invoke(app, ["batch", "--standalone", "-s", "emulator-5554", "Goal A"])
+    assert result.exit_code == 0, result.output
+    assert captured["device_serial"] == "emulator-5554"
+
+
+def test_cli_batch_standalone_env_precedence_matches_agent_config_builder(monkeypatch):
+    import artemis.interfaces.cli.commands.batch as batch_module
+    from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
+
+    monkeypatch.setenv("ARTEMIS_DEVICE_ID", "10.0.0.1:5555")
+    monkeypatch.setenv("ADB_DEVICE_SERIAL", "10.0.0.8:5555")
+    captured: dict = {}
+
+    async def fake_run_batch_tasks(tasks, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(batch_module, "run_batch_tasks", fake_run_batch_tasks)
+    result = runner.invoke(app, ["batch", "--standalone", "Goal A"])
+    assert result.exit_code == 0, result.output
+    assert captured["device_serial"] == AgentConfigBuilder().build().device_id == "10.0.0.1:5555"
+
+
+def test_run_batch_tasks_binds_device_serial_on_agent_config(monkeypatch):
+    """The standalone batch runner binds the serial through for_device (id + platform)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import artemis.interfaces.cli.commands.batch as batch_module
+
+    fake_builder = MagicMock()
+    fake_builders = MagicMock()
+    fake_builders.AgentConfig.with_default_profile.return_value = fake_builder
+    fake_agent = MagicMock()
+    fake_agent.init = AsyncMock()
+    fake_agent.run_task = AsyncMock(return_value="ok")
+    fake_agent.clean = AsyncMock()
+
+    monkeypatch.setattr(batch_module, "initialize_llm_config", lambda: MagicMock())
+    monkeypatch.setattr(batch_module, "AgentProfile", MagicMock())
+    monkeypatch.setattr(batch_module, "Builders", fake_builders)
+    monkeypatch.setattr(batch_module, "Agent", MagicMock(return_value=fake_agent))
+
+    import asyncio
+
+    asyncio.run(
+        batch_module.run_batch_tasks(
+            ["Goal A"],
+            profile_name="flash",
+            delay_seconds=0,
+            device_serial="10.0.0.8:5555",
+        )
+    )
+    fake_builder.for_device.assert_called_once_with("10.0.0.8:5555")
+
+
 def test_cli_trace_help():
     """Verify 'artemis trace --help' lists trace subcommands."""
     result = runner.invoke(app, ["trace", "--help"])

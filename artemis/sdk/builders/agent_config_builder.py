@@ -599,13 +599,18 @@ class AgentConfigBuilder:
             or os.environ.get("ARTEMIS_DEVICE_ID")
             or os.environ.get("ADB_DEVICE_SERIAL")
         )
+        # An env-provided serial has no platform; Agent._init_internal falls back to
+        # get_first_device() when either field is missing, silently ignoring the serial.
+        device_platform = self._device_platform
+        if device_id and device_platform is None:
+            device_platform = DevicePlatform.ANDROID
 
         return AgentConfig(
             agent_profiles=self._agent_profiles,
             task_request_defaults=self._task_request_defaults or TaskRequestCommon(),
             default_profile=default_profile,
             device_id=device_id,
-            device_platform=self._device_platform,
+            device_platform=device_platform,
             servers=self._servers,
             graph_config_callbacks=self._graph_config_callbacks,
             video_recording_tools_enabled=self._video_recording_tools_enabled,
