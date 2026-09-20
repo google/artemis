@@ -116,16 +116,34 @@ class LLMWithFallback(LLM):
         return f"{self.provider}/{self.model} (fallback: {self.fallback})"
 
 
-def lightweight_judge_default() -> "LLMWithFallback":
+def lightweight_judge_default(provider: str = "google") -> "LLMWithFallback":
     """Factory default for the lightweight judge nodes (pixel safety net and
-    planner validation): a flash-lite model at temperature 0."""
+    planner validation): a flash-lite model at temperature 0.
+
+    The provider follows the configured global default (inherited from the
+    operator node) so non-Google setups never hard-require a Google key:
+    Google keeps the cheap flash-lite models, every other provider rides the
+    same provider with model "auto" (resolved by that provider's gateway).
+    """
+    normalized = str(provider or "google").lower().replace("_", "").replace("-", "")
+    if normalized in ("google", "gemini"):
+        return LLMWithFallback(
+            provider="google",
+            model="gemini-3.5-flash-lite",
+            temperature=0.0,
+            fallback=LLM(
+                provider="google",
+                model="gemini-3.1-flash-lite",
+                temperature=0.0,
+            ),
+        )
     return LLMWithFallback(
-        provider="google",
-        model="gemini-3.5-flash-lite",
+        provider=provider,
+        model="auto",
         temperature=0.0,
         fallback=LLM(
-            provider="google",
-            model="gemini-3.1-flash-lite",
+            provider=provider,
+            model="auto",
             temperature=0.0,
         ),
     )
@@ -211,8 +229,16 @@ class LLMConfig(BaseModel):
             elif item in ("validator_pixel_safety_net", "planner_validation"):
                 # Both are cheap, high-frequency judges: the pixel safety net
                 # runs before actions, the planner validator after every
-                # milestone edit. They share one lightweight default.
-                return lightweight_judge_default()
+                # milestone edit. They share one lightweight default whose
+                # provider follows the configured global default (via the
+                # operator node) so custom-provider setups never touch Google.
+                try:
+                    base_provider = str(
+                        getattr(self.operator, "provider", "google") or "google"
+                    )
+                except Exception:
+                    base_provider = "google"
+                return lightweight_judge_default(provider=base_provider)
             elif item == "output_analyzer":
                 return self.log_analyzer
         return val

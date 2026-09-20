@@ -907,6 +907,51 @@ async def invoke_llm_with_timeout_message[T](
 
 
 # Backward compatible factory functions delegating to ModelFactory
+def build_model_with_configured_provider(
+    ctx: Any,
+    model_name: str,
+    node: str = "summarizer",
+    temperature: float = 0.0,
+    timeout: float = 60.0,
+) -> BaseChatModel:
+    """Builds a model for an explicit model name with the provider resolved
+    from configuration (the given agent node's provider, else the operator
+    node's). This replaces hardcoded ``get_google_llm`` call sites so
+    custom-provider setups never require a Google key. When no provider is
+    configured anywhere, it preserves the legacy Google default.
+    """
+    provider_val: Any = None
+    try:
+        llm_cfg = getattr(ctx, "llm_config", None)
+        if llm_cfg is None:
+            llm_cfg = get_default_llm_config()
+        try:
+            node_cfg = llm_cfg.get_agent(node)
+        except Exception:
+            node_cfg = None
+        if node_cfg is not None:
+            provider_val = getattr(node_cfg, "provider", None)
+        if not provider_val:
+            provider_val = getattr(getattr(llm_cfg, "operator", None), "provider", None)
+    except Exception:
+        provider_val = None
+    try:
+        provider = ModelProvider.from_string(
+            str(provider_val) if provider_val is not None else "google"
+        )
+    except ValueError:
+        # Unrecognized provider (e.g. mock configs in unit tests): preserve
+        # the legacy Google default instead of failing construction.
+        provider = ModelProvider.GOOGLE
+    endpoint = ModelEndpoint(
+        provider=provider,
+        model_name=str(model_name),
+        temperature=temperature,
+        timeout_seconds=timeout,
+    )
+    return ModelFactory.get_model(endpoint)
+
+
 def get_google_llm(
     model_name: str = "gemini-3.8-flash",
     temperature: float | None = None,

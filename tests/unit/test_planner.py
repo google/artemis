@@ -63,9 +63,11 @@ async def test_planner_validation():
 
 
 def test_planner_validation_node_defaults_to_lightweight_judge():
-    """Unconfigured planner_validation resolves to the same flash-lite default
-    as the pixel safety net (cheap, temperature 0)."""
+    """Unconfigured planner_validation resolves to the same lightweight
+    default as the pixel safety net (cheap, temperature 0), with the provider
+    following the configured global default instead of hardcoded Google."""
     from artemis.config import get_default_llm_config
+    from artemis.config.llm import lightweight_judge_default
 
     llm_cfg = get_default_llm_config()
     node = llm_cfg.get_agent("planner_validation")
@@ -73,7 +75,27 @@ def test_planner_validation_node_defaults_to_lightweight_judge():
     assert node.model == safety_net.model
     assert node.provider == safety_net.provider
     assert node.temperature == 0.0
-    assert "lite" in node.model
+    assert str(node.provider) == str(llm_cfg.operator.provider)
+    # Google setups keep the cheap flash-lite models; other providers ride auto.
+    if str(node.provider).lower() in ("google", "gemini"):
+        assert "lite" in node.model
+    else:
+        assert node.model == "auto"
+
+
+def test_lightweight_judge_default_follows_provider():
+    """The judge factory keeps flash-lite for Google and uses the same
+    provider with model auto everywhere else (no Google key required)."""
+    from artemis.config.llm import lightweight_judge_default
+
+    google = lightweight_judge_default("google")
+    assert (str(google.provider), google.model) == ("google", "gemini-3.5-flash-lite")
+    assert "lite" in google.fallback.model
+
+    custom = lightweight_judge_default("custom")
+    assert str(custom.provider) == "custom"
+    assert custom.model == "auto"
+    assert str(custom.fallback.provider) == "custom"
 
 
 if __name__ == "__main__":

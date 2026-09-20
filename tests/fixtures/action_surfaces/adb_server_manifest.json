@@ -1,6 +1,6 @@
 {
   "tap": {
-    "description": "Taps on the screen at coordinates.\n\n'coordinates' is a list [x, y].\n'times' is the number of consecutive clicks (default 1).\n'delay_ms' is the delay in milliseconds between consecutive clicks (default\n100).\n",
+    "description": "Taps on the screen at coordinates.\n\n    'coordinates' is a list [x, y].\n    'times' is the number of consecutive clicks (default 1).\n    'delay_ms' is the delay in milliseconds between consecutive clicks (default\n    100).\n    ",
     "inputSchema": {
       "properties": {
         "coordinates": {
@@ -29,7 +29,7 @@
     }
   },
   "long_press_on": {
-    "description": "Long presses on the screen at coordinates.\n\n'coordinates' is a list [x, y].\n'duration' is in milliseconds (default 1000).\n",
+    "description": "Long presses on the screen at coordinates.\n\n    'coordinates' is a list [x, y].\n    'duration' is in milliseconds (default 1000).\n    ",
     "inputSchema": {
       "properties": {
         "coordinates": {
@@ -53,7 +53,7 @@
     }
   },
   "swipe": {
-    "description": "Swipes from start coordinates to end coordinates.\n\n'coordinates' is a list [start_x, start_y, end_x, end_y].\n'duration' is in milliseconds (default 400).\n\nSet duration >= 1000 to drag-and-drop. Drag slightly past the target\nposition to trigger reordering.\n",
+    "description": "Swipes from start coordinates to end coordinates.\n\n    'coordinates' is a list [start_x, start_y, end_x, end_y].\n    'duration' is in milliseconds (default 400).\n\n    Set duration >= 1000 to drag-and-drop. Drag slightly past the target\n    position to trigger reordering.\n    ",
     "inputSchema": {
       "properties": {
         "coordinates": {
@@ -133,7 +133,7 @@
     }
   },
   "focus_and_input_text": {
-    "description": "Focuses on a UI element at coordinates and inputs text.\n\n'coordinates' is a list [x, y] to tap first to gain focus.\n'clear_before_input' if True, clears all existing text before typing. If False, appends text at the end of existing content.\n'text' supports multi-line content with '\\n'.\n",
+    "description": "Focuses on a UI element at coordinates and inputs text.\n\n    'coordinates' is a list [x, y] to tap first to gain focus.\n    'clear_before_input' if True, clears all existing text before typing. If False, appends text at the end of existing content.\n    'text' supports multi-line content with '\\n'.\n    ",
     "inputSchema": {
       "properties": {
         "coordinates": {
@@ -162,7 +162,7 @@
     }
   },
   "focus_and_clear_text": {
-    "description": "Focuses on a UI element at coordinates and clears its text content.\n\n'coordinates' is a list [x, y] to tap first to gain focus.\n",
+    "description": "Focuses on a UI element at coordinates and clears its text content.\n\n    'coordinates' is a list [x, y] to tap first to gain focus.\n    ",
     "inputSchema": {
       "properties": {
         "coordinates": {
@@ -205,7 +205,7 @@
     }
   },
   "take_screenshot": {
-    "description": "Takes a screenshot of the device screen.\n\nReturns the screenshot as a base64 encoded JPEG string.\n",
+    "description": "Takes a screenshot of the device screen.\n\n    Returns the screenshot as a base64 encoded JPEG string.\n    ",
     "inputSchema": {
       "properties": {},
       "title": "take_screenshotArguments",

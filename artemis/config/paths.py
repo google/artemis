@@ -91,6 +91,12 @@ def get_default_traces_path() -> Path:
     env_traces = os.getenv(ENV_ARTEMIS_TRACES_DIR)
     if env_traces:
         traces_dir = Path(env_traces)
+        if not traces_dir.is_absolute():
+            # `artemis init` writes ARTEMIS_TRACES_DIR=./traces. Anchor it to
+            # the workspace so the path never depends on the caller's CWD --
+            # or on whether dotenv had loaded yet when the module-level
+            # constants (REPLAY_BASE_DIR, ...) were computed at import time.
+            traces_dir = Path(os.path.normpath(ROOT_DIR / traces_dir))
     elif _use_user_app_dir():
         traces_dir = get_app_dir() / "traces"
     else:
