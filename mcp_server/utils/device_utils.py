@@ -20,6 +20,10 @@ import subprocess
 import sys
 import time
 
+_WIN32_CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+_WIN32_DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+_WIN32_PROCESS_FLAGS = _WIN32_CREATE_NEW_PROCESS_GROUP | _WIN32_DETACHED_PROCESS
+
 
 def resolve_adb_path() -> str:
     """Resolves the absolute path to the adb binary across platforms."""
@@ -146,7 +150,7 @@ def ensure_emulator(
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS),
+                creationflags=_WIN32_PROCESS_FLAGS,
             )
         else:
             subprocess.Popen(
