@@ -16,12 +16,31 @@
 
 import logging
 import os
+import shlex
 import subprocess
+import sys
 from typing import Any
 
 from mcp_server.notifiers.base import BaseNotifier
 
 logger = logging.getLogger("mcp_server.notifiers.script")
+
+
+def _safe_quote(val: Any) -> str:
+    """Safely quotes a value for shell command interpolation."""
+    return shlex.quote(str(val))
+
+
+def _safe_replace_placeholder(template: str, key: str, val: Any) -> str:
+    """Substitutes a placeholder into a command template safely."""
+    quoted = _safe_quote(val)
+    # If the user's template already surrounded the placeholder in single or double quotes,
+    # replace the quotes along with the placeholder to prevent broken/nested quoting.
+    for q in ("'", '"'):
+        quoted_placeholder = f"{q}{{{key}}}{q}"
+        if quoted_placeholder in template:
+            template = template.replace(quoted_placeholder, quoted)
+    return template.replace(f"{{{key}}}", quoted)
 
 
 class ScriptNotifier(BaseNotifier):
@@ -69,16 +88,29 @@ class ScriptNotifier(BaseNotifier):
 
         # Replace template placeholders safely
         try:
-            cmd = (
-                cmd_template.replace("{title}", str(formatted_title))
-                .replace("{message}", str(message))
-                .replace("{conversation_id}", str(conversation_id))
-                .replace("{event_type}", str(event_type))
-                .replace("{trace_id}", str(trace_id))
-            )
+            cmd = cmd_template
+            replacements = {
+                "title": formatted_title,
+                "message": message,
+                "conversation_id": conversation_id,
+                "event_type": event_type,
+                "trace_id": trace_id,
+            }
+            for key, val in replacements.items():
+                cmd = _safe_replace_placeholder(cmd, key, val)
+
+            env = {
+                **os.environ,
+                "ARTEMIS_NOTIFY_TITLE": str(formatted_title),
+                "ARTEMIS_NOTIFY_MESSAGE": str(message),
+                "ARTEMIS_NOTIFY_CONVERSATION_ID": str(conversation_id),
+                "ARTEMIS_NOTIFY_EVENT_TYPE": str(event_type),
+                "ARTEMIS_NOTIFY_TRACE_ID": str(trace_id),
+            }
             subprocess.run(
                 cmd,
                 shell=True,
+                env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,

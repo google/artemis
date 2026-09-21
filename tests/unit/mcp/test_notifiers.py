@@ -132,6 +132,30 @@ def test_script_notifier(monkeypatch):
     assert res is True
 
 
+def test_script_notifier_prevents_command_injection(monkeypatch):
+    from mcp_server.notifiers.script import ScriptNotifier
+
+    executed_cmds = []
+
+    def fake_run(cmd, shell=False, env=None, **kwargs):
+        executed_cmds.append((cmd, env))
+        return None
+
+    monkeypatch.setattr("mcp_server.notifiers.script.subprocess.run", fake_run)
+    monkeypatch.setenv("ARTEMIS_NOTIFY_CMD", "echo '{message}'")
+
+    notifier = ScriptNotifier()
+    malicious_payload = "'; rm -rf / ; echo 'pwned"
+    res = notifier.notify("conv-123", malicious_payload, title="Test")
+    assert res is True
+    assert len(executed_cmds) == 1
+
+    cmd, env = executed_cmds[0]
+    assert "'; rm -rf / ; echo 'pwned" not in cmd
+    assert env is not None
+    assert env.get("ARTEMIS_NOTIFY_MESSAGE") == malicious_payload
+
+
 def test_composite_notifier_dispatch():
     d1 = DummyNotifier(available=True, return_val=True)
     d2 = DummyNotifier(available=False, return_val=False)
