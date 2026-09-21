@@ -78,29 +78,48 @@ class DesktopNotifier(BaseNotifier):
                     return True
             elif sys.platform == "darwin":
                 if shutil.which("osascript"):
-                    script = f'display notification "{clean_body}" with title "{header}"'
+                    # Untrusted content (message/title may echo text the agent
+                    # observed on an attacker-controlled app or page) must never
+                    # be spliced into the AppleScript source: any '"' or newline
+                    # in it would let the injected text terminate the string
+                    # literal and run as its own statement (e.g. `do shell
+                    # script ...`). Pass it out of band via the environment and
+                    # read it back with `system attribute` instead.
+                    script = (
+                        'display notification (system attribute "ARTEMIS_TOAST_BODY") '
+                        'with title (system attribute "ARTEMIS_TOAST_TITLE")'
+                    )
+                    env = {**os.environ, "ARTEMIS_TOAST_BODY": clean_body, "ARTEMIS_TOAST_TITLE": header}
                     subprocess.run(
                         ["osascript", "-e", script],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         timeout=3,
+                        env=env,
                     )
                     return True
             elif sys.platform == "win32":
+                # Same class of risk as the macOS branch above: header/clean_body
+                # must never be interpolated into the PowerShell source text.
+                # Read them back from the environment instead so a quote or
+                # semicolon in untrusted content can't break out of the
+                # CreateTextNode(...) string literal and run as PowerShell.
                 ps_cmd = (
-                    f"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; "
-                    f"$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
-                    f'$textNodes = $template.GetElementsByTagName("text"); '
-                    f'$textNodes.Item(0).AppendChild($template.CreateTextNode("{header}")) > $null; '
-                    f'$textNodes.Item(1).AppendChild($template.CreateTextNode("{clean_body}")) > $null; '
-                    f"$toast = [Windows.UI.Notifications.ToastNotification]::new($template); "
-                    f'[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Artemis").Show($toast);'
+                    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; "
+                    "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
+                    '$textNodes = $template.GetElementsByTagName("text"); '
+                    "$textNodes.Item(0).AppendChild($template.CreateTextNode($env:ARTEMIS_TOAST_TITLE)) > $null; "
+                    "$textNodes.Item(1).AppendChild($template.CreateTextNode($env:ARTEMIS_TOAST_BODY)) > $null; "
+                    "$toast = [Windows.UI.Notifications.ToastNotification]::new($template); "
+                    '[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Artemis").Show($toast);'
                 )
+                env = {**os.environ, "ARTEMIS_TOAST_TITLE": header, "ARTEMIS_TOAST_BODY": clean_body}
                 subprocess.run(
                     ["powershell", "-NoProfile", "-Command", ps_cmd],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
+                    env=env,
                 )
                 return True
         except Exception as e:
