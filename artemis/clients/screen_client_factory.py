@@ -300,8 +300,18 @@ class FallbackScreenClient:
     def set_clipboard(self, text: str) -> bool:
         return self._call("set_clipboard", text)
 
-    def send_text(self, text: str) -> Any:
-        return self._call("send_text", text)
+    def send_text(self, text: str) -> bool:
+        result = self._call("send_text", text)
+        if result is False and self._active_backend == "helper":
+            # A healthy helper may observe a field but be unable to set its text.
+            # Try IME input without marking the whole helper service unavailable.
+            self._ensure_device_online()
+            try:
+                return self.uiautomator.send_text(text)
+            finally:
+                # UiAutomation can unbind the helper even when input fails.
+                self._set_active("uiautomator", "Helper rejected direct text input")
+        return result
 
     def clear_text(self) -> bool:
         return self._call("clear_text")

@@ -325,21 +325,15 @@ class AndroidAdbDriver(BaseDeviceDriver):
             # Normalize literal escaped newlines from LLM / tool call serialization
             norm_text = text.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "\n")
 
-            # 1. Tier 1: Try clipboard injection + KEYCODE_PASTE (Zero IME interference, preserves multiline, works for all charsets)
+            # Prefer direct input. A background clipboard write can be silently
+            # denied by Android even when the helper reports success.
             if self._ui_adb_client:
                 try:
-                    set_clip_ok = False
-                    if hasattr(self._ui_adb_client, "set_clipboard"):
-                        set_clip_ok = self._ui_adb_client.set_clipboard(norm_text)
-                    elif hasattr(self._ui_adb_client, "_device") and self._ui_adb_client._device:
-                        self._ui_adb_client._device.set_clipboard(norm_text)
-                        set_clip_ok = True
-
-                    if set_clip_ok:
-                        await asyncio.to_thread(self.device.shell, "input keyevent 279")
+                    result = self._ui_adb_client.send_text(norm_text)
+                    if result is True:
                         return True
                 except Exception as e:
-                    logger.debug(f"Clipboard paste fallback to ADB input: {e}")
+                    logger.debug(f"Direct text input failed, trying ADBKeyboard: {e}")
 
             # 2. Tier 2: Check if ADBKeyboard is currently active
             try:
@@ -355,7 +349,12 @@ class AndroidAdbDriver(BaseDeviceDriver):
                 # ADBKeyboard probe/broadcast failed; fall through to native input.
                 logger.debug(f"ADBKeyboard IME path failed, falling back to ADB input: {e}")
 
-            # 3. Tier 3: Universal Native ADB input text fallback
+            # Native adb input text cannot reliably enter Unicode characters.
+            if not norm_text.isascii():
+                logger.warning("Unicode input failed: no supported input channel succeeded")
+                return False
+
+            # 3. Tier 3: Native ADB input text fallback for ASCII
             lines = norm_text.split("\n")
             for i, line in enumerate(lines):
                 if i > 0:

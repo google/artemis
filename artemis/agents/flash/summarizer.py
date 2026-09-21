@@ -168,7 +168,7 @@ class VisualStepSummarizer(StepMemoryService):
             if model_name:
                 self._llm = get_google_llm(model_name=target_model, temperature=0.0)
             else:
-                self._llm = get_llm(ctx, name="summarizer", is_utils=True)
+                self._llm = get_llm(ctx, name="summarizer")
         except Exception:
             self._llm = get_google_llm(model_name=target_model, temperature=0.0)
         try:
