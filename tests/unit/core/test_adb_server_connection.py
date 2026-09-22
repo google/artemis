@@ -19,7 +19,7 @@ import subprocess
 
 import pytest
 
-from artemis.config import settings
+from artemis.config import Settings, settings
 from artemis.core.diagnostics.adb_server_connection import (
     AdbServerConnectionManager,
     AdbServerEndpoint,
@@ -68,6 +68,44 @@ def test_adb_session_builds_explicit_endpoint_command_and_environment():
     assert environment["EXISTING"] == "value"
     assert environment["ADB_SERVER_SOCKET"] == "tcp:server.example:5040"
     assert environment[ADB_ENDPOINT_ID_ENV] == endpoint.identity
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_port"),
+    [
+        ({}, 8848),
+        ({"ADB_PORT": "5038"}, 5038),
+        ({"ADB_SERVER_SOCKET": "tcp:127.0.0.1:5039"}, 5039),
+    ],
+)
+def test_synchronize_android_adb_server_port(monkeypatch, overrides, expected_port):
+    # Activation updates both settings and os.environ; isolate those mutations.
+    monkeypatch.setattr(os, "environ", os.environ.copy())
+    for name in ("ADB_HOST", "ADB_PORT", "ADB_SERVER_SOCKET", ADB_ENDPOINT_ID_ENV):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ANDROID_ADB_SERVER_PORT", "8848")
+    for name, value in overrides.items():
+        monkeypatch.setenv(name, value)
+    configured = Settings(_env_file=None)
+    monkeypatch.setattr(settings, "ADB_HOST", configured.ADB_HOST)
+    monkeypatch.setattr(settings, "ADB_PORT", configured.ADB_PORT)
+    manager = AdbServerConnectionManager(adb_resolver=lambda: "adb", env_files=[])
+
+    endpoint = manager.synchronize_environment()
+
+    assert endpoint.port == expected_port
+    assert settings.ADB_PORT == expected_port
+    assert os.environ["ADB_PORT"] == str(expected_port)
+    assert os.environ["ADB_SERVER_SOCKET"] == f"tcp:127.0.0.1:{expected_port}"
+    session = AdbSession(endpoint, adb_path="adb")
+    assert session.command(["devices"]) == [
+        "adb",
+        "-H",
+        "127.0.0.1",
+        "-P",
+        str(expected_port),
+        "devices",
+    ]
 
 
 @pytest.mark.asyncio

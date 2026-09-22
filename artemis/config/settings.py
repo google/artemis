@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import Field, SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 from artemis.config.constants import (
@@ -111,7 +111,10 @@ class Settings(BaseSettings):
 
     # Android ADB Connectivity
     ADB_HOST: str | None = Field(default=DEFAULT_ADB_HOST)
-    ADB_PORT: int | None = Field(default=DEFAULT_ADB_PORT)
+    ADB_PORT: int | None = Field(
+        default=DEFAULT_ADB_PORT,
+        validation_alias=AliasChoices("ADB_PORT", "ANDROID_ADB_SERVER_PORT"),
+    )
     ADB_DEVICE_SERIAL: str | None = None
     # UI hierarchy backend: "auto" = Accessibility Helper with UIAutomator2
     # fallback, "helper" = helper only, "uiautomator" = UIAutomator2 only.
