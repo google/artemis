@@ -108,6 +108,7 @@ class Settings(BaseSettings):
 
     # Custom Provider Endpoints
     OPENAI_BASE_URL: str | None = None
+    GEMINI_BASE_URL: str | None = None
 
     # Android ADB Connectivity
     ADB_HOST: str | None = Field(default=DEFAULT_ADB_HOST)
