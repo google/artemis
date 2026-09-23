@@ -1,0 +1,24 @@
+ARTEMIS
+Copyright 2026 Google LLC
+
+This product includes software developed by Minitap, Inc.
+(https://github.com/minitap-ai/mobile-use), licensed under the
+Apache License, Version 2.0.
+
+The following notices are reproduced from that project's NOTICE file,
+as required by Apache License 2.0 section 4(d):
+
+-------------------------------------------------------------------------------
+
+Mobile-Use
+Copyright 2025-2026 Minitap, Inc.
+
+This product includes software and architectural methodologies developed by 
+Minitap, Inc. (https://github.com/minitap-ai/mobile-use)
+
+ATTRIBUTION REQUEST:
+While the Apache 2.0 license only requires preserving copyright notices,
+we kindly request that derivative works, redistributions, or products 
+inspired by the logic/architecture of this repository include a prominent 
+attribution to "Minitap, Inc." in the documentation and "About" sections 
+of the software. This is a request, not a legal requirement.

@@ -315,4 +315,4 @@ Contributions are warmly welcomed!
 
 This project is licensed under the [Apache License 2.0](LICENSE).
 
-This project includes source code developed by [Minitap, Inc.](https://github.com/minitap-ai/mobile-use).
+This project includes source code developed by [Minitap, Inc.](https://github.com/minitap-ai/mobile-use). Their attribution notices are reproduced in [NOTICE](NOTICE), as Apache 2.0 section 4(d) requires.
