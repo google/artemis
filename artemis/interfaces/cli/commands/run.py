@@ -22,7 +22,12 @@ from typing import Annotated
 
 from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
-from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
+from artemis.config import (
+    checker_overrides_for_level,
+    initialize_llm_config,
+    load_agent_config,
+    settings,
+)
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
 from artemis.sdk.types.task import AgentProfile
@@ -116,9 +121,16 @@ async def execute_task(
         config.with_flash_step_summarizer(enabled=enable_step_summarizer)
 
     if enable_outputter is not None or force_output_synthesis is not None:
+        outputter_defaults = load_agent_config().outputter
         config.with_outputter(
-            enabled=enable_outputter if enable_outputter is not None else True,
-            force_synthesis=bool(force_output_synthesis),
+            enabled=enable_outputter
+            if enable_outputter is not None
+            else outputter_defaults.enabled,
+            force_synthesis=(
+                force_output_synthesis
+                if force_output_synthesis is not None
+                else outputter_defaults.force_synthesis
+            ),
         )
 
     if (

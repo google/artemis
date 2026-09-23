@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 
 from jinja2 import Template
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from artemis.core.tool_failure import ToolFailure, is_tool_failure
 from artemis.config import OutputConfig
 from artemis.context import ArtemisContext
@@ -268,6 +268,8 @@ async def outputter(
             raw_answer = response.content
             break
 
+        tool_replies: list[ToolMessage] = []
+        image_messages: list[BaseMessage] = []
         for tc in response.tool_calls:
             tool_name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
             args = tc["args"]
@@ -304,11 +306,19 @@ async def outputter(
                 result = f"Error running tool {tool_name}: {e}"
                 status = "error"
 
-            # Step screenshots enter the conversation in the carrier the
-            # model's provider accepts; text results stay a plain ToolMessage.
-            messages.extend(
-                tool_result_messages(tc["id"], result, name=tool_name, status=status, llm=llm)
-            )
+            # OpenAI-compatible providers carry screenshot images in a user
+            # message. All tool calls must receive their replies before that
+            # message is inserted into the conversation.
+            for message in tool_result_messages(
+                tc["id"], result, name=tool_name, status=status, llm=llm
+            ):
+                if isinstance(message, ToolMessage):
+                    tool_replies.append(message)
+                else:
+                    image_messages.append(message)
+
+        messages.extend(tool_replies)
+        messages.extend(image_messages)
 
     if raw_answer is None:
         raw_answer = "Error: Outputter failed to resolve the query within maximum turns."

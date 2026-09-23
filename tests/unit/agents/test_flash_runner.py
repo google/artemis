@@ -556,3 +556,19 @@ async def test_final_report_persists_native_thinking(mock_context):
     assert kwargs["operator_raw_thinking"] == "final text"
     assert kwargs["operator_native_thinking"] == "native summary"
     assert isinstance(messages[-1], ToolMessage)
+
+
+@pytest.mark.parametrize('text', ['你好中文英😅', '👍🏽👩‍💻🇨🇳❤️', r'路径\n"原文"'])
+def test_prompt_preserves_literal_unicode_goal_as_json(mock_context, text):
+    import json
+
+    goal = '在当前输入框输入：' + text
+    with patch('artemis.controllers.unified_controller.get_driver'):
+        runner = FlashRunner(mock_context, goal=goal)
+        prompt = runner._render_system_prompt(runner._get_tools())
+    # A second, ASCII-only representation makes the exact code points available
+    # even when the model misreads an emoji glyph (😅 was changed to ㊅ in a trace).
+    encoded = json.dumps(goal, ensure_ascii=True)
+    assert encoded in prompt
+    assert json.loads(encoded) == goal
+    assert 'original objective' in prompt

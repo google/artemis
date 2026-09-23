@@ -17,6 +17,7 @@
 
 import asyncio
 import inspect
+import json
 import os
 import re
 
@@ -101,6 +102,7 @@ from artemis.utils.media import (
     remove_steps_json_from_trace_folder,
 )
 from artemis.utils.startup_progress import publish_startup_progress
+from artemis.utils.notes import save_note_content
 
 logger = get_logger(__name__)
 
@@ -1267,6 +1269,18 @@ class Agent:
                     output_config=output_config or OutputConfig(),
                     graph_output=state,
                 )
+                if ctx.data_engine and structured_output is not None:
+                    report = (
+                        structured_output
+                        if isinstance(structured_output, str)
+                        else "```json\n"
+                        + json.dumps(structured_output, ensure_ascii=False, indent=2)
+                        + "\n```"
+                    )
+                    try:
+                        save_note_content(ctx.data_engine.base_dir, "output", report)
+                    except OSError as exc:
+                        logger.warning(f"[{task_name}] Failed to save Task Report: {exc}")
                 logger.info(f"[{task_name}] Structured output: {structured_output}")
                 record_events(
                     output_path=request.llm_output_path,

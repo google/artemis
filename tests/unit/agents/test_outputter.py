@@ -453,6 +453,66 @@ async def test_outputter_executes_video_analyzer_tool(
     assert result == "Video played successfully."
 
 
+@patch("artemis.agents.outputter.outputter.get_read_note_tool_pure")
+@patch("artemis.agents.outputter.outputter.get_history_tools")
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_replies_to_all_tools_before_screenshot_images(
+    mock_get_llm, mock_get_history_tools, mock_get_read_note, mock_context, mock_state
+):
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langchain_core.tools import StructuredTool
+
+    async def screenshot(step_number: int):
+        return [
+            {"type": "text", "text": f"Screenshot of step {step_number}"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AA=="}},
+        ]
+
+    async def read_note(key: str):
+        return f"Note {key}"
+
+    screenshot_tool = StructuredTool.from_function(
+        coroutine=screenshot, name="get_step_screenshot", description="Get screenshot"
+    )
+    read_note_tool = StructuredTool.from_function(
+        coroutine=read_note, name="read_note", description="Read note"
+    )
+    mock_get_history_tools.return_value = (screenshot_tool, screenshot_tool, screenshot_tool)
+    mock_get_read_note.return_value = read_note_tool
+
+    model = Mock()
+    model.endpoint.provider = "deepseek"
+    bound_model = Mock()
+    bound_model.ainvoke = AsyncMock(
+        side_effect=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "get_step_screenshot", "args": {"step_number": 10}, "id": "shot-10"},
+                    {"name": "read_note", "args": {"key": "result"}, "id": "note"},
+                    {"name": "get_step_screenshot", "args": {"step_number": 11}, "id": "shot-11"},
+                ],
+            ),
+            AIMessage(content="Verified.", tool_calls=[]),
+        ]
+    )
+    model.bind_tools.return_value = bound_model
+    mock_get_llm.return_value = model
+
+    answer = await outputter(
+        ctx=mock_context,
+        output_config=OutputConfig(structured_output=None, output_description=None),
+        graph_output=mock_state,
+    )
+
+    sent = bound_model.ainvoke.call_args_list[1].args[0]
+    assert [message.tool_call_id for message in sent[3:6]] == ["shot-10", "note", "shot-11"]
+    assert all(isinstance(message, ToolMessage) for message in sent[3:6])
+    assert all(isinstance(message, HumanMessage) for message in sent[6:8])
+    assert answer == "Verified."
+
+
 @patch("artemis.agents.outputter.outputter.get_llm")
 @pytest.mark.asyncio
 async def test_outputter_executes_save_note_tool(mock_get_llm, mock_context, mock_state):
