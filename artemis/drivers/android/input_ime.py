@@ -17,31 +17,10 @@
 import asyncio
 import base64
 from typing import Any
+from artemis.drivers.android.adb_driver import _adb_input_text_commands
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def _escape_for_adb_text(s: str) -> str:
-    """Escapes special characters for adb shell input text."""
-    return (
-        s.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("'", "\\'")
-        .replace("`", "\\`")
-        .replace("$", "\\$")
-        .replace("&", "\\&")
-        .replace("|", "\\|")
-        .replace(";", "\\;")
-        .replace("<", "\\<")
-        .replace(">", "\\>")
-        .replace("(", "\\(")
-        .replace(")", "\\)")
-        .replace("*", "\\*")
-        .replace("?", "\\?")
-        .replace("~", "\\~")
-        .replace(" ", "%s")
-    )
 
 
 class AndroidInputIME:
@@ -77,9 +56,8 @@ class AndroidInputIME:
                     if i > 0:
                         # Send Enter key between lines
                         await asyncio.to_thread(self.device.shell, "input keyevent 66")
-                    if line:
-                        escaped = _escape_for_adb_text(line)
-                        await asyncio.to_thread(self.device.shell, f"input text {escaped}")
+                    for cmd in _adb_input_text_commands(line):
+                        await asyncio.to_thread(self.device.shell, cmd)
                 return True
 
             # 2. For non-ASCII / Unicode text: Try UIAutomator client
@@ -111,9 +89,8 @@ class AndroidInputIME:
             for i, line in enumerate(lines):
                 if i > 0:
                     await asyncio.to_thread(self.device.shell, "input keyevent 66")
-                if line:
-                    escaped = _escape_for_adb_text(line)
-                    await asyncio.to_thread(self.device.shell, f"input text {escaped}")
+                for cmd in _adb_input_text_commands(line):
+                    await asyncio.to_thread(self.device.shell, cmd)
             return True
         except Exception as e:
             logger.error(f"Failed to type text '{text}': {e}")
