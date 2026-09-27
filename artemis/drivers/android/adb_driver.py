@@ -69,6 +69,22 @@ def _escape_for_adb_text(s: str) -> str:
     )
 
 
+def _adb_input_text_commands(line: str) -> list[str]:
+    """Build ``input text`` shell commands that type ``line`` literally.
+
+    ``input text`` always turns ``%s`` into a space and offers no escape for it,
+    so every literal ``%s`` is split across two commands: one ending in ``%``
+    and the next starting with ``s``.
+    """
+    pieces = line.split("%s")
+    commands = []
+    for i, piece in enumerate(pieces):
+        chunk = ("s" if i else "") + piece + ("%" if i < len(pieces) - 1 else "")
+        if chunk:
+            commands.append(f"input text {_escape_for_adb_text(chunk)}")
+    return commands
+
+
 class AndroidAdbDriver(BaseDeviceDriver):
     """Android device driver using ADB and UIAutomator2."""
 
@@ -361,9 +377,8 @@ class AndroidAdbDriver(BaseDeviceDriver):
                 if i > 0:
                     # Send Enter key between lines
                     await asyncio.to_thread(self.device.shell, "input keyevent 66")
-                if line:
-                    escaped = _escape_for_adb_text(line)
-                    await asyncio.to_thread(self.device.shell, f"input text {escaped}")
+                for cmd in _adb_input_text_commands(line):
+                    await asyncio.to_thread(self.device.shell, cmd)
             return True
         except Exception as e:
             logger.error(f"Input text failed for '{text}': {e}")
