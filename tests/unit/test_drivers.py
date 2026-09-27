@@ -102,6 +102,35 @@ async def test_android_driver_with_mock_adb():
 
 
 @pytest.mark.asyncio
+async def test_android_input_text_falls_back_to_adbkeyboard_when_clipboard_rejected():
+    """A rejected clipboard write must not paste; ADBKeyboard should receive the text."""
+    mock_adb_client = MagicMock()
+    mock_adb_device = MagicMock()
+    mock_adb_client.device.return_value = mock_adb_device
+    mock_adb_device.shell.side_effect = lambda cmd: (
+        "com.android.adbkeyboard/.AdbIME"
+        if cmd == "settings get secure default_input_method"
+        else ""
+    )
+    mock_ui_client = MagicMock()
+    mock_ui_client.set_clipboard.return_value = False
+
+    driver = AndroidAdbDriver(
+        device_id="emulator-5554",
+        adb_client=mock_adb_client,
+        ui_adb_client=mock_ui_client,
+    )
+
+    assert await driver.input_text("你好", clear_existing=False) is True
+
+    commands = [call.args[0] for call in mock_adb_device.shell.call_args_list]
+    mock_ui_client.set_clipboard.assert_called_once_with("你好")
+    assert "input keyevent 279" not in commands
+    b64_text = base64.b64encode("你好".encode()).decode("utf-8")
+    assert f"am broadcast -a ADB_INPUT_B64 --es msg '{b64_text}'" in commands
+
+
+@pytest.mark.asyncio
 async def test_android_driver_preserves_elements_from_combined_screen_data():
     """The combined uiautomator2 response is the authoritative live snapshot."""
     mock_adb_client = MagicMock()
