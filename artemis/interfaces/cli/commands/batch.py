@@ -32,12 +32,38 @@ import typer
 logger = get_logger(__name__)
 
 
+async def _run_batch_goal(
+    agent: Agent,
+    goal: str,
+    profile_name: str,
+    llm_model: str | None,
+    llm_provider: str | None,
+) -> str | dict | None:
+    """Runs one batch goal, pinning the LLM only when the batch asked for it.
+
+    Without an override this stays on the plain ``agent.run_task`` call; with one
+    the goal goes through the request builder so the override lands on that
+    goal's request (and therefore only on that task) instead of the shared config.
+    """
+    if not llm_model and not llm_provider:
+        return await agent.run_task(goal=goal, profile=profile_name)
+    request = (
+        agent.new_task(goal)
+        .using_profile(profile_name)
+        .with_llm_override(model=llm_model, provider=llm_provider)
+        .build()
+    )
+    return await agent.run_task(request=request)
+
+
 async def run_batch_tasks(
     tasks: list[str],
     profile_name: str = "pro",
     delay_seconds: float = 5.0,
     verification_level: str | None = None,
     explorer_pro_mode: str | None = None,
+    llm_model: str | None = None,
+    llm_provider: str | None = None,
 ) -> None:
     """Executes a list of automation tasks sequentially.
 
@@ -49,6 +75,9 @@ async def run_batch_tasks(
             'strict') for the Pro profile; ignored by Flash.
         explorer_pro_mode: Explorer tier ('flash', 'pro', 'ultra') behind
             ``ask_explorer`` under the Pro profile; ignored by Flash.
+        llm_model: Per-task model override pinned on every goal of this batch
+            (wins over artemis.jsonc, no restart needed).
+        llm_provider: Provider for ``llm_model``; requires ``llm_model``.
     """
     if not os.environ.get("ARTEMIS_TASK_INGRESS"):
         os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
@@ -73,7 +102,7 @@ async def run_batch_tasks(
             status = "SUCCESS"
             error_msg = ""
             try:
-                result = await agent.run_task(goal=goal, profile=profile_name)
+                result = await _run_batch_goal(agent, goal, profile_name, llm_model, llm_provider)
                 logger.info(f"Task {idx} completed: {result}")
             except Exception as e:
                 status = "FAILED"
@@ -162,6 +191,26 @@ def batch_command(
             help="Explorer tier behind ask_explorer under the Pro profile ('flash', 'pro', 'ultra').",
         ),
     ] = None,
+    llm_model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help=(
+                "Per-task model override applied to every LLM of every goal in the batch"
+                " (wins over artemis.jsonc, no restart needed), e.g. 'gemini-3.8-flash'."
+            ),
+        ),
+    ] = None,
+    llm_provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help=(
+                "Provider for --model (e.g. 'google', 'openai', 'anthropic');"
+                " defaults to the provider configured for each node."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Execute multiple automation tasks in sequence."""
     task_list: list[str] = []
@@ -224,6 +273,8 @@ def batch_command(
                     profile=profile,
                     verification_level=verification_level,
                     explorer_mode=explorer_pro_mode,
+                    llm_model=llm_model,
+                    llm_provider=llm_provider,
                     base_url=base_url,
                 )
                 if resp and resp.get("tasks"):
@@ -274,5 +325,7 @@ def batch_command(
             delay_seconds=delay,
             verification_level=verification_level,
             explorer_pro_mode=explorer_pro_mode,
+            llm_model=llm_model,
+            llm_provider=llm_provider,
         )
     )

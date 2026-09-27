@@ -55,11 +55,20 @@ def test_tool_signatures():
     assert "device_serial" in sig_run.parameters
     assert "verification_level" in sig_run.parameters
     assert "explorer_mode" in sig_run.parameters
+    assert "llm_model" in sig_run.parameters
+    assert "llm_provider" in sig_run.parameters
     assert sig_run.parameters["verification_level"].default is None
     assert sig_run.parameters["explorer_mode"].default is None
+    # `model` already means the Flash/Pro profile, so the LLM override uses
+    # distinct names.
+    assert sig_run.parameters["model"].default == "Flash"
+    assert sig_run.parameters["llm_model"].default is None
+    assert sig_run.parameters["llm_provider"].default is None
     # The tool description is the only schema an MCP caller sees.
     assert "verification_level" in (mobile_run_task.__doc__ or "")
     assert "explorer_mode" in (mobile_run_task.__doc__ or "")
+    assert "llm_model" in (mobile_run_task.__doc__ or "")
+    assert "llm_provider" in (mobile_run_task.__doc__ or "")
 
     # mobile_manage_task signature check
     sig_manage = inspect.signature(mobile_manage_task)
@@ -271,6 +280,103 @@ def test_mobile_run_task_forwards_pro_tuning_to_daemon(temp_trace_env, monkeypat
     # JSON field spelling of /api/run: verification_level / explorer_mode.
     assert submit.call_args.kwargs["verification_level"] == "checkpoints"
     assert submit.call_args.kwargs["explorer_mode"] == "pro"
+
+
+def test_mobile_run_task_forwards_llm_override_to_background_runner(temp_trace_env):
+    process = MagicMock(pid=779)
+    with (
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.reserve", return_value="t"),
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.transfer_reservation"),
+        patch("mcp_server.tools.task_runner.subprocess.Popen", return_value=process) as popen,
+    ):
+        mobile_run_task(
+            task_desc="Audit the checkout flow",
+            model="Pro",
+            llm_model=" gemini-3.8-pro ",
+            llm_provider="OpenAI",
+        )
+
+    cmd = popen.call_args.args[0]
+    # Distinct from the runner's own --model flag, which carries the Flash/Pro
+    # profile; the LLM override uses its own spelling.
+    assert cmd[cmd.index("--llm-model") + 1] == "gemini-3.8-pro"
+    assert cmd[cmd.index("--llm-provider") + 1] == "openai"
+    # The profile flag is untouched by the override.
+    assert cmd[cmd.index("--model") + 1] == "Pro"
+
+
+def test_mobile_run_task_omits_llm_override_flags_when_unset(temp_trace_env):
+    process = MagicMock(pid=780)
+    with (
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.reserve", return_value="t"),
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.transfer_reservation"),
+        patch("mcp_server.tools.task_runner.subprocess.Popen", return_value=process) as popen,
+    ):
+        mobile_run_task(task_desc="Open Settings", model="Pro", llm_model="  ")
+
+    cmd = popen.call_args.args[0]
+    assert "--llm-model" not in cmd
+    assert "--llm-provider" not in cmd
+
+
+def test_mobile_run_task_rejects_unknown_llm_provider_before_creating_a_trace(temp_trace_env):
+    with pytest.raises(ValueError, match="unknown llm_provider"):
+        mobile_run_task(task_desc="Open Settings", model="Pro", llm_provider="acme-cloud")
+    # Rejected before init_trace: nothing was written to the trace store.
+    assert os.listdir(temp_trace_env) == []
+
+
+def test_mobile_run_task_rejects_llm_provider_without_model(temp_trace_env):
+    with pytest.raises(ValueError, match="requires llm_model"):
+        mobile_run_task(task_desc="Open Settings", model="Pro", llm_provider="openai")
+    assert os.listdir(temp_trace_env) == []
+
+
+def test_mobile_run_task_combines_flash_profile_with_llm_override(temp_trace_env):
+    """The default Flash profile and the LLM override travel together."""
+    process = MagicMock(pid=781)
+    with (
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.reserve", return_value="t"),
+        patch("mcp_server.tools.task_runner.DeviceExecutionLock.transfer_reservation"),
+        patch("mcp_server.tools.task_runner.subprocess.Popen", return_value=process) as popen,
+    ):
+        mobile_run_task(
+            task_desc="Open Settings",
+            model="Flash",
+            llm_model="gemini-3.8-pro",
+            llm_provider="openai",
+        )
+
+    cmd = popen.call_args.args[0]
+    assert cmd[cmd.index("--model") + 1] == "Flash"
+    assert cmd[cmd.index("--llm-model") + 1] == "gemini-3.8-pro"
+    assert cmd[cmd.index("--llm-provider") + 1] == "openai"
+
+
+def test_mobile_run_task_forwards_llm_override_to_daemon(temp_trace_env, monkeypatch):
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    with (
+        patch(
+            "mcp_server.tools.task_runner.ensure_daemon_running",
+            return_value=(True, "http://127.0.0.1:8000"),
+        ),
+        patch(
+            "mcp_server.tools.task_runner.submit_task_to_daemon",
+            return_value={"status": "started", "tasks": [{"session_id": "daemon-sid-3"}]},
+        ) as submit,
+        patch("mcp_server.tools.task_runner.subprocess.Popen") as popen,
+    ):
+        result = mobile_run_task(
+            task_desc="Audit via Daemon",
+            model="Pro",
+            llm_model="gpt-5.1",
+            llm_provider="openai",
+        )
+
+    popen.assert_not_called()
+    assert result["trace_id"] == "daemon-sid-3"
+    assert submit.call_args.kwargs["llm_model"] == "gpt-5.1"
+    assert submit.call_args.kwargs["llm_provider"] == "openai"
 
 
 def test_mobile_manage_task_unknown_trace(temp_trace_env):

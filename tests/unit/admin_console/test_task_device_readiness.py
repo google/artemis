@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 
 from fastapi import HTTPException
 import pytest
+from pydantic import ValidationError
 
 from apps.admin_console.routers import tasks
 from apps.admin_console.schemas.task_schema import RunRequest
@@ -226,3 +227,82 @@ async def test_explicit_device_proceeds_when_enumeration_is_indeterminate(monkey
     enqueue_tasks.assert_awaited_once()
     _, kwargs = enqueue_tasks.call_args
     assert kwargs.get("device_serial") == "pixel-10"
+
+
+@pytest.mark.asyncio
+async def test_run_task_forwards_per_task_llm_override(monkeypatch):
+    """The per-task LLM override reaches enqueue_tasks untouched."""
+    unlocked_probe = ProbeResult(
+        id="android_adb",
+        category=ProbeCategory.DEVICE,
+        title="Device / Emulator Connected",
+        status=ProbeStatus.PASS,
+        is_blocker=True,
+        summary="Connected",
+        description="Ready.",
+    )
+    run_probe = AsyncMock(return_value=unlocked_probe)
+    enqueue_tasks = AsyncMock(return_value={"status": "started", "tasks": []})
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
+    monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue_tasks)
+
+    await tasks.run_task(
+        RunRequest(goal="Audit checkout", llm_model=" gpt-5.1 ", llm_provider=" OpenAI ")
+    )
+
+    _, kwargs = enqueue_tasks.call_args
+    # The schema trims the model and normalises the provider to lower case.
+    assert kwargs.get("llm_model") == "gpt-5.1"
+    assert kwargs.get("llm_provider") == "openai"
+
+
+@pytest.mark.asyncio
+async def test_run_task_without_override_leaves_llm_override_unset(monkeypatch):
+    unlocked_probe = ProbeResult(
+        id="android_adb",
+        category=ProbeCategory.DEVICE,
+        title="Device / Emulator Connected",
+        status=ProbeStatus.PASS,
+        is_blocker=True,
+        summary="Connected",
+        description="Ready.",
+    )
+    run_probe = AsyncMock(return_value=unlocked_probe)
+    enqueue_tasks = AsyncMock(return_value={"status": "started", "tasks": []})
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
+    monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue_tasks)
+
+    await tasks.run_task(RunRequest(goal="Open Settings", llm_model="   "))
+
+    _, kwargs = enqueue_tasks.call_args
+    assert kwargs.get("llm_model") is None
+    assert kwargs.get("llm_provider") is None
+
+
+def test_run_request_rejects_unknown_llm_provider():
+    """An unusable provider is rejected at the API boundary, not mid-task."""
+    with pytest.raises(ValidationError):
+        RunRequest(goal="Open Settings", llm_provider="acme-cloud")
+
+
+def test_run_request_rejects_provider_without_model():
+    """A provider alone would pin nothing, so FastAPI answers 422."""
+    with pytest.raises(ValidationError, match="llm_provider requires llm_model"):
+        RunRequest(goal="Open Settings", llm_provider="openai")
+
+
+def test_run_request_accepts_blank_provider_with_model():
+    """Blank keeps the blank -> None semantics, so no 422 and no override."""
+    request = RunRequest(goal="Open Settings", llm_model="gpt-5.1", llm_provider="   ")
+
+    assert request.llm_model == "gpt-5.1"
+    assert request.llm_provider is None
+
+
+def test_run_request_accepts_flash_profile_with_override():
+    """The Flash execution profile and the LLM override are independent knobs."""
+    request = RunRequest(goal="Open Settings", profile="flash", llm_model="gemini-3.8-pro")
+
+    assert request.profile == "flash"
+    assert request.llm_model == "gemini-3.8-pro"
+    assert request.llm_provider is None

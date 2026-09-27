@@ -183,6 +183,49 @@ def test_submit_batch_to_daemon_forwards_pro_tuning_knobs():
     assert data["explorer_mode"] == "pro"
 
 
+def test_submit_task_to_daemon_forwards_per_task_llm_override():
+    mock_resp = _daemon_ok_response(b'{"status": "queued", "tasks": [{"session_id": "s1"}]}')
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        submit_task_to_daemon(
+            "audit goal",
+            profile="pro",
+            llm_model="gpt-5.1",
+            llm_provider="openai",
+        )
+        data = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    # JSON field names match RunRequest on /api/run.
+    assert data["llm_model"] == "gpt-5.1"
+    assert data["llm_provider"] == "openai"
+
+
+def test_submit_task_to_daemon_llm_override_defaults_to_null():
+    mock_resp = _daemon_ok_response(b'{"status": "queued", "tasks": [{"session_id": "s1"}]}')
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        submit_task_to_daemon("plain goal", profile="flash")
+        data = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    # The daemon client keeps sending nulls verbatim (RunRequest defaults to None).
+    assert data["llm_model"] is None
+    assert data["llm_provider"] is None
+
+
+def test_submit_batch_to_daemon_forwards_per_task_llm_override():
+    from artemis.runtime.daemon_client import submit_batch_to_daemon
+
+    mock_resp = _daemon_ok_response(
+        b'{"status": "queued", "tasks": [{"session_id": "a"}, {"session_id": "b"}]}'
+    )
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        submit_batch_to_daemon(
+            ["goal a", "goal b"],
+            profile="pro",
+            llm_model="gemini-3.8-pro",
+            llm_provider="google",
+        )
+        data = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    assert data["llm_model"] == "gemini-3.8-pro"
+    assert data["llm_provider"] == "google"
+
+
 def test_stop_task_on_daemon():
     from artemis.runtime.daemon_client import stop_task_on_daemon
 

@@ -16,10 +16,10 @@
 
 import { Injectable, signal, inject, computed, DestroyRef, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, catchError, of } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
-import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
+import { LlmOptionsResponse, ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
@@ -120,7 +120,10 @@ export class AgentService {
         ...s,
         status: sStatus,
         device_serial: serial,
-        model_info: isCurrentActive && this.activeModel() ? this.activeModel()! : s.model_info
+        // The stored model_info already reflects a per-task LLM override, so it
+        // wins; the global active model is only a fallback for rows that carry
+        // no model_info at all.
+        model_info: s.model_info ?? (isCurrentActive && this.activeModel() ? this.activeModel()! : s.model_info)
       };
       sessionMap.set(s.session_id, finalSession);
       if (isTerminal) {
@@ -407,6 +410,18 @@ export class AgentService {
     return this.http.get<ProTuningDefaults>('/api/run/defaults');
   }
 
+  /**
+   * Providers, presets and the configured default reported by
+   * `GET /api/llm-options`, for the launcher's per-task override picker.
+   * Resolves to null when the endpoint is unavailable, which leaves the
+   * override as free-text fields.
+   */
+  public getLlmOptions(): Observable<LlmOptionsResponse | null> {
+    return this.http.get<LlmOptionsResponse>('/api/llm-options').pipe(
+      catchError(() => of(null))
+    );
+  }
+
   /** Session-wide token totals, live executor context size and the run's tuning. */
   public getSessionUsage(sessionId: string): Observable<SessionUsage> {
     return this.http.get<SessionUsage>(`/api/sessions/${encodeURIComponent(sessionId)}/usage`);
@@ -441,6 +456,12 @@ export class AgentService {
       }
       if (proTuning?.explorerMode) {
         payload.explorer_mode = proTuning.explorerMode;
+      }
+      if (proTuning?.provider) {
+        payload.llm_provider = proTuning.provider;
+      }
+      if (proTuning?.model) {
+        payload.llm_model = proTuning.model;
       }
       this.clearUserPinnedSession();
       this.http.post<any>('/api/run', payload).subscribe({
@@ -1546,7 +1567,9 @@ export class AgentService {
                   initial_goal: item.goal || '',
                   start_time: item.start_time || item.created_at || (Date.now() / 1000 + index),
                   status: item.status || 'pending',
-                  device_serial: item.device_serial || item.device_id || null
+                  device_serial: item.device_serial || item.device_id || null,
+                  llm_model: item.llm_model || null,
+                  llm_provider: item.llm_provider || null
                 };
               }
               return {

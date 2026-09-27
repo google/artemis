@@ -27,6 +27,7 @@ from mcp_server.base import mcp
 from mcp_server.notifiers import notify
 from mcp_server.utils import env_utils
 from artemis.config import ExplorerVersion, checker_overrides_for_level
+from artemis.config.llm_override import normalize_llm_override
 from artemis.config.runtime import read_ipc_port
 from artemis.runtime import (
     DeviceExecutionLock,
@@ -212,6 +213,8 @@ def mobile_run_task(
     device_serial: str | None = None,
     verification_level: str | None = None,
     explorer_mode: str | None = None,
+    llm_model: str | None = None,
+    llm_provider: str | None = None,
 ) -> dict[str, Any]:
     """Starts an autonomous mobile UI automation subagent on a connected Android device.
 
@@ -277,6 +280,19 @@ def mobile_run_task(
           by the Operator: `"flash"` (1-shot detection, the default),
           `"pro"` (3-turn ReAct), `"ultra"` (deep pixel reasoning; slowest).
           Ignored for Flash.
+        llm_model: Optional. Per-task LLM model override applied to every
+          model this task resolves (e.g. `"gemini-3.8-flash"`), overriding the
+          `artemis.jsonc` node configuration for this run only — no restart and
+          no config edit. It intentionally pins the resolved fallback model as
+          well, so the whole task runs on the override. Leave unset to keep the
+          configured models. Note this is *not* the `model` profile argument
+          above: that one selects the Flash/Pro execution architecture, this one
+          selects the LLM itself, and the two combine freely.
+        llm_provider: Optional. Provider for `llm_model` (`"google"`,
+          `"openai"`, `"anthropic"`, `"openrouter"`, `"xai"`, `"vertexai"`,
+          `"ollama"`, `"vllm"`, `"custom"`). When omitted, each node keeps its
+          configured provider. Requires `llm_model`; an unknown provider or a
+          provider without a model is rejected before the task starts.
     """
     # 0. Validate and normalize model
     if model.lower() not in ("flash", "pro"):
@@ -285,6 +301,9 @@ def mobile_run_task(
     # 0b. Validate the Pro tuning knobs before any trace exists so a typo is a
     # plain tool error rather than a failed trace on disk.
     verification_level, explorer_mode = _normalize_pro_tuning(verification_level, explorer_mode)
+    # 0c. Same fail-fast treatment for the per-task LLM override, before any
+    # trace exists so an unusable override is a plain tool error.
+    llm_model, llm_provider = normalize_llm_override(llm_model, llm_provider)
 
     # 1. Generate a unique trace_id
     trace_id = str(uuid.uuid4())
@@ -325,6 +344,8 @@ def mobile_run_task(
                     conversation_id=conversation_id,
                     verification_level=verification_level,
                     explorer_mode=explorer_mode,
+                    llm_model=llm_model,
+                    llm_provider=llm_provider,
                     base_url=base_url,
                 )
                 if resp and resp.get("status") == "rejected":
@@ -471,6 +492,12 @@ def mobile_run_task(
             cmd.extend(["--verification-level", verification_level])
         if explorer_mode:
             cmd.extend(["--explorer-pro-mode", explorer_mode])
+        # Distinct from this runner's own ``--model`` flag, which carries the
+        # Flash/Pro profile; these carry the LLM override.
+        if llm_model:
+            cmd.extend(["--llm-model", llm_model])
+        if llm_provider:
+            cmd.extend(["--llm-provider", llm_provider])
 
         env = os.environ.copy()
         env["ARTEMIS_SESSION_ID"] = trace_id

@@ -23,6 +23,7 @@ import pytest
 
 from apps.admin_console.core.state import state
 from apps.admin_console.routers.tasks import get_status
+from apps.admin_console.services.model_service import ModelService
 from apps.admin_console.services.task_queue_service import TaskQueueService, task_queue_service
 from artemis.runtime.device_lock import DeviceLockOwner
 from artemis.runtime.adb_endpoint import AdbEndpoint
@@ -292,6 +293,8 @@ async def test_queue_worker_cmd_construction():
             app_path="/path/to/app.apk",
             verification_level=" Checkpoints ",
             explorer_mode="ULTRA",
+            llm_model=" gemini-3.8-pro ",
+            llm_provider="OpenAI",
         )
 
         for _ in range(30):
@@ -314,8 +317,14 @@ async def test_queue_worker_cmd_construction():
         # to the worker as the CLI's existing spelling.
         assert cmd[cmd.index("--verification-level") + 1] == "checkpoints"
         assert cmd[cmd.index("--explorer-pro-mode") + 1] == "ultra"
+        # The per-task LLM override reaches the worker as --model/--provider;
+        # the model keeps its spelling, the provider is lower-cased.
+        assert cmd[cmd.index("--model") + 1] == "gemini-3.8-pro"
+        assert cmd[cmd.index("--provider") + 1] == "openai"
         assert enqueue_result["tasks"][0]["verification_level"] == "checkpoints"
         assert enqueue_result["tasks"][0]["explorer_mode"] == "ultra"
+        assert enqueue_result["tasks"][0]["llm_model"] == "gemini-3.8-pro"
+        assert enqueue_result["tasks"][0]["llm_provider"] == "openai"
         assert (
             executed_kwargs[0]["env"]["ARTEMIS_DEVICE_QUEUE_TICKET"]
             == (enqueue_result["tasks"][0]["queue_ticket"])
@@ -557,6 +566,8 @@ async def test_status_reports_external_global_owner_without_ipc_connection():
     ):
         repo.get_latest_session.return_value = None
         repo.get_session_by_id.return_value = None
+        # No session row was needed, so the model echo stays unset.
+        models.resolve_session_llm_override.return_value = (None, None)
         models.get_active_model_info.return_value = None
         result = await get_status()
 
@@ -564,6 +575,241 @@ async def test_status_reports_external_global_owner_without_ipc_connection():
     assert result["session_id"] == "cli-session"
     assert result["pid"] == 24680
     assert result["goal"] == "CLI task: inspect settings"
+
+
+@pytest.mark.asyncio
+@patch.object(
+    ModelService, "_get_llm_provider_and_model", return_value=("google", "gemini-3.8-flash")
+)
+async def test_get_status_reports_the_stored_override_with_a_known_profile(_configured):
+    """A pinned model still wins when the profile came from the worker state.
+
+    Regression: the row used to be loaded only when ``active_profile`` was
+    falsy, so a worker that set ``current_profile`` hid the override and the
+    status showed the global model.
+    """
+    state.current_profile = "pro"
+    state.active_session_id = "sess-1"
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch("apps.admin_console.routers.tasks.session_repo") as repo,
+    ):
+        repo.get_latest_session.return_value = {"session_id": "sess-1"}
+        repo.get_session_by_id.return_value = {
+            "session_id": "sess-1",
+            "status": "running",
+            "device_info": json.dumps(
+                {"profile": "pro", "llm_model": "gpt-5.1", "llm_provider": "openai"}
+            ),
+        }
+        repo.get_background_tasks.return_value = []
+
+        result = await get_status()
+
+    assert result["model_info"]["id"] == "gpt-5.1"
+    assert result["model_info"]["provider"] == "openai"
+    assert result["model_info"]["name"] == "Pro"
+    # One row read, reused for the model echo, and the expensive trace lookups
+    # stay skipped while a profile is already known.
+    repo.get_session_by_id.assert_called_once_with("sess-1")
+    repo.get_llm_traces_for_profile.assert_not_called()
+    repo.get_agent_trace_names.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch.object(
+    ModelService, "_get_llm_provider_and_model", return_value=("google", "gemini-3.8-flash")
+)
+async def test_get_status_keeps_the_global_model_for_legacy_rows(_configured):
+    """A row without the override keys reports the configured model."""
+    state.current_profile = "pro"
+    state.active_session_id = "sess-1"
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch("apps.admin_console.routers.tasks.session_repo") as repo,
+    ):
+        repo.get_latest_session.return_value = {"session_id": "sess-1"}
+        repo.get_session_by_id.return_value = {
+            "session_id": "sess-1",
+            "status": "running",
+            "device_info": json.dumps({"profile": "pro"}),
+        }
+        repo.get_background_tasks.return_value = []
+
+        result = await get_status()
+
+    assert result["model_info"]["id"] == "gemini-3.8-flash"
+    assert result["model_info"]["provider"] == "google"
+    assert result["model_info"]["name"] == "Pro"
+
+
+@pytest.mark.asyncio
+@patch.object(
+    ModelService, "_get_llm_provider_and_model", return_value=("google", "gemini-3.8-flash")
+)
+async def test_get_status_queue_still_carries_the_llm_override(_configured):
+    """Queued tickets keep reporting the model they will run on."""
+    state.current_profile = "pro"
+    state.queue_items = [
+        {
+            "session_id": "queued-1",
+            "goal": "Goal A",
+            "status": "pending",
+            "llm_model": "gpt-5.1",
+            "llm_provider": "openai",
+        }
+    ]
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch("apps.admin_console.routers.tasks.session_repo") as repo,
+    ):
+        repo.get_latest_session.return_value = None
+        repo.get_background_tasks.return_value = []
+
+        result = await get_status()
+
+    (queued,) = result["queue"]
+    assert queued["llm_model"] == "gpt-5.1"
+    assert queued["llm_provider"] == "openai"
+    # No session row to read here, so the status falls back to the global model.
+    repo.get_session_by_id.assert_not_called()
+    assert result["model_info"]["id"] == "gemini-3.8-flash"
+
+
+@pytest.mark.asyncio
+@patch.object(
+    ModelService, "_get_llm_provider_and_model", return_value=("google", "gemini-3.8-flash")
+)
+async def test_get_status_connection_branch_reports_the_stored_override(_configured):
+    """A tracked connection reports the pinned model, not the global one.
+
+    Regression: this second return path built ``conn_model_info`` from the
+    profile alone, so a task tracked through ``active_connections`` showed the
+    global model even when the run had an override.
+    """
+    state.current_profile = "pro"
+    state.active_connections["sess-1"] = {
+        "goal": "Goal A",
+        "profile": "pro",
+        "pid": None,
+    }
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch("apps.admin_console.routers.tasks.session_repo") as repo,
+    ):
+        repo.get_latest_session.return_value = {"session_id": "sess-1"}
+        repo.get_session_by_id.return_value = {
+            "session_id": "sess-1",
+            "status": "running",
+            "device_info": json.dumps(
+                {"profile": "pro", "llm_model": "gpt-5.1", "llm_provider": "openai"}
+            ),
+        }
+        repo.get_background_tasks.return_value = []
+
+        result = await get_status()
+
+    assert result["session_id"] == "sess-1"
+    assert result["model_info"]["id"] == "gpt-5.1"
+    assert result["model_info"]["provider"] == "openai"
+    assert result["model_info"]["name"] == "Pro"
+    # Reused the row the main path already read, and stayed off the trace
+    # lookups entirely.
+    repo.get_session_by_id.assert_called_once_with("sess-1")
+    repo.get_llm_traces_for_profile.assert_not_called()
+    repo.get_agent_trace_names.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch.object(
+    ModelService, "_get_llm_provider_and_model", return_value=("google", "gemini-3.8-flash")
+)
+async def test_get_status_connection_branch_keeps_the_global_model_for_legacy_rows(_configured):
+    """A connection without stored override keys keeps reporting the config."""
+    state.current_profile = "pro"
+    state.active_connections["sess-1"] = {"goal": "Goal A", "profile": "pro", "pid": None}
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch("apps.admin_console.routers.tasks.session_repo") as repo,
+    ):
+        repo.get_latest_session.return_value = {"session_id": "sess-1"}
+        repo.get_session_by_id.return_value = {
+            "session_id": "sess-1",
+            "status": "running",
+            "device_info": json.dumps({"profile": "pro"}),
+        }
+        repo.get_background_tasks.return_value = []
+
+        result = await get_status()
+
+    assert result["model_info"]["id"] == "gemini-3.8-flash"
+    assert result["model_info"]["provider"] == "google"
+    assert result["model_info"]["name"] == "Pro"
+
+
+@pytest.mark.asyncio
+@patch.object(
+    ModelService, "_get_llm_provider_and_model", return_value=("google", "gemini-3.8-flash")
+)
+async def test_get_status_connection_branch_reads_the_connections_own_session(_configured):
+    """When another session owns the earlier row, this path reads its own.
+
+    ``running_sid`` can point at a different session than the connection being
+    reported, so the cached row must not be reused blindly.
+    """
+    other_owner = DeviceLockOwner(
+        pid=24681,
+        process_created_at=1234.5,
+        token="other-owner-token",
+        device_id="emulator-5554",
+        description="CLI task: other",
+        acquired_at="2026-08-24T00:00:00+00:00",
+        session_id="other-session",
+        ingress="cli",
+    )
+    state.current_profile = "pro"
+    state.active_connections["sess-1"] = {"goal": "Goal A", "profile": "pro", "pid": None}
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        # A lock owner for another device but no "active" owner: running_sid then
+        # resolves to that other session while this path reports the connection.
+        patch(
+            "apps.admin_console.routers.tasks.DeviceExecutionLock.get_active_owner",
+            return_value=None,
+        ),
+        patch(
+            "apps.admin_console.routers.tasks.DeviceExecutionLock.get_active_owners",
+            return_value={other_owner.device_id: other_owner},
+        ),
+        patch("apps.admin_console.routers.tasks.session_repo") as repo,
+    ):
+        repo.get_latest_session.return_value = {"session_id": "sess-1"}
+        repo.get_background_tasks.return_value = []
+        repo.get_session_by_id.side_effect = lambda sid: {
+            "other-session": {
+                "session_id": "other-session",
+                "device_info": json.dumps({"profile": "pro", "llm_model": "other-model"}),
+            },
+            "sess-1": {
+                "session_id": "sess-1",
+                "device_info": json.dumps(
+                    {"profile": "pro", "llm_model": "gpt-5.1", "llm_provider": "openai"}
+                ),
+            },
+        }[str(sid)]
+
+        result = await get_status()
+
+    assert result["session_id"] == "sess-1"
+    assert result["model_info"]["id"] == "gpt-5.1"
+    assert result["model_info"]["provider"] == "openai"
+    # The other session's row is not reused for this connection.
+    assert [call.args[0] for call in repo.get_session_by_id.call_args_list] == [
+        "other-session",
+        "sess-1",
+    ]
+    repo.get_llm_traces_for_profile.assert_not_called()
+    repo.get_agent_trace_names.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -763,6 +1009,63 @@ async def test_enqueue_tasks_unified_ingress():
         assert task["ingress"] == "mcp"
         assert task["conversation_id"] == "conv-456"
         assert task["goal"] == "Test unified goal"
+
+
+@pytest.mark.asyncio
+async def test_enqueue_tasks_normalises_llm_override_and_omits_when_blank():
+    """A blank LLM override means 'not requested' and is persisted as None."""
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
+            return_value="mock-ticket-llm",
+        ),
+    ):
+        res = await task_queue_service.enqueue_tasks(
+            ["Goal with model override"],
+            profile="pro",
+            llm_model="  gpt-5.1  ",
+            llm_provider="  OpenAI ",
+        )
+        blank = await task_queue_service.enqueue_tasks(
+            ["Goal without override"],
+            profile="pro",
+            llm_model="   ",
+            llm_provider="",
+        )
+
+    task, blank_task = res["tasks"][0], blank["tasks"][0]
+    assert task["llm_model"] == "gpt-5.1"
+    assert task["llm_provider"] == "openai"
+    assert blank_task["llm_model"] is None
+    assert blank_task["llm_provider"] is None
+
+
+@pytest.mark.asyncio
+async def test_enqueue_tasks_rejects_an_unusable_llm_override():
+    """The queue runs the shared validator, so a bad override never gets a slot.
+
+    The API schema already refuses these, but the queue is also reachable from
+    the daemon and MCP, so it must not persist a task that cannot run.
+    """
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running") as worker,
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
+            return_value="mock-ticket-llm",
+        ),
+    ):
+        with pytest.raises(ValueError, match="unknown llm_provider"):
+            await task_queue_service.enqueue_tasks(
+                ["Goal"], profile="pro", llm_model="gpt-5.1", llm_provider="acme-cloud"
+            )
+        with pytest.raises(ValueError, match="llm_provider requires llm_model"):
+            await task_queue_service.enqueue_tasks(
+                ["Goal"], profile="pro", llm_model="   ", llm_provider="openai"
+            )
+
+    assert worker.call_count == 0
+    assert state.queue_items == []
 
 
 @pytest.mark.asyncio

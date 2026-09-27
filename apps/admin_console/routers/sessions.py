@@ -119,9 +119,14 @@ def _list_sessions_sync():
         sess_profile = model_service.resolve_session_profile(
             row_dict, None, state.current_profile, agent_names=agent_names
         )
+        llm_model, llm_provider = model_service.resolve_session_llm_override(row_dict)
+        # A stored override is reported even when the profile stays unresolved
+        # (the architecture stays Flash until the trace-name pass below settles
+        # it), because the pinned model is a fact about the run. Legacy rows
+        # without the keys keep the global default.
         row_dict["model_info"] = (
-            model_service.get_active_model_info(sess_profile)
-            if sess_profile
+            model_service.get_active_model_info(sess_profile, llm_model, llm_provider)
+            if sess_profile or llm_model or llm_provider
             else default_model_info
         )
         if not sess_profile:
@@ -143,7 +148,10 @@ def _list_sessions_sync():
                 row_dict, llm_traces, state.current_profile
             )
             if sess_profile:
-                row_dict["model_info"] = model_service.get_active_model_info(sess_profile)
+                llm_model, llm_provider = model_service.resolve_session_llm_override(row_dict)
+                row_dict["model_info"] = model_service.get_active_model_info(
+                    sess_profile, llm_model, llm_provider
+                )
 
     if orphaned_ids:
         try:
@@ -169,11 +177,26 @@ def _list_sessions_sync():
 
 @router.get("/api/sessions/{session_id}")
 async def get_session_details(session_id: str):
-    """Retrieve details for a single automation session."""
+    """Retrieve details for a single automation session.
+
+    Also echoes the per-task LLM override the run recorded in device_info (the
+    SDK writes it there), unpacking the same JSON ``get_session_usage`` reads, so
+    clients see which model the session actually used. Rows written before the
+    override existed report ``null`` and keep the configured model.
+    """
     row = session_repo.get_session_by_id(session_id)
     if not row:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return dict(row)
+    payload = dict(row)
+    llm_model, llm_provider = model_service.resolve_session_llm_override(payload)
+    payload["llm_model"] = llm_model
+    payload["llm_provider"] = llm_provider
+    # model_info for parity with the list endpoint; the profile comes from the
+    # stored device_info, so no extra trace lookups are needed here.
+    payload["model_info"] = model_service.get_active_model_info(
+        model_service.resolve_session_profile(payload), llm_model, llm_provider
+    )
+    return payload
 
 
 @router.get("/api/sessions/{session_id}/usage")

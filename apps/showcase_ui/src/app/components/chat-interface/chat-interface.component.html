@@ -80,6 +80,14 @@ limitations under the License.
               {{ getTaskStatus(session) | uppercase }}
             </span>
             <div class="task-card-header-actions">
+              @if (getTaskModelLabel(session); as model) {
+                <span class="task-model" role="img"
+                  [title]="model.scheduled ? 'Scheduled model: ' + model.label : 'Ran with: ' + model.label"
+                  [attr.aria-label]="model.scheduled ? 'Scheduled model: ' + model.label : 'Ran with: ' + model.label">
+                  <span class="material-symbols-outlined model-icon">memory</span>
+                  <span class="model-name">{{ model.label }}</span>
+                </span>
+              }
               @if (getDeviceSerial(session)) {
                 <span class="task-device" [title]="'Device: ' + getDeviceSerial(session)">
                   <span class="material-symbols-outlined device-icon">phone_android</span>
@@ -150,6 +158,14 @@ limitations under the License.
                   {{ getTaskStatus(session) | uppercase }}
                 </span>
                 <div class="task-card-header-actions">
+                  @if (getTaskModelLabel(session); as model) {
+                    <span class="task-model" role="img"
+                      [title]="model.scheduled ? 'Scheduled model: ' + model.label : 'Ran with: ' + model.label"
+                      [attr.aria-label]="model.scheduled ? 'Scheduled model: ' + model.label : 'Ran with: ' + model.label">
+                      <span class="material-symbols-outlined model-icon">memory</span>
+                      <span class="model-name">{{ model.label }}</span>
+                    </span>
+                  }
                   @if (getDeviceSerial(session)) {
                     <span class="task-device" [title]="'Device: ' + getDeviceSerial(session)">
                       <span class="material-symbols-outlined device-icon">phone_android</span>

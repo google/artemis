@@ -133,6 +133,10 @@ class TaskRequest(TaskRequestCommon, Generic[TOutput]):
           execution (default: False)
         trace_path: Directory path to save trace data if recording is enabled
         llm_output_path: Path to save LLM output data
+        llm_model: Optional per-task LLM override pinning every model of this
+          task to a specific identifier (takes precedence over the configured
+          ``artemis.jsonc`` nodes; ``None`` keeps the configured nodes)
+        llm_provider: Optional provider for ``llm_model``
     """
 
     model_config = {"ignored_types": (CyFunctionDetector,)}
@@ -142,6 +146,8 @@ class TaskRequest(TaskRequestCommon, Generic[TOutput]):
     output_description: str | None = None
     output_format: type[TOutput] | None = None
     enable_remote_tracing: bool = False
+    llm_model: str | None = None
+    llm_provider: str | None = None
 
 
 class TaskResult(BaseModel):

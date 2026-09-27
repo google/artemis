@@ -184,6 +184,12 @@ class ArtemisContext(BaseModel):
 
     device: DeviceContext
     llm_config: LLMConfig | None = None
+    llm_model: str | None = None
+    """Per-task LLM override (request ``llm_model``). When set it wins over the
+    ``artemis.jsonc`` node config in ``artemis.services.llm._resolve_endpoint``.
+    Per-task by design: it never mutates the shared LLMConfig."""
+    llm_provider: str | None = None
+    """Provider for :attr:`llm_model`; ``None`` keeps each node's provider."""
     agent_config: Any = None
     adb_client: Any | None = None
     ui_adb_client: Any | None = None

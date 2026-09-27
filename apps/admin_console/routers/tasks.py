@@ -104,6 +104,10 @@ async def run_task(request: RunRequest):
             task_payload.setdefault("session_id", requested_sid)
             task_payload.setdefault("goal", incoming_goals[0])
             task_payload.setdefault("profile", request.profile or "flash")
+            # setdefault, not assignment: an idempotent retry replays the first
+            # override, so a task already queued/active keeps the LLM it started with.
+            task_payload.setdefault("llm_model", request.llm_model)
+            task_payload.setdefault("llm_provider", request.llm_provider)
             task_payload.setdefault("device_serial", request.device_serial)
             task_payload.setdefault("status", "running" if is_active else "queued")
             return {
@@ -172,6 +176,8 @@ async def run_task(request: RunRequest):
         enable_outputter=request.enable_outputter,
         verification_level=request.verification_level,
         explorer_mode=request.explorer_mode,
+        llm_model=request.llm_model,
+        llm_provider=request.llm_provider,
         locked_app_package=request.locked_app_package,
         app_path=request.app_path,
         device_serial=target_serial,
@@ -195,6 +201,16 @@ async def get_run_defaults():
         "verification_level": verification_level_for_checker(agent_cfg.checker),
         "explorer_mode": agent_cfg.explorer.resolve(profile="pro"),
     }
+
+
+@router.get("/api/llm-options")
+async def get_llm_options():
+    """Provider allowlist, ``artemis.jsonc`` presets and the configured default.
+
+    The model picker builds its dropdowns from this instead of hard-coding a
+    provider list, so a new provider or preset shows up without a UI change.
+    """
+    return model_service.get_llm_options()
 
 
 @router.get("/api/devices")
@@ -305,17 +321,27 @@ async def get_status():
         or state.current_profile
         or (running_task.get("profile") if running_task and not global_owner else None)
     )
-    if not active_profile and (running_sid or latest_session_id):
-        check_sid = running_sid or latest_session_id
-        sess_row = session_repo.get_session_by_id(check_sid)
-        if sess_row:
-            llm_traces = session_repo.get_llm_traces_for_profile(check_sid)
-            agent_names = session_repo.get_agent_trace_names(check_sid)
-            active_profile = model_service.resolve_session_profile(
-                sess_row, llm_traces, agent_names=agent_names
-            )
+    # One row fetch, reused for both consumers below: the model echo needs it
+    # whenever a session exists, and profile resolution falls back to it when the
+    # worker left no profile behind. Hence the name - it feeds model resolution,
+    # not just the profile. No second query is issued for the override.
+    sess_row_for_model: dict[str, Any] | None = None
+    check_sid = running_sid or latest_session_id
+    if check_sid:
+        sess_row_for_model = session_repo.get_session_by_id(check_sid)
 
-    model_info = model_service.get_active_model_info(active_profile)
+    if not active_profile and sess_row_for_model:
+        llm_traces = session_repo.get_llm_traces_for_profile(check_sid)
+        agent_names = session_repo.get_agent_trace_names(check_sid)
+        active_profile = model_service.resolve_session_profile(
+            sess_row_for_model, llm_traces, agent_names=agent_names
+        )
+
+    # The stored override applies even when active_profile came from the owner
+    # connection, the worker state or the queue item: a pinned model is a fact
+    # about the run, independent of how the profile was resolved.
+    llm_model, llm_provider = model_service.resolve_session_llm_override(sess_row_for_model or {})
+    model_info = model_service.get_active_model_info(active_profile, llm_model, llm_provider)
 
     # Unified Global Queue: merge web tasks and external SDK/CLI device queue tickets
     global_queued = DeviceExecutionLock.get_queued_tasks()
@@ -358,7 +384,19 @@ async def get_status():
         conn_info = state.active_connections[str(latest_session_id)]
         is_paused = state.is_paused
         conn_profile = conn_info.get("profile") or active_profile
-        conn_model_info = model_service.get_active_model_info(conn_profile)
+        # This branch reports the connection's own session, so reuse the row read
+        # above only when it describes that same session; otherwise read it here.
+        # Just the one indexed lookup - the trace-name profile lookups stay on the
+        # main path, so this branch stays cheap.
+        conn_row = sess_row_for_model
+        if not conn_row or str(conn_row.get("session_id") or "") != str(latest_session_id):
+            conn_row = session_repo.get_session_by_id(latest_session_id)
+        conn_llm_model, conn_llm_provider = model_service.resolve_session_llm_override(
+            conn_row or {}
+        )
+        conn_model_info = model_service.get_active_model_info(
+            conn_profile, conn_llm_model, conn_llm_provider
+        )
         return {
             "status": "paused" if is_paused else "running",
             "paused_error": state.paused_error if is_paused else None,

@@ -30,6 +30,10 @@ export interface TaskQueueItem {
   start_time?: number;
   device_serial?: string | null;
   device_id?: string | null;
+  /** Per-task LLM override recorded on the queue item; null = server default. */
+  llm_model?: string | null;
+  /** Provider of `llm_model`; null = the provider configured for the model. */
+  llm_provider?: string | null;
 }
 
 export interface Session {
@@ -44,6 +48,10 @@ export interface Session {
   device_serial?: string | null;
   device_id?: string | null;
   device_info?: any;
+  /** Per-task LLM override when the queue item carries one; null = server default. */
+  llm_model?: string | null;
+  /** Provider of `llm_model`; null = the provider configured for the model. */
+  llm_provider?: string | null;
 }
 
 export interface AgentStatusResponse {

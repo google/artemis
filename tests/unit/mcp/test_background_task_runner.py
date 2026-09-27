@@ -39,16 +39,27 @@ async def test_background_agent_initialization_forwards_health_settings():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("knobs", "expect_level", "expect_mode"),
+    ("knobs", "expect_level", "expect_mode", "expect_override"),
     [
-        ({"verification_level": "strict", "explorer_pro_mode": "ultra"}, "strict", "ultra"),
-        ({}, None, None),
+        (
+            {"verification_level": "strict", "explorer_pro_mode": "ultra"},
+            "strict",
+            "ultra",
+            None,
+        ),
+        (
+            {"llm_model": " gpt-5.1 ", "llm_provider": "OpenAI"},
+            None,
+            None,
+            {"model": "gpt-5.1", "provider": "openai"},
+        ),
+        ({}, None, None, None),
     ],
 )
 async def test_run_task_applies_pro_tuning_to_agent_config(
-    tmp_path, monkeypatch, knobs, expect_level, expect_mode
+    tmp_path, monkeypatch, knobs, expect_level, expect_mode, expect_override
 ):
-    """The detached runner applies --verification-level / --explorer-pro-mode on the builder."""
+    """The detached runner applies the Pro knobs and the per-task LLM override."""
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -100,5 +111,13 @@ async def test_run_task_applies_pro_tuning_to_agent_config(
     else:
         fake_builder.with_verification_level.assert_called_once_with(expect_level)
         fake_builder.with_explorer.assert_called_once_with(pro_mode=expect_mode)
+    # The LLM override rides on the task request, not on the shared builder.
+    task_builder = (
+        fake_agent.new_task.return_value.with_name.return_value.with_trace_recording.return_value
+    )
+    if expect_override is None:
+        task_builder.with_llm_override.assert_not_called()
+    else:
+        task_builder.with_llm_override.assert_called_once_with(**expect_override)
     fake_agent.run_task.assert_awaited_once()
     assert trace_store.read_status(trace_id)["status"] == "completed"

@@ -167,6 +167,49 @@ limitations under the License.
                   </button>
                 </div>
               </div>
+
+              <!-- Optional Per-Task LLM Override (empty field = server default) -->
+              <div class="llm-override-group">
+                @if (llmOptions()) {
+                  <select class="llm-override-select" [ngModel]="llmSelectedOption()"
+                    (ngModelChange)="applyLlmOption($event)" (focus)="onInputFocus()"
+                    (blur)="onInputBlur()" [disabled]="isSubmitting()"
+                    aria-label="Model preset (optional)"
+                    title="Pick a preset or a provider. Leave on the default to use the server model, or type a custom value in the fields.">
+                    <option value="">{{ llmSelectPlaceholder() }}</option>
+                    @if (llmPresets().length) {
+                      <optgroup label="Presets">
+                        @for (preset of llmPresets(); track trackLlmPreset($index, preset)) {
+                          <option [value]="llmPresetValue($index)">{{ preset.name }} ({{ preset.provider }})</option>
+                        }
+                      </optgroup>
+                    }
+                    @if (llmProviders().length) {
+                      <optgroup label="Providers (pick a model too)">
+                        @for (provider of llmProviders(); track provider) {
+                          <option [value]="llmProviderValue(provider)">{{ provider }}</option>
+                        }
+                      </optgroup>
+                    }
+                  </select>
+                }
+                <input type="text" class="llm-override-input" placeholder="Provider (optional)"
+                  aria-label="Provider (optional)" title="Provider (optional). Leave empty to use the server default."
+                  [ngModel]="providerOverride()" (ngModelChange)="setProviderOverride($event)"
+                  (focus)="onInputFocus()" (blur)="onInputBlur()" [disabled]="isSubmitting()"
+                  spellcheck="false" autocomplete="off" maxlength="64" />
+                <input type="text" class="llm-override-input" placeholder="Model (optional)"
+                  aria-label="Model (optional)" title="Model (optional). Leave empty to use the server default."
+                  [ngModel]="modelOverride()" (ngModelChange)="setModelOverride($event)"
+                  (focus)="onInputFocus()" (blur)="onInputBlur()" [disabled]="isSubmitting()"
+                  spellcheck="false" autocomplete="off" maxlength="128" />
+                @if (hasLlmOverride()) {
+                  <button type="button" class="llm-override-clear" (click)="clearLlmOverride($event)"
+                    title="Clear provider and model override" aria-label="Clear provider and model override">
+                    <span class="material-symbols-outlined">close</span>
+                  </button>
+                }
+              </div>
             </div>
           </div>
         </div>

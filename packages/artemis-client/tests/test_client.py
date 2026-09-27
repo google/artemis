@@ -11,6 +11,7 @@ from __future__ import annotations
 import unittest
 from collections import defaultdict
 from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Any
 
 from artemis_client import (
@@ -130,6 +131,154 @@ class ArtemisClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "explorer_mode"):
             await self.client.submit("Open Settings", explorer_mode="turbo")
         self.assertEqual(self.transport.calls, [])
+
+    async def test_submit_forwards_per_task_llm_override(self) -> None:
+        task_id = "00000000-0000-4000-8000-000000000331"
+        self.transport.add(
+            "POST",
+            "/api/run",
+            {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+        )
+
+        await self.client.submit(
+            "Audit checkout",
+            profile="pro",
+            task_id=task_id,
+            llm_model=" gemini-3.8-pro ",
+            llm_provider="OpenAI",
+        )
+
+        body = self.transport.calls[0][2]
+        assert body is not None
+        # Model identifiers keep their spelling; only whitespace is trimmed and
+        # the provider is normalised to the API's lower-case spelling.
+        self.assertEqual(body["llm_model"], "gemini-3.8-pro")
+        self.assertEqual(body["llm_provider"], "openai")
+
+    async def test_submit_omits_llm_override_when_unset(self) -> None:
+        task_id = "00000000-0000-4000-8000-000000000332"
+        self.transport.add(
+            "POST",
+            "/api/run",
+            {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+        )
+
+        await self.client.submit("Open Settings", task_id=task_id, llm_model="  ")
+
+        body = self.transport.calls[0][2]
+        assert body is not None
+        self.assertNotIn("llm_model", body)
+        self.assertNotIn("llm_provider", body)
+
+    async def test_submit_llm_override_is_per_call_only(self) -> None:
+        """The override never sticks to the client: it is a per-call argument."""
+        transport = FakeTransport()
+        client = ArtemisClient("https://artemis.example.test", transport=transport)
+        for index in (341, 342):
+            transport.add(
+                "POST",
+                "/api/run",
+                {
+                    "status": "started",
+                    "tasks": [
+                        {"session_id": f"00000000-0000-4000-8000-{index:012d}", "status": "pending"}
+                    ],
+                },
+            )
+
+        await client.submit("Open Settings")
+        await client.submit("Open Settings", llm_model="gpt-5.1", llm_provider="openai")
+
+        first, second = transport.calls[0][2], transport.calls[1][2]
+        assert first is not None and second is not None
+        self.assertNotIn("llm_model", first)
+        self.assertNotIn("llm_provider", first)
+        self.assertEqual(second["llm_model"], "gpt-5.1")
+        self.assertEqual(second["llm_provider"], "openai")
+        self.assertFalse(hasattr(client, "default_llm_model"))
+        self.assertFalse(hasattr(client, "default_llm_provider"))
+
+    async def test_run_task_forwards_llm_override_from_task_and_overrides(self) -> None:
+        task_id = "00000000-0000-4000-8000-000000000361"
+        self.transport.add(
+            "POST",
+            "/api/run",
+            {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+        )
+        self.transport.add(
+            "GET",
+            f"/api/sessions/{task_id}",
+            {
+                "session_id": task_id,
+                "status": "completed",
+                "llm_model": "gpt-5.1",
+                "llm_provider": "openai",
+            },
+        )
+        task = SimpleNamespace(
+            goal="Audit checkout",
+            profile="pro",
+            llm_model="gemini-3.8-pro",
+            llm_provider="google",
+        )
+
+        result = await self.client.run_task(task, llm_model="gpt-5.1", llm_provider="openai")
+
+        body = self.transport.calls[0][2]
+        assert body is not None
+        # Explicit overrides win over the values carried by the task object.
+        self.assertEqual(body["profile"], "pro")
+        self.assertEqual(body["llm_model"], "gpt-5.1")
+        self.assertEqual(body["llm_provider"], "openai")
+        # Both halves of the override are echoed back by GET /api/sessions/{id},
+        # so the caller can see which model AND provider the host actually ran.
+        self.assertEqual(result.llm_model, "gpt-5.1")
+        self.assertEqual(result.llm_provider, "openai")
+
+    async def test_run_task_uses_task_llm_override_when_not_overridden(self) -> None:
+        task_id = "00000000-0000-4000-8000-000000000362"
+        self.transport.add(
+            "POST",
+            "/api/run",
+            {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+        )
+        self.transport.add(
+            "GET",
+            f"/api/sessions/{task_id}",
+            {"session_id": task_id, "status": "completed"},
+        )
+        task = SimpleNamespace(
+            goal="Audit checkout", llm_model="gemini-3.8-pro", llm_provider="Google"
+        )
+
+        await self.client.run_task(task)
+
+        body = self.transport.calls[0][2]
+        assert body is not None
+        self.assertEqual(body["llm_model"], "gemini-3.8-pro")
+        self.assertEqual(body["llm_provider"], "google")
+
+    async def test_run_forwards_per_task_llm_override(self) -> None:
+        task_id = "00000000-0000-4000-8000-000000000351"
+        self.transport.add(
+            "POST",
+            "/api/run",
+            {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+        )
+        self.transport.add(
+            "GET",
+            f"/api/sessions/{task_id}",
+            {"session_id": task_id, "status": "completed", "llm_model": "gpt-5.1"},
+        )
+
+        result = await self.client.run("Audit checkout", llm_model="gpt-5.1", llm_provider="openai")
+
+        body = self.transport.calls[0][2]
+        assert body is not None
+        self.assertEqual(body["llm_model"], "gpt-5.1")
+        self.assertEqual(body["llm_provider"], "openai")
+        # The host echoes the effective model back on the task payload.
+        self.assertEqual(result.llm_model, "gpt-5.1")
 
     async def test_submit_rejected_task_raises_specific_error(self) -> None:
         self.transport.add(

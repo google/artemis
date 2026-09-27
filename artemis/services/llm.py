@@ -1037,7 +1037,15 @@ def _resolve_endpoint(
     is_utils: bool = False,
     use_fallback: bool = False,
 ) -> ModelEndpoint:
-    """Cleanly resolves a ModelEndpoint from context llm_config."""
+    """Cleanly resolves a ModelEndpoint from context llm_config.
+
+    Precedence is the per-task override (``ctx.llm_model`` / ``ctx.llm_provider``)
+    over the ``artemis.jsonc`` node config over the built-in defaults. The
+    override is applied *after* the ``use_fallback`` unwrap on purpose: it pins
+    the fallback model as well, so a task that asked for a model never silently
+    drops to a different one mid-run. The config object itself is only read, so
+    other tasks sharing it keep their configured models.
+    """
     if getattr(ctx, "llm_config", None) is None:
         try:
             ctx.llm_config = get_default_llm_config()
@@ -1061,8 +1069,15 @@ def _resolve_endpoint(
         val = getattr(obj, attr, None)
         return val if isinstance(val, expected_type) else None
 
-    provider_val = getattr(cfg, "provider", "google")
-    model_val = getattr(cfg, "model", "gemini-2.5-flash")
+    # Precedence: per-task override > artemis.jsonc node config > built-in
+    # default. The override lives on the per-task context (see sdk/agent.py), so
+    # a task can pin a different model/provider without mutating the shared
+    # LLMConfig or restarting the host.
+    override_provider = _get_val(ctx, "llm_provider", str)
+    override_model = _get_val(ctx, "llm_model", str)
+
+    provider_val = (override_provider or "").strip() or getattr(cfg, "provider", "google")
+    model_val = (override_model or "").strip() or getattr(cfg, "model", "gemini-2.5-flash")
 
     return ModelEndpoint(
         provider=ModelProvider.from_string(provider_val),

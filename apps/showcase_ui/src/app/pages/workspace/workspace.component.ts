@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
+import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, inject, computed, signal, ViewChild, ElementRef, OnInit, type WritableSignal } from '@angular/core';
 
 import { FormsModule } from '@angular/forms';
 import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { AgentService } from '../../services/agent.service';
+import type { LlmOptionsResponse, LlmPreset, ProTuningOptions } from '../../core/models/pro-tuning.model';
 
 @Component({
   selector: 'app-workspace',
@@ -56,6 +57,15 @@ export class WorkspaceComponent implements OnInit {
   public isSubmitting = signal<boolean>(false);
   public errorMessage = signal<string | null>(null);
   public selectedProfile = signal<'flash' | 'pro'>('flash');
+  // Optional per-task LLM override, in-memory only and never restored:
+  // every task starts from the server default unless set here. An empty
+  // field is left out of the /api/run payload, so the server default applies.
+  public providerOverride = signal<string>('');
+  public modelOverride = signal<string>('');
+  public hasLlmOverride = computed(() => !!this.providerOverride() || !!this.modelOverride());
+  // Providers/presets from GET /api/llm-options. Null when the endpoint is not
+  // available, which leaves the override as free-text fields only.
+  public llmOptions = signal<LlmOptionsResponse | null>(null);
 
   // Expand States (Signals for 0-latency reactivity)
   public isHoveringCard = signal<boolean>(false);
@@ -69,7 +79,18 @@ export class WorkspaceComponent implements OnInit {
       if (saved === 'flash' || saved === 'pro') {
         this.selectedProfile.set(saved);
       }
+      // The LLM override is intentionally not restored: it applies to a
+      // single task only. Drop keys written by earlier versions so a stale
+      // value can never leak into a future task.
+      localStorage.removeItem('artemis_provider_override');
+      localStorage.removeItem('artemis_model_override');
     }
+
+    // Best effort: a backend without /api/llm-options simply leaves the
+    // override as free-text fields.
+    this.agentService.getLlmOptions().subscribe((options) => {
+      this.llmOptions.set(options);
+    });
 
     // The global ⌘K/Ctrl+K shortcut is registered outside the Angular zone so
     // ordinary typing never schedules an extra change-detection pass.
@@ -92,6 +113,122 @@ export class WorkspaceComponent implements OnInit {
     this.selectedProfile.set(profile);
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem('artemis_selected_profile', profile);
+    }
+  }
+
+  /**
+   * Set the optional LLM provider for the next task. Blank clears the override.
+   */
+  public setProviderOverride(provider: string): void {
+    this.providerOverride.set((provider || '').trim());
+  }
+
+  /**
+   * Set the optional LLM model for the next task. Blank clears the override.
+   */
+  public setModelOverride(model: string): void {
+    this.modelOverride.set((model || '').trim());
+  }
+
+  /**
+   * Drop both override fields so the next task runs on the server defaults.
+   */
+  public clearLlmOverride(event?: MouseEvent): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.setProviderOverride('');
+    this.setModelOverride('');
+  }
+
+  /**
+   * Option value for a preset from GET /api/llm-options.
+   */
+  public llmPresetValue(index: number): string {
+    return `preset|${index}`;
+  }
+
+  /**
+   * Option value for a provider from GET /api/llm-options.
+   */
+  public llmProviderValue(provider: string): string {
+    return `provider|${provider}`;
+  }
+
+  /** Stable track key for the preset list. */
+  public trackLlmPreset(index: number, preset: LlmPreset): string {
+    return `${preset.provider}|${preset.model}|${index}`;
+  }
+
+  /** Presets offered by the backend, empty until /api/llm-options answers. */
+  public llmPresets = computed<LlmPreset[]>(() => this.llmOptions()?.presets || []);
+
+  /** Providers offered by the backend, empty until /api/llm-options answers. */
+  public llmProviders = computed<string[]>(() => this.llmOptions()?.providers || []);
+
+  /**
+   * Option matching the current override fields, empty when they are a custom
+   * value that is not one of the offered presets or providers.
+   */
+  public llmSelectedOption = computed(() => {
+    const provider = this.providerOverride();
+    const model = this.modelOverride();
+    const presetIndex = this.llmPresets().findIndex(
+      (p) => p.model === model && (p.provider || '') === provider
+    );
+    if (presetIndex >= 0) {
+      return this.llmPresetValue(presetIndex);
+    }
+    if (provider && this.llmProviders().indexOf(provider) >= 0) {
+      return this.llmProviderValue(provider);
+    }
+    return '';
+  });
+
+  /**
+   * Text of the picker's first option: the model a task without an override
+   * will use while both fields are empty, or "Custom" once they are filled.
+   */
+  public llmSelectPlaceholder = computed(() => {
+    if (!this.llmOptions()) {
+      return 'Model (optional)';
+    }
+    if (this.hasLlmOverride()) {
+      return 'Custom';
+    }
+    const fallback = this.llmOptions()?.default;
+    if (!fallback?.model) {
+      return 'Model (optional)';
+    }
+    return fallback.provider
+      ? `Default: ${fallback.provider} · ${fallback.model}`
+      : `Default: ${fallback.model}`;
+  });
+
+  /**
+   * Fill the free-text override fields from the picked preset or provider. The
+   * fields stay editable, so anything can still be typed by hand.
+   */
+  public applyLlmOption(value: string): void {
+    const options = this.llmOptions();
+    if (!options || !value) {
+      return;
+    }
+    const separator = value.indexOf('|');
+    if (separator < 0) {
+      return;
+    }
+    const key = value.slice(separator + 1);
+    if (value.startsWith('preset|')) {
+      const preset = this.llmPresets()[Number(key)];
+      if (preset) {
+        this.setProviderOverride(preset.provider);
+        this.setModelOverride(preset.model);
+      }
+      return;
+    }
+    if (value.startsWith('provider|')) {
+      this.setProviderOverride(key);
     }
   }
 
@@ -154,8 +291,12 @@ export class WorkspaceComponent implements OnInit {
    */
   public onCardClick(event: MouseEvent): void {
     const target = event.target as HTMLElement;
-    // Don't steal focus if clicking action buttons or textarea directly
-    if (target.closest('button') || target.tagName.toLowerCase() === 'textarea') {
+    // Don't steal focus if clicking action buttons, the LLM override fields
+    // or the textarea directly
+    if (
+      target.closest('button, input, select') ||
+      target.tagName.toLowerCase() === 'textarea'
+    ) {
       return;
     }
     this.focusInput();
@@ -232,24 +373,34 @@ export class WorkspaceComponent implements OnInit {
     }
     this.isInputFocused.set(false);
 
-    this.agentService.runTask(goal, this.selectedProfile()).subscribe({
-      next: (res) => {
-        this.taskInput = '';
-        if (this.dockInputRef?.nativeElement) {
-          this.dockInputRef.nativeElement.style.height = 'auto';
+    const llmOverride: ProTuningOptions = {
+      provider: this.providerOverride() || undefined,
+      model: this.modelOverride() || undefined
+    };
+
+    this.agentService
+      .runTask(goal, this.selectedProfile(), undefined, undefined, llmOverride)
+      .subscribe({
+        next: (res) => {
+          this.taskInput = '';
+          // The override applies to this task only: a successful submit resets
+          // both fields so the next task falls back to the server defaults.
+          this.clearLlmOverride();
+          if (this.dockInputRef?.nativeElement) {
+            this.dockInputRef.nativeElement.style.height = 'auto';
+          }
+          this.isSubmitting.set(false);
+          this.agentService.fetchStatus();
+        },
+        error: (err) => {
+          console.error('Failed to submit task:', err);
+          this.isSubmitting.set(false);
+          this.errorMessage.set(err.error?.detail || 'The runner is busy. Please wait for current task to finish.');
+          setTimeout(() => {
+            this.errorMessage.set(null);
+          }, 5000);
         }
-        this.isSubmitting.set(false);
-        this.agentService.fetchStatus();
-      },
-      error: (err) => {
-        console.error('Failed to submit task:', err);
-        this.isSubmitting.set(false);
-        this.errorMessage.set(err.error?.detail || 'The runner is busy. Please wait for current task to finish.');
-        setTimeout(() => {
-          this.errorMessage.set(null);
-        }, 5000);
-      }
-    });
+      });
   }
 
   /**

@@ -134,12 +134,40 @@ export const EXPLORER_MODES: readonly TuningLevel<ExplorerModeId>[] = [
 export interface ProTuningOptions {
   verificationLevel?: VerificationLevelId | string;
   explorerMode?: ExplorerModeId | string;
+  /** LLM provider override for this run, sent as `llm_provider`. Unset means the server default. */
+  provider?: string;
+  /** LLM model override for this run, sent as `llm_model`. Unset means the server default. */
+  model?: string;
 }
 
 /** Effective defaults reported by `GET /api/run/defaults`. */
 export interface ProTuningDefaults {
   verification_level?: string | null;
   explorer_mode?: string | null;
+}
+
+/** One named model choice offered by the backend for the per-task override. */
+export interface LlmPreset {
+  name: string;
+  provider: string;
+  model: string;
+}
+
+/** The model the server uses when a task requests no override. */
+export interface LlmDefault {
+  provider: string;
+  model: string;
+}
+
+/**
+ * `GET /api/llm-options`: the providers and named presets the launcher can
+ * offer, plus the configured default. Every field is optional so a partial or
+ * older backend still renders the override fields.
+ */
+export interface LlmOptionsResponse {
+  providers?: string[];
+  presets?: LlmPreset[];
+  default?: LlmDefault | null;
 }
 
 export const DEFAULT_VERIFICATION_LEVEL: VerificationLevelId = 'final';

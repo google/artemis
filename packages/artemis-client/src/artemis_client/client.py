@@ -52,6 +52,27 @@ def _normalize_choice(value: str | None, name: str, choices: tuple[str, ...]) ->
     return normalized
 
 
+def _normalize_llm_override(
+    llm_model: str | None, llm_provider: str | None
+) -> tuple[str | None, str | None]:
+    """Normalise the per-task ``(model, provider)`` override before submitting.
+
+    Blank means "not requested" rather than an override with ``""``, and the
+    provider is lower-cased to the API's spelling. The model identifier stays
+    case-sensitive, so only whitespace is trimmed. Unsupported providers are
+    *not* rejected here: the host validates them and answers 4xx, which keeps
+    this package dependency-free and forwards the server's own message.
+
+    Mirrors ``artemis.config.llm_override.normalize_llm_override``, which cannot
+    be imported because this package must stay runtime-dependency-free.
+    Non-string input is stringified like the canonical helper so the mirror
+    is exact; unsupported providers are *not* rejected here.
+    """
+    model = str(llm_model).strip() or None if llm_model is not None else None
+    provider = str(llm_provider).strip().lower() or None if llm_provider is not None else None
+    return model, provider
+
+
 class ArtemisClient:
     """Thin client for an Artemis daemon running on another host.
 
@@ -186,6 +207,8 @@ class ArtemisClient:
         task_id: str | None = None,
         verification_level: VerificationLevel | None = None,
         explorer_mode: ExplorerMode | None = None,
+        llm_model: str | None = None,
+        llm_provider: str | None = None,
         options: Mapping[str, Any] | None = None,
     ) -> TaskHandle:
         """Submit one task and return immediately after scheduler admission.
@@ -196,7 +219,11 @@ class ArtemisClient:
         ``strict``: how much the Checker audits a Pro run) and
         ``explorer_mode`` (``flash`` | ``pro`` | ``ultra``: the Pro Operator's
         perception depth) are Pro-only tuning knobs; the Flash profile ignores
-        them. Experimental, forward-compatible fields belong in ``options``.
+        them. ``llm_model`` / ``llm_provider`` are the per-task LLM override:
+        the host pins this task's models instead of its configured ones, with
+        no restart and no config change. Both are per-call (blank falls back to
+        "not requested") and the override also pins the fallback model.
+        Experimental, forward-compatible fields belong in ``options``.
         """
         normalized_goal = goal.strip()
         if not normalized_goal:
@@ -214,6 +241,7 @@ class ArtemisClient:
                 raise ValueError("task_id must be a valid UUID string") from exc
         resolved_profile = profile or self.default_profile
         resolved_device = device_serial or self.device_serial
+        resolved_model, resolved_provider = _normalize_llm_override(llm_model, llm_provider)
         payload: dict[str, Any] = {
             "goal": normalized_goal,
             "profile": resolved_profile,
@@ -229,6 +257,8 @@ class ArtemisClient:
             "conversation_id": conversation_id,
             "verification_level": resolved_level,
             "explorer_mode": resolved_mode,
+            "llm_model": resolved_model,
+            "llm_provider": resolved_provider,
             "options": dict(options) if options is not None else None,
         }
         payload.update({key: value for key, value in optional_values.items() if value is not None})
@@ -306,6 +336,8 @@ class ArtemisClient:
         task_id: str | None = None,
         verification_level: VerificationLevel | None = None,
         explorer_mode: ExplorerMode | None = None,
+        llm_model: str | None = None,
+        llm_provider: str | None = None,
         options: Mapping[str, Any] | None = None,
         timeout: float = 1800.0,
         poll_interval: float | None = None,
@@ -323,6 +355,8 @@ class ArtemisClient:
             task_id=task_id,
             verification_level=verification_level,
             explorer_mode=explorer_mode,
+            llm_model=llm_model,
+            llm_provider=llm_provider,
             options=options,
         )
         return await self.wait_for_task(
@@ -341,6 +375,8 @@ class ArtemisClient:
             "device_serial": getattr(task, "device_serial", None)
             or getattr(task, "device_id", None),
             "locked_app_package": getattr(task, "locked_package", None),
+            "llm_model": getattr(task, "llm_model", None),
+            "llm_provider": getattr(task, "llm_provider", None),
         }
         values.update(overrides)
         return await self.run(goal, **values)

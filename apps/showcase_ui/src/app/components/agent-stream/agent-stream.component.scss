@@ -3805,6 +3805,46 @@ $stream-row-height: 25px;
           }
         }
 
+        .item-model {
+          display: inline-flex;
+          align-items: center;
+          gap: 2.5px;
+          min-width: 0;
+          flex-shrink: 1;
+          font-size: 10.5px;
+          color: #64748b;
+          line-height: 1;
+          cursor: default;
+          transition: color 0.15s ease, opacity 0.15s ease;
+
+          .model-icon {
+            font-size: 12px;
+            width: 12px;
+            height: 12px;
+            line-height: 12px;
+            color: #64748b;
+            opacity: 0.75;
+            flex-shrink: 0;
+          }
+
+          .model-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+            font-family: inherit;
+            letter-spacing: -0.15px;
+          }
+
+          &:hover {
+            color: #334155;
+            .model-icon {
+              color: #334155;
+              opacity: 1;
+            }
+          }
+        }
+
         .item-time-divider {
           font-size: 10px;
           color: #94a3b8;

@@ -48,6 +48,64 @@ def test_cli_run_help():
     assert "--traces-path" in result.output
     assert "--verification-level" in result.output
     assert "--explorer-pro-mode" in result.output
+    assert "--model" in result.output
+    assert "--provider" in result.output
+
+
+def test_cli_run_forwards_per_task_llm_override_in_standalone_mode(monkeypatch):
+    """`artemis run --standalone --model/--provider` threads the override into execute_task."""
+    import artemis.interfaces.cli.commands.run as run_module
+
+    captured: dict = {}
+
+    async def fake_execute_task(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(run_module, "execute_task", fake_execute_task)
+    # Cosmetic device-status display would otherwise hit a real ADB server.
+    monkeypatch.setattr(run_module, "display_device_status", lambda *a, **k: None)
+    monkeypatch.setenv("ARTEMIS_STANDALONE", "1")
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--standalone",
+            "--model",
+            "gpt-5.1",
+            "--provider",
+            "openai",
+            "Open Settings",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["llm_model"] == "gpt-5.1"
+    assert captured["llm_provider"] == "openai"
+
+
+def test_cli_run_forwards_per_task_llm_override_to_daemon(monkeypatch):
+    """Daemon-routed runs carry the override as /api/run JSON fields."""
+    import artemis.runtime as runtime
+
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    captured: dict = {}
+
+    def fake_submit_task(**kwargs):
+        captured.update(kwargs)
+        return {"status": "queued", "tasks": [{"session_id": "sid-1"}]}
+
+    monkeypatch.setattr(
+        runtime, "ensure_daemon_running", lambda **_kw: (True, "http://127.0.0.1:8000")
+    )
+    monkeypatch.setattr(runtime, "submit_task_to_daemon", fake_submit_task)
+    monkeypatch.setattr(runtime, "wait_for_daemon_task", lambda *_, **__: {"status": "completed"})
+
+    result = runner.invoke(
+        app,
+        ["run", "--model", "gpt-5.1", "--provider", "openai", "Open Settings"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["llm_model"] == "gpt-5.1"
+    assert captured["llm_provider"] == "openai"
 
 
 def test_cli_batch_help():
@@ -58,6 +116,8 @@ def test_cli_batch_help():
     assert "--delay" in result.output
     assert "--verification-level" in result.output
     assert "--explorer-pro-mode" in result.output
+    assert "--model" in result.output
+    assert "--provider" in result.output
 
 
 def test_cli_batch_forwards_pro_tuning_in_standalone_mode(monkeypatch):
@@ -151,6 +211,105 @@ def test_run_batch_tasks_applies_pro_tuning_to_agent_config(monkeypatch):
     fake_builder.with_verification_level.assert_called_once_with("strict")
     fake_builder.with_explorer.assert_called_once_with(pro_mode="ultra")
     fake_agent.run_task.assert_awaited_once_with(goal="Goal A", profile="pro")
+
+
+def test_cli_batch_forwards_llm_override_in_standalone_mode(monkeypatch):
+    """`artemis batch --standalone --model/--provider` reaches run_batch_tasks."""
+    import artemis.interfaces.cli.commands.batch as batch_module
+
+    captured: dict = {}
+
+    async def fake_run_batch_tasks(tasks, **kwargs):
+        captured["tasks"] = tasks
+        captured.update(kwargs)
+
+    monkeypatch.setattr(batch_module, "run_batch_tasks", fake_run_batch_tasks)
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--standalone",
+            "--profile",
+            "flash",
+            "--model",
+            "gemini-3.8-pro",
+            "--provider",
+            "openai",
+            "Open Settings",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["tasks"] == ["Open Settings"]
+    assert captured["llm_model"] == "gemini-3.8-pro"
+    assert captured["llm_provider"] == "openai"
+
+
+def test_cli_batch_forwards_llm_override_to_daemon(monkeypatch):
+    """Daemon-routed batches carry the override as /api/run JSON fields."""
+    import artemis.runtime as runtime
+
+    monkeypatch.delenv("ARTEMIS_STANDALONE", raising=False)
+    captured: dict = {}
+
+    def fake_submit_batch(goals, **kwargs):
+        captured["goals"] = goals
+        captured.update(kwargs)
+        return {"tasks": [{"session_id": "sid-1", "goal": goals[0]}]}
+
+    monkeypatch.setattr(runtime, "ensure_daemon_running", lambda **_: (True, "http://x:1"))
+    monkeypatch.setattr(runtime, "submit_batch_to_daemon", fake_submit_batch)
+    monkeypatch.setattr(runtime, "wait_for_daemon_task", lambda *_, **__: {"status": "completed"})
+
+    result = runner.invoke(
+        app,
+        ["batch", "--model", "gemini-3.8-pro", "--provider", "openai", "Goal A"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["goals"] == ["Goal A"]
+    assert captured["llm_model"] == "gemini-3.8-pro"
+    assert captured["llm_provider"] == "openai"
+
+
+def test_run_batch_tasks_pins_llm_override_on_every_goal(monkeypatch):
+    """The batch override reaches each goal's own request and nothing global."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    import artemis.interfaces.cli.commands.batch as batch_module
+    from artemis.sdk.builders.task_request_builder import TaskRequestBuilder
+
+    fake_builder = MagicMock()
+    fake_builders = MagicMock()
+    fake_builders.AgentConfig.with_default_profile.return_value = fake_builder
+    fake_agent = MagicMock()
+    fake_agent.init = AsyncMock()
+    fake_agent.run_task = AsyncMock(return_value="ok")
+    fake_agent.clean = AsyncMock()
+    fake_agent.new_task = MagicMock(side_effect=lambda goal: TaskRequestBuilder(goal=goal))
+
+    monkeypatch.setattr(batch_module, "initialize_llm_config", lambda: MagicMock())
+    monkeypatch.setattr(batch_module, "AgentProfile", MagicMock())
+    monkeypatch.setattr(batch_module, "Builders", fake_builders)
+    monkeypatch.setattr(batch_module, "Agent", MagicMock(return_value=fake_agent))
+
+    asyncio.run(
+        batch_module.run_batch_tasks(
+            ["Goal A", "Goal B"],
+            profile_name="flash",
+            delay_seconds=0,
+            llm_model="gemini-3.8-pro",
+            llm_provider="openai",
+        )
+    )
+
+    assert fake_agent.run_task.await_count == 2
+    requests = [call.kwargs["request"] for call in fake_agent.run_task.await_args_list]
+    assert [request.goal for request in requests] == ["Goal A", "Goal B"]
+    assert all(request.profile == "flash" for request in requests)
+    assert all(
+        (request.llm_model, request.llm_provider) == ("gemini-3.8-pro", "openai")
+        for request in requests
+    )
 
 
 def test_cli_trace_help():

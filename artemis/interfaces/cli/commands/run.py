@@ -59,6 +59,8 @@ async def execute_task(
     explorer_flash_mode: str | None = None,
     explorer_pro_mode: str | None = None,
     verification_level: str | None = None,
+    llm_model: str | None = None,
+    llm_provider: str | None = None,
 ) -> None:
     """Executes a single mobile automation task end-to-end.
 
@@ -79,6 +81,10 @@ async def execute_task(
         explorer_pro_mode: Override the Explorer tier for the Pro execution profile.
         verification_level: Coarse Checker preset ('off', 'final', 'checkpoints',
             'strict'); applied before the explicit ``enable_checker`` switch.
+        llm_model: Per-task model override applied to every model this task
+            resolves; wins over ``artemis.jsonc`` nodes, needs no restart.
+        llm_provider: Provider for ``llm_model``; unset keeps each node's own
+            provider.
     """
     effective_sid = (
         session_id or os.getenv("ARTEMIS_SESSION_ID") or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
@@ -172,6 +178,10 @@ async def execute_task(
             task.with_output_description(output_description)
         if profile:
             task.using_profile(profile)
+        if llm_model or llm_provider:
+            # Scoped to this task only: the override travels on the request and
+            # is applied when the endpoint for each model is resolved.
+            task.with_llm_override(model=llm_model, provider=llm_provider)
         if app_path:
             task.with_app_path(Path(app_path))
 
@@ -322,6 +332,26 @@ def run_command(
             ),
         ),
     ] = None,
+    llm_model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help=(
+                "Per-task model override applied to every LLM of this run (wins over"
+                " artemis.jsonc, no restart needed), e.g. 'gemini-3.8-flash'."
+            ),
+        ),
+    ] = None,
+    llm_provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help=(
+                "Provider for --model (e.g. 'google', 'openai', 'anthropic');"
+                " defaults to the provider configured for each node."
+            ),
+        ),
+    ] = None,
     device_serial: Annotated[
         str | None,
         typer.Option(
@@ -385,6 +415,8 @@ def run_command(
                     app_path=app_path,
                     session_id=target_sid,
                     ingress="cli",
+                    llm_model=llm_model,
+                    llm_provider=llm_provider,
                     base_url=base_url,
                 )
                 if resp and resp.get("tasks"):
@@ -488,6 +520,8 @@ def run_command(
                 explorer_flash_mode=explorer_flash_mode,
                 explorer_pro_mode=explorer_pro_mode,
                 verification_level=verification_level,
+                llm_model=llm_model,
+                llm_provider=llm_provider,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

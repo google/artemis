@@ -221,6 +221,8 @@ def submit_task_to_daemon(
     conversation_id: str | None = None,
     verification_level: str | None = None,
     explorer_mode: str | None = None,
+    llm_model: str | None = None,
+    llm_provider: str | None = None,
     base_url: str | None = None,
     timeout: float = 15.0,
 ) -> dict[str, Any] | None:
@@ -229,6 +231,10 @@ def submit_task_to_daemon(
     ``verification_level`` ('off' | 'final' | 'checkpoints' | 'strict') and
     ``explorer_mode`` ('flash' | 'pro' | 'ultra') are the Pro-profile tuning
     knobs of ``/api/run``; they are forwarded verbatim and ignored by Flash.
+
+    ``llm_model`` / ``llm_provider`` are the optional per-task LLM override of
+    ``/api/run``: the Daemon pins this one task's models instead of the
+    ``artemis.jsonc`` nodes. They are sent as null when unset.
 
     Returns the response JSON dict if successfully enqueued, or None on error.
     """
@@ -241,6 +247,8 @@ def submit_task_to_daemon(
         "enable_outputter": enable_outputter,
         "verification_level": verification_level,
         "explorer_mode": explorer_mode,
+        "llm_model": llm_model,
+        "llm_provider": llm_provider,
         "locked_app_package": locked_app_package,
         "app_path": app_path,
         "session_id": session_id,
@@ -345,12 +353,15 @@ def submit_batch_to_daemon(
     ingress: str = "cli",
     verification_level: str | None = None,
     explorer_mode: str | None = None,
+    llm_model: str | None = None,
+    llm_provider: str | None = None,
     base_url: str | None = None,
     timeout: float = 15.0,
 ) -> dict[str, Any] | None:
     """Submit a batch of goals to the running Daemon.
 
-    ``verification_level`` / ``explorer_mode`` apply to every goal of the batch
+    ``verification_level`` / ``explorer_mode`` / ``llm_model`` /
+    ``llm_provider`` apply to every goal of the batch
     (see :func:`submit_task_to_daemon`).
     """
     url = f"{base_url or f'http://{DEFAULT_DAEMON_HOST}:{DEFAULT_DAEMON_PORT}'}/api/run"
@@ -361,6 +372,8 @@ def submit_batch_to_daemon(
         "ingress": ingress,
         "verification_level": verification_level,
         "explorer_mode": explorer_mode,
+        "llm_model": llm_model,
+        "llm_provider": llm_provider,
     }
     try:
         data = json.dumps(payload).encode("utf-8")

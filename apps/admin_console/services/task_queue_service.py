@@ -41,6 +41,7 @@ from artemis.config import (
     TEST_OUTPUTS_DIR,
     WORKSPACE_ROOT,
 )
+from artemis.config.llm_override import normalize_llm_override
 from artemis.runtime import (
     AdbEndpoint,
     AdbTarget,
@@ -505,6 +506,8 @@ class TaskQueueService:
         enable_outputter = task_item.get("enable_outputter")
         verification_level = task_item.get("verification_level")
         explorer_mode = task_item.get("explorer_mode")
+        llm_model = task_item.get("llm_model")
+        llm_provider = task_item.get("llm_provider")
         locked_app = task_item.get("locked_app_package") or task_item.get("locked_app")
         app_path = task_item.get("app_path")
 
@@ -551,6 +554,10 @@ class TaskQueueService:
             cmd.extend(["--verification-level", str(verification_level)])
         if explorer_mode:
             cmd.extend(["--explorer-pro-mode", str(explorer_mode)])
+        if llm_model:
+            cmd.extend(["--model", str(llm_model)])
+        if llm_provider:
+            cmd.extend(["--provider", str(llm_provider)])
         if locked_app:
             cmd.extend(["--locked-app", str(locked_app)])
         if app_path:
@@ -1004,6 +1011,8 @@ class TaskQueueService:
         conversation_id: str | None,
         verification_level: str | None = None,
         explorer_mode: str | None = None,
+        llm_model: str | None = None,
+        llm_provider: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1025,6 +1034,8 @@ class TaskQueueService:
             "enable_outputter": enable_outputter,
             "verification_level": verification_level,
             "explorer_mode": explorer_mode,
+            "llm_model": llm_model,
+            "llm_provider": llm_provider,
             "locked_app_package": locked_app_package,
             "app_path": app_path,
             "device_serial": assigned_serial,
@@ -1052,17 +1063,28 @@ class TaskQueueService:
         conversation_id: str | None = None,
         verification_level: str | None = None,
         explorer_mode: str | None = None,
+        llm_model: str | None = None,
+        llm_provider: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
 
         ``verification_level`` and ``explorer_mode`` are Pro-profile tuning knobs
         forwarded to the worker as ``--verification-level`` / ``--explorer-pro-mode``;
         they are normalised here so the queue item and the CLI see one spelling.
+
+        ``llm_model`` / ``llm_provider`` are the per-task LLM override: they are
+        persisted on the queue item and forwarded to the worker as ``--model`` /
+        ``--provider``, which pin the models of that one task without editing
+        ``artemis.jsonc`` or restarting anything. A blank value means "unset".
         """
         verification_level = (
             str(verification_level).strip().lower() or None if verification_level else None
         )
         explorer_mode = str(explorer_mode).strip().lower() or None if explorer_mode else None
+        # Model identifiers are case-sensitive, so only whitespace is trimmed;
+        # provider names are normalised to lower case and validated, so an
+        # unusable override is rejected before the worker is woken.
+        llm_model, llm_provider = normalize_llm_override(llm_model, llm_provider)
         cls.ensure_worker_running()
 
         enqueued_tasks = []
@@ -1105,6 +1127,8 @@ class TaskQueueService:
                 conversation_id,
                 verification_level=verification_level,
                 explorer_mode=explorer_mode,
+                llm_model=llm_model,
+                llm_provider=llm_provider,
             )
             state.queue_items.append(task_item)
             enqueued_tasks.append(task_item)

@@ -458,6 +458,46 @@ $text-muted: #a1a1aa;
             }
           }
 
+          .task-model {
+            display: inline-flex;
+            align-items: center;
+            gap: 2.5px;
+            min-width: 0;
+            flex-shrink: 1;
+            font-size: 11px;
+            color: #94a3b8;
+            line-height: 1;
+            cursor: default;
+            transition: color 0.15s ease, opacity 0.15s ease;
+
+            .model-icon {
+              font-size: 12.5px;
+              width: 12.5px;
+              height: 12.5px;
+              line-height: 12.5px;
+              color: #94a3b8;
+              opacity: 0.75;
+              flex-shrink: 0;
+            }
+
+            .model-name {
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+              min-width: 0;
+              font-family: inherit;
+              letter-spacing: -0.15px;
+            }
+
+            &:hover {
+              color: #64748b;
+              .model-icon {
+                color: #64748b;
+                opacity: 1;
+              }
+            }
+          }
+
           .task-time-divider {
             font-size: 10px;
             color: #cbd5e1;
