@@ -408,7 +408,9 @@ def _format_check_items(check_items: list) -> str:
 
 
 async def _structured_report(llm, messages) -> CheckReport:
-    structured_llm = llm.with_structured_output(CheckReport)
+    structured_llm = llm.with_structured_output(
+        CheckReport, method="function_calling", tool_choice="auto"
+    )
     # A conversation must end with a user turn: Gemini rejects requests whose
     # last message is the model's own answer ("Requests ending with a model
     # turn are not supported"), which is exactly the state after the loop's
@@ -416,7 +418,7 @@ async def _structured_report(llm, messages) -> CheckReport:
     if messages and isinstance(messages[-1], AIMessage):
         messages = [
             *messages,
-            HumanMessage(content="Now provide your structured verdict report."),
+            HumanMessage(content="Now call the CheckReport tool with your structured verdict report."),
         ]
     result = await invoke_llm_with_timeout_message(structured_llm.ainvoke(messages))
     if isinstance(result, CheckReport):
@@ -482,7 +484,7 @@ async def _run_check_loop(
             messages.append(
                 HumanMessage(
                     content=(
-                        "This is your final iteration; provide your structured verdict report now."
+                        "This is your final iteration; call CheckReport with your verdict report now."
                     )
                 )
             )
@@ -497,6 +499,7 @@ async def _run_check_loop(
             break
 
         messages.append(response)
+        deferred_images: list[HumanMessage] = []
         for tc in response.tool_calls:
             tool_name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
             args = dict(tc["args"])
@@ -522,9 +525,15 @@ async def _run_check_loop(
             # Screenshots (get_step_screenshot) enter the conversation in the
             # carrier the model's provider accepts; text results stay a plain
             # ToolMessage.
-            messages.extend(
-                tool_result_messages(tc["id"], result_obj, name=tool_name, status=status, llm=llm)
-            )
+            for message in tool_result_messages(
+                tc["id"], result_obj, name=tool_name, status=status, llm=llm
+            ):
+                if isinstance(message, HumanMessage):
+                    deferred_images.append(message)
+                else:
+                    messages.append(message)
+        # Complete every tool_call before introducing user-carried screenshots.
+        messages.extend(deferred_images)
 
     if report is None:
         report = CheckReport(verdicts=[])

@@ -47,8 +47,8 @@ if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT" ]; then
     exit 1
 fi
 
-BUILD_TOOLS="$(find "$SDK_ROOT/build-tools" -maxdepth 1 -mindepth 1 | sort -V | tail -n 1)"
-PLATFORM="$(find "$SDK_ROOT/platforms" -maxdepth 1 -mindepth 1 | sort -V | tail -n 1)"
+BUILD_TOOLS="$(find "$SDK_ROOT/build-tools" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -n 1)"
+PLATFORM="$(find "$SDK_ROOT/platforms" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -n 1)"
 
 if [ -z "$BUILD_TOOLS" ] || [ ! -d "$BUILD_TOOLS" ]; then
     echo "Error: No build-tools found under $SDK_ROOT/build-tools" >&2

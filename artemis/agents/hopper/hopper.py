@@ -72,12 +72,14 @@ async def hopper(
         HumanMessage(content=f"{request}\nHere is the data you must dig:\n{data}"),
     ]
 
-    llm = get_llm(ctx=ctx, name="hopper", is_utils=True).with_structured_output(HopperOutput)
+    llm = get_llm(ctx=ctx, name="hopper", is_utils=True).with_structured_output(
+        HopperOutput, method="function_calling", tool_choice="auto"
+    )
     try:
         if use_fallback:
             llm_fallback = get_llm(
                 ctx=ctx, name="hopper", is_utils=True, use_fallback=True
-            ).with_structured_output(HopperOutput)
+            ).with_structured_output(HopperOutput, method="function_calling", tool_choice="auto")
             response: HopperOutput = await with_fallback(
                 main_call=lambda: invoke_llm_with_timeout_message(llm.ainvoke(messages)),
                 fallback_call=lambda: invoke_llm_with_timeout_message(

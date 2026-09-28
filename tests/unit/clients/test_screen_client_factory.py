@@ -225,3 +225,49 @@ def test_disconnect_stops_the_uiautomator_server_it_started(composite):
     client.connect()
     client.disconnect()
     u2.disconnect.assert_called_once_with(stop_server=True)
+
+
+def test_rejected_helper_text_uses_uiautomator(composite):
+    client, helper, u2, _, _ = composite
+    helper.send_text.return_value = False
+    u2.send_text.return_value = True
+    assert client.send_text("你好") is True
+    u2.send_text.assert_called_once_with("你好")
+    assert client.active_backend == "uiautomator"
+
+
+def test_successful_helper_text_is_not_duplicated(composite):
+    client, helper, u2, _, _ = composite
+    helper.send_text.return_value = True
+    assert client.send_text("你好") is True
+    u2.send_text.assert_not_called()
+
+
+def test_rejected_uiautomator_text_is_not_retried(composite):
+    client, helper, u2, _, _ = composite
+    helper.send_text.side_effect = RuntimeError("unavailable")
+    u2.send_text.return_value = False
+    assert client.send_text("你好") is False
+    u2.send_text.assert_called_once_with("你好")
+
+
+def test_failed_ime_fallback_releases_uiautomation_before_helper_retry(composite):
+    client, helper, u2, _, _ = composite
+    helper.send_text.return_value = False
+    u2.send_text.side_effect = RuntimeError("IME unavailable")
+    with pytest.raises(RuntimeError, match="IME unavailable"):
+        client.send_text("你好")
+    assert client.active_backend == "uiautomator"
+    helper.get_hierarchy.return_value = "<hierarchy/>"
+    assert client.get_hierarchy() == "<hierarchy/>"
+    u2.stop_server.assert_called_once()
+    assert client.active_backend == "helper"
+
+
+def test_rejected_text_does_not_start_fallback_on_offline_device(composite):
+    client, helper, _, factory, clock = composite
+    helper.send_text.return_value = False
+    clock["state"] = "offline"
+    with pytest.raises(DeviceOfflineError):
+        client.send_text("你好")
+    factory.assert_not_called()

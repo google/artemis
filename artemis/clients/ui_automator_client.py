@@ -324,7 +324,7 @@ class UIAutomatorClient:
         device = self._ensure_connected()
         return device.press(key=key)
 
-    def send_text(self, text: str) -> None:
+    def send_text(self, text: str) -> bool:
         """Send text input to the device using FastInputIME.
 
         This method supports special characters (e.g., 'ö') that ADB shell
@@ -343,6 +343,7 @@ class UIAutomatorClient:
             # Give FastInputIME time to process the broadcast and commit text
             # before switching it off and killing it.
             time.sleep(0.5)
+            return True
         finally:
             device.set_fastinput_ime(False)
 
