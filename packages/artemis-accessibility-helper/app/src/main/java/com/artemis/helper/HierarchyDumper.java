@@ -464,6 +464,11 @@ public final class HierarchyDumper {
      * Tier 3: Focused input / accessibility node backtracking (walks up parent chain to top root).
      */
     private static List<RawRootEntry> getActiveRawRoots(AccessibilityService service) {
+        // A snapshot or input action must use current nodes. On some OEM builds,
+        // cached focus/text can survive several actions in the same window.
+        if (Build.VERSION.SDK_INT >= 33) {
+            service.clearCache();
+        }
         List<RawRootEntry> roots = new ArrayList<>();
         Set<Integer> seenHashes = new HashSet<>();
         boolean hasAppWindow = false;
@@ -788,9 +793,13 @@ public final class HierarchyDumper {
             for (RawRootEntry entry : roots) {
                 try {
                     AccessibilityNodeInfo focused = entry.root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-                    if (focused != null) {
+                    if (focused != null && focused.isEditable() && focused.isEnabled()
+                            && focused.isVisibleToUser()) {
                         found = focused;
                         return found;
+                    }
+                    if (focused != entry.root) {
+                        safeRecycle(focused);
                     }
                 } catch (Throwable ignored) {}
             }
