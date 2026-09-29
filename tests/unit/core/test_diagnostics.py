@@ -225,6 +225,37 @@ async def test_readiness_engine_reuses_cache_until_forced():
 
 
 @pytest.mark.asyncio
+async def test_forced_refresh_rescans_when_clock_resolution_is_coarse(monkeypatch):
+    """A forced refresh must rescan even when it starts inside the tick that
+    published the cached report.
+
+    ``time.monotonic()`` advances in 15.625 ms steps on Windows
+    (``GetTickCount64``), so a report published moments earlier carries the same
+    reading as a forced request that follows it. Coalescing must not mistake that
+    earlier report for one that completed while this caller waited on the lock.
+    """
+    engine = ReadinessEngine()
+    result = ProbeResult(
+        id="test_probe",
+        category=ProbeCategory.RUNTIME,
+        title="Test",
+        status=ProbeStatus.PASS,
+        is_blocker=True,
+        summary="Ready",
+        description="Ready",
+    )
+    probe = Mock()
+    probe.probe = AsyncMock(return_value=result)
+    engine._probes = {"test_probe": probe}
+    monkeypatch.setattr("artemis.core.diagnostics.engine.time.monotonic", lambda: 15616.656)
+
+    await engine.run_all()
+    await engine.run_all(force_refresh=True)
+
+    assert probe.probe.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_invalidation_prevents_in_flight_report_from_becoming_shared_cache():
     engine = ReadinessEngine()
     result = ProbeResult(
