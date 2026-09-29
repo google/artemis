@@ -183,19 +183,28 @@ class BundledHelper:
 def load_bundled_helper(
     apk_path: Path = BUNDLED_APK_PATH, manifest_path: Path = BUNDLED_MANIFEST_PATH
 ) -> BundledHelper | None:
-    """Read the bundled APK's manifest; ``None`` when the artifact is not shipped."""
+    """Read and verify the bundled APK; ``None`` when it is unavailable or invalid."""
     if not apk_path.is_file() or not manifest_path.is_file():
         return None
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected_sha256 = str(data["sha256"]).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ValueError("manifest sha256 must be a 64-character hexadecimal digest")
+        digest = hashlib.sha256()
+        with apk_path.open("rb") as apk_file:
+            for chunk in iter(lambda: apk_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != expected_sha256:
+            raise ValueError("bundled APK sha256 does not match the manifest")
         return BundledHelper(
             apk_path=apk_path,
             version_code=int(data["version_code"]),
             version_name=str(data.get("version_name", "")),
-            sha256=str(data.get("sha256", "")),
+            sha256=expected_sha256,
         )
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        logger.warning(f"Bundled accessibility helper manifest is unreadable: {exc}")
+        logger.warning(f"Bundled accessibility helper failed integrity checks: {exc}")
         return None
 
 
