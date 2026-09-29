@@ -2,6 +2,8 @@ package com.artemis.helper;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
+import android.app.ActivityManager;
+import android.app.AppOpsManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -198,12 +200,18 @@ public final class GestureController {
     }
 
     /**
-     * Write text to the system clipboard. Clipboard writes are allowed from any
-     * app on every API level (only reads are restricted since Android 10), so this
-     * is the IME-free path the host uses for multiline and non-ASCII input:
-     * set the clip here, then KEYCODE_PASTE over adb.
+     * Write text to the system clipboard. This is the IME-free path the host uses
+     * for multiline and non-ASCII input: set the clip here, then KEYCODE_PASTE over
+     * adb. Some OEM builds restrict WRITE_CLIPBOARD to the foreground via AppOps,
+     * and ClipboardService then drops the write without throwing, so the mode is
+     * checked first; returning false lets the host fall back to another input path
+     * instead of pasting stale clipboard contents.
      */
     public static boolean setClipboard(final AccessibilityService service, final String text) {
+        if (!isClipboardWriteAllowed(service)) {
+            Log.w(TAG, "setClipboard skipped: WRITE_CLIPBOARD is not allowed for this process");
+            return false;
+        }
         final CountDownLatch latch = new CountDownLatch(1);
         final AtomicBoolean ok = new AtomicBoolean(false);
         MAIN_HANDLER.post(new Runnable() {
@@ -228,5 +236,34 @@ public final class GestureController {
             Thread.currentThread().interrupt();
         }
         return ok.get();
+    }
+
+    private static final String OPSTR_WRITE_CLIPBOARD = "android:write_clipboard";
+    // AppOpsManager.MODE_FOREGROUND, which only exists as a constant from API 29.
+    private static final int MODE_FOREGROUND = 4;
+
+    private static boolean isClipboardWriteAllowed(Context context) {
+        AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+        if (appOps == null) return true;
+        int mode;
+        try {
+            int uid = android.os.Process.myUid();
+            String pkg = context.getPackageName();
+            mode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                    ? appOps.unsafeCheckOpNoThrow(OPSTR_WRITE_CLIPBOARD, uid, pkg)
+                    : appOps.checkOpNoThrow(OPSTR_WRITE_CLIPBOARD, uid, pkg);
+        } catch (RuntimeException e) {
+            // Unknown op name on this build: keep the previous optimistic behaviour.
+            return true;
+        }
+        if (mode == AppOpsManager.MODE_ALLOWED || mode == AppOpsManager.MODE_DEFAULT) return true;
+        if (mode == MODE_FOREGROUND) return isProcessForeground();
+        return false;
+    }
+
+    private static boolean isProcessForeground() {
+        ActivityManager.RunningAppProcessInfo info = new ActivityManager.RunningAppProcessInfo();
+        ActivityManager.getMyMemoryState(info);
+        return info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE;
     }
 }
