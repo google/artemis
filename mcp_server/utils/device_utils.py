@@ -20,6 +20,13 @@ import subprocess
 import sys
 import time
 
+#: Detach flags for emulator startup on Windows. The constants only exist on
+#: Windows; 0 elsewhere keeps `ensure_emulator` (and its unit test, which fakes
+#: `sys.platform == "win32"`) working on POSIX hosts.
+WINDOWS_DETACH_FLAGS = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+    subprocess, "DETACHED_PROCESS", 0
+)
+
 
 def resolve_adb_path() -> str:
     """Resolves the absolute path to the adb binary across platforms."""
@@ -146,7 +153,7 @@ def ensure_emulator(
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS),
+                creationflags=WINDOWS_DETACH_FLAGS,
             )
         else:
             subprocess.Popen(
