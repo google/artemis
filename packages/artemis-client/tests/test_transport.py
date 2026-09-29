@@ -37,7 +37,7 @@ class JsonTransportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             JsonTransport("file:///tmp/artemis")
 
-    @patch("urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_sends_json_and_bearer_token(self, urlopen) -> None:
         urlopen.return_value = FakeResponse(json.dumps({"ok": True}).encode())
         transport = JsonTransport("https://host.example/", token="secret")
@@ -50,7 +50,7 @@ class JsonTransportTests(unittest.TestCase):
         self.assertEqual(request.headers["Authorization"], "Bearer secret")
         self.assertEqual(json.loads(request.data), {"goal": "test"})
 
-    @patch("urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_maps_unauthorized_response(self, urlopen) -> None:
         urlopen.side_effect = urllib.error.HTTPError(
             "https://host.example/api/run",
@@ -64,7 +64,7 @@ class JsonTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(AuthenticationError, "bad token"):
             transport.request("GET", "/api/run")
 
-    @patch("urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_invalid_json_raises_protocol_error(self, urlopen) -> None:
         urlopen.return_value = FakeResponse(b"not-json")
         transport = JsonTransport("https://host.example")
@@ -72,7 +72,7 @@ class JsonTransportTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             transport.request("GET", "/api/status")
 
-    @patch("urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_network_failure_is_wrapped(self, urlopen) -> None:
         urlopen.side_effect = urllib.error.URLError("connection refused")
         transport = JsonTransport("https://host.example")
