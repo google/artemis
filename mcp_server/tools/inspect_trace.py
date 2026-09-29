@@ -28,6 +28,14 @@ from artemis.tools.history import load_step_screenshot, replay_steps_text, searc
 from artemis.utils.task_tree import build_plan_and_history
 
 
+SUPPORTED_ACTIONS = (
+    "view_summary",
+    "search",
+    "view_step_screenshots",
+    "view_step_details",
+)
+
+
 def _write_overlay(annotated_bytes: bytes, output_path: str) -> bool:
     """Persists an already-drawn action overlay next to the trace."""
     try:
@@ -97,6 +105,15 @@ async def mobile_inspect_trace(
           `"search"`.
         max_results: Maximum `"search"` hits to return (server-side cap applies).
     """
+    if action not in SUPPORTED_ACTIONS:
+        return {
+            "error": "Invalid action",
+            "message": (
+                f"Action '{action}' is not supported. Supported actions: "
+                "'view_summary', 'search', 'view_step_screenshots', 'view_step_details'."
+            ),
+        }
+
     project_root = env_utils.get_project_root()
     db_path = os.path.join(trace_store.TRACES_DIR, "data_engine.db")
     if not os.path.exists(db_path):
@@ -382,13 +399,4 @@ async def mobile_inspect_trace(
             "device_serial": device_serial,
             "step_number": record.step_number,
             "details": rendered_text,
-        }
-
-    else:
-        return {
-            "error": "Invalid action",
-            "message": (
-                f"Action '{action}' is not supported. Supported actions: "
-                "'view_summary', 'search', 'view_step_screenshots', 'view_step_details'."
-            ),
         }
