@@ -9,6 +9,7 @@
 <p align="center">
   <a href="./README.md">English</a> •
   <a href="./README_CN.md"><b>中文文档</b></a> •
+  <a href="./README_JA.md">日本語</a> •
   <a href="#workflow-showcase">全流程演示</a> •
   <a href="#quick-start">快速上手</a> •
   <a href="#mcp-setup">MCP 接入 IDE</a> •
