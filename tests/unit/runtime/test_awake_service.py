@@ -13,9 +13,10 @@ def completed(stdout="", returncode=0, stderr=""):
     return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+@patch("artemis.runtime.adb_endpoint.toolchain.resolve", return_value="/mock/adb")
 @patch("artemis.runtime.awake_service.ScreenAwakeLease")
 @patch("artemis.runtime.awake_service.subprocess.run")
-def test_usb_policy_is_primary_when_android_reports_it_active(mock_run, lease_type):
+def test_usb_policy_is_primary_when_android_reports_it_active(mock_run, lease_type, _mock_resolve):
     mock_run.side_effect = [
         completed(),
         completed(),
@@ -37,9 +38,12 @@ def test_usb_policy_is_primary_when_android_reports_it_active(mock_run, lease_ty
     assert not any("KEYCODE_UNKNOWN" in command for command in commands)
 
 
+@patch("artemis.runtime.adb_endpoint.toolchain.resolve", return_value="/mock/adb")
 @patch("artemis.runtime.awake_service.ScreenAwakeLease")
 @patch("artemis.runtime.awake_service.subprocess.run")
-def test_inactive_usb_policy_falls_back_to_effective_host_heartbeat(mock_run, _lease_type):
+def test_inactive_usb_policy_falls_back_to_effective_host_heartbeat(
+    mock_run, _lease_type, _mock_resolve
+):
     mock_run.side_effect = [
         completed(),
         completed(),
