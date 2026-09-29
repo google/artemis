@@ -78,26 +78,48 @@ class DesktopNotifier(BaseNotifier):
                     return True
             elif sys.platform == "darwin":
                 if shutil.which("osascript"):
-                    script = f'display notification "{clean_body}" with title "{header}"'
+                    # header/clean_body are untrusted (can be derived from on-screen
+                    # app content). Never interpolate them into the script source -
+                    # pass them as `on run argv` arguments instead of splicing them
+                    # into the AppleScript text. (An earlier version of this fix used
+                    # `system attribute` + env vars, but `system attribute` re-decodes
+                    # its value through the wrong text encoding and corrupts non-ASCII
+                    # input, including the default "☕ Artemis Task ..." title -
+                    # `argv` values are passed through as literal UTF-8 unchanged.)
+                    # `--` stops osascript from treating a title/body that happens to
+                    # equal "-e" or "--" as its own flag.
+                    script = (
+                        "on run argv\n"
+                        "    display notification (item 2 of argv) with title (item 1 of argv)\n"
+                        "end run"
+                    )
                     subprocess.run(
-                        ["osascript", "-e", script],
+                        ["osascript", "-e", script, "--", header, clean_body],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         timeout=3,
                     )
                     return True
             elif sys.platform == "win32":
+                # Same untrusted-content constraint as the macOS branch above: the
+                # script text is fixed and reads title/body from the environment
+                # instead of having them interpolated into the source.
                 ps_cmd = (
-                    f"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; "
-                    f"$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
-                    f'$textNodes = $template.GetElementsByTagName("text"); '
-                    f'$textNodes.Item(0).AppendChild($template.CreateTextNode("{header}")) > $null; '
-                    f'$textNodes.Item(1).AppendChild($template.CreateTextNode("{clean_body}")) > $null; '
-                    f"$toast = [Windows.UI.Notifications.ToastNotification]::new($template); "
-                    f'[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Artemis").Show($toast);'
+                    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; "
+                    "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
+                    '$textNodes = $template.GetElementsByTagName("text"); '
+                    "$textNodes.Item(0).AppendChild($template.CreateTextNode($env:ARTEMIS_NOTIFY_TITLE)) > $null; "
+                    "$textNodes.Item(1).AppendChild($template.CreateTextNode($env:ARTEMIS_NOTIFY_BODY)) > $null; "
+                    "$toast = [Windows.UI.Notifications.ToastNotification]::new($template); "
+                    '[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Artemis").Show($toast);'
                 )
                 subprocess.run(
                     ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    env={
+                        **os.environ,
+                        "ARTEMIS_NOTIFY_TITLE": header,
+                        "ARTEMIS_NOTIFY_BODY": clean_body,
+                    },
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
