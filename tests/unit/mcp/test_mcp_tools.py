@@ -31,6 +31,7 @@ from mcp_server.tools import (
     mobile_manage_task,
     mobile_run_task,
 )
+from mcp_server.tools import task_runner
 from artemis.runtime import trace_store
 
 
@@ -41,6 +42,32 @@ def temp_trace_env(monkeypatch):
     monkeypatch.setenv("ARTEMIS_STANDALONE", "1")
     yield temp_dir
     shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def stub_spawn_watchdog(monkeypatch):
+    """Replace the real watchdog launcher for every test in this module.
+
+    mobile_run_task mocks subprocess.Popen in the dispatch tests below, but
+    it still calls _start_spawn_watchdog with the mocked PID once the fake
+    spawn returns. Left unpatched, that starts a real daemon thread that
+    outlives temp_trace_env: after teardown removes the temporary trace
+    directory and restores trace_store.TRACES_DIR, the thread can still
+    invoke real process-tree termination, cancel reservations, and dispatch
+    failure notifications for a process that was never actually started.
+
+    This fixture records the call arguments instead of starting a thread, so
+    dispatch tests can assert on them without any background work running.
+    Production watchdog behavior (successful startup, hung-runner detection,
+    cleanup, notifications) is covered separately in test_spawn_watchdog.py.
+    """
+    calls: list[tuple[str, int, str, str | None]] = []
+
+    def _record_call(trace_id, pid, queue_ticket, conversation_id):
+        calls.append((trace_id, pid, queue_ticket, conversation_id))
+
+    monkeypatch.setattr(task_runner, "_start_spawn_watchdog", _record_call)
+    return calls
 
 
 def test_tool_signatures():
@@ -88,7 +115,9 @@ def test_mobile_run_task_invalid_model():
         mobile_run_task(task_desc="test", conversation_id="conv-1", model="invalid_model")
 
 
-def test_mobile_run_task_reserves_and_passes_global_queue_ticket(temp_trace_env):
+def test_mobile_run_task_reserves_and_passes_global_queue_ticket(
+    temp_trace_env, stub_spawn_watchdog
+):
     process = MagicMock(pid=43210)
     with (
         patch(
@@ -119,9 +148,10 @@ def test_mobile_run_task_reserves_and_passes_global_queue_ticket(temp_trace_env)
     status = trace_store.read_status(result["trace_id"])
     assert status["queue_ticket"] == "queue-ticket-1"
     assert status["device_serial"] is None
+    assert stub_spawn_watchdog == [(result["trace_id"], 43210, "queue-ticket-1", "conv-1")]
 
 
-def test_mobile_run_task_with_device_serial(temp_trace_env):
+def test_mobile_run_task_with_device_serial(temp_trace_env, stub_spawn_watchdog):
     process = MagicMock(pid=54321)
     with (
         patch(
@@ -167,6 +197,7 @@ def test_mobile_run_task_with_device_serial(temp_trace_env):
 
     status = trace_store.read_status(result["trace_id"])
     assert status["device_serial"] == "pixel-11-pro-001"
+    assert stub_spawn_watchdog == [(result["trace_id"], 54321, "queue-ticket-dev", "conv-2")]
 
 
 def test_mobile_run_task_dispatched_to_daemon(temp_trace_env, monkeypatch):
