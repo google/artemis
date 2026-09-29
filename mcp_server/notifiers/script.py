@@ -16,6 +16,7 @@
 
 import logging
 import os
+import shlex
 import subprocess
 from typing import Any
 
@@ -31,6 +32,17 @@ class ScriptNotifier(BaseNotifier):
     or automation platform by allowing users to define ARTEMIS_NOTIFY_CMD or MCP_NOTIFY_COMMAND.
     Placeholders like {title}, {message}, {conversation_id}, {event_type}, and {trace_id}
     are automatically replaced before execution.
+
+    The template is executed as an argument vector, not through a shell: it is parsed with
+    ``shlex.split`` and launched with ``shell=False``. Substituted values are task data (a
+    task's ``goal`` reaches {title}/{message}), so they are never interpreted as shell
+    syntax. Two consequences to be aware of:
+
+    - Shell features in the template (pipes, ``&&``, redirection, ``$VAR`` expansion,
+      globbing) are not interpreted. Put that logic in the script itself and reference the
+      script as a single command, e.g. ``my-notify.sh --title '{title}'``.
+    - Quotes around a placeholder are no longer significant: ``--title '{title}'`` and
+      ``--title {title}`` both pass the value as a single argument.
     """
 
     ENV_VARS = [
@@ -67,23 +79,29 @@ class ScriptNotifier(BaseNotifier):
         trace_id = (payload or {}).get("trace_id", "")
         formatted_title = title or f"Artemis Task {event_type.capitalize()}"
 
-        # Replace template placeholders safely
+        # The template is operator-supplied, but every substituted value is
+        # attacker-influenced task data: a task's `goal` reaches {title}/{message}
+        # (see task_queue_service). Run the template as an argument vector instead of
+        # through a shell, so task data can never be reinterpreted as shell syntax
+        # (CWE-78). shlex.split() resolves the operator's own quoting, so a template such
+        # as `my-script --title '{title}'` still passes the title as a single argument.
         try:
-            cmd = (
-                cmd_template.replace("{title}", str(formatted_title))
+            argv = [
+                token.replace("{title}", str(formatted_title))
                 .replace("{message}", str(message))
                 .replace("{conversation_id}", str(conversation_id))
                 .replace("{event_type}", str(event_type))
                 .replace("{trace_id}", str(trace_id))
-            )
+                for token in shlex.split(cmd_template)
+            ]
             subprocess.run(
-                cmd,
-                shell=True,
+                argv,
+                shell=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
             )
-            logger.info(f"Custom script notification command executed: {cmd[:60]}...")
+            logger.info(f"Custom script notification executed: {shlex.join(argv)[:60]}...")
             return True
         except Exception as e:
             logger.warning(f"Failed to execute custom script notification: {e}")
