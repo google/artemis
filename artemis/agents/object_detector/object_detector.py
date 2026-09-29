@@ -124,8 +124,11 @@ async def _run_object_detection(
     queries = queries or []
     templates = templates or ["Point to the following objects: {labels_str}"]
     try:
-        llm = get_llm(ctx, name="object_detector")
-    except Exception:
+        llm = get_llm(ctx, name="object_detector", is_utils=True)
+    except Exception as e:
+        logger.warning(
+            f"Object detector model unavailable ({e}); falling back to the operator model."
+        )
         llm = get_llm(ctx, name="operator")
 
     raw_timeout = getattr(getattr(ctx, "llm_config", None), "timeout", None)
