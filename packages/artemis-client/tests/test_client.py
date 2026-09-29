@@ -215,6 +215,69 @@ class ArtemisClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TaskTimeoutError):
             await client.wait_for_task("slow-task", timeout=0.003)
 
+    async def test_run_rejects_nonpositive_wait_controls_without_submitting(self) -> None:
+        for kwargs, message in (
+            ({"timeout": 0}, "timeout must be greater than zero"),
+            ({"timeout": -1.0}, "timeout must be greater than zero"),
+            ({"poll_interval": 0}, "poll_interval must be greater than zero"),
+            ({"poll_interval": -0.5}, "poll_interval must be greater than zero"),
+        ):
+            with self.subTest(**kwargs):
+                transport = FakeTransport()
+                client = ArtemisClient(
+                    "https://artemis.example.test",
+                    poll_interval=0.001,
+                    transport=transport,
+                )
+                with self.assertRaises(ValueError) as caught:
+                    await client.run("Open Settings", **kwargs)
+                self.assertEqual(str(caught.exception), message)
+                # The task must never have been admitted: the caller holds no
+                # handle for work the host may already have started.
+                self.assertEqual(transport.calls, [])
+
+    async def test_run_task_rejects_nonpositive_wait_controls_without_submitting(self) -> None:
+        class Task:
+            goal = "Open Settings"
+
+        for kwargs in ({"timeout": 0}, {"poll_interval": 0}):
+            with self.subTest(**kwargs):
+                transport = FakeTransport()
+                client = ArtemisClient(
+                    "https://artemis.example.test",
+                    poll_interval=0.001,
+                    transport=transport,
+                )
+                with self.assertRaises(ValueError):
+                    await client.run_task(Task(), **kwargs)
+                self.assertEqual(transport.calls, [])
+
+    async def test_run_still_submits_and_completes_with_valid_wait_controls(self) -> None:
+        task_id = "00000000-0000-4000-8000-000000000456"
+        self.transport.add(
+            "POST",
+            "/api/run",
+            {"status": "started", "tasks": [{"session_id": task_id, "status": "pending"}]},
+        )
+        self.transport.add(
+            "GET",
+            f"/api/sessions/{task_id}",
+            {"session_id": task_id, "status": "completed", "summary": "done"},
+        )
+
+        result = await self.client.run(
+            "Open Settings",
+            task_id=task_id,
+            timeout=5,
+            poll_interval=0.001,
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            [(method, path) for method, path, _ in self.transport.calls],
+            [("POST", "/api/run"), ("GET", f"/api/sessions/{task_id}")],
+        )
+
     async def test_list_devices_accepts_legacy_shape(self) -> None:
         self.transport.add(
             "GET",

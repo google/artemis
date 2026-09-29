@@ -268,6 +268,24 @@ class ArtemisClient:
                 return TaskResult(task_id=task_id, status="launching")
             return TaskResult.from_payload(live_task, task_id=task_id)
 
+    def _resolve_wait_controls(
+        self,
+        timeout: float,
+        poll_interval: float | None,
+    ) -> tuple[float, float]:
+        """Validate the wait controls and resolve the effective poll interval.
+
+        Kept separate so :meth:`run` can reject a nonpositive control *before*
+        it submits anything: a rejected call must not leave work running on
+        the host that the caller never received a handle for.
+        """
+        if timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
+        interval = self.poll_interval if poll_interval is None else float(poll_interval)
+        if interval <= 0:
+            raise ValueError("poll_interval must be greater than zero")
+        return float(timeout), interval
+
     async def wait_for_task(
         self,
         task_id: str,
@@ -276,11 +294,7 @@ class ArtemisClient:
         poll_interval: float | None = None,
     ) -> TaskResult:
         """Wait until a task reaches a terminal state."""
-        if timeout <= 0:
-            raise ValueError("timeout must be greater than zero")
-        interval = self.poll_interval if poll_interval is None else float(poll_interval)
-        if interval <= 0:
-            raise ValueError("poll_interval must be greater than zero")
+        timeout, interval = self._resolve_wait_controls(timeout, poll_interval)
 
         started = time.monotonic()
         while True:
@@ -311,6 +325,7 @@ class ArtemisClient:
         poll_interval: float | None = None,
     ) -> TaskResult:
         """Submit a task and wait for its terminal result (see :meth:`submit`)."""
+        timeout, interval = self._resolve_wait_controls(timeout, poll_interval)
         handle = await self.submit(
             goal,
             profile=profile,
@@ -328,7 +343,7 @@ class ArtemisClient:
         return await self.wait_for_task(
             handle.task_id,
             timeout=timeout,
-            poll_interval=poll_interval,
+            poll_interval=interval,
         )
 
     async def run_task(self, task: Any, **overrides: Any) -> TaskResult:
