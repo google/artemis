@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime, timezone
+from datetime import datetime
 import logging
 from app.config import settings
 from app.schemas.session_schema import SessionRecord, SessionStatus
