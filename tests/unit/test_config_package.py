@@ -107,6 +107,26 @@ def test_settings_and_api_key_fallbacks(monkeypatch):
     assert custom_settings.get_api_key("xai").get_secret_value() == "xai_test_key"
 
 
+@pytest.mark.parametrize(
+    ("adb_port", "android_port", "expected"),
+    [(None, None, 5037), (None, "8848", 8848), ("5038", "8848", 5038)],
+)
+def test_settings_adb_port_environment(monkeypatch, adb_port, android_port, expected):
+    for name, value in (("ADB_PORT", adb_port), ("ANDROID_ADB_SERVER_PORT", android_port)):
+        monkeypatch.delenv(name, raising=False)
+        if value is not None:
+            monkeypatch.setenv(name, value)
+
+    assert Settings(_env_file=None).ADB_PORT == expected
+
+
+def test_settings_explicit_adb_port_overrides_android_environment(monkeypatch):
+    monkeypatch.delenv("ADB_PORT", raising=False)
+    monkeypatch.setenv("ANDROID_ADB_SERVER_PORT", "8848")
+
+    assert Settings(_env_file=None, ADB_PORT=5040).ADB_PORT == 5040
+
+
 def test_placeholder_api_key_filtering(monkeypatch):
     """Test that default template placeholders are filtered out and treated as unconfigured."""
     from artemis.config.settings import is_placeholder_key
