@@ -160,7 +160,10 @@ PYTHONPATH = "/path/to/artemis"
         "mobile_manage_task": { "eager": true },
         "mobile_get_device_state": { "eager": true },
         "mobile_inspect_trace": { "eager": true },
-        "mobile_diagnose": { "eager": true }
+        "mobile_diagnose": { "eager": true },
+        "mobile_observe": { "eager": true },
+        "mobile_act": { "eager": true },
+        "mobile_session_end": { "eager": true }
       }
     }
   }

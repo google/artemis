@@ -38,8 +38,12 @@ mcp = FastMCP(
         "mobile_manage_task to check status or steer execution, "
         "mobile_get_device_state to inspect real-time device screen/hierarchy, "
         "mobile_inspect_trace to inspect detailed execution steps and visual action overlays, "
-        "and mobile_diagnose whenever a tool errors, no device is found, or the user says "
-        "ARTEMIS is not working: it checks the environment and returns ordered fix steps."
+        "mobile_diagnose whenever a tool errors, no device is found, or the user says "
+        "ARTEMIS is not working: it checks the environment and returns ordered fix steps, "
+        "and mobile_observe / mobile_act / mobile_session_end for host-agent-driven manual "
+        "mode: when the calling MCP host has its own model and no Artemis LLM credential is "
+        "configured, it can observe the screen and issue one device action at a time itself "
+        "instead of delegating to mobile_run_task."
     ),
 )
 
