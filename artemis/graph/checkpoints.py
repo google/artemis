@@ -870,8 +870,8 @@ def harvest_run(
         status = "inconclusive"
         reason = (
             f"check timed out after {_setting(ctx, 'checkpoint_timeout', 180.0)}s"
-            if isinstance(exc, (asyncio.TimeoutError, TimeoutError))
-            else f"check raised an exception: {exc}"
+            if isinstance(exc, TimeoutError)
+            else f"check raised an exception: {str(exc) or type(exc).__name__}"
         )
         logger.warning(
             f"Checkpoint attempt {run.attempt_id} did not produce a verdict"
