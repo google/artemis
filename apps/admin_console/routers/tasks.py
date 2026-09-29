@@ -24,6 +24,7 @@ from artemis.runtime import DeviceExecutionLock, device_pool
 try:
     from admin_console.core.state import state
     from admin_console.database.repositories.session_repository import session_repo
+    from admin_console.routers.bool_params import coerce_bool
     from admin_console.schemas.task_schema import RunRequest
     from admin_console.services.ipc_service import ipc_service
     from admin_console.services.model_service import model_service
@@ -32,6 +33,7 @@ try:
 except ImportError:
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
+    from apps.admin_console.routers.bool_params import coerce_bool
     from apps.admin_console.schemas.task_schema import RunRequest
     from apps.admin_console.services.ipc_service import ipc_service
     from apps.admin_console.services.model_service import model_service
@@ -219,7 +221,7 @@ async def stop_task(
         body = await request.json()
         if isinstance(body, dict):
             if "all" in body:
-                target_all = bool(body["all"]) or target_all
+                target_all = coerce_bool(body["all"], default=target_all)
             if body.get("session_id"):
                 target_sid = str(body["session_id"])
             if body.get("device_id"):
