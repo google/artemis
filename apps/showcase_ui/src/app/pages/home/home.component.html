@@ -615,6 +615,7 @@
             </div>
           </div>
       
+          <div class="inspector-header-actions">
           <button type="button" class="btn-file-action" title="Copy file path"
             (click)="copyToClipboard(modelConfigEnv()?.env_path || '.env', 'env_path_btn')">
           <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'env_path_btn'">
@@ -622,6 +623,11 @@
           </span>
           <span>Copy Path</span>
           </button>
+          <button type="button" class="btn-file-action" [disabled]="isReloadingEnv()" (click)="reloadEnvFromFile()">
+            <span class="material-symbols-outlined">refresh</span>
+            <span>Reload .env</span>
+          </button>
+          </div>
         </div>
         
         <!-- Env Keys Table -->

@@ -153,6 +153,8 @@ export class HomeComponent implements OnInit, OnDestroy {
   // Diagnostic re-check state
   public isRefreshingDiagnostics = signal<boolean>(false);
 
+  public isReloadingEnv = signal<boolean>(false);
+
   // Wireless ADB Interactive connection signals
   public wifiHost = signal<string>('192.168.1.100');
   public wifiPort = signal<string>('5555');
@@ -593,6 +595,14 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   public toggleFullConfigFile(): void {
     this.showFullConfigFile.update(v => !v);
+  }
+
+  public reloadEnvFromFile(): void {
+    this.isReloadingEnv.set(true);
+    this.systemService.reloadEnv().subscribe({
+      next: () => this.isReloadingEnv.set(false),
+      error: () => this.isReloadingEnv.set(false),
+    });
   }
 
   public toggleGeminiKeyVisibility(): void {

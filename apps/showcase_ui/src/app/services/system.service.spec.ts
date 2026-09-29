@@ -170,4 +170,35 @@ describe('SystemService readiness polling', () => {
     expect(service.isRemoteAdbServer()).toBeFalse();
     expect(service.adbServerStatus()?.endpoint.port).toBe(5037);
   });
+
+  it('reloads managed .env keys then refreshes the inspector', () => {
+    service.reloadEnv().subscribe();
+
+    const request = http.expectOne('/api/system/reload-env');
+    expect(request.request.method).toBe('POST');
+    request.flush({
+      status: 'success',
+      message: 'Reloaded credentials from .env.',
+      report: report(60)
+    });
+
+    expect(service.readinessReport()?.timestamp).toBe(60);
+    http.expectOne('/api/system/model-config-env').flush({
+      config_path: 'config/artemis.jsonc',
+      config_filename: 'artemis.jsonc',
+      config_content: '{}',
+      default_model: { provider: 'google', model: 'gemini-3.8-flash' },
+      presets: {},
+      env_path: '/tmp/.env',
+      env_filename: '.env',
+      env_vars: [{
+        name: 'GEMINI_API_KEY',
+        provider: 'google',
+        is_set: true,
+        preview: '****abcd',
+        description: 'Google Gemini'
+      }]
+    });
+    expect(service.modelConfigEnv()?.env_vars[0].preview).toBe('****abcd');
+  });
 });
