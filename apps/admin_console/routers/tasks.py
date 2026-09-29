@@ -42,6 +42,21 @@ except ImportError:
 router = APIRouter(tags=["tasks"])
 
 
+def _parse_boolean_body_field(value: Any, field_name: str) -> bool:
+    """Parse a JSON boolean without treating every non-empty string as true."""
+    if isinstance(value, bool):
+        return value
+    if value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise HTTPException(status_code=422, detail=f"'{field_name}' must be a boolean")
+
+
 @router.get("/api/tasks/presets")
 async def get_task_presets(
     category: str = "recommended",
@@ -208,18 +223,21 @@ async def list_devices():
 async def stop_task(
     request: Request,
     all: bool = False,
+    clear_all: bool | None = None,
     session_id: str | None = None,
     device_id: str | None = None,
 ):
-    target_all = all
+    target_all = clear_all if clear_all is not None else all
     target_sid = session_id
     target_dev = device_id
 
     try:
         body = await request.json()
         if isinstance(body, dict):
-            if "all" in body:
-                target_all = bool(body["all"]) or target_all
+            if "clear_all" in body:
+                target_all = _parse_boolean_body_field(body["clear_all"], "clear_all")
+            elif "all" in body:
+                target_all = _parse_boolean_body_field(body["all"], "all")
             if body.get("session_id"):
                 target_sid = str(body["session_id"])
             if body.get("device_id"):
