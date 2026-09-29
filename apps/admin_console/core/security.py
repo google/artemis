@@ -89,7 +89,10 @@ def origin_is_allowed(origin_header: str, host_header: str) -> bool:
     origin = origin_header.strip().lower()
     if not origin or origin == "null":
         return False
-    origin_netloc = urlsplit(origin).netloc
+    try:
+        origin_netloc = urlsplit(origin).netloc
+    except ValueError:
+        return False
     if not origin_netloc:
         return False
     if origin_netloc == host_header.strip().lower():
