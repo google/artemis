@@ -20,7 +20,7 @@ content after both cleanup passes.
 """
 
 import json
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -28,6 +28,18 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from artemis.agents.flash.context_compressor import ScrubEdgeCompressor
 from artemis.agents.flash.summarizer import VisualStepSummarizer
 from artemis.context import ArtemisContext
+
+
+@pytest.fixture(autouse=True)
+def isolate_summarizer_model(monkeypatch):
+    """Keep real summarizer behavior without constructing a provider client."""
+    model = Mock()
+    model.ainvoke = AsyncMock(
+        side_effect=AssertionError("Configure a model response before invoking the summarizer")
+    )
+    factory = Mock(return_value=model)
+    monkeypatch.setattr("artemis.agents.flash.summarizer.get_llm", factory)
+    monkeypatch.setattr("artemis.agents.flash.summarizer.get_google_llm", factory)
 
 
 @pytest.fixture
