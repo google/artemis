@@ -526,6 +526,32 @@ class SessionRepository:
         except Exception:
             return False
 
+    def persist_terminal_session_status(
+        self,
+        session_id: str,
+        status: str,
+        initial_goal: str,
+        start_time: float | None = None,
+        end_time: float | None = None,
+    ) -> bool:
+        """Persist a terminal status even if the worker never created its session."""
+        try:
+            with db_session(self.db_path) as conn:
+                finished_at = time.time() if end_time is None else end_time
+                started_at = finished_at if start_time is None else start_time
+                conn.execute(
+                    "INSERT INTO sessions "
+                    "(session_id, initial_goal, start_time, end_time, status, device_info) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET "
+                    "status = excluded.status, end_time = excluded.end_time",
+                    (str(session_id), initial_goal, started_at, finished_at, status, "{}"),
+                )
+                conn.commit()
+                return True
+        except (OSError, sqlite3.Error):
+            return False
+
     def mark_all_running_cancelled(self) -> int:
         try:
             with db_session(self.db_path) as conn:
