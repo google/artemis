@@ -306,7 +306,7 @@ ARTEMIS supports two execution profiles tailored for different automation requir
 
 ## Community & Contributing
 
-Contributions are warmly welcomed!
+Contributions are warmly welcomed! Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, test layers, and pull-request process.
 * **Star the repo** to follow updates and releases
 * Join the [Discord Community](https://discord.gg/wF2FN4WHGY) for technical discussions
 * Open an [Issue](https://github.com/google/artemis/issues) or submit a [Pull Request](https://github.com/google/artemis/pulls)
