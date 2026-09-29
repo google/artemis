@@ -54,6 +54,10 @@ class WindowsPlatformPaths(IPlatformPaths):
             p.mkdir(parents=True, exist_ok=True)
             return p
 
+        legacy_antigravity = self._home / ".gemini" / "antigravity"
+        if legacy_antigravity.exists():
+            return legacy_antigravity
+
         legacy_jetski = self._home / ".gemini" / "jetski"
         if legacy_jetski.exists():
             return legacy_jetski

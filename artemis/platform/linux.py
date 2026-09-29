@@ -55,7 +55,11 @@ class LinuxPlatformPaths(IPlatformPaths):
             p.mkdir(parents=True, exist_ok=True)
             return p
 
-        # Check legacy ~/.gemini/jetski or ~/.artemis directory if it exists
+        # Check legacy ~/.gemini/antigravity, ~/.gemini/jetski or ~/.artemis directory if it exists
+        legacy_antigravity = self._home / ".gemini" / "antigravity"
+        if legacy_antigravity.exists():
+            return legacy_antigravity
+
         legacy_jetski = self._home / ".gemini" / "jetski"
         if legacy_jetski.exists():
             return legacy_jetski

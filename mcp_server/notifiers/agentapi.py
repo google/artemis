@@ -53,6 +53,7 @@ class AgentApiNotifier(BaseNotifier):
                 return which_path
 
             candidates = [
+                os.path.expanduser("~/.gemini/antigravity/bin/agentapi"),
                 os.path.expanduser("~/.gemini/jetski/bin/agentapi"),
                 os.path.expanduser("~/.artemis/bin/agentapi"),
                 os.path.expanduser("~/bin/agentapi"),
@@ -81,6 +82,7 @@ class AgentApiNotifier(BaseNotifier):
     def _save_shared_env(self, addr: str, token: str) -> None:
         """Persists recovered environment to shared files for faster subsequent access."""
         shared_candidates = [
+            os.path.expanduser("~/.gemini/antigravity/.antigravity_env"),
             os.path.expanduser("~/.gemini/jetski/.jetski_env"),
             os.path.expanduser("~/.artemis/.artemis_env"),
         ]
@@ -125,6 +127,7 @@ class AgentApiNotifier(BaseNotifier):
         # 2. Shared env files (if not forcing fresh process scan)
         if not force_proc_scan:
             shared_candidates = [
+                os.path.expanduser("~/.gemini/antigravity/.antigravity_env"),
                 os.path.expanduser("~/.gemini/jetski/.jetski_env"),
                 os.path.expanduser("~/.artemis/.artemis_env"),
             ]

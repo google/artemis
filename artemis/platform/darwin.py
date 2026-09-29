@@ -44,7 +44,11 @@ class DarwinPlatformPaths(IPlatformPaths):
             p.mkdir(parents=True, exist_ok=True)
             return p
 
-        # Check legacy ~/.artemis or ~/.gemini/jetski directory if it exists
+        # Check legacy ~/.gemini/antigravity, ~/.artemis, or ~/.gemini/jetski directory if it exists
+        legacy_antigravity = self._home / ".gemini" / "antigravity"
+        if legacy_antigravity.exists():
+            return legacy_antigravity
+
         legacy_artemis = self._home / ".artemis"
         if legacy_artemis.exists():
             return legacy_artemis
