@@ -191,6 +191,7 @@ if __name__ == "__main__":
     out_file = os.path.join(assets_dir, "artemis-banner.png")
     out_file_cn = os.path.join(assets_dir, "artemis-banner-cn.png")
     out_file_en = os.path.join(assets_dir, "artemis-banner-en.png")
+    out_file_kr = os.path.join(assets_dir, "artemis-banner-kr.png")
 
     generate_banner(
         bg_path=bg_file,
@@ -207,4 +208,5 @@ if __name__ == "__main__":
     if os.path.exists(out_file):
         shutil.copyfile(out_file, out_file_cn)
         shutil.copyfile(out_file, out_file_en)
-        print(f"Synchronized copy to: {out_file_cn} and {out_file_en}")
+        shutil.copyfile(out_file, out_file_kr)
+        print(f"Synchronized copy to: {out_file_cn}, {out_file_en}, and {out_file_kr}")
