@@ -870,6 +870,36 @@ invoke_llm_with_timeout_message = LLMWaitNotice(
 ).__call__
 
 
+def get_node_model(
+    ctx: ArtemisContext | None,
+    name: str,
+    *,
+    model_name: str,
+    is_utils: bool = False,
+    temperature: float | None = None,
+) -> BaseChatModel:
+    """Build a raw model for ``name``'s configured provider, overriding only the model.
+
+    Callers that pin a specific lightweight model still have to honour the
+    provider the operator configured. ``get_google_llm`` hard-codes
+    ``ModelProvider.GOOGLE``, so pinning a model there sends an OpenAI-compatible
+    deployment to the Gemini client and fails on an empty ``GOOGLE_API_KEY``.
+
+    Returns a raw model rather than a ``RobustChatModelWrapper``, matching what
+    ``get_google_llm`` returned, so callers keep metering their own calls.
+
+    Without a context there is no configuration to read and no provider to
+    honour, so Google stays the default for that case alone.
+    """
+    if ctx is None:
+        return get_google_llm(model_name=model_name, temperature=temperature)
+    endpoint = _resolve_endpoint(ctx, name, is_utils=is_utils)
+    update: dict[str, Any] = {"model_name": model_name}
+    if temperature is not None:
+        update["temperature"] = temperature
+    return ModelFactory.create_model(endpoint.model_copy(update=update))
+
+
 # Backward compatible factory functions delegating to ModelFactory
 def get_google_llm(
     model_name: str = "gemini-3.8-flash",
