@@ -39,6 +39,7 @@ logger = get_logger(__name__)
 
 
 from artemis.agents.prompt_assembly import render_tool_enum, resolve_available
+from artemis.config import resolve_explorer_version
 from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER
 
 
@@ -260,12 +261,14 @@ def _checkpoint_max_repairs(ctx: ArtemisContext) -> int:
 def _grammar_render_context(ctx: ArtemisContext) -> dict:
     """Template variables shared by the static and legacy system renders."""
     midway, final, verification_active = _operator_grammar_flags(ctx)
+    explorer_tier = resolve_explorer_version(ctx, agent_or_profile_name="operator")
     return {
         "plan_grammar": render_plan_grammar_spec(midway=midway, final=final),
         "verification_active": verification_active,
         "checks_active": midway or final,
         "midway_checks_active": midway,
         "checkpoint_max_repairs": _checkpoint_max_repairs(ctx),
+        "explorer_tier": explorer_tier,
     }
 
 

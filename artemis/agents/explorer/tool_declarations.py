@@ -95,7 +95,10 @@ UNIVERSAL_EXPLORER_TOOLS = [
         "type": "function",
         "function": {
             "name": "ask_image_processor",
-            "description": ("[Transformation] A scripting tool for pixel-level image processing."),
+            "description": (
+                "[Transformation] A scripting tool for pixel-level image processing,"
+                " transformations, and spot pixel/color inspection."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -274,10 +277,10 @@ NATIVE_EXPLORER_TOOL_DECLARATIONS = [
     types.FunctionDeclaration(
         name="ask_image_processor",
         description=(
-            "[Transformation] A scripting tool for pixel-level image"
-            " processing. CAUTION: This tool is slow and expensive. Returns"
-            " a summary of the operations performed and new image IDs,"
-            " along with new labels and screen coordinates."
+            "[Transformation] A scripting tool for pixel-level image processing,"
+            " transformations, and spot pixel/color inspection. CAUTION: This tool is"
+            " slow and expensive. Returns a summary of the operations performed and"
+            " new image IDs, along with new labels and screen coordinates."
         ),
         parameters=types.Schema(
             type=types.Type.OBJECT,

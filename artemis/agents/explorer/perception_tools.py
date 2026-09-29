@@ -630,3 +630,4 @@ class PerceptionToolsMixin:
                 "text": f"Error: Region inspection failed: {e}",
                 "image_path": None,
             }
+

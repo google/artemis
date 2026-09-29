@@ -33,6 +33,12 @@ ASK_EXPLORER_DESCRIPTION = (
     " coordinate, so you can act on it right away."
 )
 
+ASK_EXPLORER_ULTRA_DESCRIPTION = (
+    ASK_EXPLORER_DESCRIPTION
+    + " Explorer can also inspect pixel data to identify color codes and"
+    " disambiguate visually similar targets like subtle color swatches."
+)
+
 ASK_EXPLORER_QUERY_DESCRIPTION = (
     "What to find, described the way you see it on the screenshot: visible"
     " text, icon shape, color, position, or nearby landmarks (e.g. 'gear icon"
