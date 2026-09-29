@@ -43,10 +43,21 @@ class JsonTransport:
         headers: Mapping[str, str] | None = None,
         ssl_context: ssl.SSLContext | None = None,
     ) -> None:
+        if "?" in base_url or "#" in base_url:
+            raise ValueError("base_url must not contain a query or fragment")
         normalized = base_url.rstrip("/")
-        parsed = urlsplit(normalized)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        try:
+            parsed = urlsplit(normalized)
+            hostname = parsed.hostname
+            parsed.port
+        except ValueError as exc:
+            raise ValueError(
+                "base_url must be an absolute http:// or https:// URL with a valid host and port"
+            ) from exc
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or not hostname:
             raise ValueError("base_url must be an absolute http:// or https:// URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("base_url must not include userinfo")
         if timeout <= 0:
             raise ValueError("timeout must be greater than zero")
 
