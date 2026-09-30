@@ -25,6 +25,10 @@ async def test_operator_shell_tools():
         "click": {"target": 1, "times": 1, "delay_ms": 100},
         "input_text": {"text": "hello", "target": 1, "clear_exist": True},
         "swipe": {"gesture": "up"},
+        "perform_gesture": {
+            "phases": [{"kind": "long_press_drag", "start": [300, 400], "end": [650, 550]}],
+            "target_description": "move the selected object",
+        },
         "press_key": {"key": "ENTER"},
         "manage_app": {"action": "launch", "app_name": "Settings"},
         "wait_for_delay": {"time_in_ms": 1000},

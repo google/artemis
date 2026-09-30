@@ -1439,5 +1439,295 @@
       "type": "object"
     },
     "outputSchema": null
+  },
+  "perform_gesture": {
+    "description": "[ACTION] Perform continuous touch gestures that a normal swipe cannot express: simultaneous multi-finger input, continuous holds and drags, or delayed release. Coordinates use 0-1000 screen space. In explicit phases, pointers move together; a one-point path holds still. Keep the same pointer IDs and join endpoints across phases to maintain contact until the final release. Optional control_points define a cubic Bezier path with two endpoints and two controls. Alternatively, provide one long_press_drag entry with start and end coordinates and optional control_points. The endpoint is freely chosen, including inside the screen. duration_ms is movement time; release_delay_ms is the endpoint hold before lifting (zero releases immediately). Observe the screen afterward to verify the intended effect.",
+    "inputSchema": {
+      "$defs": {
+        "GesturePhase": {
+          "additionalProperties": false,
+          "properties": {
+            "duration_ms": {
+              "maximum": 5000,
+              "minimum": 1,
+              "title": "Duration Ms",
+              "type": "integer"
+            },
+            "pointers": {
+              "items": {
+                "$ref": "#/$defs/GesturePointer"
+              },
+              "maxItems": 10,
+              "minItems": 1,
+              "title": "Pointers",
+              "type": "array"
+            }
+          },
+          "required": [
+            "duration_ms",
+            "pointers"
+          ],
+          "title": "GesturePhase",
+          "type": "object"
+        },
+        "GesturePointer": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "maximum": 9,
+              "minimum": 0,
+              "title": "Id",
+              "type": "integer"
+            },
+            "path": {
+              "items": {
+                "items": {
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "maxItems": 128,
+              "minItems": 1,
+              "title": "Path",
+              "type": "array"
+            },
+            "control_points": {
+              "anyOf": [
+                {
+                  "items": {
+                    "items": {
+                      "maximum": 1000,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Two cubic Bezier control points. When supplied, path must contain only start and end; Android builds the curve natively.",
+              "title": "Control Points"
+            }
+          },
+          "required": [
+            "id",
+            "path"
+          ],
+          "title": "GesturePointer",
+          "type": "object"
+        },
+        "LongPressDrag": {
+          "additionalProperties": false,
+          "description": "Hold, move to a caller-selected endpoint, optionally dwell, then release.",
+          "properties": {
+            "kind": {
+              "const": "long_press_drag",
+              "title": "Kind",
+              "type": "string"
+            },
+            "start": {
+              "items": {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "title": "Start",
+              "type": "array"
+            },
+            "end": {
+              "items": {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "title": "End",
+              "type": "array"
+            },
+            "control_points": {
+              "anyOf": [
+                {
+                  "items": {
+                    "items": {
+                      "maximum": 1000,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Two cubic Bezier controls between start and end. Omit for a straight path.",
+              "title": "Control Points"
+            },
+            "duration_ms": {
+              "default": 800,
+              "maximum": 5000,
+              "minimum": 1,
+              "title": "Duration Ms",
+              "type": "integer"
+            },
+            "hold_ms": {
+              "anyOf": [
+                {
+                  "maximum": 5000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Omit to use the device long-press timeout plus 150ms.",
+              "title": "Hold Ms"
+            },
+            "release_delay_ms": {
+              "default": 0,
+              "description": "Keep the same finger down at the endpoint for this long, then lift. Zero lifts immediately after moving; independent of movement duration.",
+              "maximum": 5000,
+              "minimum": 0,
+              "title": "Release Delay Ms",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "start",
+            "end"
+          ],
+          "title": "LongPressDrag",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "phases": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GesturePhase"
+              },
+              {
+                "$ref": "#/$defs/LongPressDrag"
+              }
+            ]
+          },
+          "title": "Phases",
+          "type": "array"
+        }
+      },
+      "required": [
+        "phases"
+      ],
+      "title": "perform_gestureArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ActionCode": {
+          "description": "Machine-readable outcome classification for a device action.",
+          "enum": [
+            "OK",
+            "INVALID_ARGS",
+            "TARGET_NOT_FOUND",
+            "DEVICE_ERROR",
+            "PACKAGE_NOT_FOUND",
+            "TIMEOUT",
+            "UNSUPPORTED"
+          ],
+          "title": "ActionCode",
+          "type": "string"
+        }
+      },
+      "description": "Outcome of one device action, independent of any transport or agent.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ActionCode"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "normalized_coordinates": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Coordinates"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "action",
+        "message"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    }
   }
 }

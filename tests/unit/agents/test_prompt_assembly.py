@@ -33,6 +33,7 @@ OPERATOR_DEVICE_TOOLS = (
     "click",
     "input_text",
     "swipe",
+    "perform_gesture",
     "press_key",
     "manage_app",
     "wait_for_delay",
@@ -131,23 +132,25 @@ def test_reduced_enums_stay_well_formed():
         available_tools=OPERATOR_PROMPT_TOOLSET - {"manage_app", "wait_for_delay"},
     )
     assert (
-        "Physical device actions (`click`, `input_text`, `swipe`, `press_key`, `long_press`)" in out
+        "Physical device actions (`click`, `input_text`, `swipe`, `perform_gesture`, `press_key`, `long_press`)"
+        in out
     )
     assert (
-        "Turn-Ending Action (`click`, `swipe`, `input_text`, `long_press`, or `press_key`)" in out
+        "Turn-Ending Action (`click`, `swipe`, `perform_gesture`, `input_text`, `long_press`, or `press_key`)"
+        in out
     )
 
 
 def test_full_set_enum_slots_render_verbatim():
-    """With every tool present the historical enumeration wording is reproduced."""
+    """The new primitive appears alongside the existing physical actions."""
     template = load_operator_prompts()["main_template"]
     out = apply_operator_prompt_contract(template)
     assert (
-        "Physical device actions (`click`, `input_text`, `swipe`, `press_key`,"
+        "Physical device actions (`click`, `input_text`, `swipe`, `perform_gesture`, `press_key`,"
         " `manage_app`, `wait_for_delay`, `long_press`)" in out
     )
     assert (
-        "Turn-Ending Action (`click`, `swipe`, `input_text`, `long_press`,"
+        "Turn-Ending Action (`click`, `swipe`, `perform_gesture`, `input_text`, `long_press`,"
         " `press_key`, `manage_app`, or `wait_for_delay`)" in out
     )
     assert "Helper/Subagent tools (`ask_explorer`, `ask_diagnoser`, `video_analyzer`)" in out
@@ -160,6 +163,21 @@ def test_full_set_enum_slots_render_verbatim():
     # analyze_task_output is not advertised.
     assert "`save_note`, and" not in out
     assert "analyze_task_output" not in out
+
+
+def test_without_gesture_the_upstream_action_enumerations_are_unchanged():
+    out = apply_operator_prompt_contract(
+        load_operator_prompts()["main_template"],
+        available_tools=OPERATOR_PROMPT_TOOLSET - {"perform_gesture"},
+    )
+    assert (
+        "Physical device actions (`click`, `input_text`, `swipe`, `press_key`,"
+        " `manage_app`, `wait_for_delay`, `long_press`)" in out
+    )
+    assert (
+        "Turn-Ending Action (`click`, `swipe`, `input_text`, `long_press`,"
+        " `press_key`, `manage_app`, or `wait_for_delay`)" in out
+    )
 
 
 # --- Flash prompt assembly -----------------------------------------------------------
