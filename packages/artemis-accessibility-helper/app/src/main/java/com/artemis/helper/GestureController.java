@@ -23,6 +23,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class GestureController {
 
+    // Owned only by ContinuousGesture; ordinary actions retain their dispatch semantics.
+    static final AtomicBoolean INPUT_BUSY = new AtomicBoolean(false);
+
     private static final String TAG = "ArtemisGestureCtrl";
     private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
 
@@ -162,12 +165,18 @@ public final class GestureController {
             final GestureDescription gesture,
             long timeoutMs
     ) {
+        if (INPUT_BUSY.get()) return false;
         final CountDownLatch latch = new CountDownLatch(1);
         final AtomicBoolean result = new AtomicBoolean(false);
 
         MAIN_HANDLER.post(new Runnable() {
             @Override
             public void run() {
+                // A continuous gesture may have started while this input was queued.
+                if (INPUT_BUSY.get()) {
+                    latch.countDown();
+                    return;
+                }
                 try {
                     service.dispatchGesture(gesture, new AccessibilityService.GestureResultCallback() {
                         @Override

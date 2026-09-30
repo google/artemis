@@ -413,6 +413,51 @@ class AccessibilityClient:
     def tap(self, x: float, y: float) -> bool:
         return self._rpc("tap", {"x": x, "y": y})
 
+    def perform_gesture(self, phases: list[dict], request_id: str) -> dict[str, Any]:
+        from artemis.mcp.gestures import gesture_duration_bound_ms, validate_phases
+
+        phases = validate_phases(phases)
+        info = json.loads(self._http("/ping").decode("utf-8"))
+        if "perform_gesture" not in info.get("capabilities", []):
+            return {
+                "success": False,
+                "status": "unsupported",
+                "error": "Upgrade Accessibility Helper: perform_gesture is not supported",
+            }
+        long_press_drag = phases[0].get("kind") == "long_press_drag"
+        if long_press_drag and "gesture_long_press_drag" not in info.get("capabilities", []):
+            return {
+                "success": False,
+                "status": "unsupported",
+                "error": "Upgrade Accessibility Helper: long-press dragging is not supported",
+            }
+        if any(
+            "control_points" in phase
+            or any("control_points" in p for p in phase.get("pointers", []))
+            for phase in phases
+        ) and ("gesture_cubic_bezier" not in info.get("capabilities", [])):
+            return {
+                "success": False,
+                "status": "unsupported",
+                "error": "Upgrade Accessibility Helper: native cubic Bezier is not supported",
+            }
+        if (len(phases) > 1 or long_press_drag) and not info.get("gesture_continuation", False):
+            return {
+                "success": False,
+                "status": "unsupported",
+                "error": "Continuous gestures require Android 8.0+",
+            }
+        timeout = gesture_duration_bound_ms(phases) / 1000 + 10
+        payload = {"cmd": "perform_gesture", "request_id": request_id, "phases": phases}
+        return json.loads(self._http("/action", payload, timeout=timeout).decode("utf-8"))
+
+    def cancel_gesture(self, request_id: str) -> dict[str, Any]:
+        return json.loads(
+            self._http("/action", {"cmd": "cancel_gesture", "request_id": request_id}).decode(
+                "utf-8"
+            )
+        )
+
     def swipe(self, x1: float, y1: float, x2: float, y2: float, duration_ms: int = 300) -> bool:
         return self._rpc("swipe", {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "duration": duration_ms})
 

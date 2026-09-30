@@ -106,6 +106,22 @@ class MockDeviceDriver(BaseDeviceDriver):
         )
         return True
 
+    async def perform_gesture(self, phases: list[dict]) -> dict:
+        from artemis.mcp.gestures import validate_phases
+
+        phases = validate_phases(phases)
+        self.action_history.append({"action": "perform_gesture", "phases": phases})
+        return {
+            "success": True,
+            "status": "completed",
+            "release_confirmed": True,
+            "phases_completed": (
+                2 + int(phases[0].get("release_delay_ms", 0) > 0)
+                if phases[0].get("kind") == "long_press_drag"
+                else len(phases)
+            ),
+        }
+
     async def swipe(
         self,
         start_x: int,

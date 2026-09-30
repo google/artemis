@@ -75,6 +75,8 @@ class Actuator(Protocol):
         clear_exist: bool = True,
     ) -> ActionResult: ...
 
+    async def perform_gesture(self, phases: list[dict]) -> ActionResult: ...
+
     async def swipe(
         self,
         start: tuple[int, int],
