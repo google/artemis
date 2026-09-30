@@ -351,6 +351,20 @@ class McpActionExecutor:
                 recorded,
             )
 
+        if raw_name == "perform_gesture":
+            from artemis.mcp.gestures import validate_phases
+
+            try:
+                phases = validate_phases(args.get("phases"))
+            except (ValueError, TypeError) as exc:
+                raise _ArgError(f"Invalid gesture: {exc}") from exc
+            return (
+                "perform_gesture",
+                {"phases": phases},
+                None,
+                self._require_description(args, raw_name),
+            )
+
         if raw_name == "swipe":
             return self._translate_swipe(args, state, index_elements=index_elements)
 

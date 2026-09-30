@@ -56,6 +56,16 @@ class UnifiedMobileController(UnifiedMobileControllerBase):
         super().__init__(ctx, get_driver(ctx))
         self._segment_cache: dict[tuple[str, int, float, float], VideoRecordingResult] = {}
 
+    async def perform_gesture(self, phases: list[dict]) -> dict:
+        method = getattr(self._driver, "perform_gesture", None)
+        if method is None:
+            return {
+                "success": False,
+                "status": "unsupported",
+                "error": "Driver has no continuous multi-touch support",
+            }
+        return await method(phases)
+
     @staticmethod
     async def _spawn_scrcpy(command: list[str]) -> asyncio.subprocess.Process:
         kwargs: dict[str, Any] = {

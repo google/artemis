@@ -64,7 +64,9 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from langchain_core.tools import StructuredTool
 from mcp.types import CallToolResult
-from pydantic import Field, create_model
+from pydantic import BaseModel, Field, create_model
+
+from artemis.mcp.gestures import GestureInput, validate_phases
 
 from artemis.core.tool_declaration import ToolDeclaration
 from artemis.mcp.action_types import ActionResult
@@ -84,6 +86,21 @@ __all__ = [
     "tool_declaration",
     "wire_dialects",
 ]
+
+
+GESTURE_DESCRIPTION = (
+    "[ACTION] Perform continuous touch gestures that a normal swipe cannot express: "
+    "simultaneous multi-finger input, continuous holds and drags, or delayed release. "
+    "Coordinates use 0-1000 screen space. In explicit phases, pointers move together; "
+    "a one-point path holds still. Keep the same pointer IDs and join endpoints across "
+    "phases to maintain contact until the final release. Optional control_points "
+    "define a cubic Bezier path with two endpoints and two controls. "
+    "Alternatively, provide one long_press_drag entry with start and end coordinates "
+    "and optional control_points. The endpoint is freely chosen, including inside the screen. "
+    "duration_ms is movement time; "
+    "release_delay_ms is the endpoint hold before lifting (zero releases immediately). "
+    "Observe the screen afterward to verify the intended effect."
+)
 
 
 # --- Spec structure ------------------------------------------------------------------
@@ -204,6 +221,10 @@ async def _wire_input_text(actuator: Any, a: dict[str, Any]) -> ActionResult:
     target = a["target"]
     norm = (int(target[0]), int(target[1])) if target else None
     return await actuator.input_text(a["text"], norm, clear_exist=a["clear_exist"])
+
+
+async def _wire_perform_gesture(actuator: Any, a: dict[str, Any]) -> ActionResult:
+    return await actuator.perform_gesture(validate_phases(a["phases"]))
 
 
 async def _wire_swipe(actuator: Any, a: dict[str, Any]) -> ActionResult:
@@ -464,6 +485,27 @@ _SPECS: tuple[ActionSpec, ...] = (
         ),
     ),
     ActionSpec(
+        name="perform_gesture",
+        operator=OperatorDialect(
+            description=GESTURE_DESCRIPTION
+            + " target_description states the intended surface/objects and gesture purpose, not a claimed observation.",
+            params=(
+                ParamSpec(
+                    "phases",
+                    list[GestureInput],
+                    "Explicit continuous phases or a single native long_press_drag object.",
+                ),
+                ParamSpec("target_description", str, "Target surface/objects and gesture purpose."),
+            ),
+        ),
+        wire=WireDialect(
+            description=GESTURE_DESCRIPTION,
+            params=(ParamSpec("phases", list[GestureInput]),),
+            bind=_wire_perform_gesture,
+        ),
+        differences="target_description is recorded by the agent and is not sent to the helper.",
+    ),
+    ActionSpec(
         name="swipe",
         operator=OperatorDialect(
             description=(
@@ -686,6 +728,7 @@ OPERATOR_SHELL_ORDER: tuple[str, ...] = (
     "click",
     "input_text",
     "swipe",
+    "perform_gesture",
     "press_key",
     "manage_app",
     "wait_for_delay",
@@ -765,6 +808,20 @@ def _json_schema(annotation: Any) -> dict[str, Any]:
     ``required`` flag says so); they never appear in the projected schema, so
     the declaration carries no ``null`` alternatives or ``default`` noise.
     """
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        schema = annotation.model_json_schema()
+        definitions = schema.get("$defs", {})
+
+        def inline(value):
+            if isinstance(value, list):
+                return [inline(v) for v in value]
+            if not isinstance(value, dict):
+                return value
+            if "$ref" in value:
+                return inline(definitions[value["$ref"].split("/")[-1]])
+            return {k: inline(v) for k, v in value.items() if k not in ("$defs", "title")}
+
+        return inline(schema)
     origin = get_origin(annotation)
     if origin in (Union, types.UnionType):
         members = [a for a in get_args(annotation) if a is not type(None)]

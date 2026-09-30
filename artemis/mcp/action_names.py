@@ -35,6 +35,7 @@ OPERATOR_ACTION_TO_CANONICAL: dict[str, str] = {
     "tap": "click",
     "long_press_on": "long_press",
     "swipe": "swipe",
+    "perform_gesture": "perform_gesture",
     "focus_and_input_text": "input_text",
     "focus_and_clear_text": "focus_and_clear_text",
     "erase_one_char": "erase_one_char",
@@ -105,6 +106,11 @@ def to_canonical_call(
             "target": [pair[0], pair[1]],
             "duration_ms": action_item.get("duration", 1000),
         }
+
+    if verb == "perform_gesture":
+        from artemis.mcp.gestures import validate_phases
+
+        return "perform_gesture", {"phases": validate_phases(action_item.get("phases"))}
 
     if verb == "swipe":
         coords = action_item.get("normalized_coordinates")

@@ -186,6 +186,32 @@ class AdbActuator:
             duration_ms=duration_ms,
         )
 
+    async def perform_gesture(self, phases: list[dict]) -> ActionResult:
+        from artemis.mcp.gestures import validate_phases
+
+        phases = validate_phases(phases)
+        result = await self.controller.perform_gesture(phases)
+        if not (
+            result.get("success") is True
+            and result.get("status") == "completed"
+            and result.get("release_confirmed") is True
+        ):
+            return ActionResult.failure(
+                "perform_gesture",
+                f"Gesture {result.get('status', 'failed')}: {result.get('error', 'input not completed')}",
+                code={
+                    "unsupported": ActionCode.UNSUPPORTED,
+                    "invalid_arguments": ActionCode.INVALID_ARGS,
+                    "timeout": ActionCode.TIMEOUT,
+                }.get(result.get("status"), ActionCode.DEVICE_ERROR),
+                detail=str(result),
+            )
+        return ActionResult.success(
+            "perform_gesture",
+            "Gesture completed. Observe the screen to verify the intended effect.",
+            detail=str(result),
+        )
+
     async def input_text(
         self,
         text: str,

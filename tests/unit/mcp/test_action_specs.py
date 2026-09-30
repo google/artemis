@@ -83,6 +83,7 @@ def test_tool_declarations_match_fixture():
         "LONG_PRESS_TOOL": "long_press",
         "INPUT_TEXT_TOOL": "input_text",
         "SWIPE_TOOL": "swipe",
+        "PERFORM_GESTURE_TOOL": "perform_gesture",
         "PRESS_KEY_TOOL": "press_key",
         "MANAGE_APP_TOOL": "manage_app",
         "WAIT_FOR_DELAY_TOOL": "wait_for_delay",
@@ -121,6 +122,7 @@ def test_validator_declaration_order_is_stable():
         "long_press",
         "input_text",
         "swipe",
+        "perform_gesture",
         "press_key",
         "read_note",
         "list_notes",
@@ -138,6 +140,18 @@ def _without_optional_noise(schema: dict) -> dict:
     ``default`` and the ``null`` alternative say "optional"; the declaration says
     that through ``required`` alone.
     """
+
+    # LangChain retains Pydantic titles inside array-item unions, while the
+    # declaration projector removes them. Compare semantics, retaining bounds,
+    # required fields, defaults inside models, and every union alternative.
+    def without_titles(value):
+        if isinstance(value, list):
+            return [without_titles(v) for v in value]
+        if isinstance(value, dict):
+            return {k: without_titles(v) for k, v in value.items() if k != "title"}
+        return value
+
+    schema = without_titles(schema)
     out = {k: v for k, v in schema.items() if k not in ("anyOf", "default")}
     if "anyOf" in schema:
         members = [m for m in schema["anyOf"] if m.get("type") != "null"]

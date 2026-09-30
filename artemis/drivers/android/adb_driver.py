@@ -254,6 +254,30 @@ class AndroidAdbDriver(BaseDeviceDriver):
     async def long_press(self, x: int, y: int, duration_ms: int = 1000) -> bool:
         return await self.tap(x=x, y=y, duration_ms=duration_ms)
 
+    async def perform_gesture(self, phases: list[dict]) -> dict:
+        from artemis.clients.accessibility_client import AccessibilityClient
+        from artemis.mcp.gestures import validate_phases
+        from uuid import uuid4
+
+        phases = validate_phases(phases)
+        client = AccessibilityClient(self.device_id, provision_on_connect=False)
+        request_id = uuid4().hex
+        task = asyncio.create_task(asyncio.to_thread(client.perform_gesture, phases, request_id))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The action request is never replayed. Ask the device to finish the current
+            # phase and lift its held contacts, then wait for the terminal reply.
+            try:
+                await asyncio.shield(asyncio.to_thread(client.cancel_gesture, request_id))
+                await asyncio.wait_for(asyncio.shield(task), timeout=10.0)
+            except Exception:
+                logger.warning(
+                    "Gesture cancellation could not be confirmed; device needs reconciliation"
+                )
+                task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            raise
+
     async def swipe(
         self,
         start_x: int,

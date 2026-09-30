@@ -1252,6 +1252,20 @@ class OperatorNode:
             )
             return actions, None
 
+        elif tool_name == "perform_gesture":
+            from artemis.mcp.gestures import validate_phases
+
+            try:
+                phases = validate_phases(args.get("phases"))
+                description = args.get("target_description")
+                if not isinstance(description, str) or not description.strip():
+                    raise ValueError("target_description is required for a gesture")
+            except (ValueError, TypeError) as exc:
+                return [], f"Invalid gesture: {exc}"
+            return [
+                {"action": "perform_gesture", "phases": phases, "target_description": description}
+            ], None
+
         elif tool_name == "swipe":
             kind, target, parsed_duration = parse_swipe_parameters(args, default_duration=None)
             duration = args.get("duration")

@@ -53,9 +53,10 @@ from artemis.memory.transcript import (
 )
 
 # SHA-256 snapshots of the legacy system message with the fixed inputs below.
+# Updated for perform_gesture in the physical/turn-ending action lists.
 # Update these when an intentional template change alters the rendered prompt.
-GOLDEN_EMPTY_PLAN = "513e0341014b9a2342f608ad4dd173b7dcf5704ce53ee028ba302a9a1b696f96"
-GOLDEN_SENTINEL_PLAN = "012fe1b08645266d5a7e518023e20fc6fbfa65d4f2d985847ebb06e0184c67ee"
+GOLDEN_EMPTY_PLAN = "5ce954de33ba8c77aa14597b1bd78539a48e3e11009626c70fc04fb98e157715"
+GOLDEN_SENTINEL_PLAN = "561f3e0717a6a5e09dee0bb9b79c9b28ed96afa9221258295f02222ac92d3370"
 
 SCREENSHOT_B64 = base64.b64encode(b"fake-jpeg-bytes").decode("utf-8")
 

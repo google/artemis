@@ -310,5 +310,194 @@
         ]
       }
     }
+  },
+  "PERFORM_GESTURE_TOOL": {
+    "type": "function",
+    "function": {
+      "name": "perform_gesture",
+      "description": "[ACTION] Perform continuous touch gestures that a normal swipe cannot express: simultaneous multi-finger input, continuous holds and drags, or delayed release. Coordinates use 0-1000 screen space. In explicit phases, pointers move together; a one-point path holds still. Keep the same pointer IDs and join endpoints across phases to maintain contact until the final release. Optional control_points define a cubic Bezier path with two endpoints and two controls. Alternatively, provide one long_press_drag entry with start and end coordinates and optional control_points. The endpoint is freely chosen, including inside the screen. duration_ms is movement time; release_delay_ms is the endpoint hold before lifting (zero releases immediately). Observe the screen afterward to verify the intended effect. target_description states the intended surface/objects and gesture purpose, not a claimed observation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "phases": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "duration_ms": {
+                      "maximum": 5000,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "pointers": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maximum": 9,
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "path": {
+                            "items": {
+                              "items": {
+                                "maximum": 1000,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "maxItems": 2,
+                              "minItems": 2,
+                              "type": "array"
+                            },
+                            "maxItems": 128,
+                            "minItems": 1,
+                            "type": "array"
+                          },
+                          "control_points": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "items": {
+                                    "maximum": 1000,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "maxItems": 2,
+                                  "minItems": 2,
+                                  "type": "array"
+                                },
+                                "maxItems": 2,
+                                "minItems": 2,
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Two cubic Bezier control points. When supplied, path must contain only start and end; Android builds the curve natively."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "path"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 10,
+                      "minItems": 1,
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "duration_ms",
+                    "pointers"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Hold, move to a caller-selected endpoint, optionally dwell, then release.",
+                  "properties": {
+                    "kind": {
+                      "const": "long_press_drag",
+                      "type": "string"
+                    },
+                    "start": {
+                      "items": {
+                        "maximum": 1000,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "maxItems": 2,
+                      "minItems": 2,
+                      "type": "array"
+                    },
+                    "end": {
+                      "items": {
+                        "maximum": 1000,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "maxItems": 2,
+                      "minItems": 2,
+                      "type": "array"
+                    },
+                    "control_points": {
+                      "anyOf": [
+                        {
+                          "items": {
+                            "items": {
+                              "maximum": 1000,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "maxItems": 2,
+                            "minItems": 2,
+                            "type": "array"
+                          },
+                          "maxItems": 2,
+                          "minItems": 2,
+                          "type": "array"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Two cubic Bezier controls between start and end. Omit for a straight path."
+                    },
+                    "duration_ms": {
+                      "default": 800,
+                      "maximum": 5000,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "hold_ms": {
+                      "anyOf": [
+                        {
+                          "maximum": 5000,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Omit to use the device long-press timeout plus 150ms."
+                    },
+                    "release_delay_ms": {
+                      "default": 0,
+                      "description": "Keep the same finger down at the endpoint for this long, then lift. Zero lifts immediately after moving; independent of movement duration.",
+                      "maximum": 5000,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "start",
+                    "end"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "description": "Explicit continuous phases or a single native long_press_drag object."
+          },
+          "target_description": {
+            "type": "string",
+            "description": "Target surface/objects and gesture purpose."
+          }
+        },
+        "required": [
+          "phases",
+          "target_description"
+        ]
+      }
+    }
   }
 }

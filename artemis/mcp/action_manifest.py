@@ -79,6 +79,7 @@ OPTIONAL_ACTIONS: frozenset[str] = frozenset(
         "long_press",
         "input_text",
         "swipe",
+        "perform_gesture",
         "press_key",
         "manage_app",
         "wait_for_delay",

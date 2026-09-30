@@ -205,7 +205,9 @@ async def _process_action(
         if burst:
             max_local_retries = 1
         else:
-            max_local_retries = 1 if action_name == "launch_app" else 2
+            # A timed-out gesture may already be dispatched; never replay it.
+            # Keep the existing retry policy for every other action.
+            max_local_retries = 1 if action_name in ("launch_app", "perform_gesture") else 2
         outcome.success, outcome.error_msg = await _attempt_local_execution(
             node,
             session,

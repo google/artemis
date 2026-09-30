@@ -338,6 +338,10 @@ public class CommandServer extends Thread {
                         resp.put("success", GestureController.longPress(service, lpx, lpy, lpDuration, 2500L));
                     }
                     break;
+                case "perform_gesture":
+                    return ContinuousGesture.execute(service, params);
+                case "cancel_gesture":
+                    return ContinuousGesture.cancel(params.optString("request_id", ""));
                 case "swipe":
                     float x1 = (float) params.optDouble("x1", -1.0);
                     float y1 = (float) params.optDouble("y1", -1.0);
@@ -389,6 +393,10 @@ public class CommandServer extends Thread {
         r.put("version_name", service.getVersionName());
         r.put("protocol_version", ArtemisAccessibilityService.PROTOCOL_VERSION);
         r.put("port", port);
+        r.put("capabilities", new org.json.JSONArray().put("perform_gesture")
+                .put("gesture_cubic_bezier").put("gesture_long_press_drag"));
+        r.put("gesture_continuation", android.os.Build.VERSION.SDK_INT >= 26);
+        r.put("gesture_max_pointers", Math.min(10, android.accessibilityservice.GestureDescription.getMaxStrokeCount()));
         r.put("auth_required", true);
         r.put("token_set", TokenStore.isSet());
         r.put("authenticated", authed);
