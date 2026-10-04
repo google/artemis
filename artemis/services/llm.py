@@ -43,6 +43,7 @@ from artemis.config import (
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandler
 from artemis.llm.google import is_google_chat_model, is_google_provider
+from artemis.llm.google.provider import is_gemini_model
 from artemis.llm.reliability import (
     CircuitBreaker,
     FailureCategory,
@@ -891,6 +892,104 @@ def get_google_llm(
         enable_grounding=enable_grounding,
     )
     return ModelFactory.create_model(ep)
+
+
+def get_lens_llm(
+    ctx: ArtemisContext | None,
+    model_name: str,
+    provider: str | None = None,
+    *,
+    temperature: float = 0.0,
+    timeout: float = 60.0,
+) -> BaseChatModel:
+    """Provider-aware raw-model factory for step-memory lens calls.
+
+    Resolves the provider for an explicitly configured lens model (step
+    summarizer, chunk-capsule lens) and returns the *raw* chat model —
+    deliberately not wrapped in :class:`RobustChatModelWrapper`, because the
+    lens services own their bounded retry/timeout loops and meter raw calls
+    explicitly (``lens:*`` sources).
+
+    Resolution order:
+    1. Explicit ``provider`` knob (new config field) — validated via
+       :meth:`ModelProvider.from_string`, so typos fail fast with the
+       standard "Unknown LLM provider" error.
+    2. Gemini model names (optionally ``google/``- or ``gemini/``-prefixed)
+       route to GOOGLE. This keeps every pre-existing config byte-for-byte
+       compatible: a bare ``gemini-*`` name never needs a provider knob.
+    3. Anything else inherits the provider from the LLM config's
+       ``summarizer`` node (which itself inherits the global ``default``
+       block). Namespaced model IDs such as ``tensorx/deepseek/...`` are
+       passed through verbatim — never parsed as provider prefixes.
+    4. On any resolution failure, fall back to CUSTOM (the OpenAI-compatible
+       gateway), matching how utils nodes behave when no config is live.
+    """
+    # 1. Explicit provider knob wins and must be a known provider.
+    explicit = str(provider or "").strip()
+    if explicit:
+        resolved = ModelProvider.from_string(explicit)
+        llm_logger.info(
+            f"get_lens_llm: provider override {resolved.value!r} for model {model_name!r}"
+        )
+    else:
+        # 2. Gemini names — bare, or google/gemini-prefixed — stay on GOOGLE.
+        bare = str(model_name or "").strip()
+        prefix, sep, rest = bare.partition("/")
+        if is_gemini_model(bare) or (sep and rest and prefix.lower() in ("google", "gemini")):
+            resolved = ModelProvider.GOOGLE
+        else:
+            # 3. Inherit from the summarizer node's config (-> default block).
+            resolved = _inherit_lens_provider(ctx)
+    _warn_if_non_google_routes_to_google(resolved, model_name)
+    ep = ModelEndpoint(
+        provider=resolved,
+        model_name=model_name,
+        temperature=temperature,
+        timeout_seconds=timeout,
+    )
+    llm_logger.info(f"get_lens_llm: resolved {resolved.value}:{model_name}")
+    return ModelFactory.create_model(ep)
+
+
+def _inherit_lens_provider(ctx: ArtemisContext | None) -> ModelProvider:
+    """Inherit the lens provider from the summarizer node's LLM config.
+
+    ``summarizer`` is the natural donor: it inherits the global ``default``
+    block exactly like every other node, and the step-memory runtime already
+    reads the summarizer fallback for capsule availability (see
+    ``_resolve_capsule_fallback_model``). Unknown/namespaced model IDs inherit
+    the donor's provider verbatim — gateway namespaces like ``tensorx/...``
+    are never parsed as providers here.
+    """
+    try:
+        llm_cfg = getattr(ctx, "llm_config", None) if ctx is not None else None
+        if llm_cfg is None:
+            from artemis.config.llm import get_default_llm_config as _get_default
+
+            llm_cfg = _get_default()
+        donor = getattr(llm_cfg, "summarizer", None)
+        provider_val = getattr(donor, "provider", None)
+        if provider_val:
+            return ModelProvider.from_string(provider_val)
+    except Exception as exc:
+        llm_logger.debug(f"Lens provider inheritance failed; defaulting to custom: {exc}")
+    return ModelProvider.CUSTOM
+
+
+def _warn_if_non_google_routes_to_google(provider: ModelProvider, model_name: str) -> None:
+    """Diagnosability guard: flag Gemini-API routing of non-Gemini names.
+
+    The historical step-summarizer 404 came from a non-Google model ID being
+    sent verbatim to the Gemini Developer API; the request URL was fine, so
+    nothing else in the stack could have flagged it. Warn loudly when the
+    resolved provider would repeat that pattern.
+    """
+    if provider == ModelProvider.GOOGLE and not is_gemini_model(model_name):
+        llm_logger.warning(
+            f"get_lens_llm: non-Gemini model {model_name!r} is routed to the Google "
+            "Gemini API and will likely 404; set an explicit 'provider' or inherit a "
+            "non-google default provider for this model."
+        )
 
 
 def _resolve_endpoint(

@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from artemis.config.constants import (
     AGENT_CONFIG_FILENAME,
@@ -27,6 +27,7 @@ from artemis.config.constants import (
 )
 from artemis.config.paths import ROOT_DIR, get_config_path
 from artemis.llm.google import VideoProcessing
+from artemis.llm.router import ModelProvider
 from third_party.mobile_use.utils.file import load_jsonc
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -392,7 +393,21 @@ class StepSummarizerConfig(BaseModel):
     )
     model: str = Field(
         default="gemini-2.5-flash-lite",
-        description="Lightweight model used for background step state summarization.",
+        description=(
+            "Lightweight model used for background step state summarization."
+            " Gemini names route to the Google provider automatically; any other"
+            " model ID needs 'provider' set explicitly or inherits the LLM"
+            " config's summarizer node provider (itself inheriting 'default')."
+        ),
+    )
+    provider: str | None = Field(
+        default=None,
+        description=(
+            "Explicit provider for the step summarizer model ('google',"
+            " 'custom', 'openai', ...). None (default) auto-resolves: Gemini"
+            " model names use Google; other IDs inherit the summarizer node's"
+            " provider from the LLM config."
+        ),
     )
     prune_history_xml: bool = Field(
         default=True,
@@ -408,6 +423,14 @@ class StepSummarizerConfig(BaseModel):
         ),
     )
     model_config = {"extra": "allow"}
+
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, v: str | None) -> str | None:
+        """Fail fast on unknown provider names at config-load time."""
+        if v is not None and str(v).strip():
+            ModelProvider.from_string(v)
+        return v
 
 
 class MemoryRuntimeConfig(BaseModel):
@@ -689,7 +712,23 @@ class MemoryChunkingConfig(BaseModel):
     )
     model: str = Field(
         default="gemini-3.8-flash",
-        description="Model used for the chunk-level StepCapsuleLens (bands ①+②).",
+        description=(
+            "Model used for the chunk-level StepCapsuleLens (bands ①+②)."
+            " Gemini names route to the Google provider automatically; any"
+            " other model ID needs 'provider' set explicitly or inherits the"
+            " LLM config's summarizer node provider (itself inheriting"
+            " 'default')."
+        ),
+    )
+    provider: str | None = Field(
+        default=None,
+        description=(
+            "Explicit provider for the chunk capsule model ('google',"
+            " 'custom', 'openai', ...). None (default) auto-resolves: Gemini"
+            " model names use Google; other IDs inherit the summarizer node's"
+            " provider from the LLM config. Also applies to the capsule"
+            " fallback model resolved from the summarizer node's fallback."
+        ),
     )
     max_chunks: int = Field(
         default=8,
@@ -718,6 +757,14 @@ class MemoryChunkingConfig(BaseModel):
                 f" (got min_steps={self.min_steps}, max_steps={self.max_steps})."
             )
         return self
+
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, v: str | None) -> str | None:
+        """Fail fast on unknown provider names at config-load time."""
+        if v is not None and str(v).strip():
+            ModelProvider.from_string(v)
+        return v
 
     model_config = {"extra": "allow"}
 

@@ -45,7 +45,6 @@ from uuid import uuid4
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from artemis.llm.google import is_google_provider
 from artemis.memory.step_memory import JobKey, StepLens, StepMemoryService
 from artemis.memory.transcript import format_session_offset
 from third_party.mobile_use.utils.logger import get_logger
@@ -295,10 +294,13 @@ class StepCapsuleLens(StepLens):
         llm: Any | None = None,
         *,
         ctx: Any = None,
+        model_provider: str | None = None,
         fallback_model_name: str | None = None,
+        fallback_model_provider: str | None = None,
         fallback_llm: Any | None = None,
     ):
         self._model_name = model_name or "gemini-3.8-flash"
+        self._model_provider = model_provider
         self._llm = llm
         self._ctx = ctx
         # Availability hardening: `chunking.model` is a dedicated model with no
@@ -309,6 +311,7 @@ class StepCapsuleLens(StepLens):
         self._fallback_model_name = (
             fallback_model_name if fallback_model_name != self._model_name else None
         )
+        self._fallback_model_provider = fallback_model_provider
         self._fallback_llm = fallback_llm
         try:
             self._prompt = self._PROMPT_PATH.read_text(encoding="utf-8")
@@ -323,17 +326,22 @@ class StepCapsuleLens(StepLens):
 
     def _get_llm(self):
         if self._llm is None:
-            from artemis.services.llm import get_google_llm
+            from artemis.services.llm import get_lens_llm
 
-            self._llm = get_google_llm(model_name=self._model_name, temperature=0.0)
+            self._llm = get_lens_llm(
+                self._ctx, self._model_name, self._model_provider, temperature=0.0
+            )
         return self._llm
 
     def _get_fallback_llm(self):
         if self._fallback_llm is None and self._fallback_model_name:
-            from artemis.services.llm import get_google_llm
+            from artemis.services.llm import get_lens_llm
 
-            self._fallback_llm = get_google_llm(
-                model_name=self._fallback_model_name, temperature=0.0
+            self._fallback_llm = get_lens_llm(
+                self._ctx,
+                self._fallback_model_name,
+                self._fallback_model_provider,
+                temperature=0.0,
             )
         return self._fallback_llm
 
@@ -892,6 +900,7 @@ class HistoryChunkManager:
         self._min_steps = max(1, min(self._max_steps, int(getattr(cc, "min_steps", 3) or 3)))
         self._target_source_tokens = int(getattr(cc, "target_source_tokens", 2000) or 2000)
         self._model_name = getattr(cc, "model", None) or "gemini-3.8-flash"
+        self._model_provider = getattr(cc, "provider", None)
         self._max_chunks = int(getattr(cc, "max_chunks", 8) or 8)
         # None uses max_chunks as the era cap.
         self._max_eras = int(getattr(cc, "max_eras", None) or self._max_chunks)
@@ -942,19 +951,29 @@ class HistoryChunkManager:
                 f"Memory runtime config unavailable; using capsule service defaults: {exc}",
                 exc_info=True,
             )
+        fallback_model, fallback_provider = self._resolve_capsule_fallback(ctx)
         lens = StepCapsuleLens(
             self._model_name,
             ctx=ctx,
-            fallback_model_name=self._resolve_capsule_fallback_model(ctx),
+            model_provider=self._model_provider,
+            fallback_model_name=fallback_model,
+            # A fallback block without its own provider rides the chunking
+            # 'provider' knob; resolve eagerly so the lens stores what it
+            # will actually use.
+            fallback_model_provider=fallback_provider or self._model_provider,
         )
         return ChunkCapsuleService(ctx, lens, **kwargs)
 
-    def _resolve_capsule_fallback_model(self, ctx: Any) -> str | None:
-        """Fallback model for capsule generation when `chunking.model` is down.
+    def _resolve_capsule_fallback(self, ctx: Any) -> tuple[str | None, str | None]:
+        """Fallback model + provider for capsule generation when `chunking.model` is down.
 
         Resolved from the LLM config's summarizer role (which inherits the
-        global default fallback unless overridden). Only same-provider (google)
-        fallbacks apply — the capsule lens rides the raw google model path.
+        global default fallback unless overridden). The fallback block carries
+        its own provider — that is how every other node's fallback resolves
+        (see ``_resolve_endpoint(use_fallback=True)``) — so it wins over the
+        chunking 'provider' knob. Any provider applies: the capsule lens rides
+        the provider-aware lens resolver, so a non-google summarizer fallback
+        (e.g. a gateway model) is now usable too.
         """
         try:
             llm_cfg = getattr(ctx, "llm_config", None) if ctx is not None else None
@@ -963,13 +982,13 @@ class HistoryChunkManager:
 
                 llm_cfg = get_default_llm_config()
             fallback = getattr(getattr(llm_cfg, "summarizer", None), "fallback", None)
-            provider = str(getattr(fallback, "provider", "") or "")
             model = getattr(fallback, "model", None)
-            if model and is_google_provider(provider) and model != self._model_name:
-                return str(model)
+            provider = getattr(fallback, "provider", None)
+            if model and model != self._model_name:
+                return str(model), (str(provider) if provider else None)
         except Exception as exc:
             logger.debug(f"Capsule fallback model resolution skipped: {exc}", exc_info=True)
-        return None
+        return None, None
 
     @property
     def capsule_service(self) -> StepMemoryService:

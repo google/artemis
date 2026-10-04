@@ -145,6 +145,35 @@ def test_legacy_default_does_not_override_memory_default():
     assert cfg.memory.runtime.retry_limit == 3
 
 
+def test_lens_provider_knobs_parse_and_default_to_none():
+    """The new provider knobs on step_summarizer and chunking parse from config
+    and default to None (auto-resolution)."""
+    cfg = AgentGlobalConfig.model_validate(
+        {
+            "flash": {
+                "step_summarizer": {
+                    "model": "tensorx/deepseek/deepseek-v4-flash",
+                    "provider": "custom",
+                }
+            },
+            "memory": {"chunking": {"model": "vendor/some-model", "provider": "openai"}},
+        }
+    )
+    assert cfg.flash.step_summarizer.model == "tensorx/deepseek/deepseek-v4-flash"
+    assert cfg.flash.step_summarizer.provider == "custom"
+    assert cfg.memory.chunking.model == "vendor/some-model"
+    assert cfg.memory.chunking.provider == "openai"
+
+
+def test_lens_provider_knob_rejects_unknown_provider():
+    with pytest.raises(Exception, match="Unknown LLM provider"):
+        AgentGlobalConfig.model_validate(
+            {"flash": {"step_summarizer": {"provider": "notaprovider"}}}
+        )
+    with pytest.raises(Exception, match="Unknown LLM provider"):
+        AgentGlobalConfig.model_validate({"memory": {"chunking": {"provider": "notaprovider"}}})
+
+
 def test_recall_and_similarity_defaults():
     """M4 defaults: recall block on, bounded; similarity hint on. The distance
     threshold was calibrated to 5 in M5 (2026-09-01 on-device dHash data:

@@ -467,6 +467,38 @@ async def test_visual_lens_receives_the_recorded_action_shape(mock_context):
     )
 
 
+def test_flash_runner_forwards_step_summarizer_provider(mock_context, monkeypatch):
+    """The configured step_summarizer 'provider' knob reaches the lens."""
+    from artemis.config.agent import AgentGlobalConfig
+    from artemis.agents.flash.summarizer import VisualStepSummarizer
+
+    captured = {}
+
+    # Patch at the runner's import site: the runner references the class
+    # directly, so intercept the construction kwargs wholesale.
+    monkeypatch.setattr(
+        "artemis.agents.flash.runner.VisualStepSummarizer",
+        lambda ctx, **kwargs: captured.update(kwargs) or Mock(),
+    )
+    cfg = AgentGlobalConfig.model_validate(
+        {
+            "flash": {
+                "step_summarizer": {
+                    "model": "tensorx/deepseek/deepseek-v4-flash",
+                    "provider": "custom",
+                }
+            }
+        }
+    )
+    monkeypatch.setattr("artemis.agents.flash.runner.load_agent_config", lambda: cfg, raising=False)
+
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        FlashRunner(mock_context, goal="g")
+
+    assert captured["model_name"] == "tensorx/deepseek/deepseek-v4-flash"
+    assert captured["model_provider"] == "custom"
+
+
 # --- Native thinking (thought summaries) reach the step record ----------------------
 
 

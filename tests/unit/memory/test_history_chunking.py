@@ -30,10 +30,12 @@ step addressability (step number + ``T+mm:ss``) after every compression level
 import json
 import re
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+import artemis.memory.chunking as chunking_module
 from artemis.memory.chunking import (
     CHUNK_PENDING_NOTE,
     ChunkState,
@@ -1005,7 +1007,7 @@ async def test_capsule_outage_without_fallback_exhausts_to_failed():
     assert service.get_summary("chunk:1-2") is None
 
 
-def test_capsule_fallback_model_resolution_google_only_and_not_primary():
+def test_capsule_fallback_resolution_provider_aware():
     mgr = HistoryChunkManager(
         capsule_service=StubCapsuleService(),
         chunking_config=SimpleNamespace(
@@ -1023,14 +1025,91 @@ def test_capsule_fallback_model_resolution_google_only_and_not_primary():
             )
         )
 
-    assert (
-        mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.6-flash"))
-        == "gemini-3.6-flash"
+    assert mgr._resolve_capsule_fallback(ctx_with("google", "gemini-3.6-flash")) == (
+        "gemini-3.6-flash",
+        "google",
     )
-    # Non-google fallbacks cannot ride the raw google model path.
-    assert mgr._resolve_capsule_fallback_model(ctx_with("openai", "gpt-4o-mini")) is None
+    # Non-google fallbacks ride the provider-aware lens resolver now.
+    assert mgr._resolve_capsule_fallback(ctx_with("openai", "gpt-4o-mini")) == (
+        "gpt-4o-mini",
+        "openai",
+    )
     # A fallback identical to the primary adds nothing.
-    assert mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.7-flash")) is None
+    assert mgr._resolve_capsule_fallback(ctx_with("google", "gemini-3.7-flash")) == (None, None)
+
+
+def test_capsule_fallback_provider_knob_applies_to_fallback_provider():
+    """When the summarizer fallback block carries no provider of its own, the
+    chunking 'provider' knob applies to the fallback too."""
+    captured = {}
+
+    class RecordingLens(StepCapsuleLens):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            captured.update(
+                model_provider=self._model_provider,
+                fallback_model_name=self._fallback_model_name,
+                fallback_model_provider=self._fallback_model_provider,
+            )
+
+    # Fallback block without a provider: the knob decides.
+    ctx = SimpleNamespace(
+        llm_config=SimpleNamespace(
+            summarizer=SimpleNamespace(fallback=SimpleNamespace(model="vendor/fallback"))
+        )
+    )
+    mgr = HistoryChunkManager(
+        chunking_config=SimpleNamespace(
+            max_steps=12,
+            target_source_tokens=2000,
+            model="tensorx/deepseek/deepseek-v4-flash",
+            provider="custom",
+            max_chunks=8,
+        ),
+    )
+    with patch.object(chunking_module, "StepCapsuleLens", RecordingLens):
+        mgr._build_capsule_service(ctx)
+    assert captured["model_provider"] == "custom"
+    assert captured["fallback_model_name"] == "vendor/fallback"
+    assert captured["fallback_model_provider"] == "custom"
+
+
+def test_capsule_fallback_block_provider_wins_over_knob():
+    """The summarizer fallback block's own provider wins over the chunking
+    'provider' knob — fallback blocks resolve exactly like every other node's
+    fallback (see _resolve_endpoint(use_fallback=True))."""
+    captured = {}
+
+    class RecordingLens(StepCapsuleLens):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            captured.update(
+                model_provider=self._model_provider,
+                fallback_model_name=self._fallback_model_name,
+                fallback_model_provider=self._fallback_model_provider,
+            )
+
+    mgr = HistoryChunkManager(
+        chunking_config=SimpleNamespace(
+            max_steps=12,
+            target_source_tokens=2000,
+            model="tensorx/deepseek/deepseek-v4-flash",
+            provider="custom",
+            max_chunks=8,
+        ),
+    )
+    ctx = SimpleNamespace(
+        llm_config=SimpleNamespace(
+            summarizer=SimpleNamespace(
+                fallback=SimpleNamespace(provider="google", model="gemini-2.0-flash")
+            )
+        )
+    )
+    with patch.object(chunking_module, "StepCapsuleLens", RecordingLens):
+        mgr._build_capsule_service(ctx)
+    assert captured["model_provider"] == "custom"
+    assert captured["fallback_model_name"] == "gemini-2.0-flash"
+    assert captured["fallback_model_provider"] == "google"
 
 
 @pytest.mark.asyncio
