@@ -54,6 +54,7 @@ def test_is_daemon_running_failure():
 
 
 def test_spawn_daemon(tmp_path):
+    import subprocess
     import sys
 
     mock_proc = MagicMock()
@@ -74,6 +75,10 @@ def test_spawn_daemon(tmp_path):
         assert cmd[0] == sys.executable
         assert cmd[1:3] == ["-m", "apps.admin_console.server"]
         assert cmd[3:] == ["--host", "127.0.0.1", "--port", "9123"]
+        if sys.platform == "win32":
+            assert mock_popen.call_args.kwargs["creationflags"] == (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            )
 
 
 def test_ensure_daemon_running_when_already_active():

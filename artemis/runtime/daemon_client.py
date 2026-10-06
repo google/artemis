@@ -139,11 +139,7 @@ def spawn_daemon(
     }
 
     if sys.platform == "win32":
-        kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-        )
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     else:
         kwargs["start_new_session"] = True
 
