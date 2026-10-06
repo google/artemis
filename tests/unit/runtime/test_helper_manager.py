@@ -467,6 +467,34 @@ def test_uninstall_disables_service_and_removes_package(env):
     assert adb.forwards == []
 
 
+# The Settings UI stores the fully-qualified component; adb stores the short form.
+# ROMs that reject the adb secure-settings write (ColorOS/realme) only ever have the former.
+QUALIFIED_SERVICE_NAME = "com.artemis.helper/com.artemis.helper.ArtemisAccessibilityService"
+
+
+def test_service_enabled_through_settings_ui_is_recognised(env):
+    adb, _, manager = env
+    adb.installed[SERIAL] = 2
+    adb.enabled_services[SERIAL] = f"com.android.talkback/.TalkBackService:{QUALIFIED_SERVICE_NAME}"
+
+    assert manager.is_service_enabled(SERIAL)
+    result = manager.provision(SERIAL)
+    assert result.ok
+    puts = _calls(
+        adb, ["-s", SERIAL, "shell", "settings", "put", "secure", "enabled_accessibility_services"]
+    )
+    assert puts == []  # already enabled: the setting is left exactly as the user wrote it
+
+
+def test_uninstall_removes_service_enabled_through_settings_ui(env):
+    adb, _, manager = env
+    adb.installed[SERIAL] = 2
+    adb.enabled_services[SERIAL] = f"com.android.talkback/.TalkBackService:{QUALIFIED_SERVICE_NAME}"
+
+    assert manager.uninstall(SERIAL)
+    assert adb.enabled_services[SERIAL] == "com.android.talkback/.TalkBackService"
+
+
 def test_transport_id_parsing_handles_missing_device():
     adb = FakeAdb()
     manager = AccessibilityHelperManager(run_adb=adb, ping=lambda _p: None, bundled=None)
