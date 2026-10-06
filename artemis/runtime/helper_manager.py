@@ -86,6 +86,23 @@ logger = get_logger(__name__)
 
 PACKAGE_NAME = "com.artemis.helper"
 SERVICE_NAME = f"{PACKAGE_NAME}/.ArtemisAccessibilityService"
+
+
+def _is_helper_service(entry: str) -> bool:
+    """Whether one ``enabled_accessibility_services`` entry names the helper service.
+
+    The same component has two spellings: adb writes the short form
+    (``com.artemis.helper/.ArtemisAccessibilityService``) while the Settings UI
+    writes the fully-qualified one (``com.artemis.helper/com.artemis.helper.Artemis…``).
+    ROMs that reject the adb write (e.g. ColorOS/realme) leave only the
+    Settings-UI spelling, so compare the normalized component, not the string.
+    """
+    pkg, _, cls = entry.strip().partition("/")
+    if cls.startswith("."):
+        cls = pkg + cls
+    return pkg == PACKAGE_NAME and cls == f"{PACKAGE_NAME}.ArtemisAccessibilityService"
+
+
 TOKEN_RECEIVER = f"{PACKAGE_NAME}/.TokenReceiver"
 TOKEN_ACTION = f"{PACKAGE_NAME}.SET_TOKEN"
 #: Loopback port the service binds on the device. Never used as a host port.
@@ -408,7 +425,11 @@ class AccessibilityHelperManager:
             serial, "shell", "settings", "get", "secure", "enabled_accessibility_services"
         )
         enabled = (result.stdout or "").strip()
-        return SERVICE_NAME in enabled.split(":") if enabled and enabled != "null" else False
+        return (
+            any(_is_helper_service(s) for s in enabled.split(":"))
+            if enabled and enabled != "null"
+            else False
+        )
 
     def existing_forward(self, serial: str) -> int | None:
         """Host port of an adb forward that already targets the helper on ``serial``."""
@@ -602,7 +623,7 @@ class AccessibilityHelperManager:
             )
             current = (result.stdout or "").strip()
             services = [s for s in current.split(":") if s and s != "null"] if current else []
-            if SERVICE_NAME in services:
+            if any(_is_helper_service(s) for s in services):
                 # Already enabled (the common, up-to-date case): no settle wait.
                 self._adb(
                     serial, "shell", "settings", "put", "secure", "accessibility_enabled", "1"
@@ -640,7 +661,7 @@ class AccessibilityHelperManager:
             serial, "shell", "settings", "get", "secure", "enabled_accessibility_services"
         )
         current = (result.stdout or "").strip()
-        others = [s for s in current.split(":") if s and s != "null" and s != SERVICE_NAME]
+        others = [s for s in current.split(":") if s and s != "null" and not _is_helper_service(s)]
         self._adb(
             serial,
             "shell",
@@ -793,7 +814,9 @@ class AccessibilityHelperManager:
             serial, "shell", "settings", "get", "secure", "enabled_accessibility_services"
         )
         current = (result.stdout or "").strip()
-        services = [s for s in current.split(":") if s and s != "null" and s != SERVICE_NAME]
+        services = [
+            s for s in current.split(":") if s and s != "null" and not _is_helper_service(s)
+        ]
         self._adb(
             serial,
             "shell",
