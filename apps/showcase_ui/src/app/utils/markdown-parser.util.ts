@@ -213,9 +213,14 @@ export function extractCheckerResult(text: string): CheckerResult | null {
  */
 function formatInlineMarkdown(text: string): string {
   if (!text) return '';
-  return text
-    // Inline code first (so asterisks inside code aren't formatted)
-    .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+  const codeSpans: string[] = [];
+  const formatted = text
+    // Input is already HTML-escaped, so these placeholders cannot collide with user text.
+    // Restore code after formatting so its contents remain literal.
+    .replace(/`([^`]+)`/g, (_, code: string) => {
+      codeSpans.push(code);
+      return `<inline-code-${codeSpans.length - 1}>`;
+    })
     // Bold + Italic
     .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/___([^_]+)___/g, '<strong><em>$1</em></strong>')
@@ -227,6 +232,9 @@ function formatInlineMarkdown(text: string): string {
     .replace(/\b_([^_]+)_\b/g, '<em>$1</em>')
     // Strikethrough
     .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
+  return formatted.replace(/<inline-code-(\d+)>/g, (_, index: string) =>
+    `<code class="inline-code">${codeSpans[Number(index)]}</code>`);
 }
 
 /**
