@@ -6,7 +6,7 @@ Dedicated, session-isolated container image for running the Artemis Autonomous A
 
 ## 📌 Architecture & Lifecycle
 
-When a user initiates a session via the [Backend Manager](file:///usr/local/google/home/yaoyaogoogle/develop/artemis/playground/backend_manager/README.md), the backend dynamically spawns an instance of this container named `artemis-session-<session_id>` on the shared `artemis-net` bridge network.
+When a user initiates a session via the [Backend Manager](../backend_manager/README.md), the backend dynamically spawns an instance of this container named `artemis-session-<session_id>` on the shared `artemis-net` bridge network.
 
 ```mermaid
 flowchart LR
@@ -33,7 +33,7 @@ flowchart LR
 ## 🔑 Key Features
 
 1. **Automated ADB Bridging**:
-   - The container entrypoint ([docker-entrypoint.sh](file:///usr/local/google/home/yaoyaogoogle/develop/artemis/playground/artemis_container/docker-entrypoint.sh)) automatically connects to the target Cuttlefish instance using `$ADB_DEVICE_SERIAL` (e.g. `host.docker.internal:6520`) with automatic retry handling.
+   - The container entrypoint ([docker-entrypoint.sh](docker-entrypoint.sh)) automatically connects to the target Cuttlefish instance using `$ADB_DEVICE_SERIAL` (e.g. `host.docker.internal:6520`) with automatic retry handling.
 
 2. **Multimodal Perception & Toolchain**:
    - Packaged with Android Platform Tools (`adb`), `ffmpeg`, OpenCV libraries (`libgl1`, `libglib2.0-0`), and Python 3.12.
