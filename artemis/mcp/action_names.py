@@ -151,7 +151,19 @@ def to_canonical_call(
         # bare key word for the common keys. Anything else keeps its original spelling
         # so the driver can forward it verbatim (arbitrary KEYCODE_* / numeric codes).
         bare = keycode.removeprefix("KEYCODE_").lower() if keycode else ""
-        known = {"home", "back", "enter", "delete", "tab", "search", "menu", "app_switch"}
+        known = {
+            "home",
+            "back",
+            "enter",
+            "delete",
+            "tab",
+            "search",
+            "menu",
+            "app_switch",
+            "power",
+            "volume_up",
+            "volume_down",
+        }
         return "press_key", {"key": bare if bare in known else keycode}
 
     if verb == "back":

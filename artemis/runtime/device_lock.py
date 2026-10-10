@@ -939,9 +939,15 @@ class DeviceExecutionLock:
         lock_dir = get_temp_dir("device-locks")
         if device_id is not None:
             clean_id = cls._normalize_device_id(device_id)
-            path = lock_dir / f"artemis-device-{clean_id}.lock"
-            if not path.exists():
-                path = lock_dir / "artemis-global-device.lock"
+            candidates = [
+                lock_dir / f"artemis-device-{clean_id}.lock",
+                *sorted(lock_dir.glob(f"artemis-device-*__{clean_id}.lock")),
+                lock_dir / "artemis-global-device.lock",
+            ]
+            path = next(
+                (candidate for candidate in candidates if candidate.exists()),
+                candidates[-1],
+            )
         else:
             path = cls._find_lock_by_pid(os.getpid())
             if path is None:
@@ -959,6 +965,7 @@ class DeviceExecutionLock:
             "acquired_at": owner.acquired_at,
             "session_id": str(session_id),
             "ingress": ingress or owner.ingress or "sdk",
+            "lock_scope": owner.lock_scope,
         }
         return cls._atomic_write_json(path, payload)
 
@@ -971,7 +978,12 @@ class DeviceExecutionLock:
             return removed
 
         patterns = (
-            [f"artemis-device-{cls._normalize_device_id(device_id)}.lock"]
+            [
+                # Both the bare key and every scoped variant
+                # (e.g. artemis-device-ios__<UDID>.lock) target this device.
+                f"artemis-device-{cls._normalize_device_id(device_id)}.lock",
+                f"artemis-device-*__{cls._normalize_device_id(device_id)}.lock",
+            ]
             if device_id
             else ["artemis-device-*.lock", "artemis-global-device.lock", "*.lock"]
         )

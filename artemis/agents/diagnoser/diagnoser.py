@@ -54,6 +54,7 @@ from artemis.utils.task_tree import (
     get_recent_subgoal_hashes,
 )
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -72,6 +73,8 @@ class Diagnoser:
         self._llm = None
 
     def _is_device_online(self) -> bool:
+        if getattr(getattr(self.ctx, "device", None), "mobile_platform", None) == "ios":
+            return getattr(self.ctx, "_active_driver", None) is not None
         try:
             if self.ctx.adb_client is None:
                 return False
@@ -111,6 +114,9 @@ class Diagnoser:
             *get_history_tools(self.ctx),
             get_submit_answer_tool(self.ctx),
         ]
+        if getattr(getattr(self.ctx, "device", None), "mobile_platform", None) == "ios":
+            # logcat-backed analysis can never succeed on iOS.
+            all_tools = [t for t in all_tools if t.name not in ("run_adb_command", "analyze_logs")]
         if not self.is_device_online:
             logger.info(
                 "Diagnoser running in OFFLINE environment: stripping adb short"
@@ -227,7 +233,7 @@ class Diagnoser:
             content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{latest_screenshot_b64}"},
+                    "image_url": {"url": image_data_uri(latest_screenshot_b64)},
                 }
             )
 

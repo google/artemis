@@ -48,6 +48,8 @@ def test_cli_run_help():
     assert "--traces-path" in result.output
     assert "--verification-level" in result.output
     assert "--explorer-pro-mode" in result.output
+    assert "--platform" in result.output
+    assert "--ios-workspace" in result.output
 
 
 def test_cli_batch_help():

@@ -1761,6 +1761,10 @@ $text-light: #94a3b8;
             margin-left: auto;
             flex-shrink: 0;
 
+            &.status-idle {
+              color: #b45309;
+            }
+
             .status-dot {
               width: 7px;
               height: 7px;
@@ -1768,6 +1772,12 @@ $text-light: #94a3b8;
               background: #10b981;
               box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
               animation: statusDotPulse 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
+
+              &.dot-warn {
+                background: #f59e0b;
+                box-shadow: none;
+                animation: none;
+              }
             }
           }
 
@@ -1809,6 +1819,26 @@ $text-light: #94a3b8;
 
               .chip-icon {
                 font-size: 14px;
+              }
+
+              .chip-name {
+                color: $text-main;
+              }
+
+              .sim-state-dot {
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                background: #94a3b8;
+                flex-shrink: 0;
+
+                &.booted {
+                  background: #10b981;
+                }
+
+                &.booting {
+                  background: #f59e0b;
+                }
               }
 
               .active-check {
@@ -2394,6 +2424,120 @@ $text-light: #94a3b8;
         display: flex;
         flex-direction: column;
         gap: 12px;
+      }
+
+      .platform-tabs {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        align-self: flex-start;
+        background: rgba(241, 245, 249, 0.85);
+        padding: 3px;
+        border-radius: 10px;
+        margin-bottom: 12px;
+
+        .platform-tab {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          height: 28px;
+          padding: 0 12px;
+          border: none;
+          border-radius: 8px;
+          background: transparent;
+          font-family: inherit;
+          font-size: 12px;
+          font-weight: 600;
+          color: $text-muted;
+          cursor: pointer;
+          transition: all 0.15s ease;
+
+          .plat-icon {
+            font-size: 15px;
+          }
+
+          .plat-count {
+            font-size: 10px;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 8px;
+            background: rgba(100, 116, 139, 0.12);
+            color: inherit;
+          }
+
+          &.active {
+            background: #ffffff;
+            color: $text-main;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1);
+          }
+        }
+      }
+
+      .ios-empty-state {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 16px;
+        border: 1px dashed $card-border-hover;
+        border-radius: 8px;
+        background: #fafbff;
+
+        .ios-empty-icon {
+          font-size: 22px;
+          color: #818cf8;
+        }
+
+        .ios-empty-title {
+          font-size: 12.5px;
+          font-weight: 700;
+          color: $text-main;
+          margin-bottom: 3px;
+        }
+
+        .ios-empty-desc {
+          font-size: 11.5px;
+          color: $text-secondary;
+          line-height: 1.5;
+        }
+      }
+
+      .ios-sim-panel {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          padding: 12px;
+          border: 1px solid #e0e7ff;
+          border-radius: 8px;
+          background: #f8faff;
+
+          .ios-sim-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+
+            .ios-sim-icon {
+              font-size: 20px;
+              color: #4f46e5;
+            }
+
+            .ios-sim-header-text {
+              display: flex;
+              flex-direction: column;
+            }
+
+            .ios-sim-title {
+              font-size: 12.5px;
+              font-weight: 700;
+              color: $text-main;
+            }
+
+            .ios-sim-desc {
+              font-size: 11px;
+              color: $text-secondary;
+            }
+          }
+
+        }
 
         .connection-methods-nav {
           display: grid;
@@ -4056,6 +4200,55 @@ $text-light: #94a3b8;
           .bar-left {
             display: flex;
             align-items: center;
+            gap: 8px;
+
+            .target-device-chip {
+              display: inline-flex;
+              align-items: center;
+              gap: 6px;
+              height: 30px;
+              padding: 0 10px;
+              background: #ffffff;
+              border: 1px solid $card-border;
+              border-radius: 15px;
+              font-family: inherit;
+              font-size: 11.5px;
+              font-weight: 600;
+              color: $text-secondary;
+              cursor: pointer;
+              transition: all 0.15s ease;
+
+              .target-icon {
+                font-size: 15px;
+              }
+
+              .target-name {
+                max-width: 160px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+              }
+
+              .target-plat {
+                font-size: 9px;
+                font-weight: 700;
+                padding: 1px 5px;
+                border-radius: 4px;
+                background: #f1f5f9;
+                color: $text-muted;
+                letter-spacing: 0.3px;
+              }
+
+              &.is-ios {
+                border-color: #c7d2fe;
+                color: #4338ca;
+
+                .target-plat {
+                  background: #eef2ff;
+                  color: #4f46e5;
+                }
+              }
+            }
 
             .model-toggle-capsule {
               display: inline-flex;
@@ -4993,7 +5186,6 @@ $text-light: #94a3b8;
     }
 
   }
-}
 
 // =============================================================================
 // KEYFRAME ANIMATIONS

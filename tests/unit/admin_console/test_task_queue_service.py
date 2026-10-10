@@ -1111,3 +1111,83 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
         )
         assert len(state.queue_items) == 1
         assert res2["enqueued_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_enqueue_tasks_platforms_do_not_dedupe_against_each_other():
+    """Identical goal+serial text on Android vs iOS are distinct submissions."""
+    state.queue_items = []
+    state.active_session_id = None
+
+    with (
+        patch("apps.admin_console.services.task_queue_service.session_repo"),
+        patch(
+            "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
+            return_value="ticket-x",
+        ),
+        patch(
+            "artemis.runtime.device_pool.device_pool.try_list_devices_async",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "artemis.runtime.device_pool.device_pool.validate_explicit_serial_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "artemis.runtime.ios_device_pool.ios_device_pool.validate_explicit_serial_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(TaskQueueService, "ensure_worker_running"),
+    ):
+        res_android = await task_queue_service.enqueue_tasks(
+            ["shared goal"], device_serial="shared-serial", platform="android"
+        )
+        res_ios = await task_queue_service.enqueue_tasks(
+            ["shared goal"], device_serial="shared-serial", platform="ios"
+        )
+        # Same platform + goal + serial still debounces.
+        res_ios_again = await task_queue_service.enqueue_tasks(
+            ["shared goal"], device_serial="shared-serial", platform="ios"
+        )
+
+    assert res_android["enqueued_count"] == 1
+    assert res_ios["enqueued_count"] == 1
+    assert res_ios_again["enqueued_count"] == 0
+    platforms = sorted(i["platform"] for i in state.queue_items)
+    assert platforms == ["android", "ios"]
+    ios_item = next(i for i in state.queue_items if i["platform"] == "ios")
+    assert ios_item["device_serial"] == "shared-serial"
+
+
+def test_task_target_ios_skips_a_malformed_adb_endpoint():
+    """iOS items never parse their stale/malformed Android endpoint snapshot."""
+    from artemis.runtime.device_target import IosTarget
+
+    target = TaskQueueService._task_target(
+        {
+            "platform": "ios",
+            "device_serial": "AAAA-1111",
+            "adb_endpoint": {"host": "", "port": "not-a-port"},
+        }
+    )
+    assert isinstance(target, IosTarget)
+    assert target.serial == "AAAA-1111"
+
+
+def test_task_target_android_still_validates_its_endpoint():
+    from artemis.runtime.device_target import AdbTarget
+
+    with pytest.raises((ValueError, TypeError)):
+        TaskQueueService._task_target(
+            {
+                "platform": "android",
+                "device_serial": "emulator-5554",
+                "adb_endpoint": {"host": "", "port": "not-a-port"},
+            }
+        )
+    target = TaskQueueService._task_target(
+        {"device_serial": "emulator-5554", "adb_endpoint": AdbEndpoint.local().to_dict()}
+        if hasattr(AdbEndpoint.local(), "to_dict")
+        else {"device_serial": "emulator-5554"}
+    )
+    assert isinstance(target, AdbTarget)

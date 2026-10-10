@@ -36,6 +36,7 @@ from artemis.graph.state import State
 from artemis.services.llm import acomplete_structured
 from artemis.utils import visualization
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -120,12 +121,12 @@ def _build_messages(
         {"type": "text", "text": "[Image 1 (Reference)]"},
         {
             "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{orig_b64}"},
+            "image_url": {"url": image_data_uri(orig_b64)},
         },
         {"type": "text", "text": "[Image 2 (Current State)]"},
         {
             "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{live_b64}"},
+            "image_url": {"url": image_data_uri(live_b64)},
         },
     ]
     if state:

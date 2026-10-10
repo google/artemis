@@ -1285,3 +1285,148 @@ def test_newer_helper_than_bundle_is_not_a_finding(temp_trace_env):
     result = _run(_healthy_probes(), helper_status=status)
     assert result["verdict"] == "ready"
     assert not any("Accessibility helper" in s for s in result["next_steps"])
+
+
+# --------------------------------------------------------------------------- #
+# iOS device selection
+# --------------------------------------------------------------------------- #
+
+_IOS_SIM_BOOTED = {"udid": "SIM-AAAA", "name": "Sim Booted", "state": "Booted"}
+_IOS_SIM_SHUT = {"udid": "SIM-BBBB", "name": "Sim Off", "state": "Shutdown"}
+_IOS_PHYS = {"udid": "PHYS-0001", "name": "Office Phone", "state": "device"}
+
+
+def _ios_probe(simulators=None, physical=None, status=ProbeStatus.PASS):
+    return _probe(
+        "ios_simulators",
+        status,
+        category=ProbeCategory.DEVICE,
+        metadata={
+            "xcode_27_or_newer": True,
+            "simulators": ([_IOS_SIM_BOOTED, _IOS_SIM_SHUT] if simulators is None else simulators),
+            "connected_physical_devices": ([_IOS_PHYS] if physical is None else physical),
+        },
+    )
+
+
+def test_ios_requested_device_matches_udid_case_insensitively():
+    selected = diagnose._ios_requested_device(_ios_probe(), "sim-aaaa")
+    assert selected == {
+        "serial": "SIM-AAAA",
+        "name": "Sim Booted",
+        "state": "device",
+        "is_emulator": True,
+    }
+
+
+def test_ios_requested_device_matches_exact_sim_and_physical_names():
+    sim = diagnose._ios_requested_device(_ios_probe(), "Sim Off")
+    assert sim["serial"] == "SIM-BBBB" and sim["is_emulator"] is True
+    phys = diagnose._ios_requested_device(_ios_probe(), "Office Phone")
+    assert phys["serial"] == "PHYS-0001" and phys["is_emulator"] is False
+    # Name matching is exact — case differences do not bind.
+    assert diagnose._ios_requested_device(_ios_probe(), "sim off") is None
+
+
+def test_ios_requested_device_explicit_booted_needs_exactly_one():
+    assert diagnose._ios_requested_device(_ios_probe(), "booted")["serial"] == "SIM-AAAA"
+    two_booted = [_IOS_SIM_BOOTED, {**_IOS_SIM_SHUT, "state": "Booted"}]
+    assert diagnose._ios_requested_device(_ios_probe(simulators=two_booted), "booted") is None
+    none_booted = [dict(_IOS_SIM_SHUT)]
+    assert diagnose._ios_requested_device(_ios_probe(simulators=none_booted), "booted") is None
+
+
+def test_ios_requested_device_ambiguous_names_return_none():
+    twins = [
+        {**_IOS_SIM_BOOTED, "name": "Twin"},
+        {**_IOS_SIM_SHUT, "name": "Twin"},
+    ]
+    assert diagnose._ios_requested_device(_ios_probe(simulators=twins), "Twin") is None
+
+
+def test_ios_requested_device_never_autopicks_hardware():
+    # No request: exactly one booted sim wins; a sole shutdown sim is next.
+    assert diagnose._ios_requested_device(_ios_probe(), None)["serial"] == "SIM-AAAA"
+    only_off = diagnose._ios_requested_device(_ios_probe(simulators=[_IOS_SIM_SHUT]), None)
+    assert only_off["serial"] == "SIM-BBBB"
+    # Physical-only inventory is never auto-selected.
+    assert diagnose._ios_requested_device(_ios_probe(simulators=[]), None) is None
+
+
+def test_ios_probe_serial_routes_canonical_udid(monkeypatch):
+    """_run_device_probe must smoke the canonical UDID, not the raw request."""
+    smoke = AsyncMock(return_value=_smoke_ok("SIM-AAAA"))
+    monkeypatch.setattr(diagnose, "_device_smoke_test", smoke)
+    result = asyncio.run(diagnose._run_device_probe(None, "sim-aaaa", _ios_probe(), platform="ios"))
+    smoke.assert_awaited_once_with("SIM-AAAA", platform="ios")
+    assert result["ok"] is True
+
+
+def test_ios_probe_without_canonical_target_fails_with_udid_guidance(monkeypatch):
+    smoke = AsyncMock()
+    monkeypatch.setattr(diagnose, "_device_smoke_test", smoke)
+    result = asyncio.run(diagnose._run_device_probe(None, "ghost", _ios_probe(), platform="ios"))
+    assert result["ok"] is False
+    assert "UDID" in result["error"]
+    smoke.assert_not_awaited()
+    # No request and ambiguous inventory -> same guidance shape.
+    twins = [_IOS_SIM_BOOTED, {**_IOS_SIM_SHUT, "state": "Booted"}]
+    result = asyncio.run(
+        diagnose._run_device_probe(None, None, _ios_probe(simulators=twins), platform="ios")
+    )
+    assert result["ok"] is False
+    assert "device_serial" in result["error"]
+    smoke.assert_not_awaited()
+
+
+def test_requested_device_ready_ios_uses_the_same_selection():
+    results = [_ios_probe()]
+    assert diagnose._requested_device_ready(results, "SIM-AAAA", platform="ios")
+    assert diagnose._requested_device_ready(results, "Office Phone", platform="ios")
+    assert not diagnose._requested_device_ready(results, "ghost", platform="ios")
+    assert diagnose._requested_device_ready(results, None, platform="ios")
+
+
+def test_ios_diagnose_reports_the_selected_ios_device(temp_trace_env):
+    """The iOS `device` payload describes the selected iOS target, not ADB's."""
+    probes = _healthy_probes() + [_ios_probe()]
+    result = _run(probes, platform="ios")
+    device = result["device"]
+    assert device == {
+        "serial": "SIM-AAAA",
+        "model": "Sim Booted",
+        "platform": "ios",
+        "is_emulator": True,
+    }
+
+
+def test_ios_diagnose_smoke_uses_selected_udid(temp_trace_env):
+    probes = _healthy_probes() + [_ios_probe()]
+    smoke = AsyncMock(return_value=_smoke_ok("SIM-AAAA"))
+    result = _run(probes, platform="ios", probe_device=True, smoke=smoke)
+    smoke.assert_awaited_once_with("SIM-AAAA", platform="ios")
+    assert result["device_probe"]["ok"] is True
+
+
+def test_android_diagnose_device_shape_unchanged(temp_trace_env):
+    """Regression: Android responses keep the compact active-device payload."""
+    device = DeviceInfo(
+        serial="pixel-1",
+        model="Pixel 8",
+        android_version="15",
+        is_locked=False,
+        installed_packages=["a"],
+        screen_resolution="1080x2400",
+    )
+    result = _run(_healthy_probes(), report=_report(_healthy_probes(), active_device=device))
+    device_out = result["device"]
+    # The accessibility_helper attachment is part of the compact payload.
+    assert isinstance(device_out.pop("accessibility_helper"), dict)
+    assert device_out == {
+        "serial": "pixel-1",
+        "state": "device",
+        "model": "Pixel 8",
+        "android_version": "15",
+        "is_locked": False,
+        "is_emulator": False,
+    }

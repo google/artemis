@@ -52,6 +52,24 @@ def _device_from_payload(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _platform_from_payload(payload: Mapping[str, Any]) -> str:
+    """Normalized platform ('android'|'ios'|...) from raw or device_info."""
+    direct = _string(payload.get("platform"))
+    if direct:
+        return direct.lower()
+    device_info = payload.get("device_info")
+    if isinstance(device_info, str):
+        try:
+            device_info = json.loads(device_info)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            device_info = None
+    if isinstance(device_info, Mapping):
+        nested = _string(device_info.get("mobile_platform"))
+        if nested:
+            return nested.lower()
+    return "android"
+
+
 @dataclass(frozen=True, slots=True)
 class TaskHandle:
     """A task accepted by the remote Artemis scheduler."""
@@ -65,6 +83,11 @@ class TaskHandle:
     def session_id(self) -> str:
         """Compatibility alias for servers that call a task a session."""
         return self.task_id
+
+    @property
+    def platform(self) -> str:
+        """Recorded device platform; defaults to 'android' when absent."""
+        return _platform_from_payload(self.raw)
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> TaskHandle:
@@ -110,6 +133,11 @@ class TaskResult:
     @property
     def succeeded(self) -> bool:
         return self.status in SUCCESS_TASK_STATUSES
+
+    @property
+    def platform(self) -> str:
+        """Recorded device platform; defaults to 'android' when absent."""
+        return _platform_from_payload(self.raw)
 
     @classmethod
     def from_payload(
@@ -159,6 +187,11 @@ class Device:
     product: str | None = None
     busy: bool = False
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+    @property
+    def platform(self) -> str:
+        """Recorded device platform; defaults to 'android' when absent."""
+        return _platform_from_payload(self.raw)
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> Device:

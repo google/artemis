@@ -221,6 +221,8 @@ def submit_task_to_daemon(
     conversation_id: str | None = None,
     verification_level: str | None = None,
     explorer_mode: str | None = None,
+    platform: str | None = None,
+    ios_workspace: str | None = None,
     base_url: str | None = None,
     timeout: float = 15.0,
 ) -> dict[str, Any] | None:
@@ -229,6 +231,9 @@ def submit_task_to_daemon(
     ``verification_level`` ('off' | 'final' | 'checkpoints' | 'strict') and
     ``explorer_mode`` ('flash' | 'pro' | 'ultra') are the Pro-profile tuning
     knobs of ``/api/run``; they are forwarded verbatim and ignored by Flash.
+
+    ``platform="ios"`` submits an iOS task: ``device_serial`` is a simulator
+    or physical UDID and ``ios_workspace`` optionally scopes Xcode approval.
 
     Returns the response JSON dict if successfully enqueued, or None on error.
     """
@@ -246,6 +251,8 @@ def submit_task_to_daemon(
         "session_id": session_id,
         "ingress": ingress,
         "conversation_id": conversation_id,
+        "platform": platform,
+        "ios_workspace": ios_workspace,
     }
 
     try:
@@ -345,13 +352,16 @@ def submit_batch_to_daemon(
     ingress: str = "cli",
     verification_level: str | None = None,
     explorer_mode: str | None = None,
+    platform: str | None = None,
+    ios_workspace: str | None = None,
     base_url: str | None = None,
     timeout: float = 15.0,
 ) -> dict[str, Any] | None:
     """Submit a batch of goals to the running Daemon.
 
     ``verification_level`` / ``explorer_mode`` apply to every goal of the batch
-    (see :func:`submit_task_to_daemon`).
+    (see :func:`submit_task_to_daemon`). ``platform="ios"`` targets an iOS
+    device; ``device_serial`` is then the device UDID.
     """
     url = f"{base_url or f'http://{DEFAULT_DAEMON_HOST}:{DEFAULT_DAEMON_PORT}'}/api/run"
     payload = {
@@ -361,6 +371,8 @@ def submit_batch_to_daemon(
         "ingress": ingress,
         "verification_level": verification_level,
         "explorer_mode": explorer_mode,
+        "platform": platform,
+        "ios_workspace": ios_workspace,
     }
     try:
         data = json.dumps(payload).encode("utf-8")

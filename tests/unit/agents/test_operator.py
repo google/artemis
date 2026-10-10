@@ -1499,13 +1499,19 @@ async def test_operator_press_key_translation_is_case_insensitive():
     assert err is None
     assert actions == [{"action": "press_key", "keycode": "KEYCODE_APP_SWITCH"}]
 
-    # Unsupported keys get a self-explanatory error that lists the accepted names.
     actions, err = node._translate_and_validate_tool(
         {"name": "press_key", "args": {"key": "volume_up"}}, mock_state
     )
+    assert err is None
+    assert actions == [{"action": "press_key", "keycode": "KEYCODE_VOLUME_UP"}]
+
+    # Unsupported keys get a self-explanatory error that lists the accepted names.
+    actions, err = node._translate_and_validate_tool(
+        {"name": "press_key", "args": {"key": "delete"}}, mock_state
+    )
     assert actions == []
     assert err == (
-        "Error: Unsupported key 'volume_up'. Supported keys: ENTER, BACK, HOME, APP_SWITCH."
+        "Error: Unsupported key 'delete'. Supported keys: ENTER, BACK, HOME, APP_SWITCH, POWER, VOLUME_UP, VOLUME_DOWN."
     )
 
 

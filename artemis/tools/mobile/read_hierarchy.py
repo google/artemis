@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import inspect
+import json
 from typing import Any
 
 from langchain_core.tools import BaseTool
@@ -76,6 +77,8 @@ class GetUiHierarchyTool(ArtemisTool):
                 xml_hierarchy = getattr(screen_data, "ui_hierarchy_xml", None)
                 if xml_hierarchy:
                     return str(xml_hierarchy)
+                if getattr(screen_data, "platform", None) == "ios":
+                    return json.dumps(screen_data.ui_elements, ensure_ascii=False)
                 return ToolFailure("Error retrieving UI hierarchy: No UI hierarchy in screen data.")
             if driver is not None and hasattr(driver, "get_ui_hierarchy"):
                 xml_hierarchy = await driver.get_ui_hierarchy()
@@ -98,7 +101,10 @@ GetUIHierarchy = GetUiHierarchyTool
 
 def get_ui_hierarchy_tool(ctx: ArtemisContext) -> BaseTool:
     """Exports get_ui_hierarchy as a LangChain BaseTool."""
-    return trace_langchain_tool(get_ui_hierarchy.to_langchain_tool(ctx), ctx)
+    tool = get_ui_hierarchy.to_langchain_tool(ctx)
+    if getattr(getattr(ctx, "device", None), "mobile_platform", None) == "ios":
+        tool.description = "[DIAGNOSTIC] Retrieves the current iOS accessibility elements as JSON."
+    return trace_langchain_tool(tool, ctx)
 
 
 ui_hierarchy_wrapper = ToolWrapper(

@@ -40,6 +40,7 @@ logger = get_logger(__name__)
 
 from artemis.agents.prompt_assembly import render_tool_enum, resolve_available
 from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER
+from artemis.utils.image_mime import image_data_uri
 
 
 @lru_cache(maxsize=1)
@@ -203,6 +204,8 @@ def resolve_operator_prompt_tools(ctx: ArtemisContext) -> frozenset[str]:
     # video_recording_tools_enabled); the prompt must not advertise it when the
     # tool is not actually available this run.
     available = set(OPERATOR_PROMPT_TOOLSET)
+    if getattr(getattr(ctx, "device", None), "mobile_platform", None) == "ios":
+        available.difference_update({"run_adb_command", "manage_task", "analyze_task_output"})
     setup = getattr(ctx, "execution_setup", None)
     if not (setup and getattr(setup, "video_recording_tools_enabled", False)):
         available.discard("video_analyzer")
@@ -316,6 +319,9 @@ def render_transcript_static_system(
 
     available = resolve_operator_prompt_tools(ctx)
     static_template = apply_operator_prompt_contract(static_template, available_tools=available)
+    from artemis.agents.platform_guidance import device_action_guidance
+
+    static_template = device_action_guidance(ctx) + static_template
     return Template(static_template).render(
         initial_goal=state.initial_goal,
         subgoals_status="",
@@ -354,6 +360,9 @@ class TemplatePromptComponent(PromptComponent):
         available = resolve_operator_prompt_tools(ctx)
 
         prompt_template = apply_operator_prompt_contract(prompt_template, available_tools=available)
+        from artemis.agents.platform_guidance import device_action_guidance
+
+        prompt_template = device_action_guidance(ctx) + prompt_template
 
         plan_and_history = kwargs.get("plan_and_history", "No plan or history yet.")
 
@@ -384,7 +393,7 @@ class ObservationPromptComponent(PromptComponent):
         builder.add_human_content(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{latest_screenshot_b64}"},
+                "image_url": {"url": image_data_uri(latest_screenshot_b64)},
             }
         )
         builder.add_human_content(f"--- Visible UI Elements ---\n{minimal_list}")

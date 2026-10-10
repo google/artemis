@@ -30,6 +30,7 @@ export interface TaskQueueItem {
   start_time?: number;
   device_serial?: string | null;
   device_id?: string | null;
+  platform?: 'android' | 'ios' | string | null;
 }
 
 export interface Session {
@@ -44,6 +45,7 @@ export interface Session {
   device_serial?: string | null;
   device_id?: string | null;
   device_info?: any;
+  platform?: 'android' | 'ios' | string | null;
 }
 
 export interface AgentStatusResponse {

@@ -19,7 +19,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
-from artemis.runtime import DeviceExecutionLock, device_pool
+from artemis.runtime import DeviceExecutionLock, device_pool, ios_device_pool
+from artemis.runtime.device_target import (
+    IOS_LOCK_SCOPE,
+    device_pool_for,
+    normalize_device_platform,
+)
 
 try:
     from admin_console.core.state import state
@@ -63,6 +68,26 @@ async def get_task_catalog():
     return {
         "tasks": [t.model_dump() for t in task_recommendation_engine.get_all_tasks()],
         "app_registry": task_recommendation_engine.get_app_registry(),
+    }
+
+
+@router.get("/api/v1/capabilities")
+async def get_capabilities():
+    """Static wire-feature advertisement — no device or service probing.
+
+    ``platform.ios`` means the API accepts iOS submissions; it does not
+    imply Xcode approval or attached hardware on this host.
+    """
+    return {
+        "api_version": "1",
+        "features": [
+            "tasks.submit",
+            "tasks.get",
+            "tasks.stop",
+            "devices.list",
+            "system.readiness",
+            "platform.ios",
+        ],
     }
 
 
@@ -113,6 +138,19 @@ async def run_task(request: RunRequest):
                 "total_queued": len(state.queue_tasks),
             }
 
+    try:
+        platform = normalize_device_platform(request.platform)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported platform '{request.platform}'. Expected 'android' or 'ios'.",
+        )
+    if platform == "ios" and request.locked_app_package:
+        raise HTTPException(
+            status_code=400,
+            detail="locked_app_package is unavailable for iOS tasks.",
+        )
+
     # Reject an explicit unknown/offline target before running the more
     # expensive readiness probe. Besides producing a stable SDK response,
     # this avoids probing the currently active device for a serial that can
@@ -121,7 +159,9 @@ async def run_task(request: RunRequest):
     # fail downstream with a clear error instead.
     if request.device_serial:
         try:
-            rejection = await device_pool.validate_explicit_serial_async(request.device_serial)
+            rejection = await device_pool_for(platform).validate_explicit_serial_async(
+                request.device_serial
+            )
         except Exception:
             rejection = None
         if rejection:
@@ -140,30 +180,35 @@ async def run_task(request: RunRequest):
     # With no explicit serial the probe itself resolves a live target (it
     # prefers the diagnostics target preference, then any unlocked ready
     # device); the verified serial is bound below.
+    # iOS skips the Android screen-lock probe entirely: the Xcode driver
+    # validates and boots the pinned simulator at execution time.
     target_serial = request.device_serial
-    device_probe = await readiness_engine.run_device_submission_probe(target_serial=target_serial)
-    if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
-        locked_serial = (
-            device_probe.metadata.get("active_device", {}).get("serial") or target_serial or ""
+    if platform != "ios":
+        device_probe = await readiness_engine.run_device_submission_probe(
+            target_serial=target_serial
         )
-        detail = (
-            f"Android device {locked_serial} is locked. Unlock it and enter the home screen before running a task.".replace(
-                "  ", " "
-            ).strip()
-            if device_probe.summary == "Device Locked"
-            else f"Android device {locked_serial} lock state could not be verified. Keep it unlocked on the home screen and try again.".replace(
-                "  ", " "
-            ).strip()
-        )
-        raise HTTPException(status_code=409, detail=detail)
+        if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
+            locked_serial = (
+                device_probe.metadata.get("active_device", {}).get("serial") or target_serial or ""
+            )
+            detail = (
+                f"Android device {locked_serial} is locked. Unlock it and enter the home screen before running a task.".replace(
+                    "  ", " "
+                ).strip()
+                if device_probe.summary == "Device Locked"
+                else f"Android device {locked_serial} lock state could not be verified. Keep it unlocked on the home screen and try again.".replace(
+                    "  ", " "
+                ).strip()
+            )
+            raise HTTPException(status_code=409, detail=detail)
 
-    if device_probe and device_probe.metadata.get("active_device"):
-        verified_serial = device_probe.metadata["active_device"].get("serial")
-        # Only auto-selected targets may be re-bound to the probed device. An
-        # explicitly requested serial is never silently replaced -- if it is
-        # invalid, enqueue_tasks rejects the submission with a clear error.
-        if verified_serial and not request.device_serial:
-            target_serial = verified_serial
+        if device_probe and device_probe.metadata.get("active_device"):
+            verified_serial = device_probe.metadata["active_device"].get("serial")
+            # Only auto-selected targets may be re-bound to the probed device. An
+            # explicitly requested serial is never silently replaced -- if it is
+            # invalid, enqueue_tasks rejects the submission with a clear error.
+            if verified_serial and not request.device_serial:
+                target_serial = verified_serial
 
     return await task_queue_service.enqueue_tasks(
         incoming_goals,
@@ -178,6 +223,8 @@ async def run_task(request: RunRequest):
         ingress=request.ingress or "frontend",
         session_id=request.session_id,
         conversation_id=request.conversation_id,
+        platform=platform,
+        ios_workspace=request.ios_workspace,
     )
 
 
@@ -199,9 +246,11 @@ async def get_run_defaults():
 
 @router.get("/api/devices")
 async def list_devices():
-    """List all connected Android devices with their busy / idle status."""
-    devices = await device_pool.list_devices_async()
-    return {"devices": [d.to_dict() for d in devices]}
+    """List all connected devices (Android + iOS) with lock status."""
+    android_devices, ios_devices = await asyncio.gather(
+        device_pool.list_devices_async(), ios_device_pool.list_devices_async()
+    )
+    return {"devices": [d.to_dict() for d in (*android_devices, *ios_devices)]}
 
 
 @router.post("/api/stop")
@@ -276,6 +325,9 @@ async def get_status():
             "pid": owner.pid,
             "ingress": owner.ingress,
             "acquired_at": owner.acquired_at,
+            "platform": "ios"
+            if getattr(owner, "lock_scope", None) == IOS_LOCK_SCOPE
+            else "android",
         }
         for owner in active_owners.values()
     ]

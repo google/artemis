@@ -371,6 +371,21 @@ export class HomeComponent implements OnInit, OnDestroy {
   // Device information
   public activeDevice = computed(() => this.systemService.activeDevice());
   public connectedDevices = computed(() => this.systemService.connectedDevices());
+  public selectedDeviceSerial = computed(() => this.systemService.selectedDeviceSerial());
+  public iosDevices = computed(() => this.systemService.iosDevices());
+  public selectedIosDevice = computed(() => this.systemService.selectedIosDevice());
+  public iosProbe = computed(() => this.systemService.iosProbe());
+  public androidDevices = computed<DeviceInfo[]>(
+    () => this.connectedDevices().filter(d => d.platform !== 'ios')
+  );
+  // Raw ADB state for the Android tab — isDeviceReady also counts an iOS pick.
+  public androidDeviceReady = computed(() => this.adbProbe()?.status === 'pass');
+  public selectedTarget = computed<DeviceInfo | null>(
+    () => this.systemService.selectedIosDevice() ?? this.activeDevice()
+  );
+  // Device guide platform split: Android (ADB) vs iOS Simulator
+  public deviceGuidePlatform = signal<'android' | 'ios'>('android');
+  private deviceGuidePlatformAutoSet = false;
   public installedAvds = computed(() => this.systemService.installedAvds());
   public emulatorPath = computed(() => this.systemService.emulatorPath());
   public isEmulatorInPath = computed(() => this.systemService.isEmulatorInPath());
@@ -531,6 +546,19 @@ export class HomeComponent implements OnInit, OnDestroy {
       }
       if (!this.isOcrKeyEdited()) {
         this.ocrKeyInput.set(ocrKey);
+      }
+    });
+    // Default the device guide to whichever platform actually has devices.
+    effect(() => {
+      if (this.deviceGuidePlatformAutoSet) return;
+      if (this.systemService.selectedIosDevice()) {
+        this.deviceGuidePlatform.set('ios');
+        this.deviceGuidePlatformAutoSet = true;
+      } else if (this.iosDevices().length > 0 && this.androidDevices().length === 0) {
+        this.deviceGuidePlatform.set('ios');
+        this.deviceGuidePlatformAutoSet = true;
+      } else if (this.androidDevices().length > 0) {
+        this.deviceGuidePlatformAutoSet = true;
       }
     });
   }
@@ -1008,8 +1036,9 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.systemService.dismissEmulatorStatus().subscribe();
   }
 
-  public selectTargetDevice(serial: string): void {
-    this.systemService.selectDevice(serial).subscribe();
+  public selectTargetDevice(dev: DeviceInfo): void {
+    this.deviceGuidePlatform.set(dev.platform === 'ios' ? 'ios' : 'android');
+    this.systemService.selectDevice(dev.serial, dev.platform ?? 'android').subscribe();
   }
 
   public getEmulatorCommand(avdName: string): string {

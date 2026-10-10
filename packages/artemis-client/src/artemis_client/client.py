@@ -38,6 +38,8 @@ VERIFICATION_LEVELS: tuple[str, ...] = ("off", "final", "checkpoints", "strict")
 #: Pro-profile Explorer perception versions accepted by ``/api/run`` (``explorer_mode``).
 ExplorerMode = Literal["flash", "pro", "ultra"]
 EXPLORER_MODES: tuple[str, ...] = ("flash", "pro", "ultra")
+#: Device platforms accepted by ``/api/run`` (``platform``).
+PLATFORMS: tuple[str, ...] = ("android", "ios")
 
 
 def _normalize_choice(value: str | None, name: str, choices: tuple[str, ...]) -> str | None:
@@ -84,9 +86,15 @@ class ArtemisClient:
         concurrency_mode: str = "per_device",
         max_concurrency: int | None = None,
         standalone: bool = False,
+        platform: str | None = None,
+        ios_workspace: str | None = None,
     ) -> None:
         if poll_interval <= 0:
             raise ValueError("poll_interval must be greater than zero")
+        normalized_platform = _normalize_choice(platform, "platform", PLATFORMS)
+        workspace = str(ios_workspace).strip() if ios_workspace is not None else ""
+        if workspace and normalized_platform != "ios":
+            raise ValueError("ios_workspace requires platform='ios'")
         resolved_base_url = base_url or os.environ.get("ARTEMIS_BASE_URL")
         if not resolved_base_url:
             daemon_host = os.environ.get("ARTEMIS_DAEMON_HOST", "127.0.0.1")
@@ -100,6 +108,9 @@ class ArtemisClient:
         self.concurrency_mode = str(concurrency_mode).strip().lower()
         self.max_concurrency = max_concurrency
         self.standalone = standalone
+        self._platform = normalized_platform
+        # Host-side path only: it is never resolved against the local disk.
+        self._ios_workspace = workspace or None
         self._transport = transport or JsonTransport(
             resolved_base_url,
             token=token,
@@ -186,6 +197,8 @@ class ArtemisClient:
         task_id: str | None = None,
         verification_level: VerificationLevel | None = None,
         explorer_mode: ExplorerMode | None = None,
+        platform: str | None = None,
+        ios_workspace: str | None = None,
         options: Mapping[str, Any] | None = None,
     ) -> TaskHandle:
         """Submit one task and return immediately after scheduler admission.
@@ -205,6 +218,13 @@ class ArtemisClient:
             verification_level, "verification_level", VERIFICATION_LEVELS
         )
         resolved_mode = _normalize_choice(explorer_mode, "explorer_mode", EXPLORER_MODES)
+        resolved_platform = _normalize_choice(platform, "platform", PLATFORMS) or self._platform
+        call_workspace = str(ios_workspace).strip() if ios_workspace is not None else ""
+        if call_workspace and resolved_platform != "ios":
+            raise ValueError("ios_workspace requires platform='ios'")
+        resolved_workspace = call_workspace or (
+            self._ios_workspace if resolved_platform == "ios" else None
+        )
         if task_id is None:
             resolved_task_id = str(uuid.uuid4())
         else:
@@ -229,9 +249,21 @@ class ArtemisClient:
             "conversation_id": conversation_id,
             "verification_level": resolved_level,
             "explorer_mode": resolved_mode,
+            "platform": resolved_platform,
+            "ios_workspace": resolved_workspace,
             "options": dict(options) if options is not None else None,
         }
         payload.update({key: value for key, value in optional_values.items() if value is not None})
+
+        if resolved_platform == "ios":
+            # A legacy host silently drops unknown platform fields — refuse
+            # before POSTing unless it advertises iOS wire support.
+            advertised = await self.capabilities()
+            if not advertised.supports("platform.ios"):
+                raise TaskRejectedError(
+                    "This Artemis host does not advertise 'platform.ios' "
+                    "support; upgrade the host before submitting iOS tasks."
+                )
 
         response = self._mapping(
             await self._request("POST", "/api/run", json_body=payload),
@@ -306,6 +338,8 @@ class ArtemisClient:
         task_id: str | None = None,
         verification_level: VerificationLevel | None = None,
         explorer_mode: ExplorerMode | None = None,
+        platform: str | None = None,
+        ios_workspace: str | None = None,
         options: Mapping[str, Any] | None = None,
         timeout: float = 1800.0,
         poll_interval: float | None = None,
@@ -323,6 +357,8 @@ class ArtemisClient:
             task_id=task_id,
             verification_level=verification_level,
             explorer_mode=explorer_mode,
+            platform=platform,
+            ios_workspace=ios_workspace,
             options=options,
         )
         return await self.wait_for_task(
@@ -341,6 +377,8 @@ class ArtemisClient:
             "device_serial": getattr(task, "device_serial", None)
             or getattr(task, "device_id", None),
             "locked_app_package": getattr(task, "locked_package", None),
+            "platform": getattr(task, "platform", None),
+            "ios_workspace": getattr(task, "ios_workspace", None),
         }
         values.update(overrides)
         return await self.run(goal, **values)

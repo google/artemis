@@ -21,11 +21,13 @@ Recording session types and the session registry live in
 import asyncio
 import importlib.util
 import json
+import math
 from pathlib import Path
 import re
 import shutil
-import time
 import subprocess
+import sys
+import time
 from typing import Any
 
 import cv2
@@ -289,21 +291,74 @@ async def remux_recording_to_mp4(source_path: Path, output_path: Path) -> bool:
     return False
 
 
-async def probe_video_segment(video_path: Path) -> dict[str, float | int]:
-    """Read duration and coded dimensions for a finalized segment."""
-    process = await asyncio.create_subprocess_exec(
-        get_ffprobe_path(),
-        "-v",
-        "error",
-        "-show_entries",
-        "stream=width,height,duration,codec_type:format=duration",
-        "-of",
-        "json",
-        str(video_path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _stderr = await process.communicate()
+def _probe_video_segment_cv2(video_path: Path) -> dict[str, float | int]:
+    """Read metadata from a finalized CFR video when ffprobe is unavailable."""
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        width = capture.get(cv2.CAP_PROP_FRAME_WIDTH)
+        height = capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        fps = capture.get(cv2.CAP_PROP_FPS)
+        frame_count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+    finally:
+        capture.release()
+    if not (
+        math.isfinite(width)
+        and math.isfinite(height)
+        and math.isfinite(fps)
+        and math.isfinite(frame_count)
+        and width > 0
+        and height > 0
+        and fps > 0
+        and frame_count > 0
+    ):
+        return {}
+    return {
+        "duration": frame_count / fps,
+        "width": int(width),
+        "height": int(height),
+    }
+
+
+async def probe_video_segment(
+    video_path: Path, *, timeout_seconds: float | None = None
+) -> dict[str, float | int]:
+    """Read duration and coded dimensions for a finalized segment.
+
+    ``timeout_seconds`` bounds the owned ffprobe child: on timeout or
+    cancellation the subprocess is killed and drained before propagating.
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            get_ffprobe_path(),
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=width,height,duration,codec_type:format=duration",
+            "-of",
+            "json",
+            str(video_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return await asyncio.to_thread(_probe_video_segment_cv2, video_path)
+    if timeout_seconds is None:
+        # Default callers keep the original unbounded communicate behaviour.
+        stdout, _stderr = await process.communicate()
+    else:
+        try:
+            stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout_seconds)
+        except (TimeoutError, asyncio.CancelledError):
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            try:
+                await process.communicate()
+            except (OSError, RuntimeError, TimeoutError) as drain_error:
+                logger.debug(f"ffprobe drain after kill failed: {drain_error}")
+            raise
     if process.returncode != 0:
         return {}
     try:
@@ -364,6 +419,7 @@ async def write_recording_manifest(
     output_dir: Path,
     mp4_paths: list[Path],
     segment_offsets: dict[Path, float] | None = None,
+    probe_timeout_seconds: float | None = None,
 ) -> Path | None:
     """Write the browser playlist used for orientation-aware playback.
 
@@ -385,7 +441,13 @@ async def write_recording_manifest(
     for path in mp4_paths:
         if not path.exists():
             continue
-        metadata = await probe_video_segment(path)
+        # Forward the timeout only when supplied so default callers keep the
+        # historical probe signature.
+        metadata = await (
+            probe_video_segment(path, timeout_seconds=probe_timeout_seconds)
+            if probe_timeout_seconds is not None
+            else probe_video_segment(path)
+        )
         duration = float(metadata.get("duration", 0))
         width = int(metadata.get("width", 0))
         height = int(metadata.get("height", 0))
@@ -564,8 +626,16 @@ def is_scrcpy_installed() -> bool:
     return shutil.which("scrcpy") is not None
 
 
-def detect_video_tools_enabled() -> bool:
-    """Check if both scrcpy and ffmpeg are available to enable automated video features."""
+def detect_video_tools_enabled(platform: str = "android") -> bool:
+    """Check whether the platform's recording toolchain is available locally.
+
+    iOS uses native ``xcrun simctl io recordVideo`` capture plus the bundled
+    FFmpeg for post-processing; Android requires scrcpy plus FFmpeg.
+    """
+    if str(platform).strip().lower() == "ios":
+        return (
+            sys.platform == "darwin" and shutil.which("xcrun") is not None and is_ffmpeg_installed()
+        )
     return is_ffmpeg_installed() and is_scrcpy_installed()
 
 

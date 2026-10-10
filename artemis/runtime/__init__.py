@@ -23,11 +23,12 @@ from artemis.runtime.adb_endpoint import (
     ADB_ENDPOINT_ID_ENV,
     AdbEndpoint,
     AdbSession,
-    AdbTarget,
     InvalidAdbEndpoint,
     current_adb_endpoint,
 )
+from artemis.runtime.device_target import IOS_LOCK_SCOPE, AdbTarget, IosTarget
 from artemis.runtime.device_pool import DevicePool, DeviceStatus, device_pool
+from artemis.runtime.ios_device_pool import IosDevicePool, ios_device_pool
 from artemis.runtime.process_probe import pid_is_alive
 from artemis.runtime.daemon_client import (
     ensure_daemon_running,
@@ -66,6 +67,7 @@ from artemis.runtime.cancel_requests import (
 
 __all__ = [
     "ADB_ENDPOINT_ID_ENV",
+    "IOS_LOCK_SCOPE",
     "AdbEndpoint",
     "AdbSession",
     "AdbTarget",
@@ -75,6 +77,8 @@ __all__ = [
     "DevicePool",
     "DeviceStatus",
     "InvalidAdbEndpoint",
+    "IosDevicePool",
+    "IosTarget",
     "clear_cancel_request",
     "clear_server_info",
     "current_adb_endpoint",
@@ -87,6 +91,7 @@ __all__ = [
     "get_server_status",
     "is_artemis_daemon",
     "is_daemon_running",
+    "ios_device_pool",
     "is_cancel_requested",
     "is_port_in_use",
     "pid_is_alive",

@@ -45,6 +45,7 @@ from artemis.utils.notes import (
     READ_NOTE_DOCSTRING,
 )
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -79,7 +80,7 @@ class ToolExecutionResult(BaseModel):
             content_blocks.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"},
+                    "image_url": {"url": image_data_uri(b64_img)},
                 }
             )
         return ToolMessage(

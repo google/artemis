@@ -1442,29 +1442,6 @@
         let activeReplayNodeDetails = null;
         const replayInProgressSteps = new Set();
 
-        async function fetchDevices() {
-            try {
-                const res = await fetch(`/api/devices?_t=${Date.now()}`);
-                const devices = await res.json();
-                const select = document.getElementById('replay-device-select');
-                select.innerHTML = '';
-                
-                if (devices.length === 0) {
-                    select.innerHTML = '<option value="">No devices detected</option>';
-                    return;
-                }
-                
-                devices.forEach(d => {
-                    const opt = document.createElement('option');
-                    opt.value = d.serial;
-                    opt.innerText = `${d.serial} (${d.status})`;
-                    select.appendChild(opt);
-                });
-            } catch (err) {
-                console.error("Failed to fetch devices:", err);
-            }
-        }
-
         let replayTools = [];
 
         async function fetchReplayTools() {

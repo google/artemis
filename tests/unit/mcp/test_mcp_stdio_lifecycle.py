@@ -117,11 +117,13 @@ def test_mcp_stdio_handshake_immediate_input():
         p.stdin.write(json.dumps(init_req).encode("utf-8") + b"\n")
         p.stdin.flush()
 
-        # Read initialize response with a strict timeout
-        init_resp_line = _readline_with_timeout(p.stdout, 6.0)
+        # Read initialize response with a strict timeout. The deadline only needs
+        # to catch a wedged subprocess; cold-start imports on a loaded machine can
+        # take well over 6s, so allow generous-but-finite headroom.
+        init_resp_line = _readline_with_timeout(p.stdout, 30.0)
 
         assert init_resp_line is not None, (
-            "MCP server failed to respond to initialize request within 6 seconds (deadlock detected)!"
+            "MCP server failed to respond to initialize request within 30 seconds (deadlock detected)!"
         )
         init_data = json.loads(init_resp_line)
         assert init_data.get("id") == 1
@@ -134,7 +136,7 @@ def test_mcp_stdio_handshake_immediate_input():
         p.stdin.write(json.dumps(tools_req).encode("utf-8") + b"\n")
         p.stdin.flush()
 
-        tools_resp_line = _readline_with_timeout(p.stdout, 4.0)
+        tools_resp_line = _readline_with_timeout(p.stdout, 15.0)
 
         assert tools_resp_line is not None, "MCP server failed to respond to tools/list request!"
         tools_data = json.loads(tools_resp_line)

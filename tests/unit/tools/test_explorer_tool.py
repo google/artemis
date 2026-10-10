@@ -355,7 +355,7 @@ def test_render_operator_blocks_adds_the_annotated_image(tmp_path):
     assert "target=3, a bare integer" in result[0]["text"]
     assert "target=[x, y]" not in result[0]["text"]
     assert result[1]["type"] == "image_url"
-    assert result[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert result[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 def test_render_operator_blocks_numbers_annotations_sequentially(tmp_path):

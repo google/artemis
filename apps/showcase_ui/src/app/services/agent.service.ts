@@ -23,6 +23,7 @@ import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.m
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
+import { SystemService } from './system.service';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
 const SESSION_CACHE_KEY = 'artemis.sessions.v1';
@@ -70,6 +71,7 @@ interface SessionVideoResponse {
 export class AgentService {
   private http = inject(HttpClient);
   private zone = inject(NgZone);
+  private systemService = inject(SystemService);
   private activePauseCardKey: string | null = null;
 
   // Signals to expose state to components
@@ -158,7 +160,8 @@ export class AgentService {
             start_time: at.acquired_at ? (new Date(at.acquired_at).getTime() / 1000) : (Date.now() / 1000),
             status: 'running',
             model_info: this.activeModel() || undefined,
-            device_serial: at.device_id || null
+            device_serial: at.device_id || null,
+            platform: at.platform || null
           };
           sessionMap.set(sid, newSession);
           this.activeSessionTracking.set(sid, newSession);
@@ -430,6 +433,13 @@ export class AgentService {
       };
       this.pendingStartupProgress.set([submittedEvent]);
       const payload: any = { goal, profile };
+      const iosDevice = this.systemService?.selectedIosDevice?.() ?? null;
+      if (iosDevice) {
+        // iOS submissions carry the simulator UDID + platform explicitly;
+        // Android keeps resolving through the ADB probe target.
+        payload.platform = 'ios';
+        payload.device_serial = iosDevice.serial;
+      }
       if (expectedOutput && expectedOutput.trim()) {
         payload.expected_output = expectedOutput.trim();
       }
@@ -1546,7 +1556,8 @@ export class AgentService {
                   initial_goal: item.goal || '',
                   start_time: item.start_time || item.created_at || (Date.now() / 1000 + index),
                   status: item.status || 'pending',
-                  device_serial: item.device_serial || item.device_id || null
+                  device_serial: item.device_serial || item.device_id || null,
+                  platform: item.platform || null
                 };
               }
               return {

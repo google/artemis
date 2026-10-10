@@ -34,6 +34,7 @@ from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan
 from artemis.llm.google import normalize_usage
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_mime_type
 
 logger = get_logger(__name__)
 
@@ -171,10 +172,11 @@ def _append_ledger_diff(analyzer, contents: list, last_ledger_index: int) -> int
                 image_parts.append(
                     types.Part.from_text(text=f"PROOF: {Path(screenshot_file).name}")
                 )
+                image_bytes = Path(screenshot_file).read_bytes()
                 image_parts.append(
                     types.Part.from_bytes(
-                        data=Path(screenshot_file).read_bytes(),
-                        mime_type="image/jpeg",
+                        data=image_bytes,
+                        mime_type=image_mime_type(image_bytes),
                     )
                 )
             lines.append(line)

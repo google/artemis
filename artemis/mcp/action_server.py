@@ -46,6 +46,7 @@ from artemis.mcp.action_types import ActionCode, ActionResult, ObserveResult
 from artemis.mcp.actuators.base import Actuator
 from artemis.mcp.observation import observe as observe_impl
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_mime_type
 
 logger = get_logger(__name__)
 
@@ -112,7 +113,7 @@ def build_action_server(actuator: Actuator, name: str = "artemis_actions") -> Fa
                         ImageContent(
                             type="image",
                             data=_b64.b64encode(img_bytes).decode("utf-8"),
-                            mimeType="image/jpeg",
+                            mimeType=image_mime_type(img_bytes),
                         )
                     )
                 return CallToolResult(

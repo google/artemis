@@ -67,6 +67,7 @@ from artemis.utils.ocr_xml_fusion import (
 )
 from artemis.utils.visualization import format_minimal_list_with_elements
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -255,6 +256,8 @@ def _load_prompts() -> dict[str, str]:
 
 
 def probes_enabled(ctx: ArtemisContext) -> bool:
+    if getattr(getattr(ctx, "device", None), "mobile_platform", None) == "ios":
+        return False
     setup = getattr(ctx, "execution_setup", None)
     return not (setup and getattr(setup, "disable_device_probes", False))
 
@@ -842,7 +845,7 @@ async def run_final_check(
         content.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
+                "image_url": {"url": image_data_uri(screenshot_b64)},
             }
         )
 

@@ -26,6 +26,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.services.llm import get_llm
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_mime_type
 
 logger = get_logger(__name__)
 
@@ -107,7 +108,7 @@ async def _run_object_detection(
     image_bytes: bytes | str | Path | None = None,
     queries: list[str] | None = None,
     templates: list[str] | None = None,
-    mime_type: str = "image/jpeg",
+    mime_type: str | None = None,
     global_timeout: float = 30.0,
     image_path: str | Path | None = None,
 ) -> dict:
@@ -120,6 +121,7 @@ async def _run_object_detection(
         image_data = Path(target_img).read_bytes()
     else:
         image_data = target_img
+    mime_type = mime_type or image_mime_type(image_data)
 
     queries = queries or []
     templates = templates or ["Point to the following objects: {labels_str}"]

@@ -32,7 +32,7 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from artemis.config import (
     PAUSE_FILE,
@@ -110,6 +110,21 @@ _NON_STREAMING_ENDPOINTS: set[str] = set()
 
 # Total retry limit when failures switch categories within one recovery cycle.
 _MAX_TOTAL_RETRY_ATTEMPTS = 8
+
+# Providers that serialize messages onto the OpenAI chat-completions wire.
+# Strict OpenAI-compatible servers pair tool results by ``tool_call_id`` and
+# reject a request when one id names two different calls — some local
+# endpoints restart their id counter every turn (``call_0`` each time).
+_OPENAI_WIRE_PROVIDERS = frozenset(
+    {
+        ModelProvider.OPENAI.value,
+        ModelProvider.OPENROUTER.value,
+        ModelProvider.XAI.value,
+        ModelProvider.OLLAMA.value,
+        ModelProvider.VLLM.value,
+        ModelProvider.CUSTOM.value,
+    }
+)
 
 
 def _get_current_data_engine():
@@ -638,7 +653,50 @@ class RobustChatModelWrapper:
             engine = _get_current_data_engine()
         record_llm_usage(engine, response, source=self._endpoint_key())
 
+    def _dedupe_tool_call_ids(self, args: tuple) -> tuple:
+        """Rename repeated tool_call ids on OpenAI-wire providers.
+
+        A ``tool_call_id`` is an opaque correlation token pairing one tool
+        result to one call, so rewriting a reused id is wire-safe. Each
+        AIMessage's repeated id and the ToolMessage answering it (matched in
+        call order, which also covers parallel calls) are rewritten together.
+        """
+        if self._provider_value() not in _OPENAI_WIRE_PROVIDERS or not args:
+            return args
+        messages = args[0]
+        if not isinstance(messages, (list, tuple)):
+            return args
+        seen: dict[str, int] = {}
+        pending: dict[str, list[str]] = {}
+        changed = False
+        sanitized: list[BaseMessage] = []
+        for message in messages:
+            if isinstance(message, AIMessage) and message.tool_calls:
+                calls = []
+                for call in message.tool_calls:
+                    call_id = str(call.get("id") or "")
+                    occurrence = seen.get(call_id, 0)
+                    seen[call_id] = occurrence + 1
+                    if occurrence:
+                        call = {**call, "id": f"{call_id}#{occurrence}"}
+                        changed = True
+                    pending.setdefault(call_id, []).append(call["id"])
+                    calls.append(call)
+                message = message.model_copy(update={"tool_calls": calls})
+            elif isinstance(message, ToolMessage):
+                ids = pending.get(str(message.tool_call_id))
+                if ids:
+                    new_id = ids.pop(0)
+                    if new_id != message.tool_call_id:
+                        message = message.model_copy(update={"tool_call_id": new_id})
+                        changed = True
+            sanitized.append(message)
+        if not changed:
+            return args
+        return (sanitized, *args[1:])
+
     async def ainvoke(self, *args, **kwargs):
+        args = self._dedupe_tool_call_ids(args)
         args, kwargs, _ = self._traced_call(args, kwargs)
         response = await _run_with_recovery(
             functools.partial(self.base_model.ainvoke, *args, **kwargs),
@@ -658,6 +716,7 @@ class RobustChatModelWrapper:
         signals the UI to drop it, and retries the whole call per policy;
         partial or duplicated chunks can never reach message history.
         """
+        args = self._dedupe_tool_call_ids(args)
         args, kwargs, _ = self._traced_call(args, kwargs)
         emit_deltas = bool(self.ctx and self.ctx.data_engine)
         response = await _run_with_recovery(
@@ -929,6 +988,9 @@ def _resolve_endpoint(
     return ModelEndpoint(
         provider=ModelProvider.from_string(provider_val),
         model_name=str(model_val),
+        api_base=_get_val(cfg, "api_base", str),
+        api_key=_get_val(cfg, "api_key", str),
+        max_tokens=_get_val(cfg, "max_tokens", int),
         temperature=_get_val(cfg, "temperature", (int, float)) or 0.0,
         timeout_seconds=_get_val(cfg, "timeout", (int, float)) or 60.0,
         thinking_budget=_get_val(cfg, "thinking_budget", int),

@@ -19,12 +19,13 @@ import signal
 import subprocess
 import tempfile
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from artemis.config.paths import get_temp_dir
 from artemis.context import ArtemisContext
 from artemis.drivers.factory import get_driver
+from artemis.drivers.ios.recording import IosRecordingSession
 from artemis.utils.video import (
     ANDROID_RECORDING_SEGMENT_SECONDS,
     await_scrcpy_first_frame,
@@ -48,6 +49,9 @@ from third_party.mobile_use.utils.video import (
     set_active_session,
 )
 
+if TYPE_CHECKING:
+    from artemis.drivers.ios.xcode_driver import XcodeSimulatorDriver
+
 logger = get_logger(__name__)
 
 
@@ -55,6 +59,18 @@ class UnifiedMobileController(UnifiedMobileControllerBase):
     def __init__(self, ctx: ArtemisContext):
         super().__init__(ctx, get_driver(ctx))
         self._segment_cache: dict[tuple[str, int, float, float], VideoRecordingResult] = {}
+
+    async def open_url(self, url: str) -> bool:
+        if self.ctx.device.mobile_platform == "ios":
+            return await self._driver.open_url(url)
+        return await super().open_url(url)
+
+    async def erase_text(self, nb_chars: int | None = None) -> bool:
+        if self.ctx.device.mobile_platform == "ios":
+            # No native clear/Backspace key exists; the driver raises
+            # NotImplementedError for unsupported clear operations.
+            return await self._driver.input_text("", clear_existing=True)
+        return await super().erase_text(nb_chars)
 
     @staticmethod
     async def _spawn_scrcpy(command: list[str]) -> asyncio.subprocess.Process:
@@ -130,6 +146,21 @@ class UnifiedMobileController(UnifiedMobileControllerBase):
                     f"{cache_key[2]}s to {cache_key[3]}s"
                 )
                 return cached_res
+
+        if isinstance(session, IosRecordingSession):
+            result = await self._extract_ios_segment(session, start_time, end_time, output_path)
+            if (
+                cache_key is not None
+                and result.success
+                and result.video_path
+                and result.video_path.exists()
+            ):
+                # Sealing bumps the generation; key the entry under the
+                # post-seal generation a repeated lookup will observe.
+                self._segment_cache[
+                    (cache_key[0], session.generation, cache_key[2], cache_key[3])
+                ] = result
+            return result
 
         try:
             mkv_path = session.local_video_path
@@ -397,8 +428,10 @@ class UnifiedMobileController(UnifiedMobileControllerBase):
         output_dir: Path | None = None,
         max_duration_seconds: int = DEFAULT_MAX_DURATION_SECONDS,
     ) -> VideoRecordingResult:
-        """Start screen recording on Android device using scrcpy."""
+        """Start screen recording using the platform's native capture."""
         self._segment_cache.clear()
+        if self.ctx.device.mobile_platform == "ios":
+            return await self._start_ios_recording(output_dir, max_duration_seconds)
         device_id = self._get_device_id()
 
         # Check mock driver first
@@ -517,8 +550,10 @@ class UnifiedMobileController(UnifiedMobileControllerBase):
             return abort_recording(device_id, "start", e)
 
     async def stop_video_recording(self) -> VideoRecordingResult:
-        """Stop scrcpy recording and return the converted MP4 video file."""
+        """Stop recording and return the finalized MP4 video file."""
         self._segment_cache.clear()
+        if self.ctx.device.mobile_platform == "ios":
+            return await self._stop_ios_recording()
         device_id = self._get_device_id()
 
         # Check mock driver first
@@ -644,6 +679,243 @@ class UnifiedMobileController(UnifiedMobileControllerBase):
             logger.error(f"Failed to stop scrcpy recording: {e}")
             self._record_recording_failure(session, str(e))
             return abort_recording(device_id, "stop", e)
+
+    def _ios_recording_driver(self) -> "XcodeSimulatorDriver | None":
+        """The active driver when it supports native iOS capture, else ``None``."""
+        from artemis.drivers.ios.xcode_driver import XcodeSimulatorDriver
+
+        return self._driver if isinstance(self._driver, XcodeSimulatorDriver) else None
+
+    async def _start_ios_recording(
+        self, output_dir: Path | None, max_duration_seconds: int
+    ) -> VideoRecordingResult:
+        """Start native capture through the iOS driver (simctl or devicectl)."""
+        device_id = self._get_device_id()
+        if already_active := recording_already_active(device_id):
+            return already_active
+        driver = self._ios_recording_driver()
+        if driver is None:
+            return VideoRecordingResult(
+                success=False,
+                message="iOS recording requires the iOS driver.",
+            )
+        try:
+            await driver.start_video_recording(
+                output_dir, max_duration_seconds=max_duration_seconds
+            )
+        except Exception as exc:
+            session = driver.recording_session
+            if session is None:
+                session = IosRecordingSession(
+                    video_id=uuid4(),
+                    device_id=device_id,
+                    start_time=time.time(),
+                    local_video_path=(Path(output_dir) / "recording.mov" if output_dir else None),
+                    is_active=False,
+                )
+            if session.data_engine_start_time is None and self.ctx and self.ctx.data_engine:
+                session.data_engine_start_time = (
+                    self.ctx.data_engine.session_start_time or session.start_time
+                )
+            if self.ctx and self.ctx.data_engine:
+                self.ctx.data_engine.record_video_start(
+                    video_id=session.video_id,
+                    device_id=device_id,
+                    local_video_path=session.local_video_path or "",
+                    start_time=session.start_time,
+                )
+            self._record_recording_failure(session, f"iOS recording failed to start: {exc}")
+            return VideoRecordingResult(
+                success=False, message=f"iOS recording failed to start: {exc}"
+            )
+        session = driver.recording_session
+        if session is None:
+            return VideoRecordingResult(success=False, message="iOS recorder returned no session")
+        session.data_engine_start_time = (
+            self.ctx.data_engine.session_start_time
+            if (self.ctx and self.ctx.data_engine)
+            else session.start_time
+        )
+        set_active_session(device_id, session)
+        if self.ctx and self.ctx.data_engine:
+            self.ctx.data_engine.record_video_start(
+                video_id=session.video_id,
+                device_id=device_id,
+                local_video_path=session.local_video_path,
+                start_time=session.start_time,
+            )
+        warning = "; ".join(session.errors) or None
+        return VideoRecordingResult(
+            success=True,
+            message=f"iOS recording started on {device_id}",
+            video_id=session.video_id,
+            generation=session.generation,
+            sealed_until=session.sealed_until,
+            source_revision=f"{session.video_id}:{session.generation}:active",
+            warning=warning,
+        )
+
+    async def _stop_ios_recording(self) -> VideoRecordingResult:
+        """Finalize the driver's recorder and report the sealed manifest."""
+        device_id = self._get_device_id()
+        driver = self._ios_recording_driver()
+        session = get_active_session(device_id)
+        if session is None:
+            session = driver.recording_session if driver is not None else None
+        if session is None or session.video_id is None:
+            return no_active_recording(device_id)
+        if driver is None:
+            message = "iOS recording stop requires the Xcode simulator driver."
+            self._record_recording_failure(session, message)
+            return VideoRecordingResult(success=False, message=message)
+
+        async def _finalize() -> str | None:
+            session.is_active = False
+            return await driver.stop_video_recording()
+
+        try:
+            final_path = await asyncio.shield(_finalize())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._record_recording_failure(session, f"iOS recording stop failed: {exc}")
+            return VideoRecordingResult(success=False, message=f"iOS recording stop failed: {exc}")
+        finally:
+            remove_active_session(device_id)
+
+        missing = [
+            record
+            for record in session.segments
+            if not (
+                record.get("conversion_done")
+                and Path(record["output_path"]).exists()
+                and Path(record["output_path"]).stat().st_size > 0
+            )
+        ]
+        if final_path is None or not session.segments or missing:
+            message = "; ".join(session.errors) or "iOS recording finalized with no valid segments"
+            self._record_recording_failure(session, message)
+            return VideoRecordingResult(success=False, message=message)
+
+        final_video_path = Path(final_path)
+        if self.ctx and self.ctx.data_engine:
+            self.ctx.data_engine.record_video_stop(
+                video_id=session.video_id,
+                device_id=device_id,
+                local_video_path=final_video_path,
+                start_time=session.start_time,
+                end_time=session.start_time + session.sealed_until,
+            )
+        warning = "; ".join(session.errors) or None
+        return VideoRecordingResult(
+            success=True,
+            message=f"iOS recording stopped, saved {len(session.segments)} segments",
+            video_path=final_video_path,
+            video_id=session.video_id,
+            generation=session.generation,
+            sealed_until=session.sealed_until,
+            source_revision=f"{session.video_id}:{session.generation}:ready",
+            warning=warning,
+        )
+
+    async def _extract_ios_segment(
+        self,
+        session: IosRecordingSession,
+        start_time: float,
+        end_time: float | None,
+        output_path: Path | None,
+    ) -> VideoRecordingResult:
+        """Render a clip from sealed iOS MP4 segments only.
+
+        The open .mov is never handed to FFmpeg: the driver seals the segment
+        at the requested recording-relative end first, then finalized segments
+        render through the shared timeline renderer. Recorder restarts leave
+        their gaps black rather than stretching adjacent frames.
+        """
+        device_id = self._get_device_id()
+        anchor = session.data_engine_start_time
+        shift = (session.start_time - anchor) if anchor is not None else 0.0
+        recording_start = float(start_time) - shift
+        recording_end = float(end_time) - shift if end_time is not None else None
+
+        driver = self._ios_recording_driver()
+        if session.is_active and recording_end is not None and driver is not None:
+            await driver.seal_recording_segment(through_time=recording_end)
+        if session.conversion_tasks:
+            await asyncio.gather(*session.conversion_tasks, return_exceptions=True)
+
+        warning = None
+        available_end = session.sealed_until
+        if recording_end is None or recording_end > available_end:
+            if recording_end is not None:
+                warning = (
+                    "Requested end clipped to latest sealed iOS capture "
+                    f"({available_end + shift:.1f}s of session time)"
+                )
+            recording_end = available_end
+
+        records = [dict(record) for record in session.segments]
+        first_capture = min((float(record["start"]) for record in records), default=None)
+        if first_capture is not None and recording_start < first_capture:
+            leading = "Requested start preceded the first captured frame; clipped to capture start"
+            warning = f"{warning}; {leading}" if warning else leading
+            recording_start = first_capture
+
+        if not records or recording_end <= recording_start:
+            message = "Requested range does not overlap sealed iOS recording"
+            self._record_recording_failure(session, message)
+            return VideoRecordingResult(success=False, message=message)
+
+        timeline = [
+            {
+                "path": str(record["output_path"]),
+                "start": float(record["start"]),
+                "end": float(record["end"]),
+            }
+            for record in records
+            if record.get("conversion_done")
+            and Path(record["output_path"]).exists()
+            and float(record["end"]) > recording_start
+            and float(record["start"]) < recording_end
+        ]
+        timeline.sort(key=lambda segment: segment["start"])
+        if not timeline:
+            message = "No finalized iOS MP4 segments overlap the requested range"
+            self._record_recording_failure(session, message)
+            return VideoRecordingResult(success=False, message=message)
+
+        trim_output_path = (
+            Path(output_path)
+            if output_path is not None
+            else Path(tempfile.mkdtemp(prefix="video_trimmed_", dir=get_temp_dir("trimmed_videos")))
+            / "segment.mp4"
+        )
+        success = await render_timeline_clip(
+            timeline, recording_start, recording_end, trim_output_path
+        )
+        if not success or not trim_output_path.exists():
+            message = "Failed to render clip from sealed iOS segments"
+            self._record_recording_failure(session, message)
+            return VideoRecordingResult(success=False, message=message)
+
+        actual_start = recording_start + shift
+        actual_end = recording_end + shift
+        file_size_mb = trim_output_path.stat().st_size / (1024 * 1024)
+        return VideoRecordingResult(
+            success=True,
+            message=(
+                f"iOS clip rendered for session range {actual_start:.1f}s to {actual_end:.1f}s"
+            ),
+            video_path=trim_output_path,
+            file_size_mb=round(file_size_mb, 2),
+            duration_seconds=round(recording_end - recording_start, 2),
+            actual_start_relative_time=actual_start,
+            warning=warning,
+            video_id=session.video_id,
+            generation=session.generation,
+            sealed_until=session.sealed_until,
+            source_revision=(f"{session.video_id}:{session.generation}:{round(actual_end, 3)}"),
+        )
 
     async def cleanup(self) -> None:
         await self._driver.disconnect()

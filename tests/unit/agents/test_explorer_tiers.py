@@ -251,7 +251,7 @@ async def test_universal_dispatch_appends_image_message(tmp_path):
     image_blocks = human.content[1:]
     assert len(image_blocks) == 2  # the missing file is skipped
     assert all(b["type"] == "image_url" for b in image_blocks)
-    assert image_blocks[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert image_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 @pytest.mark.asyncio
