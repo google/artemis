@@ -82,8 +82,8 @@ async def test_planner_initial_plan(mock_context):
 
         human_msg_content = messages[1].content
         assert isinstance(human_msg_content, list)
-        assert human_msg_content[0]["type"] == "text"
-        assert "Goal: Test Goal" in human_msg_content[0]["text"]
+        assert human_msg_content[0]["type"] == "image_url"
+        assert "Goal: Test Goal" in human_msg_content[1]["text"]
 
 
 def test_validate_plan_format_single_sourced_status_alphabet():

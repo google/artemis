@@ -144,6 +144,14 @@ class Settings(BaseSettings):
             " forever (legacy interactive behavior)."
         ),
     )
+    LLM_FLASH_HARD_TIMEOUT_SECONDS: float | None = Field(
+        default=180.0,
+        description=(
+            "Hard per-call timeout for Flash operator turns, in seconds."
+            " Busy time only: paused waits (PAUSE_FILE) do not accrue."
+            " Raise for slow local providers; None waits indefinitely."
+        ),
+    )
 
     # Paths & Storage
     TRACES_PATH: Path = Field(default_factory=get_default_traces_path)

@@ -46,6 +46,7 @@ from artemis.utils.notes import read_note_content
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from third_party.mobile_use.utils.logger import get_logger
 from pydantic import BaseModel
+from artemis.utils.image_codec import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -257,7 +258,21 @@ def _initial_messages(
         target_schema=_target_schema_json(output_config),
         plan_and_history=plan_and_history,
     )
-    content: list[dict[str, Any]] = [{"type": "text", "text": human_message}]
+    content: list[dict[str, Any]] = []
+
+    raw_data = graph_output.operator_raw_data
+    screenshot_b64 = raw_data.get("screenshot_b64") if raw_data else None
+    if screenshot_b64:
+        # Image-first: vision models ground better when the screenshot
+        # precedes the instruction/context text.
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": image_data_uri(screenshot_b64)},
+            }
+        )
+
+    content.append({"type": "text", "text": human_message})
 
     if ctx.data_engine:
         verification = _verification_block(ctx, graph_output)
@@ -267,16 +282,6 @@ def _initial_messages(
     environment = _environment_block(ctx)
     if environment:
         content.append({"type": "text", "text": environment})
-
-    raw_data = graph_output.operator_raw_data
-    screenshot_b64 = raw_data.get("screenshot_b64") if raw_data else None
-    if screenshot_b64:
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
-            }
-        )
 
     return [SystemMessage(content=_SYSTEM_MESSAGE), HumanMessage(content=content)]
 

@@ -103,6 +103,10 @@ class PlanItem:
         return self.status == STATUS_DONE
 
     @property
+    def is_blocked(self) -> bool:
+        return self.status == STATUS_BLOCKED
+
+    @property
     def is_loop(self) -> bool:
         return bool(_LOOP_TAG_RE.search(self.text))
 
@@ -154,6 +158,17 @@ class PlanSnapshot:
     def all_top_level_done(self) -> bool:
         top = self.top_level
         return bool(top) and all(i.is_done for i in top)
+
+    @property
+    def all_top_level_resolved(self) -> bool:
+        """Every top-level milestone is settled — completed or declared blocked.
+
+        Unlike ``all_top_level_done`` this includes ``[!]`` items: an
+        all-blocked plan is a terminal state the settlement/checker arbitrates,
+        not a reason to loop the operator forever.
+        """
+        top = self.top_level
+        return bool(top) and all(i.is_done or i.is_blocked for i in top)
 
     @property
     def continuous_top_level(self) -> tuple[PlanItem, ...]:

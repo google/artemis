@@ -41,6 +41,7 @@ from artemis.services.token_meter import record_llm_usage
 from artemis.utils.task_tree import format_actions_clean
 from artemis.utils.visualization import draw_action_overlay_on_image
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_codec import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -430,7 +431,7 @@ class VisualStepSummarizer(StepMemoryService):
                     }
                 )
                 content_blocks.append(
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_pre}"}}
+                    {"type": "image_url", "image_url": {"url": image_data_uri(b64_pre)}}
                 )
 
             if post_bytes:
@@ -449,7 +450,7 @@ class VisualStepSummarizer(StepMemoryService):
                 content_blocks.append(
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64_post}"},
+                        "image_url": {"url": image_data_uri(b64_post)},
                     }
                 )
 

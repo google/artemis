@@ -16,7 +16,9 @@
 
 import asyncio
 import base64
+import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -25,11 +27,175 @@ from langchain_core.messages import HumanMessage, ToolMessage
 
 from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.services.llm import get_llm
+from artemis.utils.image_codec import image_data_uri
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 _DETECTOR_SEMAPHORE = asyncio.Semaphore(6)
+
+# The detector's output contract: points are [x, y] on a normalized 0-1000
+# grid over the image that was sent (consumers divide by 1000 to get pixels).
+# Items may also carry ``box_2d`` corner pairs in the same declared convention
+# (Gemma 4's trained detection output is [ymin, xmin, ymax, xmax] / 1000, i.e.
+# the default ``yx_1000``); a box is normalized in place to [x1, y1, x2, y2]
+# and synthesizes ``point`` from its center when the item lacks one.
+# Models differ in what they natively emit; ``coordinate_format`` on the
+# resolved endpoint declares the convention so results can be normalized:
+#   axis order  — ``yx`` (Gemini ER style) or ``xy`` (most vision models)
+#   scale       — ``1000`` grid, ``px`` absolute pixels, ``norm`` 0-1 floats
+_DEFAULT_COORDINATE_FORMAT = "yx_1000"
+_PIXEL_GRID = 1000.0
+
+# Qwen-family processors smart-resize inputs to a multiple of the patch-merge
+# factor within min/max pixel bounds; pixel-space coordinates land on that
+# resized grid, not the raw image grid.
+_QWEN_RESIZE_FACTOR = 32
+_QWEN_MIN_PIXELS = 65536
+_QWEN_MAX_PIXELS = 16777216  # size.longest_edge in the shipped preprocessor config
+
+
+def _image_dimensions(image_data: bytes) -> tuple[int, int] | None:
+    """Return (width, height) of encoded image bytes, or None when undecodable."""
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(image_data)) as img:
+            return img.width, img.height
+    except Exception:
+        return None
+
+
+def _qwen_resized_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Grid a Qwen-family processor sees after its smart resize."""
+    factor = _QWEN_RESIZE_FACTOR
+    w_bar = round(width / factor) * factor
+    h_bar = round(height / factor) * factor
+    if w_bar * h_bar > _QWEN_MAX_PIXELS:
+        beta = math.sqrt((width * height) / _QWEN_MAX_PIXELS)
+        w_bar = math.floor(width / beta / factor) * factor
+        h_bar = math.floor(height / beta / factor) * factor
+    elif w_bar * h_bar < _QWEN_MIN_PIXELS:
+        beta = math.sqrt(_QWEN_MIN_PIXELS / (width * height))
+        w_bar = math.ceil(width * beta / factor) * factor
+        h_bar = math.ceil(height * beta / factor) * factor
+    return w_bar, h_bar
+
+
+def _endpoint_coordinate_format(llm) -> str:
+    fmt = getattr(getattr(llm, "endpoint", None), "coordinate_format", None)
+    if isinstance(fmt, str) and fmt in _COORDINATE_FORMATS:
+        return fmt
+    return _DEFAULT_COORDINATE_FORMAT
+
+
+_COORDINATE_FORMATS = frozenset({"yx_1000", "xy_1000", "yx_px", "xy_px", "yx_norm", "xy_norm"})
+
+
+def _detected_batch_scale(items: list) -> str | None:
+    """Infer the actual scale a model used across a whole response.
+
+    The contract is 0-1000, but when a model ignores it the whole batch
+    shares one convention: every coordinate fitting in 0-1 means ``norm``;
+    any coordinate above 1000 means ``px``. Mixed magnitudes stay on the
+    declared grid so sub-1000 corner points are not rescaled twice.
+    """
+    coords = [
+        abs(float(c))
+        for item in items
+        if isinstance(item, dict)
+        for key in ("point", "box_2d")
+        if isinstance(item.get(key), (list, tuple))
+        and len(item[key]) == (2 if key == "point" else 4)
+        for c in item[key]
+        if isinstance(c, (int, float)) and not isinstance(c, bool)
+    ]
+    if not coords:
+        return None
+    max_coord = max(coords)
+    if max_coord <= 1.0 and any(c != 0.0 for c in coords):
+        return "norm"
+    if max_coord > _PIXEL_GRID:
+        return "px"
+    return None
+
+
+def _normalize_detected_point(
+    item: dict,
+    coordinate_format: str,
+    image_size: tuple[int, int] | None,
+    batch_scale: str | None,
+) -> None:
+    """Rewrite ``item['point']`` to the [x, y] 0-1000 contract in place.
+
+    Axis order and scale come from the endpoint's declared coordinate
+    format; ``batch_scale`` (``norm``/``px``) overrides the declared scale
+    only when the whole response clearly violated the contract.
+    """
+    point = item.get("point")
+    if not (isinstance(point, (list, tuple)) and len(point) == 2):
+        return
+    try:
+        first, second = float(point[0]), float(point[1])
+    except (TypeError, ValueError):
+        return
+
+    x, y = (second, first) if coordinate_format.startswith("yx") else (first, second)
+
+    scale = batch_scale or coordinate_format.rsplit("_", 1)[-1]
+    if scale == "px":
+        if image_size:
+            grid_w, grid_h = _qwen_resized_dimensions(*image_size)
+            x, y = x * _PIXEL_GRID / grid_w, y * _PIXEL_GRID / grid_h
+    elif scale == "norm":
+        x, y = x * _PIXEL_GRID, y * _PIXEL_GRID
+
+    item["point"] = [x, y]
+
+
+def _normalize_detected_box(
+    item: dict,
+    coordinate_format: str,
+    image_size: tuple[int, int] | None,
+    batch_scale: str | None,
+) -> bool:
+    """Rewrite ``item['box_2d']`` to [x1, y1, x2, y2] on the 0-1000 contract.
+
+    When the item has no usable ``point``, the box center becomes it. Returns
+    True only in that case: a synthesized point is already on the contract
+    grid and must not go through ``_normalize_detected_point`` again.
+    """
+    box = item.get("box_2d")
+    if not (isinstance(box, (list, tuple)) and len(box) == 4):
+        return False
+    try:
+        a, b, c, d = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return False
+
+    x1, y1, x2, y2 = (b, a, d, c) if coordinate_format.startswith("yx") else (a, b, c, d)
+
+    scale = batch_scale or coordinate_format.rsplit("_", 1)[-1]
+    if scale == "px":
+        if image_size:
+            grid_w, grid_h = _qwen_resized_dimensions(*image_size)
+            x1, x2 = x1 * _PIXEL_GRID / grid_w, x2 * _PIXEL_GRID / grid_w
+            y1, y2 = y1 * _PIXEL_GRID / grid_h, y2 * _PIXEL_GRID / grid_h
+    elif scale == "norm":
+        x1, y1, x2, y2 = x1 * _PIXEL_GRID, y1 * _PIXEL_GRID, x2 * _PIXEL_GRID, y2 * _PIXEL_GRID
+
+    item["box_2d"] = [x1, y1, x2, y2]
+
+    point = item.get("point")
+    if isinstance(point, (list, tuple)) and len(point) == 2:
+        try:
+            float(point[0])
+            float(point[1])
+            return False
+        except (TypeError, ValueError):
+            pass
+    item["point"] = [(x1 + x2) / 2, (y1 + y2) / 2]
+    return True
 
 
 async def _detect_single_label(
@@ -53,7 +219,7 @@ async def _detect_single_label(
                 content=[
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:{mime_type};base64,{img_b64}"},
+                        "image_url": {"url": image_data_uri(img_b64)},
                     },
                     {"type": "text", "text": prompt},
                 ]
@@ -124,7 +290,7 @@ async def _run_object_detection(
     queries = queries or []
     templates = templates or ["Point to the following objects: {labels_str}"]
     try:
-        llm = get_llm(ctx, name="object_detector")
+        llm = get_llm(ctx, name="object_detector", is_utils=True)
     except Exception:
         llm = get_llm(ctx, name="operator")
 
@@ -165,16 +331,18 @@ async def _run_object_detection(
         except Exception as e:
             logger.error(f"Task raised exception: {e}")
 
-    # Swap coordinates from [y, x] normalized to [x, y] normalized if needed
+    # Normalize model points to the [x, y] 0-1000 contract. Axis order and
+    # scale follow the endpoint's declared coordinate_format (Gemini ER's
+    # [y, x] stays the default); a batch that clearly arrived in 0-1 or raw
+    # pixels is rescaled instead.
+    coordinate_format = _endpoint_coordinate_format(llm)
+    image_size = _image_dimensions(image_data)
+    batch_scale = _detected_batch_scale(fused_results)
     for item in fused_results:
-        if (
-            isinstance(item, dict)
-            and "point" in item
-            and isinstance(item["point"], list)
-            and len(item["point"]) == 2
-        ):
-            y_norm, x_norm = item["point"]
-            item["point"] = [x_norm, y_norm]
+        if isinstance(item, dict):
+            box_derived = _normalize_detected_box(item, coordinate_format, image_size, batch_scale)
+            if not box_derived:
+                _normalize_detected_point(item, coordinate_format, image_size, batch_scale)
 
     detected_labels = set(
         item["label"] for item in fused_results if isinstance(item, dict) and "label" in item

@@ -7,13 +7,20 @@
   // 1. Global Default Model (Applied to all sub-agents unless overridden below)
   // ------------------------------------------------------------------------------
   "default": {
-    "provider": "google",
-    "model": "gemini-3.8-flash",
-    "thinking_level": "medium",
+    "provider": "custom",
+    // gemma4-e4b via a local OpenAI-compatible model server (mlx-vlm gemma4 route);
+    // vision nodes use gemma4-e4b (semantic/grounding); vision-hybrid
+    // is the OCR-only route (Apple Vision first, qwen-vl escalation).
+    "model": "gemma4-e4b",
+    "api_base": "http://127.0.0.1:8080/v1",
+    // Local 9B reasoning runs ~15-30 tok/s with a thinking preamble;
+    // the 60s endpoint default times out mid-response on dense prompts.
+    "timeout": 300,
     "fallback": {
-      "provider": "google",
-      "model": "gemini-3.7-flash",
-      "thinking_level": "medium"
+      "provider": "custom",
+      "model": "qwen3.8-9b",
+      "api_base": "http://127.0.0.1:8080/v1",
+      "timeout": 300
     }
   },
 
@@ -58,27 +65,52 @@
     },
 
     // 🎯 Operator: Screen perception, element interaction, and direct execution
+    // MUST stay on a vision-capable model — it consumes the screenshot every
+    // turn; the platform hard-rejects image parts on text-only models (400).
     "operator": {
+      "model": "gemma4-e4b",
       "thinking_level": "medium",
-      "include_thoughts": true
+      "include_thoughts": true,
+      "fallback": {
+        "provider": "custom",
+        "model": "qwen-vl",
+        "api_base": "http://127.0.0.1:8080/v1"
+      }
     },
 
     // 🎬 Video Analyzer: Multimodal screen recording verification and temporal analysis
-    // NOTE: Dual-path engine automatically routes:
-    //  - Native Gemini Files API for Gemini models with Google API keys (long video file stream);
-    //    Gemini 3.6+ Flash sub-agents use agentic video understanding by default (see video_analyzer.processing below)
-    //  - Universal Multi-Model Engine for Claude 3.5/3.7, GPT-4o, OpenRouter, Vertex AI (dynamic keyframe extraction + multimodal tool calling)
-    "video_analyzer": {},
+    // Local route: universal multi-model path feeds extracted keyframes to
+    // qwen-vl (native Gemini Files API path only exists for google provider).
+    "video_analyzer": {
+      "provider": "custom",
+      "model": "gemma4-e4b",
+      "api_base": "http://127.0.0.1:8080/v1",
+      "fallback": {
+        "provider": "custom",
+        "model": "qwen-vl",
+        "api_base": "http://127.0.0.1:8080/v1"
+      }
+    },
 
     // 👁️ Object Detector & Explorer (Flash Mode): Visual coordinates grounding and bounding boxes
-    // CRITICAL REQUIREMENT: Standard LLMs (including standard Gemini Flash, GPT-4o, Claude 3.7) lack sub-pixel spatial coordinate fine-tuning.
-    // To achieve accurate [x, y] point and bounding box localization, this node MUST use specialized Gemini ER (Embodied Reasoning / Robotics) models:
-    // e.g., "gemini-robotics-er-2-preview". Non-ER models will fail spatial coordinate detection.
+    // Local gemma4-e4b via a local OpenAI-compatible model server.
+    // grounding verified on synthetic UI: gemma4-e4b emits box_2d as
+    // [ymin,xmin,ymax,xmax]/1000 = the detector's native yx_1000 contract
+    // (pixel-accurate on a settings-screen mock; real-UI eval still pending).
+    // qwen-vl fallback keeps "xy_1000" — it emits [x, y] on the 0-1000 grid.
+    // Off-contract batches still auto-rescale (0-1 or raw pixels).
     "object_detector": {
-      "model": "gemini-robotics-er-2-preview",
+      "provider": "custom",
+      "model": "gemma4-e4b",
+      "api_base": "http://127.0.0.1:8080/v1",
+      "coordinate_format": "yx_1000",
+      "timeout": 300,
       "fallback": {
-        "provider": "google",
-        "model": "gemini-robotics-er-2-preview"
+        "provider": "custom",
+        "model": "qwen-vl",
+        "api_base": "http://127.0.0.1:8080/v1",
+        "coordinate_format": "xy_1000",
+        "timeout": 300
       }
     },
 
@@ -86,21 +118,25 @@
     // NOTE:
     //  - "flash" version delegates directly to object_detector (requires Gemini ER model above).
     //  - "pro" / "ultra" versions run multi-turn ReAct loops (supports both Native Gemini and Universal Multi-Model LangChain engines).
+    // pro/ultra tiers consume screenshots directly — must be vision-capable.
     "explorer": {
-      "thinking_level": "medium"
+      "model": "gemma4-e4b",
+      "thinking_level": "medium",
+      "fallback": {
+        "provider": "custom",
+        "model": "qwen-vl",
+        "api_base": "http://127.0.0.1:8080/v1"
+      }
     },
 
     // 📋 Summarizer: Aggregates step history and generates structured outcome
     "summarizer": {},
 
     // 🔽 Hopper: Fast lightweight package name locator
-    "hopper": {
-      "model": "gemini-3.5-flash-lite",
-      "fallback": {
-        "provider": "google",
-        "model": "gemini-3.1-flash-lite"
-      }
-    },
+    // Inherits the local default; a Gemini model name here would be sent to
+    // the local server and fail. qwen-small is registered if a lighter hopper
+    // is wanted: {"model": "qwen-small"}.
+    "hopper": {},
 
     // 📝 Outputter: Synthesizes execution trace into final output report
     "outputter": {},
@@ -143,8 +179,11 @@
       // 🧠 Step Summarizer: Asynchronous visual context compressor
       // Summarizes intermediate steps in background without blocking the runner,
       // replacing images only after strictly objective, high-density summaries are ready.
+      // LOCAL-MODEL NOTE: the visual-transition lens bypasses the LLM router
+      // (get_google_llm) — with no GOOGLE_API_KEY it crashes runner init.
+      // Disabled for the local-provider deployment.
       "step_summarizer": {
-        "enabled": true, // Whether background step summarization is active
+        "enabled": false, // Whether background step summarization is active
         "model": "gemini-3.5-flash-lite", // Lightweight model for fast background inference
         "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
       }
@@ -206,7 +245,9 @@
         // prompt path byte-for-byte (L2/L3 chunk compression rides this same
         // flag). See services/token_meter.py for measured session token usage
         // and cache-hit ratios.
-        "enabled": true,
+        // LOCAL-MODEL NOTE: transcript + capsule lens are Google-bound
+        // (get_google_llm) — disabled under the local-provider deployment.
+        "enabled": false,
         "context_budget_tokens": 80000,
         // Below start_ratio of the operator's own measured prompt size, closed
         // segments only prepare their summary; the original turns are kept in

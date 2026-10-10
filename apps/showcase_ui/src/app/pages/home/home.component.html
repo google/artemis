@@ -349,7 +349,7 @@
               <span class="choice-title">Custom Configuration</span>
             </div>
             <p class="choice-desc">Define models in <code>config/artemis.jsonc</code> & keys in <code>.env</code>
-              (OpenAI, Claude, Ollama).</p>
+              (OpenAI, Claude, Ollama — or a local model via <code>artemis model serve</code>).</p>
           </div>
         </div>
       </div>
@@ -603,6 +603,87 @@
           </div>
           }
           </div>
+
+      <!-- Section 1b: Local Model Endpoint (shown when a custom api_base is
+           configured, or the readiness probe is failing) -->
+      @if (localModelProbe(); as lm) {
+        @if (lm.status !== 'pass' || modelConfigEnv()?.default_model?.provider === 'custom') {
+          <div class="inspector-card" [class.card-warn]="lm.status !== 'pass'">
+            <div class="inspector-card-header">
+              <div class="inspector-header-left">
+                <span class="material-symbols-outlined header-icon">dns</span>
+                <div class="inspector-header-titles">
+                  <span class="inspector-title">Local Model Endpoint</span>
+                  <span class="inspector-subtitle">{{ lm.summary }}</span>
+                </div>
+              </div>
+              <div class="inspector-header-actions">
+                @if (lm.status === 'pass') {
+                <span class="badge-env-pass">
+                  <span class="material-symbols-outlined">check_circle</span>
+                  <span>Ready</span>
+                </span>
+                } @else {
+                <span class="badge-env-unset">
+                  <span class="material-symbols-outlined">error</span>
+                  <span>Action Needed</span>
+                </span>
+                }
+              </div>
+            </div>
+
+            <p class="inspector-desc">{{ lm.description }}</p>
+
+            <!-- Guided actions: Artemis commands are clickable when the CLI
+                 exists in this build (fallback: copyable code box); hints text -->
+            @for (act of lm.actions; track act.label) {
+              @if (act.action_type === 'command') {
+                <div class="code-box small-box">
+                  <code>{{ act.payload }}</code>
+                  @if (modelActionArgs(act.payload); as args) {
+                    @if (localModelCommandsAvailable()) {
+                      @if (localModelTaskFor(args.action, args.alias)?.status === 'running') {
+                        <span class="material-symbols-outlined spinning lm-spin">progress_activity</span>
+                        <span class="lm-running-label">Running…</span>
+                      } @else {
+                        <button type="button" class="btn-run-cmd"
+                          (click)="runLocalModelAction(args)">
+                          <span class="material-symbols-outlined">play_arrow</span>
+                          <span>Run</span>
+                        </button>
+                      }
+                    }
+                  }
+                  <button type="button" class="btn-copy-code" [class.copied]="copiedId() === 'lm_' + act.label"
+                    (click)="copyToClipboard(act.payload, 'lm_' + act.label)">
+                    <span class="material-symbols-outlined">{{ copiedId() === 'lm_' + act.label ? 'check' : 'content_copy' }}</span>
+                    <span>{{ copiedId() === 'lm_' + act.label ? 'Copied!' : 'Copy' }}</span>
+                  </button>
+                </div>
+                @if (modelActionArgs(act.payload); as args) {
+                  @if (localModelTaskFor(args.action, args.alias); as task) {
+                    @if (task.status === 'failed' || task.log.length) {
+                      <div class="lm-task-log" [class.lm-task-failed]="task.status === 'failed'">
+                        @if (task.status === 'done') {
+                          <div class="lm-log-line lm-log-done">✓ {{ act.label }} finished</div>
+                        }
+                        @if (task.status === 'failed') {
+                          <div class="lm-log-line lm-log-failed">✗ {{ act.label }} failed (exit {{ task.returncode }}) — check the log below or run the command in a terminal</div>
+                        }
+                        @for (line of task.log.slice(-4); track $index) {
+                          <div class="lm-log-line">{{ line }}</div>
+                        }
+                      </div>
+                    }
+                  }
+                }
+              } @else {
+              <p class="inspector-desc"><strong>{{ act.label }}:</strong> {{ act.payload }}</p>
+              }
+            }
+          </div>
+        }
+      }
 
       <!-- Section 2: Environment API Keys (.env) -->
       <div class="inspector-card">

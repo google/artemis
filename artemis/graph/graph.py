@@ -68,6 +68,7 @@ from artemis.tools.command_tool import (
     run_adb_command_wrapper,
 )
 from artemis.tools.diagnostic_tool import ask_diagnoser_wrapper
+from artemis.tools.done_tool import mark_done_wrapper
 from artemis.tools.explorer_tool import ask_explorer_wrapper
 from artemis.tools.index import get_tools_from_wrappers
 from artemis.tools.scratchpad import (
@@ -913,6 +914,15 @@ def convergence_gate(
         logger.info("Plan validation failed, returning to operator for retry.")
         return "continue"
 
+    # An explicit completion claim via the mark_done tool routes to terminal
+    # verification regardless of plan-ledger state. The claim is consumed once:
+    # a failed settlement returns the run to the operator, which may claim
+    # again after acting.
+    if getattr(ctx, "operator_done_claimed", False):
+        ctx.operator_done_claimed = False
+        logger.info("Operator claimed completion via mark_done; routing to settlement.")
+        return _terminal_route()
+
     file_path = get_note_file_path(ctx.data_engine.base_dir, "task_plan")
     if not file_path.exists():
         logger.warning(f"Task plan file not found at {file_path}")
@@ -940,6 +950,14 @@ def convergence_gate(
             )
             return "continue"
         logger.info("All subgoals are completed, ending the goal")
+        return _terminal_route()
+
+    # Every top-level milestone settled with at least one [!] blocked: the
+    # operator has declared the goal infeasible. Route to settlement so the
+    # final check arbitrates — it either repairs (reverts a subgoal to
+    # in-progress) or ends with a blocked outcome once its budget is spent.
+    if snapshot.all_top_level_resolved:
+        logger.info("All subgoals are resolved with blocked items; routing to settlement.")
         return _terminal_route()
 
     return "continue"
@@ -982,6 +1000,7 @@ async def get_graph(ctx: ArtemisContext) -> CompiledStateGraph:
         run_adb_command_wrapper,
         manage_task_wrapper,
         ask_explorer_wrapper,
+        mark_done_wrapper,
         *HISTORY_TOOL_WRAPPERS,
     ]
     # ask_committee does not follow the Operator's pre-decision / turn-ending contract.

@@ -111,6 +111,13 @@ class ModelEndpoint(BaseModel):
         default=False,
         description="Whether to enable Google Search grounding for Gemini endpoints",
     )
+    coordinate_format: str | None = Field(
+        default=None,
+        description=(
+            "Vision detector point convention, e.g. 'yx_1000' (Gemini default),"
+            " 'xy_1000', 'yx_px', 'xy_px', 'yx_norm', 'xy_norm'"
+        ),
+    )
 
     def cache_key(self) -> tuple:
         """Key the client cache by endpoint settings, hashing the API key."""
@@ -286,7 +293,8 @@ class ModelFactory:
             api_key = (
                 endpoint.api_key
                 or (settings.OPENAI_API_KEY.get_secret_value() if settings.OPENAI_API_KEY else None)
-                or os.environ.get("OPENAI_API_KEY", "EMPTY")
+                or os.environ.get("OPENAI_API_KEY")
+                or "EMPTY"
             )
             base_url = endpoint.api_base or (
                 str(settings.OPENAI_BASE_URL) if settings.OPENAI_BASE_URL else None
@@ -369,7 +377,7 @@ class ModelFactory:
         elif provider in (ModelProvider.OLLAMA, ModelProvider.VLLM, ModelProvider.CUSTOM):
             from langchain_openai import ChatOpenAI
 
-            api_key = endpoint.api_key or os.environ.get("OPENAI_API_KEY", "EMPTY")
+            api_key = endpoint.api_key or os.environ.get("OPENAI_API_KEY") or "EMPTY"
             base_url = endpoint.api_base or os.environ.get(
                 "OPENAI_BASE_URL", "http://localhost:8000/v1"
             )

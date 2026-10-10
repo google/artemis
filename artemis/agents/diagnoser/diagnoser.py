@@ -40,6 +40,7 @@ from artemis.tools.index import get_tool_by_name
 from artemis.tools.log_tool import get_analyze_logs_tool
 from artemis.tools.mobile.read_hierarchy import get_ui_hierarchy_tool
 from artemis.tools.scratchpad import get_list_notes_tool, get_read_note_tool
+from artemis.utils.image_codec import image_data_uri
 from artemis.tools.tool_wrapper import (
     get_tool_result_content,
     invoke_tool_with_injection,
@@ -227,7 +228,7 @@ class Diagnoser:
             content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{latest_screenshot_b64}"},
+                    "image_url": {"url": image_data_uri(latest_screenshot_b64)},
                 }
             )
 

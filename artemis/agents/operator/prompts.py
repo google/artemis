@@ -31,6 +31,7 @@ from artemis.tools.command_tool import (
     _format_long_output_response,
     _is_output_long,
 )
+from artemis.utils.image_codec import image_data_uri
 from artemis.utils.plan_grammar import parse_plan, render_plan_grammar_spec
 from artemis.utils.task_tree import SELF_DESCRIBED_MARKER, action_intent_phrase
 from third_party.mobile_use.utils.logger import get_logger
@@ -384,7 +385,7 @@ class ObservationPromptComponent(PromptComponent):
         builder.add_human_content(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{latest_screenshot_b64}"},
+                "image_url": {"url": image_data_uri(latest_screenshot_b64)},
             }
         )
         builder.add_human_content(f"--- Visible UI Elements ---\n{minimal_list}")
@@ -749,6 +750,63 @@ class ToolLimitWarningPromptComponent(PromptComponent):
                 " is unclear, ask_diagnoser can help.",
                 ephemeral=True,
             )
+
+
+#: Header of the standing focus block rendered last in every observation tail.
+FOCUS_REMINDER_MARKER = "--- Now ---"
+
+
+class ActiveFocusPromptComponent(PromptComponent):
+    """Standing tail-end recitation of the active milestone/sub-goal plus the
+    two rules the bounce checks enforce.
+
+    Rendered last in the observation so these lines sit inside the local
+    attention window of sliding-window models (e.g. Gemma's window covers only
+    the final tokens of the whole sequence — the deep system-prompt sections
+    restating these rules are outside it once the prompt grows). The block is
+    ephemeral: it leaves the transcript when the turn commits.
+    """
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        snapshot = parse_plan(kwargs.get("task_plan") or "")
+        if not snapshot.has_top_level or snapshot.all_top_level_done:
+            return
+        milestone = snapshot.active_milestone()
+        leaf = snapshot.active_leaf(milestone) if milestone else None
+        lines = [FOCUS_REMINDER_MARKER]
+        if milestone is not None and leaf is not None:
+            lines.append(
+                f'In progress: milestone "{_clip(milestone.text)}" → sub-goal "{_clip(leaf.text)}".'
+            )
+            lines.append(
+                "Settle it (`[x]` / `[!]`) or open the next `[/]` sub-goal via"
+                " `update_note` (key `task_plan`) in the same tool-call list as"
+                " the action."
+            )
+        elif milestone is not None:
+            lines.append(
+                f'In progress: milestone "{_clip(milestone.text)}" has no `[/]`'
+                " sub-goal — open one for what you are doing now via"
+                " `update_note` (key `task_plan`)."
+            )
+        else:
+            lines.append("No milestone is marked in progress — mark one `[/]`.")
+        lines.append(
+            "If the goal is already achieved on screen, settle the plan and call"
+            " `mark_done` — do not take further actions. If the goal cannot be"
+            " achieved (e.g., a required app is not installed), mark the"
+            " milestone `[!]` blocked instead of searching indefinitely."
+        )
+        lines.append("End the turn only with a Turn-Ending Action.")
+        text = "\n".join(lines)
+        if builder.human_footer is not None:
+            # Legacy path: the template footer renders after every component,
+            # so the focus block must ride inside it to stay last.
+            builder.set_human_footer(f"{builder.human_footer.rstrip()}\n\n{text}")
+        else:
+            # Transcript path: the tail is the last message; the ephemeral flag
+            # keeps the block out of the committed transcript.
+            builder.add_human_content(text, ephemeral=True)
 
 
 #: Header of the user-guidance block (shared by the Flash runner and the Pro

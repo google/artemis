@@ -55,6 +55,7 @@ from artemis.utils.task_tree import (
     get_recent_subgoal_hashes,
 )
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_codec import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -273,19 +274,20 @@ async def _execute_committee(
         async def run_agent_turn(llm, system_prompt, tools, agent_name):
             current_blackboard = blackboard_path.read_text(encoding="utf-8")
 
-            human_content = [
-                {
-                    "type": "text",
-                    "text": f"Current Blackboard:\n{current_blackboard}",
-                }
-            ]
+            human_content = []
             if screenshot_b64:
                 human_content.append(
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
+                        "image_url": {"url": image_data_uri(screenshot_b64)},
                     }
                 )
+            human_content.append(
+                {
+                    "type": "text",
+                    "text": f"Current Blackboard:\n{current_blackboard}",
+                }
+            )
 
             messages = [
                 SystemMessage(content=system_prompt),
@@ -367,19 +369,20 @@ async def _execute_committee(
         # Final Synthesis by Planner Avatar
         current_blackboard = blackboard_path.read_text(encoding="utf-8")
 
-        final_human_content = [
-            {
-                "type": "text",
-                "text": f"Current Blackboard:\n{current_blackboard}",
-            }
-        ]
+        final_human_content = []
         if screenshot_b64:
             final_human_content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
+                    "image_url": {"url": image_data_uri(screenshot_b64)},
                 }
             )
+        final_human_content.append(
+            {
+                "type": "text",
+                "text": f"Current Blackboard:\n{current_blackboard}",
+            }
+        )
 
         msg_final = [
             SystemMessage(

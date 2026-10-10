@@ -1421,6 +1421,18 @@ $text-light: #94a3b8;
           border-radius: 10px;
           overflow: hidden;
 
+          .inspector-desc {
+            font-size: 12px;
+            line-height: 1.5;
+            color: $text-secondary;
+            margin: 0;
+            padding: 10px 14px 0;
+          }
+
+          > .code-box {
+            margin: 10px 14px;
+          }
+
           .inspector-card-header {
             display: flex;
             align-items: center;
@@ -3777,6 +3789,89 @@ $text-light: #94a3b8;
             font-size: 12px;
           }
         }
+      }
+
+      .btn-run-cmd {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 3px;
+        padding: 0 8px;
+        height: 22px;
+        background: rgba(56, 189, 248, 0.25);
+        color: #7dd3fc !important;
+        border: 1px solid rgba(56, 189, 248, 0.4);
+        border-radius: 5px;
+        font-family: $font-sans;
+        font-size: 10.5px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.18s ease;
+        flex-shrink: 0;
+
+        .material-symbols-outlined, span {
+          color: #7dd3fc !important;
+        }
+
+        .material-symbols-outlined {
+          font-size: 13px;
+        }
+
+        &:hover {
+          background: rgba(56, 189, 248, 0.4);
+          border-color: rgba(56, 189, 248, 0.6);
+        }
+
+        &:active {
+          transform: scale(0.96);
+        }
+      }
+
+      .lm-spin {
+        font-size: 15px;
+        color: #38bdf8;
+        flex-shrink: 0;
+        animation: spin 1s linear infinite;
+      }
+
+      .lm-running-label {
+        font-size: 10.5px;
+        font-weight: 600;
+        color: #7dd3fc;
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
+    }
+
+    .lm-task-log {
+      margin-top: 6px;
+      padding: 8px 10px;
+      background: #0f172a;
+      border-radius: 6px;
+      font-family: $font-mono;
+      font-size: 10.5px;
+      line-height: 1.5;
+      max-height: 110px;
+      overflow-y: auto;
+
+      .lm-log-line {
+        color: #94a3b8;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+
+      .lm-log-done {
+        color: #34d399;
+        font-weight: 600;
+      }
+
+      .lm-log-failed {
+        color: #f87171;
+        font-weight: 600;
+      }
+
+      &.lm-task-failed {
+        border: 1px solid rgba(248, 113, 113, 0.35);
       }
     }
 

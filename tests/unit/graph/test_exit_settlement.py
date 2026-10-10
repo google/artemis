@@ -62,6 +62,7 @@ def _make_ctx(tmp_path, **setup_kwargs):
     ctx.checkpoint_attempt_seq = {}
     ctx.checkpoint_repairs = {}
     ctx.assert_halt = False
+    ctx.operator_done_claimed = False
     ctx.final_check_attempts = 0
     return ctx
 
@@ -162,6 +163,47 @@ def test_gate_explicit_validation_failure_still_continues(tmp_path):
         assert convergence_gate(_make_state(checker_success=False), ctx) == "continue"
     logged = " ".join(str(c.args[0]) for c in mock_logger.info.call_args_list if c.args)
     assert "Plan validation failed" in logged
+
+
+def test_gate_mark_done_claim_ends_when_nothing_to_settle(tmp_path):
+    """A mark_done claim with an incomplete plan and no check items routes to
+    the terminal path — with nothing to verify, that path is ``end``."""
+    _write_plan(tmp_path, "- [/] Create alarm\n")
+    ctx = _make_ctx(tmp_path, disable_final_check=True)
+    ctx.operator_done_claimed = True
+    assert convergence_gate(_make_state(), ctx) == "end"
+    # The claim is consumed once: a bounced settlement must not re-route.
+    assert ctx.operator_done_claimed is False
+
+
+def test_gate_mark_done_claim_routes_to_settlement_with_checks(tmp_path):
+    _write_plan(tmp_path, DONE_PLAN_WITH_CHECKS)
+    ctx = _make_ctx(tmp_path)
+    ctx.operator_done_claimed = True
+    assert convergence_gate(_make_state(), ctx) == "exit_settlement"
+
+
+def test_gate_mark_done_claim_yields_to_validation_failure(tmp_path):
+    _write_plan(tmp_path, "- [/] Create alarm\n")
+    ctx = _make_ctx(tmp_path)
+    ctx.operator_done_claimed = True
+    assert convergence_gate(_make_state(checker_success=False), ctx) == "continue"
+    # Rejected validation leaves the claim latched for the next pass.
+    assert ctx.operator_done_claimed is True
+
+
+def test_gate_all_blocked_plan_routes_to_settlement(tmp_path):
+    """A plan whose milestones are all [!] (declared infeasible) is terminal —
+    settlement/final-check arbitrates instead of looping forever."""
+    _write_plan(tmp_path, "- [!] Open App Store\n")
+    ctx = _make_ctx(tmp_path)
+    assert convergence_gate(_make_state(), ctx) == "exit_settlement"
+
+
+def test_gate_mixed_done_blocked_plan_routes_terminal(tmp_path):
+    _write_plan(tmp_path, "- [x] Open Photos\n- [!] Open App Store\n")
+    ctx = _make_ctx(tmp_path, disable_final_check=True)
+    assert convergence_gate(_make_state(), ctx) == "end"
 
 
 def test_gate_assert_halt_terminates_mid_plan(tmp_path):

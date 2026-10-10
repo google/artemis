@@ -54,6 +54,7 @@ from artemis.memory.context_policy import build_history_for
 from artemis.utils.cython_compat import CyFunctionDetector
 from third_party.mobile_use.utils.decorators import agent_lifecycle_logging
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_codec import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -274,14 +275,31 @@ class PlannerNode:
 
         human_message = Template(human_content).render(**render_kwargs)
 
-        human_message_content = [{"type": "text", "text": human_message}]
+        human_message_content = []
         if screenshot_b64:
             human_message_content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
+                    "image_url": {"url": image_data_uri(screenshot_b64)},
                 }
             )
+        # Multimodal models ground more reliably when the image precedes the
+        # instruction text (image-first ordering).
+        human_message_content.append({"type": "text", "text": human_message})
+        # Sliding-window models attend reliably to the tail of the sequence;
+        # the submission protocol reminder must sit after the screenshot, or
+        # the image tokens push it out of the local window.
+        human_message_content.append(
+            {
+                "type": "text",
+                "text": (
+                    "Reminder: submit the plan by calling `save_note` (key"
+                    " `task_plan`), or `update_note` when revising an existing"
+                    " plan. A tool call is required — a plan written only in"
+                    " your text response is not recognized."
+                ),
+            }
+        )
         messages = [
             SystemMessage(content=system_message),
             HumanMessage(content=human_message_content),

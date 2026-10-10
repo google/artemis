@@ -556,3 +556,64 @@ async def test_final_report_persists_native_thinking(mock_context):
     assert kwargs["operator_raw_thinking"] == "final text"
     assert kwargs["operator_native_thinking"] == "native summary"
     assert isinstance(messages[-1], ToolMessage)
+
+
+# --- Gemma local-server tool-call envelope repair --------------------------------
+
+
+def _make_runner(mock_context):
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        return FlashRunner(mock_context, goal="test goal")
+
+
+def test_resolve_tool_calls_keeps_native_calls(mock_context):
+    runner = _make_runner(mock_context)
+    native = [{"name": "click", "args": {"target": 1}, "id": "n1"}]
+    resp = SimpleNamespace(tool_calls=native, invalid_tool_calls=[])
+    assert runner._resolve_tool_calls(resp, "") == native
+
+
+def test_resolve_tool_calls_repairs_enveloped_invalid_call(mock_context):
+    """mlx_vlm wraps `call:name{args}` as name="call" + unparseable arguments."""
+    runner = _make_runner(mock_context)
+    resp = SimpleNamespace(
+        tool_calls=[],
+        invalid_tool_calls=[
+            {
+                "name": "call",
+                "args": '{"report_task_status{explanation": "Settings is open."}',
+                "id": "broken-1",
+                "error": "json error",
+            }
+        ],
+    )
+    calls = runner._resolve_tool_calls(resp, "")
+    assert calls == [
+        {
+            "name": "report_task_status",
+            "args": {"explanation": "Settings is open."},
+            "id": "broken-1",
+        }
+    ]
+
+
+def test_resolve_tool_calls_repairs_call_envelope_in_text(mock_context):
+    """The `call:` envelope can leak into content instead of tool_calls."""
+    runner = _make_runner(mock_context)
+    resp = SimpleNamespace(tool_calls=[], invalid_tool_calls=[])
+    text = 'Opening settings. call:click{target: 34, target_description: "Display & touch"}'
+    calls = runner._resolve_tool_calls(resp, text)
+    assert calls[0]["name"] == "click"
+    assert calls[0]["args"] == {"target": 34, "target_description": "Display & touch"}
+
+
+def test_resolve_tool_calls_unrecoverable_envelope_returns_empty(mock_context):
+    """Genuinely garbled args still surface as no-call (notice path), not a crash."""
+    runner = _make_runner(mock_context)
+    resp = SimpleNamespace(
+        tool_calls=[],
+        invalid_tool_calls=[
+            {"name": "call", "args": '{"click{target": "6,broken', "id": "b2", "error": "x"}
+        ],
+    )
+    assert runner._resolve_tool_calls(resp, "") == []

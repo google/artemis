@@ -358,6 +358,9 @@ export class HomeComponent implements OnInit, OnDestroy {
   public configProbe = computed(() => this.systemService.configProbe());
   public adbProbe = computed(() => this.systemService.adbProbe());
   public llmProbe = computed(() => this.systemService.llmProbe());
+  public localModelProbe = computed(() => this.systemService.localModelProbe());
+  public localModelTasks = computed(() => this.systemService.localModelTasks());
+  public localModelCommandsAvailable = computed(() => this.systemService.localModelCommandsAvailable());
   public geminiProbe = computed(() => this.systemService.geminiProbe());
   public ocrProbe = computed(() => this.systemService.ocrProbe());
   public toolchainProbe = computed(() => this.systemService.toolchainProbe());
@@ -541,6 +544,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     // Initial fetch of system readiness & model configuration
     this.systemService.fetchReadiness().subscribe();
     this.systemService.fetchModelConfigEnv().subscribe();
+    this.systemService.fetchLocalModelStatus().subscribe();
     this.systemService.fetchAdbServerStatus().subscribe({
       next: status => {
         if (status.endpoint.mode === 'remote') {
@@ -564,6 +568,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     if (tab === 'diagnostics') {
       this.systemService.fetchReadiness().subscribe();
       this.systemService.fetchModelConfigEnv().subscribe();
+      this.systemService.fetchLocalModelStatus().subscribe();
     }
   }
 
@@ -1033,6 +1038,35 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   public setProfile(profile: 'flash' | 'pro'): void {
     this.selectedProfile.set(profile);
+  }
+
+  // --- Local model lifecycle (artemis model pull/serve/stop) ---------------
+
+  /** Parse an `artemis model <action> <alias> [--port N]` action payload. */
+  public modelActionArgs(payload: string): { action: 'pull' | 'serve' | 'stop'; alias: string; port?: number } | null {
+    const m = payload.match(/artemis\s+model\s+(pull|serve|stop)\s+([^\s]+)/);
+    if (!m) return null;
+    const portMatch = payload.match(/--port\s+(\d+)/);
+    return {
+      action: m[1] as 'pull' | 'serve' | 'stop',
+      alias: m[2],
+      port: portMatch ? Number(portMatch[1]) : undefined,
+    };
+  }
+
+  /** Latest task state for an action+alias pair, if any. */
+  public localModelTaskFor(action: string, alias: string) {
+    return this.localModelTasks()[`${action}:${alias}`] || null;
+  }
+
+  public runLocalModelAction(args: { action: 'pull' | 'serve' | 'stop'; alias: string; port?: number }): void {
+    if (args.action === 'pull') {
+      this.systemService.pullLocalModel(args.alias).subscribe();
+    } else if (args.action === 'serve') {
+      this.systemService.serveLocalModel(args.alias, args.port).subscribe();
+    } else {
+      this.systemService.stopLocalModel(args.alias, args.port).subscribe();
+    }
   }
 
   public setCategory(cat: SuggestionCategory): void {

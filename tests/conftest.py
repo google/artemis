@@ -32,6 +32,20 @@ def mock_driver():
     return MockDeviceDriver(device_id="fixture-mock-device", width=1080, height=2400)
 
 
+@pytest.fixture(autouse=True)
+def _reset_apple_vision_ocr_breaker():
+    """Isolate the Apple Vision OCR circuit-breaker counter between tests.
+
+    Tests exercising the real ``perform_ocr`` path with undecodable images
+    trip the process-global failure counter and would silently disable the
+    provider for every later test in the session."""
+    import artemis.utils.ocr_api as ocr_api
+
+    ocr_api._apple_vision_consecutive_failures = 0
+    yield
+    ocr_api._apple_vision_consecutive_failures = 0
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Attach test-layer markers according to the owning test directory."""
     for item in items:

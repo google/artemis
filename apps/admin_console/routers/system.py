@@ -16,6 +16,7 @@
 
 import ipaddress
 import os
+import re
 import secrets
 from urllib.parse import urlsplit
 
@@ -624,3 +625,188 @@ async def shutdown_server_endpoint(request: Request):
         "message": "Artemis server is shutting down.",
         "pid": os.getpid(),
     }
+
+
+# --- Local model lifecycle (artemis model pull/serve/stop) ------------------
+#
+# The console surfaces the local_model_endpoint probe's guided actions; these
+# endpoints let the user run them without leaving the browser. Each action
+# spawns `python -m artemis model ...` and streams its output into a capped
+# in-memory log the frontend polls.
+
+
+class LocalModelActionRequest(BaseModel):
+    """Payload for a local-model lifecycle action."""
+
+    alias: str = Field(..., description="Catalog alias or org/repo id (e.g. gemma4-e4b)")
+    port: int | None = Field(
+        default=None,
+        ge=1,
+        le=65535,
+        description="Serve/stop port; the CLI default (8080) applies when omitted",
+    )
+
+
+_MODEL_TASKS: dict[str, dict] = {}
+_MODEL_TASK_LOG_LINES = 80
+
+
+def _model_cli_available() -> bool:
+    """Whether the ``artemis model`` command group exists in this build."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("artemis.interfaces.cli.commands.model") is not None
+    except Exception:
+        return False
+
+
+def _task_view(key: str, task: dict) -> dict:
+    return {
+        "key": key,
+        "action": task["action"],
+        "alias": task["alias"],
+        "cmd": task["cmd"],
+        "status": task["status"],
+        "returncode": task["returncode"],
+        "started_at": task["started_at"],
+        "log": task["log"][-12:],
+    }
+
+
+def _task_snapshot() -> dict:
+    return {k: _task_view(k, t) for k, t in _MODEL_TASKS.items()}
+
+
+async def _drain_model_task(task: dict) -> None:
+    proc = task["process"]
+    try:
+        if proc.stdout is not None:
+            async for raw in proc.stdout:
+                line = raw.decode(errors="replace").rstrip()
+                if line:
+                    task["log"].append(line)
+                    del task["log"][:-_MODEL_TASK_LOG_LINES]
+        rc = await proc.wait()
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        rc = -1
+        task["log"].append(f"task monitor error: {e}")
+    task["returncode"] = rc
+    task["status"] = "done" if rc == 0 else "failed"
+
+
+async def _start_model_task(action: str, alias: str, extra_args: list[str]) -> dict:
+    """Spawn `artemis model <action>` as a subprocess with a capped log."""
+    import asyncio
+    import sys
+    import time
+
+    key = f"{action}:{alias}"
+    existing = _MODEL_TASKS.get(key)
+    if existing and existing["status"] == "running":
+        return _task_view(key, existing)
+
+    # ``stop`` is port-scoped on the CLI (no positional model arg).
+    cmd = [sys.executable, "-m", "artemis", "model", action]
+    if action != "stop":
+        cmd.append(alias)
+    cmd += extra_args
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to start `artemis model {action}`: {e}"
+        ) from e
+
+    task = {
+        "action": action,
+        "alias": alias,
+        "cmd": " ".join(cmd),
+        "status": "running",
+        "returncode": None,
+        "started_at": time.time(),
+        "log": [],
+        "process": proc,
+    }
+    _MODEL_TASKS[key] = task
+    task["watcher"] = asyncio.create_task(_drain_model_task(task))
+    return _task_view(key, task)
+
+
+def _require_model_cli() -> None:
+    if not _model_cli_available():
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "`artemis model` commands are not available in this build. "
+                "Run the shown command in a terminal, or manage the model with "
+                "your own OpenAI-compatible server."
+            ),
+        )
+
+
+_MODEL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)?$")
+
+
+def _require_model_ref(alias: str) -> None:
+    """Reject aliases the managed CLI could never resolve.
+
+    ``resolve_model_ref`` accepts catalog aliases and ``org/repo`` ids — the
+    same inputs ``artemis model pull`` takes. Anything else (bare junk, flag
+    injection like ``--port``, or argv that doesn't look like a model ref) is
+    refused before a subprocess is spawned.
+    """
+    from artemis.config.local_models import resolve_model_ref
+
+    if not _MODEL_REF_RE.match(alias) or resolve_model_ref(alias) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown model '{alias}'. `artemis model` accepts catalog "
+                "aliases (see `artemis model list`) or a Hugging Face "
+                "'org/repo' id."
+            ),
+        )
+
+
+@router.get("/local-models/status")
+async def local_model_status():
+    """Command availability plus in-flight/finished model task states."""
+    return {
+        "commands_available": _model_cli_available(),
+        "tasks": _task_snapshot(),
+    }
+
+
+@router.post("/local-models/pull")
+async def pull_local_model(payload: LocalModelActionRequest, request: Request):
+    """Download model weights via `artemis model pull` (long-running)."""
+    _require_loopback_request(request, "Local model lifecycle is local-only.")
+    _require_model_cli()
+    alias = payload.alias.strip()
+    _require_model_ref(alias)
+    return await _start_model_task("pull", alias, [])
+
+
+@router.post("/local-models/serve")
+async def serve_local_model(payload: LocalModelActionRequest, request: Request):
+    """Start the managed model server via `artemis model serve`."""
+    _require_loopback_request(request, "Local model lifecycle is local-only.")
+    _require_model_cli()
+    alias = payload.alias.strip()
+    _require_model_ref(alias)
+    extra = ["--port", str(payload.port)] if payload.port else []
+    return await _start_model_task("serve", alias, extra)
+
+
+@router.post("/local-models/stop")
+async def stop_local_model(payload: LocalModelActionRequest, request: Request):
+    """Stop a managed model server via `artemis model stop`."""
+    _require_loopback_request(request, "Local model lifecycle is local-only.")
+    _require_model_cli()
+    extra = ["--port", str(payload.port)] if payload.port else []
+    return await _start_model_task("stop", payload.alias.strip(), extra)

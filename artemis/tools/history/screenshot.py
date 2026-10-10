@@ -32,6 +32,7 @@ from typing import Any
 from artemis.core.tool_failure import ToolFailure
 from artemis.utils.visualization import overlay_action_on_screenshot
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_codec import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -64,8 +65,8 @@ class ScreenshotResult:
             return self.description
         encoded = base64.b64encode(self.image_bytes).decode("utf-8")
         return [
+            {"type": "image_url", "image_url": {"url": image_data_uri(encoded)}},
             {"type": "text", "text": self.description},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}},
         ]
 
 

@@ -244,11 +244,11 @@ async def test_universal_dispatch_appends_image_message(tmp_path):
     assert [type(m) for m in messages] == [ToolMessage, ToolMessage, HumanMessage]
     assert messages[0].content == "perception text"
     human = messages[2]
-    assert human.content[0] == {
+    assert human.content[-1] == {
         "type": "text",
         "text": "[Annotated image(s) returned by: ask_perception_tool, inspect_region]",
     }
-    image_blocks = human.content[1:]
+    image_blocks = human.content[:-1]
     assert len(image_blocks) == 2  # the missing file is skipped
     assert all(b["type"] == "image_url" for b in image_blocks)
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")

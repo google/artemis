@@ -62,6 +62,7 @@ from artemis.utils.cython_compat import CyFunctionDetector
 from artemis.utils.element_hit_test import find_element_at_point
 from artemis.utils.visualization import draw_dots
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_codec import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -479,8 +480,8 @@ def render_operator_blocks(
         logger.error(f"Failed to read annotated explorer image: {e}")
         return text
     return [
+        {"type": "image_url", "image_url": {"url": image_data_uri(img_b64)}},
         {"type": "text", "text": text},
-        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
     ]
 
 

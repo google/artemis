@@ -147,6 +147,9 @@ class ArtemisContext(DeviceClientAccessors, BaseModel):
     """checkpoint_id -> number of verify-fail repairs already applied."""
     assert_halt: bool = False
     """Latched by an assert failure under ``assert_failure_policy='halt'``."""
+    operator_done_claimed: bool = False
+    """Latched by the operator's ``mark_done`` tool; consumed once by the
+    convergence gate, which routes the claim to terminal verification."""
     final_check_attempts: int = 0
     """Number of final-check passes already executed at exit settlement."""
 

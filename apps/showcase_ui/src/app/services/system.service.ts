@@ -58,6 +58,7 @@ export class SystemService {
   public adbProbe = computed(() => this.probes().find(p => p.id === 'android_adb') || null);
   public llmProbe = computed(() => this.probes().find(p => p.id === 'gemini_api_key' || p.id === 'llm_api_key') || null);
   public geminiProbe = computed(() => this.llmProbe());
+  public localModelProbe = computed(() => this.probes().find(p => p.id === 'local_model_endpoint') || null);
   public ocrProbe = computed(() => this.probes().find(p => p.id === 'vision_ocr_key' || p.id === 'ocr_api_key') || null);
 
   // Grouped readiness helpers for the 3-step onboarding flow
@@ -80,7 +81,12 @@ export class SystemService {
       return true;
     }
     const llm = this.llmProbe();
-    return llm?.status === 'pass';
+    // The local-endpoint probe is a blocker server-side: when artemis.jsonc
+    // binds a node to a custom api_base (Artemis-served or BYO), a dead
+    // endpoint or missing model must gate the run the same way a missing
+    // API key does. It self-passes ("Not used") for cloud-only configs.
+    const local = this.localModelProbe();
+    return llm?.status === 'pass' && (local == null || local.status === 'pass');
   });
 
   public isDeviceReady = computed(() => {
@@ -312,6 +318,79 @@ export class SystemService {
       clearInterval(this.emulatorPollTimer);
       this.emulatorPollTimer = null;
     }
+  }
+
+  // --- Local model lifecycle (artemis model pull/serve/stop) ---------------
+
+  public localModelCommandsAvailable = signal<boolean | null>(null);
+  public localModelTasks = signal<Record<string, LocalModelTask>>({});
+  private localModelPollTimer: any = null;
+
+  public fetchLocalModelStatus(): Observable<LocalModelStatusResponse> {
+    return this.http.get<LocalModelStatusResponse>('/api/system/local-models/status').pipe(
+      tap({
+        next: (resp) => {
+          this.localModelCommandsAvailable.set(resp.commands_available);
+          this.localModelTasks.set(resp.tasks || {});
+          const anyRunning = Object.values(resp.tasks || {}).some(t => t.status === 'running');
+          if (!anyRunning) {
+            this.stopLocalModelPolling();
+          }
+        }
+      })
+    );
+  }
+
+  public startLocalModelPolling(): void {
+    if (this.localModelPollTimer) {
+      clearInterval(this.localModelPollTimer);
+    }
+    this.localModelPollTimer = setInterval(() => {
+      this.fetchLocalModelStatus().subscribe({ error: () => {} });
+    }, 2000);
+  }
+
+  public stopLocalModelPolling(): void {
+    if (this.localModelPollTimer) {
+      clearInterval(this.localModelPollTimer);
+      this.localModelPollTimer = null;
+      // A finished action may have changed model readiness — re-check.
+      this.fetchReadiness().subscribe({ error: () => {} });
+    }
+  }
+
+  private runLocalModelAction(
+    endpoint: 'pull' | 'serve' | 'stop',
+    alias: string,
+    port?: number
+  ): Observable<LocalModelTask> {
+    return this.http
+      .post<LocalModelTask>(`/api/system/local-models/${endpoint}`, { alias, port: port ?? null })
+      .pipe(
+        tap({
+          next: (task) => {
+            this.localModelTasks.update(tasks => ({ ...tasks, [task.key]: task }));
+            if (task.status === 'running') {
+              this.startLocalModelPolling();
+            } else {
+              this.fetchReadiness().subscribe({ error: () => {} });
+            }
+          },
+          error: () => {}
+        })
+      );
+  }
+
+  public pullLocalModel(alias: string): Observable<LocalModelTask> {
+    return this.runLocalModelAction('pull', alias);
+  }
+
+  public serveLocalModel(alias: string, port?: number): Observable<LocalModelTask> {
+    return this.runLocalModelAction('serve', alias, port);
+  }
+
+  public stopLocalModel(alias: string, port?: number): Observable<LocalModelTask> {
+    return this.runLocalModelAction('stop', alias, port);
   }
 
   /**
@@ -608,3 +687,19 @@ export interface ModelConfigEnvResponse {
   }>;
 }
 
+
+export interface LocalModelTask {
+  key: string;
+  action: 'pull' | 'serve' | 'stop' | string;
+  alias: string;
+  cmd: string;
+  status: 'running' | 'done' | 'failed' | string;
+  returncode: number | null;
+  started_at: number;
+  log: string[];
+}
+
+export interface LocalModelStatusResponse {
+  commands_available: boolean;
+  tasks: Record<string, LocalModelTask>;
+}

@@ -68,6 +68,9 @@ dependencies = [
     "scipy>=1.13.0",
     # System, Utilities & Telemetry
     "psutil>=5.9.0",
+    # On-device OCR via Apple Vision (macOS only); guarded import — the OCR
+    # seam degrades to Google Cloud Vision or disabled without it.
+    "pyobjc-framework-Vision>=10.0,<13; sys_platform == 'darwin'",
     "retry>=0.9.2",
     "posthog>=3.5.0",
     "uuid-utils>=0.9.0",
@@ -85,6 +88,13 @@ dev = [
     "syrupy>=4.0.0",
     "pyright>=1.1.389",
     "pre-commit>=3.5.0",
+]
+# `artemis model pull/serve`: managed local model serving via mlx-vlm.
+# Apple Silicon only; other platforms should run an OpenAI-compatible
+# server (e.g. Ollama) and point api_base at it.
+local = [
+    "mlx-vlm>=0.7.6,<1.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "huggingface-hub>=0.30,<2.0",
 ]
 
 [project.scripts]

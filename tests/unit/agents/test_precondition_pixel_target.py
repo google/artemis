@@ -28,7 +28,7 @@ def _texts(messages: list) -> list[str]:
     return [part["text"] for part in human.content if part["type"] == "text"]
 
 
-def test_named_control_target_block_precedes_images():
+def test_named_control_target_block_follows_images():
     item = {
         "action": "tap",
         "coordinates": [1001, 718],
@@ -45,14 +45,18 @@ def test_named_control_target_block_precedes_images():
 
     assert isinstance(messages[0], SystemMessage)
     assert isinstance(messages[1], HumanMessage)
-    first_text = messages[1].content[0]["text"]
-    assert first_text.startswith("[Target]")
-    assert "Kind: specific UI control" in first_text
-    assert "Label: 进入全屏模式" in first_text
-    assert "Resource ID: com.google.android.youtube:id/fullscreen_button" in first_text
-    assert "Class: android.widget.ImageView" in first_text
-    assert "[922, 655, 1080, 781]" in first_text
-    assert messages[1].content[1]["text"] == "[Image 1 (Reference)]"
+    blocks = messages[1].content
+    assert blocks[0]["type"] == "image_url"
+    assert blocks[1]["text"] == "[Image 1 (Reference)]"
+    assert blocks[2]["type"] == "image_url"
+    assert blocks[3]["text"] == "[Image 2 (Current State)]"
+    target_text = blocks[4]["text"]
+    assert target_text.startswith("[Target]")
+    assert "Kind: specific UI control" in target_text
+    assert "Label: 进入全屏模式" in target_text
+    assert "Resource ID: com.google.android.youtube:id/fullscreen_button" in target_text
+    assert "Class: android.widget.ImageView" in target_text
+    assert "[922, 655, 1080, 781]" in target_text
     assert any("Original Thinking" in t for t in _texts(messages))
     assert any("Action: tap" in t for t in _texts(messages))
 
@@ -62,7 +66,8 @@ def test_coordinates_only_target_is_labelled_as_surface():
 
     messages = pp._build_messages("SYSTEM", _PNG, _PNG, item, state=None)
 
-    first_text = messages[1].content[0]["text"]
+    blocks = messages[1].content
+    first_text = next(b["text"] for b in blocks if b.get("text", "").startswith("[Target]"))
     assert "Kind: coordinates only" in first_text
     # No hit test runs any more: the block states that nothing was recorded, it
     # does not claim the point was looked up in the UI hierarchy.
