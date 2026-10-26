@@ -27,6 +27,7 @@ from mcp_server.base import mcp as agent_mcp
 import mcp_server.tools  # noqa: F401
 from mcp_server.utils import env_utils
 from artemis.mcp.adb_server import mcp as adb_mcp
+from artemis.mcp.transport import run_sse
 from artemis.runtime import shutdown_awake_service, start_awake_service
 from third_party.mobile_use.utils.logger import get_logger
 from rich.console import Console
@@ -830,13 +831,13 @@ def mcp_command(
         if st in ("agent", "mobile", "artemis", "default"):
             logger.info(f"Starting Artemis Mobile Agent MCP Server over {transport}...")
             if transport.lower() == "sse":
-                agent_mcp.run(transport="sse", host=host, port=port)
+                run_sse(agent_mcp, host, port)
             else:
                 agent_mcp.run(transport="stdio")
         elif st == "adb":
             if transport.lower() == "sse":
                 logger.info(f"Starting Artemis ADB MCP Server over {transport}...")
-                adb_mcp.run(transport="sse", host=host, port=port)
+                run_sse(adb_mcp, host, port)
             else:
                 # stdio carries the MCP JSON-RPC stream: redirect logging and detach
                 # from the parent DataEngine before any output can corrupt it.
@@ -850,7 +851,7 @@ def mcp_command(
 
             logger.info(f"Starting Artemis XML Fuzzy Search MCP Server over {transport}...")
             if transport.lower() == "sse":
-                xml_mcp.run(transport="sse", host=host, port=port)
+                run_sse(xml_mcp, host, port)
             else:
                 xml_mcp.run(transport="stdio")
         else:
