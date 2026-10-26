@@ -36,6 +36,16 @@ def _integer(value: Any) -> int | None:
         return None
 
 
+def _turns_from_payload(payload: Mapping[str, Any]) -> int | None:
+    # Not `a or b`: a numeric 0 is a real turn count, not a missing value.
+    for key in ("turns", "current_turn"):
+        value = payload.get(key)
+        if value is None or value is False or value == "":
+            continue
+        return _integer(value)
+    return None
+
+
 def _device_from_payload(payload: Mapping[str, Any]) -> str | None:
     direct = _string(payload.get("device_serial") or payload.get("device_id"))
     if direct:
@@ -144,7 +154,7 @@ class TaskResult:
             device_serial=_device_from_payload(payload),
             output=output,
             error=_string(payload.get("error") or payload.get("error_message")),
-            turns=_integer(payload.get("turns") or payload.get("current_turn")),
+            turns=_turns_from_payload(payload),
             raw=dict(payload),
         )
 

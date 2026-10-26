@@ -18,6 +18,7 @@ from artemis_client import (
     NotFoundError,
     ProtocolError,
     TaskRejectedError,
+    TaskResult,
     TaskTimeoutError,
 )
 
@@ -283,6 +284,28 @@ class ArtemisClientTests(unittest.IsolatedAsyncioTestCase):
             self.transport.calls[0],
             ("POST", "/api/stop", {"session_id": "task-stop"}),
         )
+
+
+class TaskResultTurnsTests(unittest.TestCase):
+    def turns(self, **fields: Any) -> int | None:
+        return TaskResult.from_payload({"task_id": "sample", **fields}).turns
+
+    def test_numeric_zero_turns_is_preserved(self) -> None:
+        self.assertEqual(self.turns(turns=0), 0)
+        self.assertEqual(self.turns(turns="0"), 0)
+
+    def test_zero_turns_takes_precedence_over_legacy_alias(self) -> None:
+        self.assertEqual(self.turns(turns=0, current_turn=7), 0)
+
+    def test_missing_empty_or_boolean_false_falls_back_to_alias(self) -> None:
+        for value in (None, "", False):
+            self.assertEqual(self.turns(turns=value, current_turn=7), 7)
+        self.assertIsNone(self.turns())
+        self.assertIsNone(self.turns(turns=None))
+
+    def test_positive_and_alias_only_turns(self) -> None:
+        self.assertEqual(self.turns(turns=3, current_turn=7), 3)
+        self.assertEqual(self.turns(current_turn=5), 5)
 
 
 if __name__ == "__main__":
