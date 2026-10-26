@@ -20,8 +20,9 @@ Every contribution—big or small—helps make ARTEMIS better. Thank you for bui
 ## Test layers
 
 `make test` is the required, deterministic suite. It does not need an Android
-device, model credentials, or the optional private cloud service. This is the
-same suite used by pull-request CI.
+device, model credentials, or the optional private cloud service. In CI, this
+suite currently runs only on manual workflow dispatch (`workflow_dispatch`), so
+run it locally before opening a pull request.
 
 - `make test-integration` runs cross-component tests that may need configured
   model credentials.
