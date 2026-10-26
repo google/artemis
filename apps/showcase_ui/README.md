@@ -1,6 +1,6 @@
 # ✨ Artemis Showcase & User Workspace UI
 
-A modern, highly aesthetic presentation and interaction frontend built with **Angular 19** and **SCSS** for showcasing the Artemis mobile autonomous agent.
+A modern, highly aesthetic presentation and interaction frontend built with **Angular 22** and **SCSS** for showcasing the Artemis mobile autonomous agent.
 
 ## 🎨 Visual Design Highlights
 
