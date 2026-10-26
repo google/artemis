@@ -668,6 +668,34 @@ def test_agent_config_environment_variable_overrides(monkeypatch):
     assert cfg.pro.video_analyzer.enable_ledger is False
 
 
+@pytest.mark.parametrize(
+    ("recording", "alias", "expected"),
+    [
+        ("false", None, False),
+        (None, "false", False),
+        ("false", "false", False),
+        ("true", None, True),
+        (None, "true", True),
+        ("true", "false", True),
+        ("false", "true", True),
+    ],
+)
+def test_video_recording_environment_override(monkeypatch, recording, alias, expected):
+    """An explicit false must disable video even when the other alias is unset."""
+    from artemis.config.agent import load_agent_config
+
+    monkeypatch.delenv("ARTEMIS_VIDEO_RECORDING_ENABLED", raising=False)
+    monkeypatch.delenv("ARTEMIS_WITH_VIDEO_RECORDING_TOOLS", raising=False)
+    if recording is not None:
+        monkeypatch.setenv("ARTEMIS_VIDEO_RECORDING_ENABLED", recording)
+    if alias is not None:
+        monkeypatch.setenv("ARTEMIS_WITH_VIDEO_RECORDING_TOOLS", alias)
+
+    cfg = load_agent_config()
+    assert cfg.video_analyzer.enabled is expected
+    assert cfg.pro.video_analyzer.enabled is expected
+
+
 def test_consolidated_workspace_and_admin_paths():
     """Verify consolidated workspace and admin paths exported from artemis.config."""
     from artemis.config import (

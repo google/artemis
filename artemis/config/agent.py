@@ -1005,9 +1005,18 @@ class AgentGlobalConfig(BaseModel):
         if out_env is not None:
             data.setdefault("outputter", {})["enabled"] = out_env
 
-        vid_rec_env = _parse_bool("ARTEMIS_VIDEO_RECORDING_ENABLED") or _parse_bool(
-            "ARTEMIS_WITH_VIDEO_RECORDING_TOOLS"
-        )
+        # `a or b` would turn an explicit False into None when the other alias
+        # is unset, silently dropping the override. Keep "any True wins" for
+        # conflicting aliases, but let a lone False through.
+        vid_rec_values = [
+            v
+            for v in (
+                _parse_bool("ARTEMIS_VIDEO_RECORDING_ENABLED"),
+                _parse_bool("ARTEMIS_WITH_VIDEO_RECORDING_TOOLS"),
+            )
+            if v is not None
+        ]
+        vid_rec_env = any(vid_rec_values) if vid_rec_values else None
         if vid_rec_env is not None:
             data.setdefault("video_analyzer", {})["enabled"] = vid_rec_env
             data.setdefault("pro", {}).setdefault("video_analyzer", {})["enabled"] = vid_rec_env
