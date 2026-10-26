@@ -239,12 +239,19 @@ class ModelFactory:
             thinking_level = (
                 endpoint.thinking_level if supports_thinking_level(endpoint.model_name) else None
             )
+            # Honor a custom Gemini endpoint the same way every other provider does.
+            # Without it `api_base` was silently dropped here and requests always went
+            # to the public API, so a gateway-issued key could never authenticate.
+            base_url = endpoint.api_base or (
+                str(settings.GEMINI_BASE_URL) if settings.GEMINI_BASE_URL else None
+            )
 
             kwargs: dict[str, Any] = {
                 "model": endpoint.model_name,
                 "temperature": endpoint.temperature,
                 "max_output_tokens": endpoint.max_tokens,
                 "api_key": api_key,
+                "base_url": base_url,
                 "timeout": endpoint.timeout_seconds,
                 "thinking_budget": endpoint.thinking_budget,
                 "thinking_level": thinking_level,
