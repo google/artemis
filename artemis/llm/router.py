@@ -34,6 +34,32 @@ from third_party.mobile_use.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def supports_custom_temperature(model_name: Any) -> bool:
+    """Whether the model accepts a ``temperature`` other than its default.
+
+    The newest OpenAI and Anthropic generations do not, and reject the request outright
+    rather than clamping it::
+
+        gpt-5.5          400 unsupported_value  "'temperature' does not support 0.0 with
+                                                 this model. Only the default (1) value
+                                                 is supported."
+        claude-sonnet-5-5 400 invalid_request_error "`temperature` is deprecated for this
+                                                     model."
+
+    Both answer normally when the parameter is simply left out, so the callers below pass
+    ``None`` for these models and the kwargs filter drops it. Names without a parsable
+    version are assumed to accept it, which keeps every older model on its current path.
+    """
+    name = str(model_name or "")
+    for prefix in ("gpt-", "claude-opus-", "claude-sonnet-", "claude-haiku-"):
+        if name.startswith(prefix):
+            version = name[len(prefix) :].split("-")[0]
+            major, _, _ = version.partition(".")
+            if major.isdigit():
+                return int(major) < 5
+    return True
+
+
 class ModelProvider(StrEnum):
     GOOGLE = "google"
     GEMINI = "google"
@@ -293,7 +319,11 @@ class ModelFactory:
             )
             kwargs = {
                 "model": endpoint.model_name,
-                "temperature": endpoint.temperature,
+                "temperature": (
+                    endpoint.temperature
+                    if supports_custom_temperature(endpoint.model_name)
+                    else None
+                ),
                 "max_tokens": endpoint.max_tokens,
                 "api_key": api_key,
                 "base_url": base_url,
@@ -317,7 +347,11 @@ class ModelFactory:
             )
             kwargs = {
                 "model": endpoint.model_name,
-                "temperature": endpoint.temperature,
+                "temperature": (
+                    endpoint.temperature
+                    if supports_custom_temperature(endpoint.model_name)
+                    else None
+                ),
                 "api_key": api_key,
                 "timeout": endpoint.timeout_seconds,
             }
@@ -375,7 +409,11 @@ class ModelFactory:
             )
             kwargs = {
                 "model": endpoint.model_name,
-                "temperature": endpoint.temperature,
+                "temperature": (
+                    endpoint.temperature
+                    if supports_custom_temperature(endpoint.model_name)
+                    else None
+                ),
                 "max_tokens": endpoint.max_tokens,
                 "api_key": api_key,
                 "base_url": base_url,
