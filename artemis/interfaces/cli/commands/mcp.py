@@ -819,9 +819,9 @@ def mcp_command(
             json_str = json.dumps(snippet, indent=2)
             syntax_language = "json"
 
-        syntax = Syntax(json_str, syntax_language, theme="monokai", line_numbers=False)
+        syntax = Syntax(json_str, syntax_language, theme="monokai", background_color="default")
         console.print(f"[bold cyan]MCP Configuration for {client.upper()}:[/bold cyan]")
-        console.print(syntax)
+        console.print(syntax, soft_wrap=True)
         raise typer.Exit(0)
 
     threading.Thread(target=start_awake_service, daemon=True, name="artemis-awake-init").start()

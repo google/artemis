@@ -239,6 +239,65 @@ def test_cli_mcp_generate_config_codex():
     ]
 
 
+def _narrow_console_with_long_windows_paths(monkeypatch):
+    """Render at 40 columns with Windows paths far wider than the console."""
+    from rich.console import Console
+
+    import artemis.interfaces.cli.commands.mcp as mcp_module
+
+    project_root = "C:\\Users\\Example User\\Documents\\" + "long-folder-name\\" * 6 + "artemis"
+    python_exe = project_root + "\\.venv\\Scripts\\python.exe"
+    monkeypatch.setattr(mcp_module.env_utils, "get_project_root", lambda: project_root)
+    monkeypatch.setattr(mcp_module.env_utils, "resolve_python_executable", lambda _: python_exe)
+    monkeypatch.setattr(mcp_module, "console", Console(width=40))
+    return project_root, python_exe
+
+
+def test_cli_mcp_generate_config_codex_narrow_console(monkeypatch):
+    """Verify the Codex TOML block stays complete and parseable in a narrow console."""
+    import tomllib
+
+    from artemis.interfaces.cli.commands.mcp import ARTEMIS_MCP_TOOLS, _get_config_snippet
+
+    project_root, python_exe = _narrow_console_with_long_windows_paths(monkeypatch)
+    result = runner.invoke(app, ["mcp", "--generate-config", "codex"])
+    assert result.exit_code == 0
+    begin = result.output.index("# BEGIN ARTEMIS MCP CONFIG")
+    end_marker = "# END ARTEMIS MCP CONFIG"
+    end = result.output.index(end_marker, begin) + len(end_marker)
+    server_config = tomllib.loads(result.output[begin:end])["mcp_servers"]["artemis"]
+    expected = _get_config_snippet("codex", python_exe, project_root)["mcp_servers"]["artemis"]
+    assert server_config == expected
+    assert server_config["enabled_tools"] == list(ARTEMIS_MCP_TOOLS)
+
+
+def test_cli_mcp_generate_config_json_narrow_console(monkeypatch):
+    """Verify single-client JSON stays complete and parseable in a narrow console."""
+    import json
+
+    from artemis.interfaces.cli.commands.mcp import _get_config_snippet
+
+    project_root, python_exe = _narrow_console_with_long_windows_paths(monkeypatch)
+    result = runner.invoke(app, ["mcp", "--generate-config", "cursor"])
+    assert result.exit_code == 0
+    header, body = result.output.split("\n", 1)
+    assert header == "MCP Configuration for CURSOR:"
+    assert json.loads(body) == _get_config_snippet("cursor", python_exe, project_root)
+
+
+def test_cli_mcp_generate_config_all_narrow_console(monkeypatch):
+    """Verify the all-clients JSON parses in a narrow console and every entry is filled."""
+    import json
+
+    _narrow_console_with_long_windows_paths(monkeypatch)
+    result = runner.invoke(app, ["mcp", "--generate-config", "all"])
+    assert result.exit_code == 0
+    configs = json.loads(result.output.split("\n", 1)[1])
+    clients = {label.split(" ", 1)[0] for label in configs}
+    assert {"antigravity", "claude", "codex", "cursor", "vscode"} <= clients
+    assert all(isinstance(config, dict) and config for config in configs.values())
+
+
 def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
     """Verify 'artemis mcp --install antigravity' writes configuration and global rules into target files."""
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
