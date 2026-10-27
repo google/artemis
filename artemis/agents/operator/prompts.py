@@ -694,12 +694,14 @@ _LEDGER_BOUNCE_TAIL = (
 #: One-line tail notice for the turn after a turn whose replies carried no visible
 #: reasoning text. Thinking-mode models satisfy "reason first" inside their thought
 #: channel and emit bare tool calls; the reminder costs no extra model call.
+# Worded as a progress note, not as a request for reasoning: Claude 5.x on Bedrock
+# refuses (stop_reason "refusal", category "reasoning_extraction") prompts that ask
+# it to write out its reasoning or that mention hidden thinking.
 REASONING_REMINDER = (
     "--- Reminder ---\n"
-    "Your previous turn carried no visible reasoning text (internal thinking is not"
-    " shown). This turn, write one short paragraph of plain prose before calling a"
-    " Turn-Ending Action: what the screen shows, whether the last action worked, and"
-    " what you do next and why."
+    "Your previous turn had no progress note. This turn, write one short progress"
+    " note before calling a Turn-Ending Action: what the screen shows, whether the"
+    " last action worked, and the action you take next."
 )
 
 
