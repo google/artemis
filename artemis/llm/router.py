@@ -22,6 +22,7 @@ Anthropic, OpenRouter, and local Ollama/vLLM endpoints.
 from enum import StrEnum
 import hashlib
 import os
+import re
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -383,6 +384,11 @@ class ModelFactory:
             }
             if endpoint.reasoning_effort:
                 kwargs["reasoning_effort"] = endpoint.reasoning_effort
+            # Some OpenAI-compatible endpoints serve function tools only on the Responses API (e.g. GPT-6.x on
+            # Amazon Bedrock). Opt in per model with ARTEMIS_OPENAI_RESPONSES_API, a regex on the model name.
+            responses_models = os.environ.get("ARTEMIS_OPENAI_RESPONSES_API")
+            if responses_models and re.search(responses_models, endpoint.model_name or ""):
+                kwargs["use_responses_api"] = True
             return ChatOpenAI(**{k: v for k, v in kwargs.items() if v is not None})
 
         else:
