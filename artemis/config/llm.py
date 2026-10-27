@@ -182,6 +182,12 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
                     node_cfg[k] = v
         result[node] = node_cfg
 
+    # Optional judge nodes: only set when declared, otherwise get_agent()
+    # falls back to lightweight_judge_default().
+    for node in ("validator_pixel_safety_net", "planner_validation"):
+        if node in nodes_override:
+            result[node] = {**default_model_cfg, **nodes_override[node]}
+
     utils_dict: dict[str, Any] = {}
     for util in all_utils_nodes:
         util_cfg = dict(default_model_cfg)
