@@ -769,6 +769,16 @@ class FlashProfileConfig(BaseModel):
             " task simply runs until it reports its status."
         ),
     )
+    max_silent_turns: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Stop the Flash loop as failed after this many consecutive turns in"
+            " which the model called no tool (e.g. empty replies, refusals); 0"
+            " disables the guard. Without it an endpoint that keeps answering"
+            " with nothing loops for as long as max_turns allows."
+        ),
+    )
     explorer_mode: ExplorerVersion = Field(
         default="flash",
         description="Perception mode for Flash runner ('flash' for 1-shot detection).",

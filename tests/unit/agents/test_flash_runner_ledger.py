@@ -684,3 +684,50 @@ def test_turn_record_reports_the_first_failure_of_a_multi_action_turn():
         ]
     )
     assert record.result()["error"] == "click rejected: coordinates out of bounds"
+
+
+@pytest.mark.asyncio
+async def test_run_stops_after_consecutive_silent_turns(mock_context):
+    """An endpoint that keeps answering with nothing (empty content, refusal)
+    must not loop an unbounded run: after ``max_silent_turns`` consecutive
+    tool-less turns the run fails with the stop reason, and no further call."""
+    empty = AIMessage(content="", tool_calls=[], response_metadata={"stop_reason": "refusal"})
+    responses = [empty] * 3 + [_report()]
+    with (
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch(
+            "artemis.agents.flash.runner.capture_screenshot_and_parse_ui",
+            AsyncMock(return_value=_INITIAL_OBSERVATION),
+        ),
+    ):
+        runner = _make_runner(mock_context, responses, max_turns=0)
+        runner.max_silent_turns = 3
+        result = await runner.run(State(initial_goal="Open Settings"))
+
+    assert runner._invoke_model.await_count == 3
+    assert result["status"] == "failed"
+    assert "3 consecutive turns" in result["explanation"]
+    assert "'refusal'" in result["explanation"]
+
+
+@pytest.mark.asyncio
+async def test_run_silent_turn_counter_resets_on_a_tool_call(mock_context):
+    """Only consecutive silent turns count: an action in between resets it."""
+    silent = AIMessage(content="hmm", tool_calls=[])
+    act = AIMessage(
+        content="tap", tool_calls=[{"name": "click", "args": {"target": 1}, "id": "tc1"}]
+    )
+    responses = [silent, silent, act, silent, silent, _report()]
+    with (
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch(
+            "artemis.agents.flash.runner.capture_screenshot_and_parse_ui",
+            AsyncMock(return_value=_INITIAL_OBSERVATION),
+        ),
+    ):
+        runner = _make_runner(mock_context, responses, max_turns=0)
+        runner.max_silent_turns = 3
+        result = await runner.run(State(initial_goal="Open Settings"))
+
+    assert result == {"status": "completed"}
+    assert runner._invoke_model.await_count == 6
