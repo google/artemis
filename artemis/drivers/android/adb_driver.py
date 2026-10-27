@@ -384,7 +384,10 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def launch_app(self, package_name: str) -> bool:
         try:
-            cmd = f"monkey -p {package_name} -c android.intent.category.LAUNCHER 1"
+            # --pct-syskeys 0: on devices without physical keys (emulators, head units) monkey otherwise warns
+            # "SYS_KEYS has no physical keys" and can spend its single event on a key instead of the launch,
+            # leaving the previous app in the foreground.
+            cmd = f"monkey --pct-syskeys 0 -p {package_name} -c android.intent.category.LAUNCHER 1"
             await asyncio.to_thread(self.device.shell, cmd)
             return True
         except Exception as e:

@@ -101,6 +101,12 @@ async def test_android_driver_with_mock_adb():
     await driver.press_key(KeyCode.BACK)
     mock_adb_device.shell.assert_called_with("input keyevent 4")
 
+    # Launch through the LAUNCHER category without system-key events (keyless devices)
+    assert await driver.launch_app("com.example.themesim") is True
+    mock_adb_device.shell.assert_called_with(
+        "monkey --pct-syskeys 0 -p com.example.themesim -c android.intent.category.LAUNCHER 1"
+    )
+
 
 @pytest.mark.asyncio
 async def test_android_driver_preserves_elements_from_combined_screen_data():
