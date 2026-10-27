@@ -20,7 +20,7 @@ import time
 from typing import Annotated, Any, Literal, get_args, get_origin
 import uuid
 
-from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import InjectedToolCallId
 from langgraph.prebuilt import InjectedState
@@ -268,3 +268,33 @@ def tool_result_messages(
         ToolMessage(tool_call_id=tool_call_id, content=text, status=status, **extra),
         HumanMessage(content=[{"type": "text", "text": caption}, *images]),
     ]
+
+
+def order_tool_batch_messages(messages: list) -> list:
+    """Move "human" image carriers after every tool result of their turn.
+
+    Agent loops extend history with ``tool_result_messages`` once per tool
+    call, so a turn with parallel screenshot calls becomes Tool, Human, Tool,
+    Human. OpenAI-compatible APIs require all tool results to directly follow
+    the assistant turn and reject that with a 400, so each run of tool results
+    and carriers after a tool-calling AIMessage is reordered to all
+    ToolMessages first, then the HumanMessages in their original order.
+    """
+    if not isinstance(messages, list):
+        return messages
+    ordered: list = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        ordered.append(msg)
+        i += 1
+        if not (isinstance(msg, AIMessage) and msg.tool_calls):
+            continue
+        tools: list = []
+        humans: list = []
+        while i < len(messages) and isinstance(messages[i], (ToolMessage, HumanMessage)):
+            (tools if isinstance(messages[i], ToolMessage) else humans).append(messages[i])
+            i += 1
+        ordered.extend(tools)
+        ordered.extend(humans)
+    return ordered

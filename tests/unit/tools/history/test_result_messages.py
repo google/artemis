@@ -118,3 +118,80 @@ def test_explicit_carrier_wins_over_the_llm():
     assert len(msgs) == 2
     msgs = tool_result_messages("tc", SHOT, image_carrier="tool", llm=_llm("openai"))
     assert len(msgs) == 1
+
+
+# --- Parallel tool calls: image carriers must follow the whole tool batch -------
+
+
+def _parallel_turn(n):
+    from langchain_core.messages import AIMessage
+
+    calls = [{"name": "get_step_screenshot", "args": {}, "id": f"call_{i}"} for i in range(n)]
+    return AIMessage(content="", tool_calls=calls)
+
+
+def test_order_tool_batch_moves_image_carriers_after_all_tool_results():
+    """OpenAI-compatible APIs reject a user turn between the tool results of
+    one assistant turn (400: tool_call_ids did not have response messages)."""
+    from artemis.tools.tool_wrapper import order_tool_batch_messages
+
+    ai = _parallel_turn(2)
+    per_call = [
+        tool_result_messages(f"call_{i}", SHOT, name="get_step_screenshot", llm=_llm("openai"))
+        for i in range(2)
+    ]
+    interleaved = [ai, *per_call[0], *per_call[1]]
+
+    ordered = order_tool_batch_messages(interleaved)
+
+    assert [type(m) for m in ordered] == [
+        type(ai),
+        ToolMessage,
+        ToolMessage,
+        HumanMessage,
+        HumanMessage,
+    ]
+    assert [m.tool_call_id for m in ordered[1:3]] == ["call_0", "call_1"]
+
+
+def test_order_tool_batch_keeps_valid_history_unchanged():
+    from artemis.tools.tool_wrapper import order_tool_batch_messages
+
+    ai = _parallel_turn(2)
+    history = [
+        HumanMessage(content="check"),
+        ai,
+        ToolMessage(tool_call_id="call_0", content="a"),
+        ToolMessage(tool_call_id="call_1", content="b"),
+        HumanMessage(content="This is your final iteration."),
+    ]
+
+    assert order_tool_batch_messages(history) == history
+
+
+@pytest.mark.asyncio
+async def test_wrapper_sends_tool_batch_before_image_carriers():
+    from artemis.services.llm import RobustChatModelWrapper
+
+    seen = {}
+
+    class _Model:
+        async def ainvoke(self, messages, **kwargs):
+            seen["messages"] = messages
+            return "ok"
+
+    ai = _parallel_turn(2)
+    interleaved = [ai]
+    for i in range(2):
+        interleaved += tool_result_messages(
+            f"call_{i}", SHOT, name="get_step_screenshot", llm=_llm("openai")
+        )
+
+    await RobustChatModelWrapper(_Model()).ainvoke(interleaved)
+
+    assert [type(m).__name__ for m in seen["messages"][1:]] == [
+        "ToolMessage",
+        "ToolMessage",
+        "HumanMessage",
+        "HumanMessage",
+    ]

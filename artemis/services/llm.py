@@ -624,6 +624,12 @@ class RobustChatModelWrapper:
         return type(self.base_model).__name__
 
     def _traced_call(self, args: tuple, kwargs: dict) -> tuple[tuple, dict, Any]:
+        # Every request leaves through here: keep parallel tool results
+        # contiguous so OpenAI-compatible providers accept image carriers.
+        from artemis.tools.tool_wrapper import order_tool_batch_messages
+
+        if args:
+            args = (order_tool_batch_messages(args[0]), *args[1:])
         trace_id = None
         if self.ctx and self.ctx.data_engine:
             trace_id = CURRENT_TRACE_ID.get()
