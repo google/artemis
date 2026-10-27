@@ -779,3 +779,60 @@ async def test_check_loop_tool_message_status_is_structural(result, expected_sta
     assert tool_msgs[0].tool_call_id == "c1"
     assert tool_msgs[0].status == expected_status
     assert tool_msgs[0].content == str(result)
+
+
+@pytest.mark.asyncio
+async def test_final_retry_does_not_treat_previous_final_verdicts_as_authoritative():
+    """A final-check retry must re-judge what the previous final review failed:
+    only checkpoint verdicts are authoritative, earlier final verdicts are
+    shown separately as findings the Operator was asked to fix."""
+    ctx = _mock_ctx()
+    captured = {}
+
+    async def loop(ctx, messages, tools, items):
+        captured["system"] = messages[0].content
+        captured["human"] = messages[1].content[0]["text"]
+        return CheckReport(verdicts=[])
+
+    ledger = [
+        {
+            "attempt_id": "cp#1",
+            "checkpoint_id": "cp",
+            "item_text": "detail page opened",
+            "kind": "verify",
+            "status": "passed",
+            "evidence": "CHECKPOINT-EVIDENCE",
+        },
+        {
+            "attempt_id": "final#1",
+            "checkpoint_id": "final",
+            "item_text": "new summary recorded",
+            "kind": "verify",
+            "status": "failed",
+            "evidence": "FINAL1-EVIDENCE",
+        },
+    ]
+    with (
+        patch("artemis.agents.checker.checker._run_check_loop", side_effect=loop),
+        patch("artemis.agents.checker.checker.build_checker_tools", return_value=[]),
+        patch(
+            "artemis.agents.checker.checker._capture_final_screen",
+            AsyncMock(return_value=(None, "")),
+        ),
+    ):
+        await run_final_check(
+            ctx,
+            goal="g",
+            plan_text="- [x] G",
+            ledger=ledger,
+            check_items=[_ci(text="new summary recorded")],
+            attempt_id="final#2",
+        )
+
+    human = captured["human"]
+    authoritative = human.split("# Verdict Ledger", 1)[1].split("\n# ", 1)[0]
+    assert "CHECKPOINT-EVIDENCE" in authoritative
+    assert "FINAL1-EVIDENCE" not in authoritative
+    previous = human.split("# Previous Final Reviews", 1)[1].split("\n# ", 1)[0]
+    assert "FINAL1-EVIDENCE" in previous
+    assert "Previous Final Reviews" in captured["system"]
