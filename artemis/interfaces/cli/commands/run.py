@@ -335,6 +335,10 @@ def run_command(
                     app_path=app_path,
                     session_id=target_sid,
                     ingress="cli",
+                    # Pro tuning is accepted by /api/run and reapplied as worker
+                    # flags. Omitting them made daemon dispatch ignore the CLI.
+                    verification_level=verification_level,
+                    explorer_mode=explorer_pro_mode,
                     base_url=base_url,
                 )
                 if resp and resp.get("tasks"):
