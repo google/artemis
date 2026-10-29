@@ -14,6 +14,8 @@
 
 """Unit tests for Universal VideoAnalyzer dual-path execution engine."""
 
+import asyncio
+import base64
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -65,6 +67,117 @@ def test_universal_tool_schemas():
     assert "extract_segment_metadata" in tool_names
     assert "spawn_sub_agent" in tool_names
     assert "analyze_audio_only" in tool_names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame_limit", [None, 8])
+async def test_video_frame_cap_applies_before_model_and_discloses_sampling(
+    mock_context, tmp_path, frame_limit
+):
+    agent = VideoAnalyzer(mock_context)
+    agent.max_total_frames = frame_limit
+    frames = [(float(index), bytes([index])) for index in range(53)]
+    source_bytes = b"unchanged-original-recording"
+    recording = tmp_path / "recording.mp4"
+    recording.write_bytes(source_bytes)
+    prompt = "Check only the supplied test interval. Preserve this full query."
+    response = AIMessage(content="Observed only supplied frames.")
+    with (
+        patch(
+            "artemis.agents.video_analyzer.universal_engine._gather_universal_frames",
+            return_value=frames,
+        ),
+        patch.object(agent, "_action_timestamps", return_value=[125.1, 150.1]),
+        patch(
+            "artemis.agents.video_analyzer.video_analyzer.extract_audio_from_video",
+            new=AsyncMock(side_effect=ValueError("no audio")),
+        ),
+        patch.object(
+            agent, "_invoke_universal_model", new=AsyncMock(return_value=response)
+        ) as invoke,
+        patch(
+            "artemis.agents.video_analyzer.universal_engine._persist_universal_events",
+            new=AsyncMock(),
+        ),
+    ):
+        await agent._exec_single_chunk_universal(
+            compressed_path=recording,
+            raw_path=recording,
+            start_time=100.0,
+            end_time=153.0,
+            actual_start=100.0,
+            prompt_with_context=prompt,
+            specific_query="test interval",
+        )
+    messages, tools = invoke.await_args.args[:2]
+    assert messages[0].content == agent.sub_system_prompt
+    assert messages[1].content[0] == {"type": "text", "text": prompt}
+    assert tools == [UNIVERSAL_SUBMIT_ANSWER_TOOL]
+    parts = messages[1].content
+    images = [part for part in parts if part["type"] == "image_url"]
+    assert len(images) == (8 if frame_limit else 53)
+    decoded = [base64.b64decode(part["image_url"]["url"].split(",", 1)[1]) for part in images]
+    assert decoded == sorted(decoded)
+    assert decoded[0] == frames[0][1] and decoded[-1] == frames[-1][1]
+    if frame_limit:
+        assert {frames[index][1] for index in [25, 26, 50, 51]} <= set(decoded)
+        assert "selected 8 of 53 extracted frames" in parts[1]["text"]
+        assert "does not show every video instant or every action" in parts[1]["text"]
+    else:
+        assert len(parts) == 1 + 2 * len(frames)
+    assert recording.read_bytes() == source_bytes
+    assert len(frames) == 53
+
+
+@pytest.mark.asyncio
+async def test_concurrent_video_chunks_keep_their_own_sampling_counts(mock_context, tmp_path):
+    agent = VideoAnalyzer(mock_context)
+    agent.max_total_frames = 8
+    sent = []
+
+    async def invoke(messages, *_args, **_kwargs):
+        await asyncio.sleep(0)
+        sent.append(messages[1].content)
+        return AIMessage(content="Observed only supplied frames.")
+
+    def gather(_agent, path, *_args):
+        return [(float(index), bytes([index])) for index in range(int(path.stem))]
+
+    with (
+        patch(
+            "artemis.agents.video_analyzer.universal_engine._gather_universal_frames",
+            side_effect=gather,
+        ),
+        patch.object(agent, "_action_timestamps", return_value=[]),
+        patch(
+            "artemis.agents.video_analyzer.video_analyzer.extract_audio_from_video",
+            new=AsyncMock(side_effect=ValueError("no audio")),
+        ),
+        patch.object(agent, "_invoke_universal_model", side_effect=invoke),
+        patch(
+            "artemis.agents.video_analyzer.universal_engine._persist_universal_events",
+            new=AsyncMock(),
+        ),
+    ):
+        await asyncio.gather(
+            *(
+                agent._exec_single_chunk_universal(
+                    compressed_path=tmp_path / f"{count}.mp4",
+                    raw_path=tmp_path / f"{count}.mp4",
+                    start_time=0.0,
+                    end_time=60.0,
+                    actual_start=0.0,
+                    prompt_with_context=f"Source chunk {count}",
+                    specific_query="test interval",
+                )
+                for count in [53, 51]
+            )
+        )
+    assert len(sent) == 2
+    for parts in sent:
+        count = int(parts[0]["text"].split()[-1])
+        assert f"selected 8 of {count} extracted frames" in parts[1]["text"]
+        assert len([part for part in parts if part["type"] == "image_url"]) == 8
 
 
 @pytest.mark.asyncio

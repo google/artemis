@@ -95,6 +95,17 @@ class VideoAnalyzerConfig(BaseModel):
         le=120,
         description="Maximum additional action-proximal keyframes per chunk.",
     )
+    max_total_frames: int | None = Field(
+        default=None,
+        ge=2,
+        le=150,
+        strict=True,
+        description=(
+            "Optional cap on merged frames in one universal video request. "
+            "Keeps extracted endpoints and prioritizes action-adjacent frame pairs; "
+            "None preserves the existing frame selection."
+        ),
+    )
     native_max_retries: int = Field(
         default=1,
         ge=0,

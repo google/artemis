@@ -23,6 +23,7 @@ keep working.
 
 import asyncio
 import base64
+from bisect import bisect_left, bisect_right
 import glob
 from pathlib import Path
 import re
@@ -59,9 +60,23 @@ async def exec_single_chunk_universal(
 ) -> str:
     """Executes sub-agent chunk analysis via keyframe extraction and LangChain ChatModel."""
     keyframes = _gather_universal_frames(analyzer, raw_path, start_time, end_time, actual_start)
+    source_frame_count = len(keyframes)
+    frame_limit = analyzer.max_total_frames
+    if frame_limit is not None:
+        actions = analyzer._action_timestamps(
+            start_time, end_time if end_time is not None else start_time
+        )
+        keyframes = _select_video_frames(
+            keyframes, frame_limit, [timestamp - actual_start for timestamp in actions]
+        )
 
     user_blocks, audio_block = await _build_universal_user_blocks(
-        analyzer, keyframes, actual_start, prompt_with_context, raw_path
+        analyzer,
+        keyframes,
+        actual_start,
+        prompt_with_context,
+        raw_path,
+        sampling_source_count=source_frame_count if frame_limit is not None else None,
     )
 
     messages = [
@@ -76,6 +91,7 @@ async def exec_single_chunk_universal(
             name="video_sub_agent_universal",
             payload={
                 "num_keyframes": len(keyframes),
+                "source_num_keyframes": source_frame_count,
                 "prompt": prompt_with_context,
                 "system_instruction": analyzer.sub_system_prompt,
             },
@@ -137,15 +153,64 @@ def _gather_universal_frames(
     return sorted(merged_frames.items())
 
 
+def _select_video_frames(
+    frames: list[tuple[float, bytes]], limit: int, action_offsets: list[float]
+) -> list[tuple[float, bytes]]:
+    """Bound sorted extracted frames without changing their timestamps or bytes."""
+    if type(limit) is not int or limit < 2:
+        raise ValueError("Video frame limit must be an integer of at least two")
+    if len(frames) <= limit:
+        return frames
+    times = [timestamp for timestamp, _ in frames]
+    selected = {0, len(frames) - 1}
+    # Favor recent actions, adding a before/after pair only when both fit.
+    # An action outside the extracted range has no evidenced pair.
+    for action in sorted(set(action_offsets), reverse=True):
+        before = bisect_left(times, action) - 1
+        after = bisect_right(times, action)
+        if before < 0 or after >= len(frames):
+            continue
+        pair = {before, after}
+        if len(selected | pair) <= limit:
+            selected.update(pair)
+    # Fill the remaining slots across time, with an earlier-frame tie break.
+    while len(selected) < limit:
+        selected.add(
+            max(
+                (index for index in range(len(frames)) if index not in selected),
+                key=lambda index: (
+                    min(abs(times[index] - times[chosen]) for chosen in selected),
+                    -times[index],
+                ),
+            )
+        )
+    return [frames[index] for index in sorted(selected)]
+
+
 async def _build_universal_user_blocks(
     analyzer,
     keyframes: list,
     actual_start: float,
     prompt_with_context: str,
     raw_path: Path,
+    *,
+    sampling_source_count: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Builds the multimodal user content blocks (text, frames, optional audio)."""
     user_blocks: list[dict[str, Any]] = [{"type": "text", "text": prompt_with_context}]
+    if sampling_source_count is not None:
+        user_blocks.append(
+            {
+                "type": "text",
+                "text": (
+                    f"Video frame sampling: selected {len(keyframes)} of "
+                    f"{sampling_source_count} extracted frames in timestamp order. "
+                    "Extracted endpoints and fitting action-adjacent pairs are prioritized. "
+                    "This does not show every video instant or every action; "
+                    "do not infer what happened between the supplied frames."
+                ),
+            }
+        )
 
     for ts_sec, frame_bytes in keyframes:
         b64_str = base64.b64encode(frame_bytes).decode("utf-8")
