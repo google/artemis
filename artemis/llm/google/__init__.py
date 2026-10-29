@@ -37,6 +37,9 @@ from artemis.llm.google.provider import (
     strip_provider_prefix,
     supports_agentic_video,
     supports_thinking_level,
+    use_vertex_backend,
+    vertex_location,
+    vertex_project,
 )
 from artemis.llm.google.usage import normalize_usage, usage_from_message
 
@@ -54,4 +57,7 @@ __all__ = [
     "supports_agentic_video",
     "supports_thinking_level",
     "usage_from_message",
+    "use_vertex_backend",
+    "vertex_location",
+    "vertex_project",
 ]

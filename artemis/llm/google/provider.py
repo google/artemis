@@ -30,6 +30,7 @@ video support, but their version still determines thinking-level support.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Literal, NamedTuple
 
@@ -76,6 +77,28 @@ def is_google_provider(value: Any) -> bool:
 def is_google_family_provider(value: Any) -> bool:
     """True for every provider that authenticates with Google credentials."""
     return _normalize_provider(value) in _GOOGLE_FAMILY_PROVIDERS
+
+
+def use_vertex_backend() -> bool:
+    """True when ``GOOGLE_GENAI_USE_VERTEXAI`` routes Gemini calls to Vertex AI.
+
+    The flag is google-genai's own switch. With it set, every ``google``
+    endpoint runs on Vertex through Application Default Credentials, so one
+    environment line moves all agents (helpers included) off the API key.
+    """
+    return os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower() in {"1", "true", "yes"}
+
+
+def vertex_project() -> str | None:
+    """Google Cloud project for Vertex AI; None lets google-auth use the ADC default."""
+    return os.environ.get("VERTEX_AI_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+
+
+def vertex_location() -> str:
+    """Vertex AI location; Gemini 3.x models are served from ``global``."""
+    return (
+        os.environ.get("VERTEX_AI_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "global"
+    )
 
 
 def is_google_chat_model(model: Any) -> bool:

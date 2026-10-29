@@ -26,6 +26,12 @@ import pytest
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 
 
+@pytest.fixture(autouse=True)
+def _gemini_api_key_backend(monkeypatch):
+    """Keep tests on the API-key backend even when a local .env routes Gemini to Vertex."""
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+
+
 @pytest.fixture
 def mock_driver():
     """Provide an isolated mock mobile driver."""

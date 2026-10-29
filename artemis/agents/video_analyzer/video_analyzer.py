@@ -72,6 +72,7 @@ from artemis.llm.google import (
     is_gemini_model,
     resolve_video_processing,
     strip_provider_prefix,
+    use_vertex_backend,
 )
 from artemis.llm.reliability import retry_policy_for
 from artemis.services.llm import _record_llm_event, _record_llm_retry, get_llm
@@ -421,7 +422,8 @@ class VideoAnalyzer:
             llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.8-flash"
         )
 
-        has_google_key = bool(
+        # The native path uploads through the Files API, which Vertex does not have.
+        has_google_key = not use_vertex_backend() and bool(
             settings.GOOGLE_API_KEY and settings.GOOGLE_API_KEY.get_secret_value()
         )
 
