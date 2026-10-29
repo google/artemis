@@ -54,8 +54,8 @@ from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
 from artemis.mcp.action_session import ActionSession, get_action_session
 from artemis.services.llm import acomplete_structured, get_llm  # noqa: F401
-from artemis.utils.decorators import wrap_with_callbacks
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.decorators import agent_lifecycle_logging
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -97,11 +97,7 @@ class ValidatorNode:
     async def _execute_validation_loop(self, state: State):
         return await execution_loop.run_validation_loop(self, state)
 
-    @wrap_with_callbacks(
-        before=lambda: logger.info("Starting Validator Agent..."),
-        on_success=lambda _: logger.success("Validator Agent"),
-        on_failure=lambda _: logger.error("Validator Agent"),
-    )
+    @agent_lifecycle_logging("Validator", logger)
     @trace(type="agent", name="validator")
     async def __call__(self, state: State):
         state = strict_state(state, "validator")

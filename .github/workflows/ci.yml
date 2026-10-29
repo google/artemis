@@ -74,6 +74,7 @@ jobs:
           --cov=artemis
           --cov=mcp_server
           --cov=apps/admin_console
+          --cov=third_party
           --cov-fail-under=60
 
   frontend:

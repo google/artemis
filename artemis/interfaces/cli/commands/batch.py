@@ -23,8 +23,8 @@ from typing import Annotated
 from artemis.config import initialize_llm_config
 from artemis.sdk import Agent
 from artemis.sdk.builders import Builders
-from artemis.sdk.types.task import AgentProfile
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.sdk.types.task import AgentProfile
+from third_party.mobile_use.utils.logger import get_logger
 from rich.console import Console
 from rich.table import Table
 import typer

@@ -19,7 +19,8 @@ thought stream recording, and role-based dynamic dispatching.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 import functools
 import logging
@@ -27,7 +28,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Any, Literal, TypeVar, overload
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -35,10 +36,6 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from artemis.config import (
     PAUSE_FILE,
-    AgentNode,
-    AgentNodeWithFallback,
-    LLMUtilsNode,
-    LLMUtilsNodeWithFallback,
     LLMWithFallback,
     get_default_llm_config,
     settings,
@@ -63,7 +60,8 @@ from artemis.llm.structured import (
     content_to_text,
     parse_structured,
 )
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.llm_service import FallbackRunner, GetLLM, LLMWaitNotice
+from third_party.mobile_use.utils.logger import get_logger
 
 # Logger for internal messages
 llm_logger = logging.getLogger(__name__)
@@ -862,48 +860,14 @@ async def acomplete_structured(
     return parsed
 
 
-async def invoke_llm_with_timeout_message[T](
-    llm_call: Coroutine[Any, Any, T],
-    timeout_seconds: int = 10,
-    hard_timeout: int = 180,
-) -> T:
-    """Send an LLM call and display a countdown / timeout message if delayed."""
-    llm_task = asyncio.create_task(llm_call)
-    waiter_task = asyncio.create_task(asyncio.sleep(timeout_seconds))
-    try:
-        done, _ = await asyncio.wait({llm_task, waiter_task}, return_when=asyncio.FIRST_COMPLETED)
-
-        if llm_task in done:
-            return llm_task.result()
-
-        user_messages_logger.info("Waiting for LLM call response...")
-        start_time = asyncio.get_event_loop().time()
-
-        while True:
-            try:
-                return await asyncio.wait_for(asyncio.shield(llm_task), timeout=1.0)
-            except TimeoutError:
-                if llm_task.done():
-                    return llm_task.result()
-
-                pause_file = PAUSE_FILE
-                if pause_file.exists():
-                    start_time = asyncio.get_event_loop().time()
-                    continue
-
-                elapsed = asyncio.get_event_loop().time() - start_time
-                if elapsed > max(0, hard_timeout - timeout_seconds):
-                    user_messages_logger.error(f"LLM call timed out after {hard_timeout} seconds.")
-                    raise TimeoutError(f"LLM call timed out after {hard_timeout} seconds.")
-    except BaseException:
-        if not llm_task.done():
-            llm_task.cancel()
-        await asyncio.gather(llm_task, return_exceptions=True)
-        raise
-    finally:
-        if not waiter_task.done():
-            waiter_task.cancel()
-        await asyncio.gather(waiter_task, return_exceptions=True)
+# Wraps every LLM call: tells the user when a call is slow and enforces a hard
+# timeout. The timeout does not count while the task is paused (PAUSE_FILE).
+invoke_llm_with_timeout_message = LLMWaitNotice(
+    notify=user_messages_logger.info,
+    on_timeout=user_messages_logger.error,
+    hold=lambda: PAUSE_FILE.exists(),
+    default_hard_timeout=180,
+).__call__
 
 
 # Backward compatible factory functions delegating to ModelFactory
@@ -927,108 +891,6 @@ def get_google_llm(
         enable_grounding=enable_grounding,
     )
     return ModelFactory.create_model(ep)
-
-
-def get_vertex_llm(
-    model_name: str = "gemini-3.8-flash",
-    temperature: float | None = None,
-    timeout: float | None = None,
-    thinking_budget: int | None = None,
-) -> BaseChatModel:
-    ep = ModelEndpoint(
-        provider=ModelProvider.VERTEX_AI,
-        model_name=model_name,
-        temperature=temperature or 0.0,
-        timeout_seconds=timeout or 60.0,
-        thinking_budget=thinking_budget,
-    )
-    return ModelFactory.create_model(ep)
-
-
-def get_openai_llm(
-    model_name: str = "o3",
-    temperature: float | None = None,
-    timeout: float | None = None,
-) -> BaseChatModel:
-    ep = ModelEndpoint(
-        provider=ModelProvider.OPENAI,
-        model_name=model_name,
-        temperature=temperature or 0.0,
-        timeout_seconds=timeout or 60.0,
-    )
-    return ModelFactory.create_model(ep)
-
-
-def get_openrouter_llm(
-    model_name: str,
-    temperature: float | None = None,
-    timeout: float | None = None,
-) -> BaseChatModel:
-    ep = ModelEndpoint(
-        provider=ModelProvider.OPENROUTER,
-        model_name=model_name,
-        temperature=temperature or 0.0,
-        timeout_seconds=timeout or 60.0,
-    )
-    return ModelFactory.create_model(ep)
-
-
-def get_grok_llm(
-    model_name: str,
-    temperature: float | None = None,
-    timeout: float | None = None,
-) -> BaseChatModel:
-    ep = ModelEndpoint(
-        provider=ModelProvider.XAI,
-        model_name=model_name,
-        temperature=temperature or 0.0,
-        timeout_seconds=timeout or 60.0,
-    )
-    return ModelFactory.create_model(ep)
-
-
-def get_anthropic_llm(
-    model_name: str,
-    temperature: float | None = None,
-    timeout: float | None = None,
-    thinking_budget: int | None = None,
-    reasoning_effort: str | None = None,
-) -> BaseChatModel:
-    ep = ModelEndpoint(
-        provider=ModelProvider.ANTHROPIC,
-        model_name=model_name,
-        temperature=temperature or 0.0,
-        timeout_seconds=timeout or 60.0,
-        thinking_budget=thinking_budget,
-        reasoning_effort=reasoning_effort,
-    )
-    return ModelFactory.create_model(ep)
-
-
-def get_cached_raw_model(
-    provider: str,
-    model_name: str,
-    temperature: float | None = None,
-    timeout: float | None = None,
-    thinking_budget: int | None = None,
-    thinking_level: str | None = None,
-    include_thoughts: bool | None = None,
-    reasoning_effort: str | None = None,
-    enable_grounding: bool = False,
-) -> BaseChatModel:
-    """Retrieves or instantiates a cached raw LangChain chat model."""
-    ep = ModelEndpoint(
-        provider=ModelProvider.from_string(provider),
-        model_name=model_name,
-        temperature=temperature or 0.0,
-        timeout_seconds=timeout or 60.0,
-        thinking_budget=thinking_budget,
-        thinking_level=thinking_level,
-        include_thoughts=include_thoughts,
-        reasoning_effort=reasoning_effort,
-        enable_grounding=enable_grounding,
-    )
-    return ModelFactory.get_model(ep)
 
 
 def _resolve_endpoint(
@@ -1077,46 +939,15 @@ def _resolve_endpoint(
     )
 
 
-@overload
-def get_llm(
+def _get_llm(
     ctx: ArtemisContext,
-    name: AgentNodeWithFallback,
-    *,
-    use_fallback: bool = False,
-    temperature: float | None = None,
-) -> BaseChatModel: ...
-
-
-@overload
-def get_llm(
-    ctx: ArtemisContext,
-    name: LLMUtilsNode,
-    *,
-    is_utils: Literal[True],
-    temperature: float | None = None,
-) -> BaseChatModel: ...
-
-
-@overload
-def get_llm(
-    ctx: ArtemisContext,
-    name: LLMUtilsNodeWithFallback,
-    *,
-    is_utils: Literal[True],
-    use_fallback: bool = False,
-    temperature: float | None = None,
-) -> BaseChatModel: ...
-
-
-def get_llm(
-    ctx: ArtemisContext,
-    name: AgentNode | LLMUtilsNode | AgentNodeWithFallback,
+    name: str,
     is_utils: bool = False,
     use_fallback: bool = False,
     temperature: float | None = None,
 ) -> BaseChatModel:
     """Resolves and instantiates the appropriate LLM wrapper for the given agent role."""
-    endpoint = _resolve_endpoint(ctx, str(name), is_utils=is_utils, use_fallback=use_fallback)
+    endpoint = _resolve_endpoint(ctx, name, is_utils=is_utils, use_fallback=use_fallback)
     if temperature is not None:
         endpoint = endpoint.model_copy(update={"temperature": temperature})
     raw_model = ModelFactory.get_model(endpoint)
@@ -1127,23 +958,39 @@ def get_llm(
     return RobustChatModelWrapper(bound_model, ctx, endpoint=endpoint)  # type: ignore
 
 
-async def with_fallback[T](
-    main_call: Callable[[], Awaitable[T]],
-    fallback_call: Callable[[], Awaitable[T]],
-    none_should_fallback: bool = True,
-) -> T:
-    """Run main_call, switching to fallback_call only when it can actually help.
+get_llm: GetLLM = _get_llm
 
-    Falling back is an explicit, observed decision: the failure is classified
-    and only categories where a different endpoint might succeed trigger the
-    fallback (a bad request would just hide the bug inside a weaker model's
-    output). Every switch is logged at WARNING and recorded as an
-    llm_fallback telemetry event. While main_call runs, the recovery layer
-    knows a fallback exists and hands over immediately on retry exhaustion
-    instead of pausing the task.
+
+class _ObservedFallback(FallbackRunner):
+    """Fall back only on failures another endpoint could fix, and record it.
+
+    Errors are classified first; a bad request, for example, is re-raised
+    because a weaker model would only hide the bug. Each switch is logged at
+    WARNING and recorded as an ``llm_fallback`` event. While the main call
+    runs, the retry layer knows a fallback exists and hands over as soon as
+    retries run out instead of pausing the task.
     """
 
-    def _switch(reason: str, category: str | None, error: str | None) -> None:
+    @contextmanager
+    def main_scope(self) -> Iterator[None]:
+        # Reset before the fallback call starts: nothing is behind the
+        # fallback, so if it runs out of retries the task should pause.
+        token = _FALLBACK_AVAILABLE.set(True)
+        try:
+            yield
+        finally:
+            _FALLBACK_AVAILABLE.reset(token)
+
+    def fallback_reason(self, error: Exception) -> tuple[str, str | None] | None:
+        if isinstance(error, LLMCallError):
+            reason, failure = "terminal_error", error.failure
+        else:
+            reason, failure = "error", classify_failure(error)
+            if failure.category is FailureCategory.CANCELLED:
+                return None
+        return (reason, failure.category.value) if failure.should_fallback else None
+
+    def on_fallback(self, reason: str, category: str | None, error: str | None) -> None:
         llm_logger.warning(
             f"❗ Main LLM inference failed ({reason}"
             f"{f': {error}' if error else ''}). Falling back..."
@@ -1157,30 +1004,6 @@ async def with_fallback[T](
             },
         )
 
-    # The contextvar must be reset BEFORE fallback_call runs: the fallback has
-    # no further fallback behind it, so its own exhaustion should pause.
-    fallback_token = _FALLBACK_AVAILABLE.set(True)
-    try:
-        result = await main_call()
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        raise
-    except LLMCallError as e:
-        _FALLBACK_AVAILABLE.reset(fallback_token)
-        if not e.failure.should_fallback:
-            raise
-        _switch("terminal_error", e.failure.category.value, str(e))
-        return await fallback_call()
-    except Exception as e:
-        _FALLBACK_AVAILABLE.reset(fallback_token)
-        failure = classify_failure(e)
-        if failure.category is FailureCategory.CANCELLED or not failure.should_fallback:
-            raise
-        _switch("error", failure.category.value, str(e))
-        return await fallback_call()
-    else:
-        _FALLBACK_AVAILABLE.reset(fallback_token)
 
-    if result is None and none_should_fallback:
-        _switch("empty_result", None, None)
-        return await fallback_call()
-    return result
+# Runs main_call; switches to fallback_call when another endpoint could succeed.
+with_fallback = _ObservedFallback().run

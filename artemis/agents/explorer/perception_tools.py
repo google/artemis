@@ -37,8 +37,8 @@ from artemis.agents.image_processor.image_processor import ImageProcessor
 from artemis.agents.object_detector.object_detector import _run_object_detection
 from artemis.config import settings
 from artemis.data_engine.trace import trace
-from artemis.utils.logger import get_logger
 from artemis.utils.visualization import draw_dots
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

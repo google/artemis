@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
+from collections.abc import Callable
 import json
 import logging
 import os
 from pathlib import Path
 import sys
+import textwrap
 from typing import Any
 
 # Ensure repository root is in sys.path when executed directly or via MCP runner
@@ -43,7 +44,7 @@ from artemis.clients.screen_client_factory import create_screen_client
 from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.platform import platform
-from artemis.utils.app_launch_utils import launch_app_with_retries
+from third_party.mobile_use.utils.app_launch_utils import launch_app_with_retries
 
 
 def configure_stdio_mode() -> None:
@@ -86,6 +87,29 @@ def configure_stdio_mode() -> None:
 
 # Create minimal MCP server
 mcp = FastMCP("Android_ADB_Controller")
+
+
+def _tool_description(fn: Callable[..., Any]) -> str:
+    """Returns ``fn``'s docstring normalized identically on every Python version.
+
+    FastMCP publishes ``__doc__`` verbatim as the tool description. Python 3.13+
+    strips the common indentation of docstring continuation lines at compile time,
+    while 3.12 keeps it, so the schema external MCP clients see would otherwise
+    depend on the interpreter. This reproduces the 3.13 form (first line as-is,
+    remaining lines dedented, whitespace-only lines emptied); it is a no-op there.
+    """
+    first, sep, rest = (fn.__doc__ or "").partition("\n")
+    return first + sep + textwrap.dedent(rest)
+
+
+def _tool() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """``mcp.tool()`` with a Python-version-independent description."""
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        return mcp.tool(description=_tool_description(fn))(fn)
+
+    return decorator
+
 
 _GLOBAL_CONTROLLER = None
 _CONTROLLERS: dict[str, Any] = {}
@@ -184,11 +208,10 @@ def _get_controller(device_serial: str | None = None):
 # single implementation in artemis.mcp.actuators.adb.
 from artemis.mcp.actuators.adb import (  # noqa: E402  pylint: disable=wrong-import-position
     ensure_focus_at_coords as _ensure_focus_at_coords,
-    find_element_at_coords as _find_element_at_coords,
 )
 
 
-@mcp.tool()
+@_tool()
 async def tap(
     ctx: Context,
     coordinates: list[int],
@@ -219,7 +242,7 @@ async def tap(
     return "Success"
 
 
-@mcp.tool()
+@_tool()
 async def long_press_on(
     ctx: Context,
     coordinates: list[int],
@@ -250,7 +273,7 @@ async def long_press_on(
     return "Success"
 
 
-@mcp.tool()
+@_tool()
 async def swipe(
     ctx: Context,
     coordinates: list[int],
@@ -284,7 +307,7 @@ async def swipe(
     return "Success"
 
 
-@mcp.tool()
+@_tool()
 async def back(ctx: Context) -> str:
     """Simulates pressing the system back button."""
     try:
@@ -296,7 +319,7 @@ async def back(ctx: Context) -> str:
     return "Success" if success else "Failed"
 
 
-@mcp.tool()
+@_tool()
 async def launch_app(ctx: Context, package_name: str) -> str:
     """Launches an application by its Android package name with retries and smart polling."""
     try:
@@ -308,7 +331,7 @@ async def launch_app(ctx: Context, package_name: str) -> str:
     return "Success" if success else f"Failed: {error_msg}"
 
 
-@mcp.tool()
+@_tool()
 async def stop_app(ctx: Context, package_name: str) -> str:
     """Force stops an application by its Android package name."""
     try:
@@ -320,7 +343,7 @@ async def stop_app(ctx: Context, package_name: str) -> str:
     return "Success" if success else "Failed"
 
 
-@mcp.tool()
+@_tool()
 async def open_link(ctx: Context, url: str) -> str:
     """Opens a URL or deep link on the device."""
     try:
@@ -332,7 +355,7 @@ async def open_link(ctx: Context, url: str) -> str:
     return "Success" if success else "Failed"
 
 
-@mcp.tool()
+@_tool()
 async def focus_and_input_text(
     ctx: Context,
     coordinates: list[int],
@@ -369,7 +392,7 @@ async def focus_and_input_text(
     return "Success" if success else "Failed"
 
 
-@mcp.tool()
+@_tool()
 async def focus_and_clear_text(
     ctx: Context,
     coordinates: list[int],
@@ -394,7 +417,7 @@ async def focus_and_clear_text(
     return "Success" if success else "Failed"
 
 
-@mcp.tool()
+@_tool()
 async def erase_one_char(ctx: Context) -> str:
     """Erases a single character (simulates Backspace)."""
     try:
@@ -406,7 +429,7 @@ async def erase_one_char(ctx: Context) -> str:
     return "Success" if success else "Failed"
 
 
-@mcp.tool()
+@_tool()
 async def press_key(ctx: Context, keycode: str) -> str:
     """Presses a specific Android key event (e.g., KEYCODE_ENTER, KEYCODE_HOME)."""
     try:
@@ -421,7 +444,7 @@ async def press_key(ctx: Context, keycode: str) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@_tool()
 async def take_screenshot(ctx: Context) -> str:
     """Takes a screenshot of the device screen.
 
@@ -439,7 +462,7 @@ async def take_screenshot(ctx: Context) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@_tool()
 async def get_ui_hierarchy(ctx: Context) -> str:
     """Retrieves the current UI elements hierarchy from the device."""
     try:

@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 import time
 
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 try:
     from datetime import UTC

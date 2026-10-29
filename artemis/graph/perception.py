@@ -23,7 +23,6 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
-from artemis.utils.logger import get_logger
 from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 from artemis.utils.ocr_xml_fusion import (
     _crop_image_remove_status_bar,
@@ -31,6 +30,7 @@ from artemis.utils.ocr_xml_fusion import (
     _map_coordinates_back,
     fuse_ocr_with_xml,
 )
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

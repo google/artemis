@@ -33,7 +33,7 @@ from pydantic import BaseModel
 from artemis.core.tool_declaration import ToolDeclaration
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.drivers.factory import get_driver
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

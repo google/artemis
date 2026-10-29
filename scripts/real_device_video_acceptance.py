@@ -37,7 +37,7 @@ from artemis.controllers.controller_factory import get_controller
 from artemis.runtime import DeviceExecutionLock
 from artemis.sdk.builders import Builders
 from artemis.sdk.types import AgentProfile
-from artemis.clients.ui_automator_client import UIAutomatorClient
+from third_party.mobile_use.clients.ui_automator_client import UIAutomatorClient
 
 
 CALCULATOR_PACKAGE = "com.google.android.calculator"

@@ -55,7 +55,6 @@ from artemis.utils.coordinates import (
     compute_smart_swipe_coordinates,
     parse_swipe_parameters,
 )
-from artemis.utils.logger import get_logger
 from artemis.utils.notes import (
     format_list_notes_failure,
     format_list_notes_success,
@@ -63,6 +62,7 @@ from artemis.utils.notes import (
     list_notes_info,
     read_note_content,
 )
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -40,7 +40,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from artemis.utils.logger import get_logger
 from artemis.utils.notes import append_note_content, get_note_file_path
 from artemis.utils.plan_grammar import (
     CHECKBOX_LINE_RE,
@@ -52,6 +51,7 @@ from artemis.utils.plan_grammar import (
     parse_plan,
     subgoal_hash,
 )
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

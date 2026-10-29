@@ -44,7 +44,7 @@ from artemis.config.paths import (
     get_env_file,
     get_temp_dir,
 )
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 # Installed wheels load .env from the user directory, outside site-packages.
 _canonical_env = get_env_file()

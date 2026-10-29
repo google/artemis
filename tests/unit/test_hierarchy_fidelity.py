@@ -15,10 +15,13 @@ import pytest
 
 from artemis.clients.accessibility_client import AccessibilityClient, HelperEmptyHierarchy
 from artemis.clients.screen_client_factory import FallbackScreenClient
-from artemis.clients.ui_automator_client import UIAutomatorClient, _parse_hierarchy_xml_to_elements
 from artemis.core.diagnostics.hierarchy_parity import compare_dumps
 from artemis.utils import ui_filter
 from artemis.utils.visualization import format_minimal_list_with_elements
+from third_party.mobile_use.clients.ui_automator_client import (
+    UIAutomatorClient,
+    parse_hierarchy_xml_to_elements,
+)
 
 
 def _node(**attrs: str) -> str:
@@ -47,7 +50,7 @@ def _xml(*nodes: str) -> str:
 
 
 def test_negative_bounds_keep_their_coordinates_and_get_clipped():
-    elements = _parse_hierarchy_xml_to_elements(_xml(_node(text="Row", bounds="[-20,-40][300,60]")))
+    elements = parse_hierarchy_xml_to_elements(_xml(_node(text="Row", bounds="[-20,-40][300,60]")))
     row = elements[1]
     assert row["parsed_bounds"] == {"left": -20, "top": -40, "right": 300, "bottom": 60}
 
@@ -68,7 +71,7 @@ def test_negative_bounds_keep_their_coordinates_and_get_clipped():
 
 
 def test_minimal_list_shows_hint_for_empty_inputs_and_errors():
-    elements = _parse_hierarchy_xml_to_elements(
+    elements = parse_hierarchy_xml_to_elements(
         _xml(
             _node(text="", hint="Search settings", **{"class": "android.widget.EditText"}),
             _node(text="abc", error="Password too short", bounds="[0,200][100,300]"),

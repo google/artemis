@@ -119,6 +119,7 @@ if USE_CYTHON:
 
         if module_name in (
             "artemis.__init__",
+            "artemis._legacy_imports",
             "artemis.main",
             "artemis.mcp.adb_server",
             "artemis.mcp.xml_search_server",
@@ -144,12 +145,16 @@ setup(
             "apps",
             "apps.admin_console",
             "apps.admin_console.*",
-        ]
+            "third_party.*",
+        ],
     ),
     package_data={
         "artemis": ["**/*.json", "**/*.md"],
         "artemis.resources": ["config/*.jsonc", "showcase_ui/*", "showcase_ui/**/*"],
         "apps.admin_console": ["index.html"],
+        # third_party has no __init__.py (namespace package), so it does not clash
+        # with other distributions that also ship a third_party directory.
+        "third_party.mobile_use": ["LICENSE", "NOTICE", "METADATA", "**/*.md"],
     },
     include_package_data=False,
     ext_modules=ext_modules,

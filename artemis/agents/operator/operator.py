@@ -47,13 +47,13 @@ from artemis.utils.coordinates import (
     compute_smart_swipe_coordinates,
     parse_swipe_parameters,
 )
-from artemis.utils.decorators import wrap_with_callbacks
-from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.plan_grammar import parse_plan
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from artemis.utils.visualization import format_minimal_list_with_elements
+from third_party.mobile_use.utils.decorators import agent_lifecycle_logging
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -854,11 +854,7 @@ class OperatorNode:
             tool_limit_exceeded,
         )
 
-    @wrap_with_callbacks(
-        before=lambda: logger.info("Starting Operator Agent..."),
-        on_success=lambda _: logger.success("Operator Agent"),
-        on_failure=lambda _: logger.error("Operator Agent"),
-    )
+    @agent_lifecycle_logging("Operator", logger)
     @trace(type="agent", name="operator")
     async def __call__(self, state: State):
         state = strict_state(state, "operator")

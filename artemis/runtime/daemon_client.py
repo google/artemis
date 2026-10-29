@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 
 from artemis.config.paths import ROOT_DIR
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -66,7 +66,7 @@ def is_daemon_running(
 def is_artemis_daemon(
     host: str = DEFAULT_DAEMON_HOST,
     port: int = DEFAULT_DAEMON_PORT,
-    timeout: float = 0.5,
+    timeout: float = 2.0,
 ) -> bool:
     """Identity probe: is the process on ``host:port`` the Artemis daemon?
 

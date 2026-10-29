@@ -42,11 +42,14 @@ from typing import Any
 from PIL import Image
 
 from artemis.clients.accessibility_client import AccessibilityClient, HelperUnavailable
-from artemis.clients.ui_automator_client import UIAutomatorClient, UIAutomatorScreenData
 from artemis.config.constants import ENV_ARTEMIS_HIERARCHY_BACKEND
 from artemis.runtime.adb_endpoint import adb_command
 from artemis.runtime.helper_manager import ProvisionEvent
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.clients.ui_automator_client import (
+    UIAutomatorClient,
+    UIAutomatorScreenData,
+)
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

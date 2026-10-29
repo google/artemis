@@ -41,7 +41,7 @@ from typing import Any
 
 from artemis.data_engine.context_vars import CURRENT_NODE_NAME
 from artemis.llm.google import usage_from_message
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

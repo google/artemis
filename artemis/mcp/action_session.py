@@ -54,7 +54,7 @@ import anyio
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from artemis.mcp.action_types import ActionResult, ObserveResult
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

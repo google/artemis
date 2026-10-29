@@ -28,7 +28,7 @@ import mcp_server.tools  # noqa: F401
 from mcp_server.utils import env_utils
 from artemis.mcp.adb_server import mcp as adb_mcp
 from artemis.runtime import shutdown_awake_service, start_awake_service
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 from rich.console import Console
 from rich.syntax import Syntax
 import typer

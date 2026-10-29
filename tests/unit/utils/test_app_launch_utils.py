@@ -17,12 +17,15 @@ from unittest.mock import AsyncMock, Mock, patch
 from artemis.context import ArtemisContext
 from artemis.utils.app_launch_utils import (
     ForegroundTask,
-    _handle_initial_app_launch,
     get_foreground_task,
-    launch_app_with_retries,
     parse_foreground_task,
 )
 import pytest
+from third_party.mobile_use.utils.app_launch_utils import (
+    _handle_initial_app_launch,
+    launch_app_with_retries,
+)
+
 
 SETTINGS = "com.android.settings"
 SETTINGS_SEARCH = "com.google.android.settings.intelligence"
@@ -273,7 +276,7 @@ def test_get_foreground_task_tolerates_missing_device_and_errors(mock_get_device
 
 @pytest.mark.asyncio
 @patch("artemis.utils.app_launch_utils.get_foreground_task")
-@patch("artemis.utils.app_launch_utils.UnifiedMobileController")
+@patch("third_party.mobile_use.utils.app_launch_utils.UnifiedMobileController")
 @patch("artemis.utils.app_launch_utils.get_current_foreground_package_async")
 async def test_launch_app_success_immediate(
     mock_get_foreground, mock_controller_cls, mock_get_task, mock_context
@@ -294,7 +297,7 @@ async def test_launch_app_success_immediate(
 
 @pytest.mark.asyncio
 @patch("artemis.utils.app_launch_utils.get_foreground_task")
-@patch("artemis.utils.app_launch_utils.UnifiedMobileController")
+@patch("third_party.mobile_use.utils.app_launch_utils.UnifiedMobileController")
 @patch("artemis.utils.app_launch_utils.get_current_foreground_package_async")
 async def test_launch_app_success_when_top_task_belongs_to_app(
     mock_get_foreground, mock_controller_cls, mock_get_task, mock_context
@@ -317,7 +320,7 @@ async def test_launch_app_success_when_top_task_belongs_to_app(
 
 @pytest.mark.asyncio
 @patch("artemis.utils.app_launch_utils.get_foreground_task")
-@patch("artemis.utils.app_launch_utils.UnifiedMobileController")
+@patch("third_party.mobile_use.utils.app_launch_utils.UnifiedMobileController")
 @patch("artemis.utils.app_launch_utils.get_current_foreground_package_async")
 async def test_launch_app_success_permission_overlay_in_app_task(
     mock_get_foreground, mock_controller_cls, mock_get_task, mock_context
@@ -343,7 +346,7 @@ async def test_launch_app_success_permission_overlay_in_app_task(
 
 @pytest.mark.asyncio
 @patch("artemis.utils.app_launch_utils.get_foreground_task")
-@patch("artemis.utils.app_launch_utils.UnifiedMobileController")
+@patch("third_party.mobile_use.utils.app_launch_utils.UnifiedMobileController")
 @patch("artemis.utils.app_launch_utils.get_current_foreground_package_async")
 async def test_launch_app_failure_when_top_task_is_another_app(
     mock_get_foreground, mock_controller_cls, mock_get_task, mock_context
@@ -365,7 +368,7 @@ async def test_launch_app_failure_when_top_task_is_another_app(
 
 @pytest.mark.asyncio
 @patch("artemis.utils.app_launch_utils.get_foreground_task")
-@patch("artemis.utils.app_launch_utils.UnifiedMobileController")
+@patch("third_party.mobile_use.utils.app_launch_utils.UnifiedMobileController")
 @patch("artemis.utils.app_launch_utils.get_current_foreground_package_async")
 async def test_launch_timeout_message_names_foreground_package_and_task(
     mock_get_foreground, mock_controller_cls, mock_get_task, mock_context
@@ -374,7 +377,7 @@ async def test_launch_timeout_message_names_foreground_package_and_task(
     mock_get_foreground.return_value = SETTINGS_SEARCH
     mock_get_task.return_value = parse_foreground_task(DUMP_SEARCH_IN_OWN_TASK)
 
-    with patch("artemis.utils.app_launch_utils.logger") as mock_logger:
+    with patch("third_party.mobile_use.utils.app_launch_utils.logger") as mock_logger:
         success, _ = await launch_app_with_retries(
             mock_context, SETTINGS, max_retries=1, max_poll_seconds=1
         )
@@ -395,7 +398,7 @@ async def test_launch_timeout_message_names_foreground_package_and_task(
 
 @pytest.mark.asyncio
 @patch("artemis.utils.app_launch_utils.get_foreground_task")
-@patch("artemis.utils.app_launch_utils.UnifiedMobileController")
+@patch("third_party.mobile_use.utils.app_launch_utils.UnifiedMobileController")
 @patch("artemis.utils.app_launch_utils.get_current_foreground_package_async")
 async def test_launch_app_null_focus_keeps_polling_without_reading_task(
     mock_get_foreground, mock_controller_cls, mock_get_task, mock_context
@@ -419,7 +422,7 @@ async def test_launch_app_null_focus_keeps_polling_without_reading_task(
 
 
 @pytest.mark.asyncio
-@patch("artemis.utils.app_launch_utils.launch_app_with_retries")
+@patch("third_party.mobile_use.utils.app_launch_utils.launch_app_with_retries")
 @patch("artemis.utils.app_launch_utils.get_foreground_task")
 @patch("artemis.utils.app_launch_utils.get_current_foreground_package_async")
 async def test_initial_launch_skips_launch_when_app_task_is_already_foreground(
@@ -436,7 +439,9 @@ async def test_initial_launch_skips_launch_when_app_task_is_already_foreground(
 
 
 @pytest.mark.asyncio
-@patch("artemis.utils.app_launch_utils.launch_app_with_retries", new_callable=AsyncMock)
+@patch(
+    "third_party.mobile_use.utils.app_launch_utils.launch_app_with_retries", new_callable=AsyncMock
+)
 @patch("artemis.utils.app_launch_utils.get_foreground_task")
 @patch("artemis.utils.app_launch_utils.get_current_foreground_package_async")
 async def test_initial_launch_launches_when_another_app_is_foreground(

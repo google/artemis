@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Annotated
 
 from artemis.config import settings
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 from rich.console import Console
 from rich.table import Table
 import typer

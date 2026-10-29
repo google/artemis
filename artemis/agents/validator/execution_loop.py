@@ -52,8 +52,8 @@ from artemis.agents.validator.incidents import (
 from artemis.data_engine.trace import CURRENT_TRACE_ID
 from artemis.graph.state import State
 from artemis.utils.coordinates import normalize_action_dict
-from artemis.utils.logger import get_logger
 from artemis.utils.task_tree import format_action_clean
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

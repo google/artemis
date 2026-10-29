@@ -16,6 +16,14 @@ The user explicitly requested to extract the following information:
 > "{{ output_description }}"
 {% endif %}
 
+{% if target_schema %}
+## Target Output Fields
+Your final answer will afterwards be formatted into the JSON schema below. Gather evidence for every field, and make sure your final answer states each value you found (or that it could not be verified). You do not need to write JSON yourself.
+```json
+{{ target_schema }}
+```
+{% endif %}
+
 ---
 
 # Instruction

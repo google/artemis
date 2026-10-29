@@ -11,27 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
-# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
-"""Context variables for global state management.
-
-Uses ContextVar to avoid prop drilling and maintain clean function signatures.
-"""
+"""Runtime context shared by Artemis agents, tools and drivers for a single task run."""
 
 from __future__ import annotations
 
 import asyncio
-
-try:
-    from enum import StrEnum
-except ImportError:
-    from enum import Enum
-
-    class StrEnum(str, Enum):
-        pass
-
 
 from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
@@ -51,62 +36,21 @@ from artemis.utils.video import detect_video_tools_enabled
 from artemis.config import ExplorerConfig, LLMConfig, OutputterConfig
 
 
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.context import (
+    AppLaunchResult,
+    DeviceContext,
+    DeviceClientAccessors,
+    DevicePlatform,
+    ExecutionSetupBase,
+)
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class AppLaunchResult(BaseModel):
-    """Result of initial app launch attempt."""
-
-    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
-
-    locked_app_package: str
-    locked_app_initial_launch_success: bool | None
-    locked_app_initial_launch_error: str | None
-
-
-class DevicePlatform(StrEnum):
-    """Mobile device platform enumeration."""
-
-    ANDROID = "android"
-
-
-class DeviceContext(BaseModel):
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        extra="allow",
-    )
-
-    host_platform: Literal["WINDOWS", "LINUX", "DARWIN", "MACOS"] | str = "DARWIN"
-    mobile_platform: DevicePlatform = DevicePlatform.ANDROID
-    device_id: str = "default-device"
-
-    device_width: int = 1080
-    device_height: int = 2400
-
-    def to_str(self):
-        return (
-            f"Host platform: {self.host_platform}\n"
-            f"Mobile platform: {self.mobile_platform.value}\n"
-            f"Device ID: {self.device_id}\n"
-            f"Device width: {self.device_width}\n"
-            f"Device height: {self.device_height}\n"
-        )
-
-
-class ExecutionSetup(BaseModel):
+class ExecutionSetup(ExecutionSetupBase):
     """Execution setup for a task."""
 
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        extra="allow",
-    )
-
-    traces_path: Path | None = None
-    trace_name: str | None = None
-    enable_remote_tracing: bool = False
-    app_lock_status: AppLaunchResult | None = None
     video_recording_tools_enabled: bool = Field(default_factory=detect_video_tools_enabled)
     disable_checker: bool = False
     """Legacy master switch (compat alias): ``True`` disables BOTH the midway
@@ -165,18 +109,8 @@ class ExecutionSetup(BaseModel):
     def explorer_caching(self) -> bool | None:
         return self.explorer.caching
 
-    def get_locked_app_package(self) -> str | None:
-        """Get the locked app package name if app locking is enabled.
 
-        Returns:
-            The locked app package name, or None if app locking is not enabled.
-        """
-        if self.app_lock_status:
-            return self.app_lock_status.locked_app_package
-        return None
-
-
-class ArtemisContext(BaseModel):
+class ArtemisContext(DeviceClientAccessors, BaseModel):
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         extra="allow",
@@ -348,16 +282,6 @@ class ArtemisContext(BaseModel):
                 await self.data_engine.shutdown()
             except Exception as exc:
                 logger.debug(f"DataEngine shutdown failed; skipped: {exc}", exc_info=True)
-
-    def get_adb_client(self) -> Any:
-        if self.adb_client is None:
-            raise ValueError("No ADB client in context.")
-        return self.adb_client
-
-    def get_ui_adb_client(self) -> Any:
-        if self.ui_adb_client is None:
-            raise ValueError("No UIAutomator client in context.")
-        return self.ui_adb_client
 
 
 from artemis.data_engine.engine import DataEngine

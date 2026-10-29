@@ -14,13 +14,13 @@
 
 """Type definitions for the ARTEMIS SDK."""
 
+from artemis.context import DevicePlatform
 from artemis.sdk.types.agent import (
     AgentConfig,
     ApiBaseUrl,
-    DevicePlatform,
     ServerConfig,
 )
-from artemis.sdk.types.exceptions import (
+from third_party.mobile_use.sdk.types.exceptions import (
     AgentError,
     AgentNotInitializedError,
     AgentProfileNotFoundError,
@@ -31,7 +31,7 @@ from artemis.sdk.types.exceptions import (
     ServerError,
     ServerStartupError,
 )
-from artemis.sdk.types.task import (
+from third_party.mobile_use.sdk.types.task import (
     AgentProfile,
     Task,
     TaskRequest,

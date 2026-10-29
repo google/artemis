@@ -16,27 +16,20 @@ from langchain_core.tools import BaseTool
 
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace_langchain_tool
-from artemis.tools.tool_wrapper import CompositeToolWrapper, ToolWrapper
+from artemis.tools.tool_wrapper import ToolWrapper
+from third_party.mobile_use.tools.index import (
+    get_tools_from_wrappers as build_tools_from_wrappers,
+)
 
 
 def get_tools_from_wrappers(
     ctx: "ArtemisContext",
     wrappers: list[ToolWrapper],
 ) -> list[BaseTool]:
-    """Instantiate and wrap LangChain tools from a list of ToolWrappers."""
-    tools: list[BaseTool] = []
-    for wrapper in wrappers:
-        if wrapper.is_available_fn is not None and not wrapper.is_available_fn(ctx):
-            continue
-        if isinstance(wrapper, CompositeToolWrapper):
-            comp_tools = wrapper.composite_tools_fn_getter(ctx)
-            for t in comp_tools:
-                tools.append(trace_langchain_tool(t, ctx))
-            continue
-
-        t = wrapper.tool_fn_getter(ctx)
-        tools.append(trace_langchain_tool(t, ctx))
-    return tools
+    """Instantiate the available tools of ``wrappers``, traced into the data engine."""
+    return build_tools_from_wrappers(
+        ctx, wrappers, wrap_tool=lambda t: trace_langchain_tool(t, ctx)
+    )
 
 
 def get_tool_by_name(name: str, tools: list[BaseTool]) -> BaseTool | None:

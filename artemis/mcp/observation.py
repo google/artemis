@@ -28,9 +28,9 @@ from artemis.config import get_temp_dir
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.mcp.action_types import ActionCode, ObserveResult
-from artemis.utils.logger import get_logger
 from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
 from artemis.utils.visualization import format_minimal_list_with_elements
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

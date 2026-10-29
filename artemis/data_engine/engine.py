@@ -45,8 +45,8 @@ from artemis.utils.coordinates import (
     normalize_any_structure,
     normalize_step_actions,
 )
-from artemis.utils.logger import get_logger
 from artemis.utils.text import safe_extract_text
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

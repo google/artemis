@@ -16,14 +16,10 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict
 
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.graph import take_last
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def take_last(a, b):
-    """Reducer function keeping the latest value."""
-    return b
 
 
 def sticky_or(a, b):

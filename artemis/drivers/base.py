@@ -28,6 +28,8 @@ import time
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
+from third_party.mobile_use.controllers.types import ElementQuery
+
 
 class SwipeDirection(str, Enum):
     UP = "up"
@@ -221,13 +223,10 @@ class BaseDeviceDriver(ABC):
         return await self.swipe(sx, sy, ex, ey, duration_ms=duration_ms)
 
     async def find_element(
-        self,
-        resource_id: str | None = None,
-        text: str | None = None,
-        index: int = 0,
-        screen_data: ScreenData | None = None,
+        self, query: ElementQuery, screen_data: ScreenData | None = None
     ) -> tuple[dict[str, Any] | None, list[int] | None, str | None]:
         """Finds matching UI element in screen hierarchy by resource_id or text."""
+        resource_id, text, index = query.resource_id, query.text, query.index
         data = screen_data or await self.get_screen_data()
         elements = data.ui_elements or []
 
@@ -242,7 +241,7 @@ class BaseDeviceDriver(ABC):
                 matched.append(elem)
 
         if not matched:
-            return None, None, f"Element not found (resource_id={resource_id}, text={text})"
+            return None, None, f"Element not found ({query.describe()})"
 
         if index >= len(matched):
             return None, None, f"Element index {index} out of range (matched {len(matched)})"
@@ -280,15 +279,10 @@ class BaseDeviceDriver(ABC):
         return elem, center, None
 
     async def tap_element(
-        self,
-        resource_id: str | None = None,
-        text: str | None = None,
-        index: int = 0,
-        long_press: bool = False,
-        duration_ms: int = 1000,
+        self, query: ElementQuery, long_press: bool = False, duration_ms: int = 1000
     ) -> bool:
         """Finds and taps a UI element by resource_id or text."""
-        _, center, error = await self.find_element(resource_id=resource_id, text=text, index=index)
+        _, center, error = await self.find_element(query)
         if error or not center:
             return False
         if long_press:

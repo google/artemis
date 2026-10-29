@@ -36,7 +36,7 @@ flag-off output of every agent stays byte-for-byte unchanged.
 from dataclasses import dataclass, fields, replace
 from typing import Any
 
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

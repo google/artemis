@@ -31,9 +31,9 @@ from artemis.tools.command_tool import (
     _format_long_output_response,
     _is_output_long,
 )
-from artemis.utils.logger import get_logger
 from artemis.utils.plan_grammar import parse_plan, render_plan_grammar_spec
 from artemis.utils.task_tree import SELF_DESCRIBED_MARKER, action_intent_phrase
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

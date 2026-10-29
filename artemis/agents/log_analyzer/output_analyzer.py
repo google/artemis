@@ -20,7 +20,7 @@ from artemis.core.tool_failure import ToolFailure, is_tool_failure
 from artemis.context import ArtemisContext
 from artemis.services.llm import get_llm, invoke_llm_with_timeout_message
 from artemis.tools.mobile.search_logs import search_and_merge_logs
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

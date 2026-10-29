@@ -27,7 +27,7 @@ from typing import Any
 
 from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.toolchain import toolchain
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

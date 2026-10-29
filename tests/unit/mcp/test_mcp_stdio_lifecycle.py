@@ -29,10 +29,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from artemis.clients import ui_automator_client
 from artemis.runtime.awake_lease import ScreenAwakeLease
 from artemis.runtime.awake_service import _run_awake_adb_command
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.clients import ui_automator_client
+from third_party.mobile_use.utils.logger import get_logger
 from mcp_server.utils import device_utils, env_utils
 
 
@@ -205,13 +205,13 @@ def test_device_utils_isolates_stdin():
 
 def test_ui_automator_client_isolates_stdin():
     """Verify ui_automator_client helper commands isolate stdin."""
-    with patch("artemis.clients.ui_automator_client.subprocess.run") as mock_run:
+    with patch("third_party.mobile_use.clients.ui_automator_client.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="package:com.test\n", stderr="")
         ui_automator_client._is_package_installed("dev-1", "com.test")
         assert mock_run.called
         assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
 
-    with patch("artemis.clients.ui_automator_client.subprocess.run") as mock_run:
+    with patch("third_party.mobile_use.clients.ui_automator_client.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         ui_automator_client._uninstall_package("dev-1", "com.test")
         assert mock_run.called

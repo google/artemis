@@ -27,7 +27,7 @@ import asyncio
 from typing import Any
 
 from artemis.data_engine.trace import detached_trace
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

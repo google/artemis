@@ -27,7 +27,7 @@ from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.mcp.action_names import to_canonical_call
 from artemis.mcp.action_session import ActionSession
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

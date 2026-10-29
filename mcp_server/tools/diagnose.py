@@ -46,7 +46,7 @@ from artemis.core.diagnostics.schema import ProbeResult, ProbeStatus, SystemRead
 from artemis.runtime import DeviceExecutionLock, trace_store
 from artemis.runtime.helper_manager import helper_manager
 from artemis.utils.credentials_validator import validate_api_key
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

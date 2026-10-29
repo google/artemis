@@ -14,7 +14,7 @@
 
 import json
 
-from artemis.utils.media import (
+from third_party.mobile_use.utils.media import (
     create_steps_json_from_trace_folder,
     remove_steps_json_from_trace_folder,
 )

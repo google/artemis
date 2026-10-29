@@ -48,7 +48,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from artemis.llm.google import is_google_provider
 from artemis.memory.step_memory import JobKey, StepLens, StepMemoryService
 from artemis.memory.transcript import format_session_offset
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

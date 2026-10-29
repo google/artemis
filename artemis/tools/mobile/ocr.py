@@ -27,8 +27,8 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.utils.logger import get_logger
 from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
+from third_party.mobile_use.utils.logger import get_logger
 
 
 class OcrArgs(BaseModel):

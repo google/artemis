@@ -315,4 +315,8 @@ Contributions are warmly welcomed!
 
 This project is licensed under the [Apache License 2.0](LICENSE).
 
-This project includes source code developed by [Minitap, Inc.](https://github.com/minitap-ai/mobile-use).
+### Third-party code
+
+Code not owned by Google lives under [`third_party/`](third_party/), one directory per upstream project, each with its own `LICENSE` and `METADATA`.
+
+- [`third_party/mobile_use`](third_party/mobile_use/) – portions of [mobile-use](https://github.com/minitap-ai/mobile-use) by Minitap, Inc., Apache License 2.0.

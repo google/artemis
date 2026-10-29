@@ -30,7 +30,7 @@ import uuid
 from artemis.config.paths import get_temp_dir
 from artemis.runtime.adb_endpoint import adb_command
 from artemis.runtime.process_probe import pid_is_alive
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

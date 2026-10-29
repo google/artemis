@@ -17,8 +17,8 @@ from artemis.clients.screen_client_factory import (
     hierarchy_backend_summary,
     resolve_backend,
 )
-from artemis.clients.ui_automator_client import UIAutomatorClient
 from artemis.config.constants import ENV_ARTEMIS_HIERARCHY_BACKEND
+from third_party.mobile_use.clients.ui_automator_client import UIAutomatorClient
 
 
 # --------------------------------------------------------------------------- #

@@ -20,8 +20,8 @@ import re
 
 from artemis.core.tool_failure import ToolFailure
 from artemis.data_engine.engine import _CURRENT_DATA_ENGINE
-from artemis.utils.logger import get_logger
 from artemis.utils.plan_grammar import parse_plan
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

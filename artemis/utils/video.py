@@ -11,51 +11,38 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
-# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
-"""Video recording utilities for mobile devices.
+"""scrcpy recording, remuxing, timeline rendering and frame extraction.
 
-Provides shared types and utilities for video recording across platforms.
+Recording session types and the session registry live in
+``third_party.mobile_use.utils.video``.
 """
 
 import asyncio
 import importlib.util
 import json
 from pathlib import Path
-import platform
 import re
 import shutil
 import time
 import subprocess
 from typing import Any
-from uuid import UUID
 
 import cv2
-from pydantic import BaseModel, ConfigDict
 
-from artemis.utils.logger import get_logger
+from artemis.utils.cython_compat import CyFunctionDetector
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_MAX_DURATION_SECONDS = 900  # 15 minutes
 ANDROID_RECORDING_SEGMENT_SECONDS = 1800
 # The recording marker closely tracks the first frame; startup measurements
 # put the fallback near three quarters of a second after process creation.
 SCRCPY_RECORDING_STARTED_MARKER = "Recording started"
 SCRCPY_STARTUP_FALLBACK_SECONDS = 0.75
 SCRCPY_STARTUP_TIMEOUT_SECONDS = 6.0
-VIDEO_READY_DELAY_SECONDS = 1
-ANDROID_DEVICE_VIDEO_PATH = "/sdcard/screen_recording.mp4"
-ANDROID_MAX_RECORDING_DURATION_SECONDS = 180  # Android screenrecord limit
 # Ignore small timing differences at segment boundaries.
 TIMELINE_GAP_EPSILON_SECONDS = 0.05
-
-# Expanded for Gemini File API (Supports up to 2GB).
-# Target 100MB to allow 3-5min crisp video and prevent blurring for long durations.
-MAX_VIDEO_SIZE_MB = 500
-MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
 
 
 def build_scrcpy_record_command(
@@ -124,94 +111,6 @@ async def await_scrcpy_first_frame(
             return fallback
         if SCRCPY_RECORDING_STARTED_MARKER in line.decode(errors="replace"):
             return max(spawned_at, time.time())
-
-
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
-
-
-class RecordingSession(BaseModel):
-    """Tracks an active video recording session."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    video_id: UUID
-    device_id: str
-    start_time: float
-    process: Any = None
-    data_engine_start_time: float | None = None
-    local_video_path: Path | None = None
-    capture_width: int | None = None
-    capture_height: int | None = None
-    android_device_path: str = ANDROID_DEVICE_VIDEO_PATH
-    android_video_segments: list[Path] = []
-    android_segment_index: int = 0
-    android_restart_task: asyncio.Task | None = None
-    watchdog_task: asyncio.Task | None = None
-    android_rotation: int | None = None
-    android_segment_started_at: float | None = None
-    android_segment_records: list[dict[str, Any]] = []
-    android_conversion_tasks: list[asyncio.Task] = []
-    generation: int = 0
-    sealed_until: float = 0.0
-    is_active: bool = True
-    errors: list[str] = []
-
-
-class VideoRecordingResult(BaseModel):
-    """Result of a video recording operation."""
-
-    success: bool
-    message: str
-    video_path: Path | None = None
-    file_size_mb: float | None = None
-    duration_seconds: float | None = None
-    actual_start_relative_time: float | None = None
-    warning: str | None = None
-    video_id: UUID | None = None
-    generation: int | None = None
-    sealed_until: float | None = None
-    source_revision: str | None = None
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-# Global session storage - keyed by device_id
-_active_recordings: dict[str, RecordingSession] = {}
-
-
-def get_active_session(device_id: str) -> RecordingSession | None:
-    """Get the active recording session for a device."""
-    return _active_recordings.get(device_id)
-
-
-def set_active_session(device_id: str, session: RecordingSession) -> None:
-    """Set the active recording session for a device."""
-    _active_recordings[device_id] = session
-
-
-def remove_active_session(device_id: str) -> RecordingSession | None:
-    """Remove and return the active recording session for a device."""
-    return _active_recordings.pop(device_id, None)
-
-
-def has_active_session(device_id: str) -> bool:
-    """Check if there's an active recording session for a device."""
-    return device_id in _active_recordings
 
 
 def is_ffmpeg_installed() -> bool:
@@ -614,10 +513,13 @@ async def render_timeline_clip(
                 f"setsar=1,fps={fps},format=yuv420p[{label}]"
             )
         labels.append(f"[{label}]")
+    # ``concat`` does not advertise a frame rate on its output link, so without an
+    # explicit rate ffmpeg falls back to 25 fps CFR and duplicates frames, breaking
+    # the ``start_time + frame_index / fps`` mapping the analyzer relies on.
     if len(labels) == 1:
-        filter_parts.append(f"{labels[0]}null[outv]")
+        filter_parts.append(f"{labels[0]}fps={fps}[outv]")
     else:
-        filter_parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[outv]")
+        filter_parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0,fps={fps}[outv]")
 
     command.extend(
         [
@@ -667,80 +569,6 @@ def detect_video_tools_enabled() -> bool:
     return is_ffmpeg_installed() and is_scrcpy_installed()
 
 
-class FFmpegNotInstalledError(Exception):
-    """Raised when ffmpeg is required but not installed."""
-
-    def __init__(self):
-        os_name = platform.system().lower()
-        if os_name == "darwin":  # macOS
-            install_instructions = "brew install ffmpeg"
-        elif os_name == "windows":
-            install_instructions = "Download from https://www.ffmpeg.org/download.html"
-        else:  # Linux and others
-            install_instructions = (
-                "Install via your package manager (e.g., apt install ffmpeg,"
-                " dnf install ffmpeg) or download from"
-                " https://www.ffmpeg.org/download.html"
-            )
-
-        message = (
-            "\n\n❌ ffmpeg is required for video recording but is not"
-            " installed.\n\nPlease install ffmpeg first:\n  →"
-            f" {install_instructions}\n\nAfter installation, restart Artemis.\n"
-        )
-        super().__init__(message)
-
-
-def check_ffmpeg_available() -> None:
-    """Check if ffmpeg is installed and raise an error if not.
-
-    Raises:
-        FFmpegNotInstalledError: If ffmpeg is not found in PATH.
-    """
-    if not is_ffmpeg_installed():
-        raise FFmpegNotInstalledError()
-
-
-async def concatenate_videos(segments: list[Path], output_path: Path) -> bool:
-    """Concatenate multiple video segments using ffmpeg."""
-    if not segments:
-        return False
-
-    if len(segments) == 1:
-        shutil.move(segments[0], output_path)
-        return True
-
-    list_file = output_path.parent / "segments.txt"
-    with open(list_file, "w") as f:
-        for segment in segments:
-            f.write(f"file '{segment}'\n")
-
-    try:
-        process = await asyncio.create_subprocess_exec(
-            get_ffmpeg_path(),
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(list_file),
-            "-c",
-            "copy",
-            str(output_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await process.wait()
-        return output_path.exists()
-    except Exception as e:
-        logger.error(f"Failed to concatenate videos: {e}")
-        return False
-    finally:
-        if list_file.exists():
-            list_file.unlink()
-
-
 _drawtext_supported: bool | None = None
 
 
@@ -760,274 +588,6 @@ def is_ffmpeg_drawtext_supported() -> bool:
     except Exception:
         _drawtext_supported = False
     return _drawtext_supported
-
-
-async def trim_video(
-    input_path: Path,
-    start_time: float,
-    end_time: float | None,
-    output_path: Path,
-    fast_copy: bool = True,
-) -> bool:
-    """Trim a video file using ffmpeg.
-
-    Uses fast stream copy (-c copy) by default with fallback to re-encoding.
-    """
-    try:
-        cmd = [
-            get_ffmpeg_path(),
-            "-y",
-            "-ss",
-            str(start_time),
-            "-i",
-            str(input_path),
-        ]
-        if end_time is not None:
-            duration = end_time - start_time
-            cmd.extend(["-t", str(duration)])
-
-        if fast_copy:
-            cmd.extend(["-c", "copy", str(output_path)])
-        else:
-            cmd.extend(
-                [
-                    "-vf",
-                    "setpts=PTS-STARTPTS",
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                    str(output_path),
-                ]
-            )
-
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-        if process.returncode == 0 and output_path.exists():
-            return True
-
-        if fast_copy:
-            logger.warning(
-                f"ffmpeg fast copy trim failed (code {process.returncode}),"
-                f" falling back to re-encoding: {stderr.decode()[:200]}"
-            )
-            return await trim_video(input_path, start_time, end_time, output_path, fast_copy=False)
-
-        logger.error(f"ffmpeg trim failed (code {process.returncode}): {stderr.decode()}")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to trim video: {e}")
-        return False
-
-
-def cleanup_video_segments(segments: list[Path], keep_path: Path | None = None) -> None:
-    """Clean up temporary video segments, optionally keeping one path."""
-    for segment in segments:
-        try:
-            if segment.exists() and segment != keep_path:
-                segment.unlink()
-                if segment.parent.exists() and not any(segment.parent.iterdir()):
-                    segment.parent.rmdir()
-        except OSError:
-            # Best-effort cleanup of temporary segments; leftovers are harmless.
-            pass
-
-
-async def compress_video_for_api(
-    input_path: Path,
-    target_size_bytes: int = MAX_VIDEO_SIZE_BYTES,
-    force_compress: bool = False,
-    start_offset_seconds: float = 0.0,
-    slowdown_factor: float = 1.0,
-) -> Path:
-    """Compress a video to fit within API size limits using ffmpeg.
-
-    Uses a two-pass approach:
-    1. First check if video is already small enough
-    2. If not, compress with reduced resolution and bitrate
-
-    Args:
-        input_path: Path to the input video file
-        target_size_bytes: Target maximum file size in bytes
-        force_compress: If True, always perform compression (e.g., to extract
-          frames at 15fps)
-        start_offset_seconds: Offset to add to the burned-in timestamp
-        slowdown_factor: Factor to slow down the video by (e.g. 5.0 for 5x
-          slower) to increase API frame sampling rate
-
-    Returns:
-        Path to the compressed video (may be same as input if no compression
-        needed)
-    """
-    if not input_path.exists():
-        raise FileNotFoundError(f"Video file not found: {input_path}")
-
-    current_size = input_path.stat().st_size
-    logger.info(f"Video size: {current_size / 1024 / 1024:.2f} MB")
-
-    if current_size <= target_size_bytes and not force_compress and slowdown_factor == 1.0:
-        logger.info(
-            "Video already within size limit and force_compress=False, no compression needed"
-        )
-        return input_path
-
-    logger.info(
-        f"Compressing video to fit within {target_size_bytes / 1024 / 1024:.1f}"
-        f" MB (slowdown={slowdown_factor})"
-    )
-
-    output_path = input_path.parent / f"compressed_{input_path.name}"
-
-    # Use Constant Rate Factor (CRF) for high-fidelity UI text readability.
-    # CRF dynamically allocates bitrates depending on scene motion.
-    logger.info("Compressing video using CRF=26 for high-fidelity UI text readability.")
-
-    # Compress with ffmpeg: reduce resolution to 720p max, use CRF
-    # and check if drawtext is supported
-    vf_parts = ["setpts=PTS-STARTPTS", "scale='min(720,iw)':'-2'"]
-    if is_ffmpeg_drawtext_supported():
-        vf_parts.append(
-            "drawtext=text='TS\\:"
-            f" %{{expr_int_format\\:trunc(t+{start_offset_seconds})\\:d}}"
-            " s':x=w-tw-30:y=120+th+20:fontcolor=white@0.6:fontsize=44:borderw=4:"
-            "bordercolor=red@0.6:box=1:boxcolor=yellow@0.4:boxborderw=10:font='Sans"
-            " Bold'"
-        )
-    else:
-        logger.warning(
-            "ffmpeg 'drawtext' filter not supported on this system. Skipping"
-            " burned-in timestamp overlay."
-        )
-
-    if slowdown_factor != 1.0:
-        vf_parts.append(f"setpts={slowdown_factor}*PTS")
-
-    vf_filter = ",".join(vf_parts)
-
-    compress_cmd = [
-        get_ffmpeg_path(),
-        "-y",
-        "-i",
-        str(input_path),
-        "-vf",
-        vf_filter,
-        "-r",
-        "15",  # Set framerate to 15 fps
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "26",  # High quality for UI elements
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "64k",
-        str(output_path),
-    ]
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *compress_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            err_msg = stderr.decode().strip()
-            logger.error(f"ffmpeg compression failed (code {proc.returncode}): {err_msg}")
-            if force_compress or slowdown_factor != 1.0:
-                raise RuntimeError(
-                    f"Video compression/slowdown failed (code {proc.returncode}): {err_msg}"
-                )
-            return input_path  # Return original if compression fails and was optional
-
-        new_size = output_path.stat().st_size
-        logger.info(
-            f"Compressed: {current_size / 1024 / 1024:.2f} MB -> {new_size / 1024 / 1024:.2f} MB"
-        )
-
-        return output_path
-
-    except Exception as e:
-        logger.error(f"Video compression failed: {e}")
-        if force_compress or slowdown_factor != 1.0:
-            raise RuntimeError(f"Video compression/slowdown failed: {e}")
-        return input_path  # Return original if compression fails and was optional
-
-
-async def extract_audio_from_video(input_path: Path) -> Path:
-    """Extract audio from a video file using ffmpeg.
-
-    Saves as .mp3.
-    """
-    if not input_path.exists():
-        raise FileNotFoundError(f"Video file not found: {input_path}")
-
-    probe_cmd = [
-        get_ffprobe_path(),
-        "-v",
-        "error",
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "stream=index",
-        "-of",
-        "csv=p=0",
-        str(input_path),
-    ]
-    probe = await asyncio.create_subprocess_exec(
-        *probe_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    probe_stdout, _ = await probe.communicate()
-    if probe.returncode != 0 or not probe_stdout.strip():
-        raise ValueError("Video has no audio stream")
-
-    output_path = input_path.parent / f"audio_{input_path.stem}.mp3"
-    logger.info(f"Extracting audio from {input_path} to {output_path}")
-
-    cmd = [
-        get_ffmpeg_path(),
-        "-y",
-        "-i",
-        str(input_path),
-        "-vn",
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        "128k",
-        str(output_path),
-    ]
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            err_msg = stderr.decode(errors="replace").strip()
-            concise_error = "\n".join(err_msg.splitlines()[-8:])
-            logger.error(f"ffmpeg audio extraction failed: {concise_error}")
-            raise RuntimeError(
-                f"ffmpeg audio extraction failed (code {proc.returncode}): {concise_error}"
-            )
-
-        return output_path
-
-    except Exception:
-        raise
 
 
 def extract_keyframes_from_video(

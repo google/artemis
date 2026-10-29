@@ -19,7 +19,7 @@ import pytest
 from artemis.sdk.agent import Agent
 from artemis.context import DeviceContext, DevicePlatform
 from artemis.runtime.device_lock import DeviceBusyError
-from artemis.sdk.types.exceptions import AgentError
+from third_party.mobile_use.sdk.types.exceptions import AgentError
 
 
 @pytest.mark.asyncio
@@ -79,7 +79,7 @@ async def test_task_that_never_acquires_queue_does_not_create_trace_session():
     agent._prepare_tracing = MagicMock()
 
     with patch(
-        "artemis.sdk.agent.DeviceExecutionLock.acquire",
+        "artemis.runtime.DeviceExecutionLock.acquire",
         side_effect=DeviceBusyError("queue cancelled"),
     ):
         with pytest.raises(DeviceBusyError, match="queue cancelled"):

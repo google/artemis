@@ -79,7 +79,6 @@ from artemis.tools.scratchpad import (
 )
 from artemis.tools.tool_wrapper import invoke_tool_with_injection
 from artemis.tools.video_tool import get_video_analyzer_tool
-from artemis.utils.logger import get_logger
 from artemis.utils.notes import (
     SAVE_NOTE_ARG_CONTENT_DESC,
     SAVE_NOTE_ARG_KEY_DESC,
@@ -99,13 +98,15 @@ from artemis.utils.plan_grammar import (
     unintended_milestone_edits,
 )
 from artemis.utils.task_tree import get_active_subgoal_hashes
+from artemis.utils.cython_compat import CyFunctionDetector
+from third_party.mobile_use.graph import (
+    CONVERGENCE_NODE,
+    add_convergence_edges,
+    add_convergence_node,
+)
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def convergence_node(state: State):
-    """Convergence point for parallel execution paths."""
-    return {}
 
 
 def _notify_history_chunker(ctx: ArtemisContext, method: str, *args) -> None:
@@ -509,24 +510,6 @@ def _get_active_subgoal_hashes(ctx: ArtemisContext) -> tuple[str, str | None]:
         logger.error(f"Failed to parse active subgoal: {e}")
 
     return "default", None
-
-
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
 
 
 def check_plan_mutation_rejections(
@@ -1036,32 +1019,28 @@ async def get_graph(ctx: ArtemisContext) -> CompiledStateGraph:
     graph_builder.add_node("summarizer", SummarizerNode(ctx))
     graph_builder.add_node("execution_check", functools.partial(execution_check_node, ctx=ctx))
     graph_builder.add_node("perception", functools.partial(perception_node, ctx=ctx))
-    graph_builder.add_node(node="convergence", action=convergence_node, defer=True)
+    add_convergence_node(graph_builder)
     graph_builder.add_node("exit_settlement", functools.partial(exit_settlement_node, ctx=ctx))
 
     ## Linking nodes
     graph_builder.add_edge(START, "planner")
-    graph_builder.add_edge("planner", "convergence")
+    graph_builder.add_edge("planner", CONVERGENCE_NODE)
     graph_builder.add_edge("operator", "execution_check")
     graph_builder.add_conditional_edges(
         "execution_check",
         execution_check_edge,
         {
-            "review_subgoals": "convergence",
+            "review_subgoals": CONVERGENCE_NODE,
             "execute_decisions": "validator",
         },
     )
     graph_builder.add_edge("validator", "summarizer")
-    graph_builder.add_edge("summarizer", "convergence")
+    graph_builder.add_edge("summarizer", CONVERGENCE_NODE)
 
-    graph_builder.add_conditional_edges(
-        source="convergence",
-        path=functools.partial(convergence_gate, ctx=ctx),
-        path_map={
-            "continue": "perception",
-            "exit_settlement": "exit_settlement",
-            "end": END,
-        },
+    add_convergence_edges(
+        graph_builder,
+        functools.partial(convergence_gate, ctx=ctx),
+        {"continue": "perception", "exit_settlement": "exit_settlement", "end": END},
     )
     graph_builder.add_conditional_edges(
         source="exit_settlement",

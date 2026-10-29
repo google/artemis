@@ -34,7 +34,7 @@ from statistics import median
 import time
 from typing import Any
 
-from artemis.clients.ui_automator_client import _parse_hierarchy_xml_to_elements
+from third_party.mobile_use.clients.ui_automator_client import parse_hierarchy_xml_to_elements
 
 MIN_RECALL = 0.9
 MIN_PRECISION = 0.8
@@ -62,7 +62,7 @@ def _iou(a: dict[str, int], b: dict[str, int]) -> float:
 
 def analyze_xml(xml: str, width: int, height: int) -> dict[str, Any]:
     """Counts and labelled elements of one dump, plus the bounds problems the helper must not have."""
-    elements = _parse_hierarchy_xml_to_elements(xml)
+    elements = parse_hierarchy_xml_to_elements(xml)
     labelled: list[tuple[str, dict[str, int]]] = []
     negative = offscreen = 0
     package = None
@@ -167,7 +167,7 @@ def compare_dumps(helper_xml: str, uiautomator_xml: str, width: int, height: int
 def compare_backends(serial: str, rounds: int = 3) -> dict[str, Any]:
     """Dump the current screen of ``serial`` with both backends and compare (device required)."""
     from artemis.clients.accessibility_client import AccessibilityClient
-    from artemis.clients.ui_automator_client import UIAutomatorClient
+    from third_party.mobile_use.clients.ui_automator_client import UIAutomatorClient
 
     helper = AccessibilityClient(serial)
     u2 = UIAutomatorClient(serial)

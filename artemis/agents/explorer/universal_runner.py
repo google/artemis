@@ -35,7 +35,7 @@ from artemis.agents.explorer.tiers import SUBMIT_TOOL
 from artemis.agents.explorer.tool_declarations import UNIVERSAL_EXPLORER_TOOLS
 from artemis.graph.state import State
 from artemis.services.llm import get_llm
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

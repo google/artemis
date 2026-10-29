@@ -57,7 +57,7 @@ import time
 from typing import Any, TypeVar
 
 from artemis.runtime.device_lock import DeviceExecutionLock
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

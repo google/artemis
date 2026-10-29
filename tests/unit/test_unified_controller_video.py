@@ -28,15 +28,17 @@ from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.utils.video import (
-    RecordingSession,
     build_scrcpy_record_command,
-    extract_audio_from_video,
     extract_frames_at_timestamps,
     get_ffmpeg_path,
-    get_active_session,
     normalize_recording_to_mp4,
     plan_timeline_pieces,
     render_timeline_clip,
+)
+from third_party.mobile_use.utils.video import (
+    RecordingSession,
+    extract_audio_from_video,
+    get_active_session,
     remove_active_session,
     set_active_session,
 )

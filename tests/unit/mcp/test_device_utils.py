@@ -9,6 +9,16 @@ from mcp_server.utils import device_utils
 def test_ensure_emulator_uses_windows_creation_flags(monkeypatch) -> None:
     popen = MagicMock()
     monkeypatch.setattr(device_utils.sys, "platform", "win32")
+    # CREATE_NEW_PROCESS_GROUP / DETACHED_PROCESS only exist in the Windows build of
+    # ``subprocess``; supply them (keeping the real values on Windows) so faking
+    # win32 works on any host instead of raising AttributeError inside the code.
+    for name, value in (("CREATE_NEW_PROCESS_GROUP", 0x200), ("DETACHED_PROCESS", 0x8)):
+        monkeypatch.setattr(
+            device_utils.subprocess,
+            name,
+            getattr(device_utils.subprocess, name, value),
+            raising=False,
+        )
     monkeypatch.setattr(device_utils, "is_emulator_running", lambda _adb: False)
     monkeypatch.setattr(device_utils.os.path, "exists", lambda _path: True)
     monkeypatch.setattr(device_utils.subprocess, "Popen", popen)

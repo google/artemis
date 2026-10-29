@@ -94,7 +94,7 @@ from artemis.utils.coordinates import (
     COORDINATE_SPACE_NORMALIZED,
     parse_swipe_parameters,
 )
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

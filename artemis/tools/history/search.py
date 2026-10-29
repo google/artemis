@@ -47,8 +47,8 @@ import sqlite3
 from typing import Any
 
 from artemis.core.tool_failure import ToolFailure
-from artemis.utils.logger import get_logger
 from artemis.utils.task_tree import format_actions_clean
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

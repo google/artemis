@@ -33,7 +33,7 @@ from artemis.core.diagnostics.schema import (
 )
 from artemis.platform import OSType, platform
 from artemis.toolchain import toolchain
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -80,7 +80,7 @@ import urllib.request
 from artemis.config.constants import ENV_ARTEMIS_HELPER_AUTO_INSTALL
 from artemis.config.paths import get_temp_dir
 from artemis.runtime.adb_endpoint import adb_command
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

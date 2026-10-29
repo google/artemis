@@ -34,7 +34,7 @@ from artemis.data_engine.models import (
     TraceRecord,
     VideoRecordingRecord,
 )
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 
 def _safe_uuid(val: Any) -> UUID | str:

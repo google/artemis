@@ -25,8 +25,7 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.tools.types import CyFunctionDetector
-from artemis.utils.logger import get_logger
+from artemis.utils.cython_compat import CyFunctionDetector
 from artemis.utils.notes import (
     APPEND_NOTE_ARG_CONTENT_DESC,
     APPEND_NOTE_ARG_KEY_DESC,
@@ -51,6 +50,8 @@ from artemis.utils.notes import (
     save_note_content,
     update_note_content,
 )
+from third_party.mobile_use.tools.tool_wrapper import make_save_note_wrapper
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -789,11 +790,7 @@ def get_append_note_tool_pure(ctx: ArtemisContext) -> BaseTool:
     return append_note_pure.to_langchain_tool(ctx, name="append_note")
 
 
-save_note_wrapper = ToolWrapper(
-    tool_fn_getter=get_save_note_tool,
-    on_success_fn=lambda key: f"Saved note '{key}'.",
-    on_failure_fn=lambda key: f"Failed to save note '{key}'.",
-)
+save_note_wrapper = make_save_note_wrapper(get_save_note_tool)
 
 read_note_wrapper = ToolWrapper(
     tool_fn_getter=get_read_note_tool,

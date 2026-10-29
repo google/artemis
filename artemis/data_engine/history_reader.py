@@ -27,7 +27,7 @@ from typing import Any, Protocol, runtime_checkable
 from artemis.data_engine.engine import build_image_describer, friendly_step
 from artemis.data_engine.models import HistoryChunkRecord, StepRecord
 from artemis.data_engine.storage import StorageManager
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

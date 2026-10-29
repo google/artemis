@@ -24,30 +24,22 @@ from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import InjectedToolCallId
 from langgraph.prebuilt import InjectedState
-from pydantic import BaseModel
 
 from artemis.core.tool_failure import is_tool_failure
-from artemis.context import ArtemisContext
 from artemis.data_engine import engine as engine_mod
 from artemis.data_engine.trace import CURRENT_TRACE_ID, smart_serialize
 from artemis.graph.state import State
-from artemis.tools.types import CyFunctionDetector
+from third_party.mobile_use.tools.tool_wrapper import CompositeToolWrapper, ToolWrapper
 
-
-class ToolWrapper(BaseModel):
-    """Wrapper holding a tool factory and lifecycle callbacks."""
-
-    model_config = {"ignored_types": (CyFunctionDetector,)}
-    tool_fn_getter: Callable[[ArtemisContext], BaseTool]
-    on_success_fn: Callable[..., str]
-    on_failure_fn: Callable[..., str]
-    is_available_fn: Callable[[ArtemisContext], bool] | None = None
-
-
-class CompositeToolWrapper(ToolWrapper):
-    """Wrapper holding a composite tool factory and lifecycle callbacks."""
-
-    composite_tools_fn_getter: Callable[[ArtemisContext], list[BaseTool]]
+__all__ = [
+    "CompositeToolWrapper",
+    "ToolWrapper",
+    "get_tool_result_content",
+    "invoke_tool_with_injection",
+    "resolve_image_carrier",
+    "split_multimodal_result",
+    "tool_result_messages",
+]
 
 
 # pylint: disable=too-many-branches,too-many-locals,too-many-statements

@@ -19,8 +19,8 @@ from artemis.clients.accessibility_client import (
     HelperUnavailable,
     normalize_helper_elements,
 )
-from artemis.clients.ui_automator_client import _parse_hierarchy_xml_to_elements
 from artemis.runtime.helper_manager import HelperSession
+from third_party.mobile_use.clients.ui_automator_client import parse_hierarchy_xml_to_elements
 
 XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
@@ -217,7 +217,7 @@ def test_screen_data_is_one_snapshot_request_with_xml_only(client):
 
     assert data.base64 == "QUJD" and data.width == 1080 and data.height == 2424
     assert data.hierarchy_xml == XML
-    assert data.elements == _parse_hierarchy_xml_to_elements(XML)
+    assert data.elements == parse_hierarchy_xml_to_elements(XML)
     element = data.elements[1]
     assert element["clickable"] == "true"
     assert element["visible-to-user"] == "true"
@@ -246,7 +246,7 @@ def test_screen_data_without_screenshot_reuses_the_hierarchy_and_adds_screencap(
     assert urlopen.call_count == 1  # the hierarchy is not dumped a second time
     assert data.width == 4 and data.height == 6
     assert Image.open(BytesIO(base64.b64decode(data.base64))).size == (4, 6)
-    assert data.elements == _parse_hierarchy_xml_to_elements(XML)
+    assert data.elements == parse_hierarchy_xml_to_elements(XML)
 
 
 def test_screen_data_falls_back_to_normalized_json_without_xml(client):

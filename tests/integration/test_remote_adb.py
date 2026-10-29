@@ -32,7 +32,7 @@ from cloud_service.virtualization.remote_adb import (
 )
 
 from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
-from artemis.controllers.platform_specific_commands_controller import (
+from third_party.mobile_use.controllers.platform_specific_commands_controller import (
     get_adb_device,
     list_packages,
     get_current_foreground_package,

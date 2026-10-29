@@ -75,13 +75,13 @@ from artemis.llm.google import (
 )
 from artemis.llm.reliability import retry_policy_for
 from artemis.services.llm import _record_llm_event, _record_llm_retry, get_llm
-from artemis.utils.logger import get_logger
-from artemis.utils.video import (
+from artemis.utils.video import extract_frames_at_timestamps, extract_keyframes_from_video
+from third_party.mobile_use.utils.logger import get_logger
+from third_party.mobile_use.utils.video import (
     compress_video_for_api,
     extract_audio_from_video,
-    extract_frames_at_timestamps,
-    extract_keyframes_from_video,
     get_active_session,
+    probe_duration,
 )
 
 try:
@@ -536,23 +536,7 @@ class VideoAnalyzer:
                 duration = end_time - start_time
             else:
                 try:
-                    duration_cmd = [
-                        "ffprobe",
-                        "-v",
-                        "error",
-                        "-show_entries",
-                        "format=duration",
-                        "-of",
-                        "default=noprint_wrappers=1:nokey=1",
-                        str(path),
-                    ]
-                    proc = await asyncio.create_subprocess_exec(
-                        *duration_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    stdout, _ = await proc.communicate()
-                    duration = float(stdout.decode().strip())
+                    duration = await probe_duration(path)
                 except Exception as e:
                     logger.warning(f"Failed to resolve duration via ffprobe for {path}: {e}")
                     duration = 0.0

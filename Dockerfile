@@ -29,6 +29,7 @@ WORKDIR /build
 COPY artemis/ ./artemis/
 COPY apps/ ./apps/
 COPY mcp_server/ ./mcp_server/
+COPY third_party/ ./third_party/
 COPY packages/artemis-client/ ./packages/artemis-client/
 COPY config/ ./config/
 COPY pyproject.toml setup.py README.md LICENSE ./

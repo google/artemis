@@ -31,7 +31,7 @@ from artemis.interfaces.cli.commands.server_lifecycle import (
 )
 from artemis.interfaces.cli.commands.trace import trace_app
 from artemis.interfaces.cli.commands.ui import ui_command
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 from rich.console import Console
 from rich.panel import Panel
 import typer

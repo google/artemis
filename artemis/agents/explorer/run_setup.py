@@ -45,10 +45,10 @@ from artemis.agents.object_detector.object_detector import _run_object_detection
 from artemis.config import settings
 from artemis.data_engine.storage import StorageManager
 from artemis.graph.state import State
-from artemis.utils.logger import get_logger
 from artemis.utils.ocr_api import is_ocr_configured, perform_ocr
 from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
 from artemis.utils.visualization import draw_dots, format_minimal_list_with_elements
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

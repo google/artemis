@@ -28,7 +28,7 @@ from artemis.interfaces.cli.commands.server_lifecycle import (
     status_command,
     stop_command,
 )
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 import typer
 
 logger = get_logger(__name__)

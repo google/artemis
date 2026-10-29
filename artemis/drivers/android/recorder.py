@@ -17,7 +17,7 @@
 import asyncio
 from pathlib import Path
 from typing import Any
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -33,8 +33,8 @@ from artemis.context import ArtemisContext
 from artemis.core.tool_declaration import ToolDeclaration
 from artemis.data_engine.trace import TraceSpan, trace
 from artemis.services.llm import get_llm
-from artemis.utils.logger import get_logger
 from artemis.utils.python_executor import PythonExecutor
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

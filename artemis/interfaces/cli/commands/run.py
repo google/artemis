@@ -16,19 +16,23 @@
 
 import asyncio
 import os
-from pathlib import Path
-from shutil import which
 from typing import Annotated
 
-from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
-from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
+from artemis.config import checker_overrides_for_level, settings
 from artemis.utils.startup_progress import publish_startup_progress
-from artemis import Agent, Builders
-from artemis.sdk.types.task import AgentProfile
-from artemis.utils.cli_helpers import display_device_status
-from artemis.utils.logger import get_logger
-from artemis.utils.video import check_ffmpeg_available
+from third_party.mobile_use.main import (
+    GoalArgument,
+    OutputDescriptionOption,
+    TestNameOption,
+    TracesPathOption,
+    VideoRecordingToolsOption,
+    ensure_video_recording_available,
+    new_default_config_builder,
+    run_automation,
+)
+from third_party.mobile_use.utils.cli_helpers import display_local_device_status
+from third_party.mobile_use.utils.logger import get_logger
 import signal
 from rich.console import Console
 from rich.panel import Panel
@@ -93,9 +97,7 @@ async def execute_task(
         session_id=str(effective_sid) if effective_sid else None,
     )
 
-    llm_config = initialize_llm_config()
-    agent_profile = AgentProfile(name="default", llm_config=llm_config)
-    config = Builders.AgentConfig.with_default_profile(profile=agent_profile)
+    config = new_default_config_builder()
 
     if video_recording_tools_enabled is not None:
         config.with_video_recording_tools(enabled=video_recording_tools_enabled)
@@ -132,9 +134,6 @@ async def execute_task(
             pro_mode=explorer_pro_mode,
         )
 
-    if settings.ADB_HOST:
-        config.with_adb_server(host=settings.ADB_HOST, port=settings.ADB_PORT)
-
     target_serial = (
         device_serial or settings.ADB_DEVICE_SERIAL or os.environ.get("ADB_DEVICE_SERIAL")
     )
@@ -154,39 +153,21 @@ async def execute_task(
     if graph_config_callbacks:
         config.with_graph_config_callbacks(graph_config_callbacks)
 
-    agent: Agent | None = None
-    try:
-        agent = Agent(config=config.build(), session_id=effective_sid)
-        await agent.init(
-            retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
-            retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
-        )
-
-        task = agent.new_task(goal)
-        if locked_app_package:
-            task.with_locked_app_package(locked_app_package)
-        if test_name:
-            trace_path = traces_output_path_str or str(settings.TRACES_PATH)
-            task.with_name(test_name).with_trace_recording(path=trace_path)
-        if output_description:
-            task.with_output_description(output_description)
-        if profile:
-            task.using_profile(profile)
-        if app_path:
-            task.with_app_path(Path(app_path))
-
-        llm_result_path = os.getenv("RESULTS_OUTPUT_PATH", None)
-        if llm_result_path:
-            task.with_llm_output_saving(path=llm_result_path)
-
-        await agent.run_task(request=task.build())
-    finally:
-        if agent is not None:
-            await agent.clean()
+    await run_automation(
+        config,
+        goal,
+        session_id=effective_sid,
+        locked_app_package=locked_app_package,
+        test_name=test_name,
+        traces_output_path_str=traces_output_path_str,
+        output_description=output_description,
+        profile=profile,
+        app_path=app_path,
+    )
 
 
 def run_command(
-    goal: Annotated[str, typer.Argument(help="The main goal for the agent to achieve.")],
+    goal: GoalArgument,
     profile: Annotated[
         str | None,
         typer.Option(
@@ -203,40 +184,10 @@ def run_command(
             help="Optional Android package name to restrict the agent to.",
         ),
     ] = None,
-    test_name: Annotated[
-        str | None,
-        typer.Option(
-            "--test-name",
-            "-n",
-            help="Name of the test run for trace recording.",
-        ),
-    ] = None,
-    traces_path: Annotated[
-        str | None,
-        typer.Option(
-            "--traces-path",
-            "-t",
-            help="Directory where execution traces are persisted.",
-        ),
-    ] = None,
-    output_description: Annotated[
-        str | None,
-        typer.Option(
-            "--output-description",
-            "-o",
-            help="Natural language or schema description of the expected output.",
-        ),
-    ] = None,
-    with_video_recording_tools: Annotated[
-        bool | None,
-        typer.Option(
-            "--with-video-recording-tools/--without-video-recording-tools",
-            help=(
-                "Enable or disable dynamic video recording and screen analysis "
-                "tools (auto-detected if omitted)."
-            ),
-        ),
-    ] = None,
+    test_name: TestNameOption = None,
+    traces_path: TracesPathOption = None,
+    output_description: OutputDescriptionOption = None,
+    with_video_recording_tools: VideoRecordingToolsOption = None,
     app_path: Annotated[
         str | None,
         typer.Option(
@@ -346,8 +297,7 @@ def run_command(
     ] = False,
 ) -> None:
     """Run an autonomous UI automation task on the connected Android device."""
-    if with_video_recording_tools:
-        check_ffmpeg_available()
+    ensure_video_recording_available(with_video_recording_tools)
 
     console = Console()
 
@@ -440,18 +390,7 @@ def run_command(
                 f"[yellow]Daemon routing notice: {exc}. Falling back to local execution...[/yellow]"
             )
 
-    adb_client = None
-    try:
-        if which("adb"):
-            adb_client = AdbClient(
-                host=settings.ADB_HOST or "localhost",
-                port=settings.ADB_PORT or 5037,
-            )
-    except Exception as exc:
-        # Optional cosmetic device-status display; run continues without it.
-        logger.debug(f"Could not create ADB client for device status display: {exc}")
-
-    display_device_status(console, adb_client=adb_client)
+    display_local_device_status(console, host=settings.ADB_HOST, port=settings.ADB_PORT)
 
     cancelled = False
     original_sigterm = None

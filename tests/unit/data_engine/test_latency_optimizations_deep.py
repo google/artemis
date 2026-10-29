@@ -24,7 +24,7 @@ from langchain_core.messages import HumanMessage
 from artemis.context import ArtemisContext
 from artemis.data_engine.engine import DataEngine
 from artemis.graph.state import State
-from artemis.utils.logger import DataEngineHandler
+from third_party.mobile_use.utils.logger import DataEngineHandler
 import pytest
 
 
@@ -302,12 +302,12 @@ async def test_ocr_api_persistent_http_client_singleton_and_tls_reuse():
 async def test_ui_filter_and_ui_automator_client_pre_parsed_bounds_o1_lookup():
     """Verify XML parsing pre-populates parsed_bounds and _parse_bounds hits this cache in O(1) without regex matches."""
     import re
-    from artemis.clients.ui_automator_client import _parse_hierarchy_xml_to_elements
+    from third_party.mobile_use.clients.ui_automator_client import parse_hierarchy_xml_to_elements
     from artemis.utils.ui_filter import _parse_bounds
 
-    # 1. Test ingestion pre-parsing in _parse_hierarchy_xml_to_elements
+    # 1. Test ingestion pre-parsing in parse_hierarchy_xml_to_elements
     xml_data = '<hierarchy><node text="Login Btn" bounds="[15,25][350,120]"/></hierarchy>'
-    elements = _parse_hierarchy_xml_to_elements(xml_data)
+    elements = parse_hierarchy_xml_to_elements(xml_data)
     assert len(elements) == 1
     assert elements[0]["parsed_bounds"] == {
         "left": 15,

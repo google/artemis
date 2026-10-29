@@ -43,7 +43,7 @@ from artemis.agents.video_analyzer.reliability import (
 from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.data_engine.trace import TraceSpan
 from artemis.llm.reliability import retry_policy_for
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

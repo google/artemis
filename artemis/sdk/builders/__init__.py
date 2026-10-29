@@ -15,8 +15,8 @@
 """Builder classes for configuring ARTEMIS components."""
 
 from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
-from artemis.sdk.builders.index import Builders
-from artemis.sdk.builders.task_request_builder import (
+from third_party.mobile_use.sdk.builders.index import Builders
+from third_party.mobile_use.sdk.builders.task_request_builder import (
     TaskRequestBuilder,
     TaskRequestCommonBuilder,
 )

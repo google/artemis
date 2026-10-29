@@ -40,7 +40,7 @@ from artemis.tools.history.replay import replay_steps_text
 from artemis.tools.history.screenshot import ScreenshotResult, load_step_screenshot
 from artemis.tools.history.search import search_history_text
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

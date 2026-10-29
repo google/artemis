@@ -17,7 +17,7 @@
 from pathlib import Path
 from typing import Literal
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

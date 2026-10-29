@@ -1,5 +1,6 @@
 """Tests for the LLM gateway: complete(), classified recovery, and fallback."""
 
+import asyncio
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -13,6 +14,7 @@ from artemis.services.llm import (
     acomplete_structured,
     with_fallback,
 )
+from third_party.mobile_use.llm_service import WAITING_MESSAGE, LLMWaitNotice
 
 
 @pytest.fixture(autouse=True)
@@ -166,6 +168,47 @@ async def test_with_fallback_refuses_to_hide_bad_requests():
     with pytest.raises(CodedError):
         await with_fallback(main_call=main_call, fallback_call=fallback_call)
     assert calls["fallback"] == 0
+
+
+@pytest.mark.asyncio
+async def test_with_fallback_clears_fallback_flag_when_cancelled():
+    seen = {}
+
+    async def main_call():
+        seen["during"] = llm_service._FALLBACK_AVAILABLE.get()
+        raise asyncio.CancelledError
+
+    async def fallback_call():  # pragma: no cover - must not run
+        raise AssertionError("fallback must not run on cancellation")
+
+    with pytest.raises(asyncio.CancelledError):
+        await with_fallback(main_call=main_call, fallback_call=fallback_call)
+    assert seen["during"] is True
+    assert llm_service._FALLBACK_AVAILABLE.get() is False
+
+
+@pytest.mark.asyncio
+async def test_timeout_wrapper_enforces_hard_timeout():
+    notices = []
+    wait = LLMWaitNotice(notify=notices.append, on_timeout=notices.append, poll_interval=0.01)
+
+    with pytest.raises(TimeoutError):
+        await wait(asyncio.sleep(10), timeout_seconds=0.01, hard_timeout=0.05)
+    assert notices == [WAITING_MESSAGE, "LLM call timed out after 0.05 seconds."]
+
+
+@pytest.mark.asyncio
+async def test_timeout_wrapper_holds_clock_while_paused():
+    wait = LLMWaitNotice(
+        notify=lambda _: None, on_timeout=lambda _: None, hold=lambda: True, poll_interval=0.01
+    )
+
+    async def slow():
+        await asyncio.sleep(0.1)
+        return "done"
+
+    # The 0.02s hard timeout never runs out while the task is held (paused).
+    assert await wait(slow(), timeout_seconds=0.01, hard_timeout=0.02) == "done"
 
 
 @pytest.mark.asyncio

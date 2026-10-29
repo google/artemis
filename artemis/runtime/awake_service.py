@@ -27,7 +27,7 @@ from adbutils import AdbClient
 from artemis.config import settings
 from artemis.runtime.adb_endpoint import adb_command
 from artemis.runtime.awake_lease import ScreenAwakeLease
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

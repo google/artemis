@@ -33,7 +33,7 @@ from artemis.agents.video_analyzer.reliability import classify_video_failure
 from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan
 from artemis.llm.google import normalize_usage
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

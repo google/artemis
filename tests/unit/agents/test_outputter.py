@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 from pydantic import BaseModel
@@ -21,73 +22,13 @@ from artemis.agents.outputter.outputter import outputter
 from artemis.config import LLM, OutputConfig  # noqa: E402
 from artemis.context import ArtemisContext  # noqa: E402
 from artemis.core.tool_failure import ToolFailure  # noqa: E402
-from artemis.utils.logger import get_logger  # noqa: E402
+from third_party.mobile_use import testing as agent_fixtures
+from third_party.mobile_use.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
 
-
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
-
-
-class MockPydanticSchema(BaseModel):
-    model_config = {"ignored_types": (CyFunctionDetector,)}
-    color: str
-    price: float
-    currency_symbol: str
-    website_url: str
-
-
-mock_dict = {
-    "color": "green",
-    "price": 20,
-    "currency_symbol": "$",
-    "website_url": "http://superwebsite.fr",
-}
-
-
-class DummyState:
-    def __init__(self, messages, initial_goal, operator_raw_data=None):
-        self.messages = messages
-        self.initial_goal = initial_goal
-        self.operator_raw_data = operator_raw_data
-
-
-@pytest.fixture
-def mock_context():
-    """Create a properly mocked context with all required fields."""
-    ctx = Mock(spec=ArtemisContext)
-    ctx.llm_config = {
-        "planner": LLM(provider="openai", model="gpt-5-nano"),
-        "operator": LLM(provider="openai", model="gpt-5-nano"),
-        "validator": LLM(provider="openai", model="gpt-5-nano"),
-    }
-    ctx.device = Mock()
-    ctx.data_engine = None
-    return ctx
-
-
-@pytest.fixture
-def mock_state():
-    """Create a mock state with test data."""
-    return DummyState(
-        messages=[],
-        initial_goal="Find a green product on my website",
-    )
+mock_context = agent_fixtures.mock_context
+mock_state = agent_fixtures.mock_state
 
 
 def setup_mock_llm(mock_get_llm, react_response_content="Paris", structured_response=None):
@@ -123,87 +64,45 @@ def setup_mock_llm(mock_get_llm, react_response_content="Paris", structured_resp
     return mock_llm, mock_llm_with_tools, mock_structured_llm
 
 
-@patch("artemis.agents.outputter.outputter.get_llm")
-@pytest.mark.asyncio
-async def test_outputter_with_pydantic_model(mock_get_llm, mock_context, mock_state):
-    """Test outputter with Pydantic model output."""
-    expected_structured = MockPydanticSchema(
-        color="green",
-        price=20,
-        currency_symbol="$",
-        website_url="http://superwebsite.fr",
-    )
-    setup_mock_llm(
-        mock_get_llm,
-        react_response_content="Raw details about green product",
-        structured_response=expected_structured,
-    )
+class _Verdict(BaseModel):
+    achieved: bool
+    evidence: str
 
-    config = OutputConfig(
-        structured_output=MockPydanticSchema,
-        output_description=None,
-    )
 
-    result = await outputter(ctx=mock_context, output_config=config, graph_output=mock_state)
-
-    assert isinstance(result, dict)
-    assert result.get("color") == "green"
+# A Pydantic model or a JSON schema dict; the result is a plain dict in both cases.
+_FORMAT_CASES = [
+    pytest.param(_Verdict, _Verdict(achieved=True, evidence="Order placed"), id="pydantic_model"),
+    pytest.param(
+        _Verdict.model_json_schema(),
+        {"achieved": True, "evidence": "Order placed"},
+        id="json_schema",
+    ),
+]
 
 
 @patch("artemis.agents.outputter.outputter.get_llm")
 @pytest.mark.asyncio
-async def test_outputter_with_dict(mock_get_llm, mock_context, mock_state):
-    """Test outputter with dictionary output."""
-    expected_dict = {
-        "color": "green",
-        "price": 20,
-        "currency_symbol": "$",
-        "website_url": "http://superwebsite.fr",
-    }
-    setup_mock_llm(
-        mock_get_llm,
-        react_response_content="Raw details",
-        structured_response=expected_dict,
+@pytest.mark.parametrize("schema, formatted_reply", _FORMAT_CASES)
+async def test_outputter_applies_schema_in_separate_formatting_pass(
+    mock_get_llm, schema, formatted_reply, mock_context, mock_state
+):
+    """The ReAct answer is re-shaped by a second, schema-bound call that sees the goal."""
+    react_answer = "The confirmation screen reads 'Order placed'."
+    mock_llm, _, mock_structured_llm = setup_mock_llm(
+        mock_get_llm, react_response_content=react_answer, structured_response=formatted_reply
     )
 
-    config = OutputConfig(
-        structured_output=mock_dict,
-        output_description=None,
+    result = await outputter(
+        ctx=mock_context,
+        output_config=OutputConfig(structured_output=schema),
+        graph_output=mock_state,
     )
 
-    result = await outputter(ctx=mock_context, output_config=config, graph_output=mock_state)
-
-    assert isinstance(result, dict)
-    assert result.get("color") == "green"
-    assert result.get("price") == 20
-    assert result.get("currency_symbol") == "$"
-    assert result.get("website_url") == "http://superwebsite.fr"
-
-
-@patch("artemis.agents.outputter.outputter.get_llm")
-@pytest.mark.asyncio
-async def test_outputter_with_natural_language_output(mock_get_llm, mock_context, mock_state):
-    """Test outputter with natural language description output (returns JSON string)."""
-    expected_json = (
-        '{"color": "green", "price": 20, "currency_symbol": "$", "website_url":'
-        ' "http://superwebsite.fr"}'
-    )
-    setup_mock_llm(mock_get_llm, react_response_content=expected_json)
-
-    config = OutputConfig(
-        structured_output=None,
-        output_description=(
-            "A JSON object with a color, a price, a currency_symbol and a website_url key"
-        ),
-    )
-
-    result = await outputter(ctx=mock_context, output_config=config, graph_output=mock_state)
-
-    assert isinstance(result, dict)
-    assert result.get("color") == "green"
-    assert result.get("price") == 20
-    assert result.get("currency_symbol") == "$"
-    assert result.get("website_url") == "http://superwebsite.fr"
+    assert result == {"achieved": True, "evidence": "Order placed"}
+    mock_llm.with_structured_output.assert_called_once_with(schema)
+    format_request = mock_structured_llm.ainvoke.call_args.args[0][-1].content
+    assert mock_state.initial_goal in format_request
+    assert react_answer in format_request
 
 
 @patch("artemis.agents.outputter.outputter.get_llm")
@@ -559,3 +458,289 @@ async def test_outputter_tool_message_status_is_structural(
     assert tool_msgs[0].tool_call_id == "c1"
     assert tool_msgs[0].status == expected_status
     assert tool_msgs[0].content == str(result)
+
+
+# Runs that end without a normal answer.
+
+
+def _tool_call(name: str, call_id: str, **args):  # noqa: D103
+    return {"name": name, "args": args, "id": call_id}
+
+
+def _recording_tool(name: str, result, events: list, barrier=None):  # noqa: D103
+    from langchain_core.tools import StructuredTool
+
+    async def _run(**_kwargs):
+        events.append(f"start:{name}")
+        if barrier is not None:
+            await asyncio.wait_for(barrier.wait(), timeout=2)
+        await asyncio.sleep(0)
+        events.append(f"end:{name}")
+        return result
+
+    return StructuredTool.from_function(coroutine=_run, name=name, description=name)
+
+
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_returns_text_for_content_block_replies(
+    mock_get_llm, mock_context, mock_state
+):
+    """Gemini 3+ replies arrive as content blocks; the caller gets their text."""
+    from langchain_core.messages import AIMessage
+
+    _, bound, _ = setup_mock_llm(mock_get_llm)
+    bound.ainvoke.return_value = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": "internal"},
+            {"type": "text", "text": "The order was placed."},
+        ]
+    )
+
+    result = await outputter(
+        ctx=mock_context, output_config=OutputConfig(), graph_output=mock_state
+    )
+
+    assert result == "The order was placed."
+
+
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_nudges_once_after_empty_reply(mock_get_llm, mock_context, mock_state):
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    _, bound, _ = setup_mock_llm(mock_get_llm)
+    bound.ainvoke.side_effect = [AIMessage(content=""), AIMessage(content="Done.")]
+
+    result = await outputter(
+        ctx=mock_context, output_config=OutputConfig(), graph_output=mock_state
+    )
+
+    assert result == "Done."
+    assert bound.ainvoke.call_count == 2
+    sent = bound.ainvoke.call_args_list[1].args[0]
+    assert isinstance(sent[2], HumanMessage)  # the nudge, not the empty AI turn
+    assert not any(isinstance(m, AIMessage) and not m.content for m in sent)
+
+
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_nudges_only_once(mock_get_llm, mock_context, mock_state):
+    from langchain_core.messages import AIMessage
+
+    _, bound, _ = setup_mock_llm(mock_get_llm)
+    bound.ainvoke.side_effect = [AIMessage(content=""), AIMessage(content=""), AssertionError()]
+
+    result = await outputter(
+        ctx=mock_context, output_config=OutputConfig(), graph_output=mock_state
+    )
+
+    assert bound.ainvoke.call_count == 2
+    assert result.startswith("Error: Outputter failed")
+
+
+@patch("artemis.agents.outputter.outputter.MAX_TURNS", 2)
+@patch("artemis.agents.outputter.outputter.get_read_note_tool_pure")
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_final_turn_runs_no_tools_and_returns_text(
+    mock_get_llm, mock_get_read_note, mock_context, mock_state
+):
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    events: list[str] = []
+    mock_get_read_note.return_value = _recording_tool("read_note", "note body", events)
+    _, bound, _ = setup_mock_llm(mock_get_llm)
+    bound.ainvoke.side_effect = [
+        AIMessage(content="", tool_calls=[_tool_call("read_note", "c1", key="a")]),
+        AIMessage(content="Best answer so far.", tool_calls=[_tool_call("read_note", "c2")]),
+    ]
+
+    result = await outputter(
+        ctx=mock_context, output_config=OutputConfig(), graph_output=mock_state
+    )
+
+    assert result == "Best answer so far."
+    assert events == ["start:read_note", "end:read_note"]  # the final turn's call never ran
+    final_request = bound.ainvoke.call_args_list[1].args[0]
+    assert any(
+        isinstance(m, HumanMessage) and "final turn" in str(m.content) for m in final_request
+    )
+
+
+@patch("artemis.agents.outputter.outputter.MAX_TURNS", 2)
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_falls_back_to_saved_report(
+    mock_get_llm, mock_context, mock_state, tmp_path
+):
+    """Without a final answer, the report written this run is returned, not an error."""
+    from langchain_core.messages import AIMessage
+
+    mock_context.data_engine = Mock(base_dir=str(tmp_path))
+    _, bound, _ = setup_mock_llm(mock_get_llm)
+    report = "# Report\nStatus: SUCCESS"
+    bound.ainvoke.side_effect = [
+        AIMessage(
+            content="", tool_calls=[_tool_call("save_note", "c1", key="output", content=report)]
+        ),
+        AIMessage(content=""),
+    ]
+
+    result = await outputter(
+        ctx=mock_context,
+        output_config=OutputConfig(),
+        graph_output=mock_state,
+        plan_and_history="Step 1: placed order",
+    )
+
+    assert result == report
+
+
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_formatting_pass_sees_saved_report(
+    mock_get_llm, mock_context, mock_state, tmp_path
+):
+    from langchain_core.messages import AIMessage
+
+    mock_context.data_engine = Mock(base_dir=str(tmp_path))
+    _, bound, structured = setup_mock_llm(
+        mock_get_llm, structured_response={"achieved": True, "evidence": "e"}
+    )
+    bound.ainvoke.side_effect = [
+        AIMessage(
+            content="", tool_calls=[_tool_call("save_note", "c1", key="output", content="REPORT")]
+        ),
+        AIMessage(content="Order placed."),
+    ]
+
+    await outputter(
+        ctx=mock_context,
+        output_config=OutputConfig(structured_output=_Verdict),
+        graph_output=mock_state,
+        plan_and_history="Step 1",
+    )
+
+    format_messages = structured.ainvoke.call_args.args[0]
+    assert "REPORT" in format_messages[1].content
+    assert "Order placed." in format_messages[-1].content
+    assert mock_state.initial_goal in format_messages[-1].content
+
+
+@patch("artemis.agents.outputter.outputter.get_save_note_tool_pure")
+@patch("artemis.agents.outputter.outputter.get_history_tools")
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_runs_reads_concurrently_and_writes_in_order(
+    mock_get_llm, mock_history_tools, mock_get_save_note, mock_context, mock_state
+):
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    events: list[str] = []
+    barrier = asyncio.Barrier(2)  # only passable if both reads are in flight together
+    mock_history_tools.return_value = (
+        _recording_tool("search_history", "hit", events, barrier),
+        _recording_tool("replay_steps", "replay", events, barrier),
+        _recording_tool("get_step_screenshot", "no image", events),
+    )
+    mock_get_save_note.return_value = _recording_tool("save_note", "saved", events)
+    _, bound, _ = setup_mock_llm(mock_get_llm)
+    calls = [
+        _tool_call("search_history", "a"),
+        _tool_call("replay_steps", "b"),
+        _tool_call("save_note", "c", key="k", content="v"),
+        _tool_call("get_step_screenshot", "d"),
+    ]
+    bound.ainvoke.side_effect = [AIMessage(content="", tool_calls=calls), AIMessage("ok")]
+
+    await outputter(ctx=mock_context, output_config=OutputConfig(), graph_output=mock_state)
+
+    save_start = events.index("start:save_note")
+    assert {"end:search_history", "end:replay_steps"} <= set(events[:save_start])
+    assert events.index("end:save_note") < events.index("start:get_step_screenshot")
+    sent = bound.ainvoke.call_args_list[1].args[0]
+    assert [m.tool_call_id for m in sent if isinstance(m, ToolMessage)] == ["a", "b", "c", "d"]
+
+
+@patch("artemis.agents.outputter.outputter.get_history_tools")
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_puts_image_messages_after_all_tool_results(
+    mock_get_llm, mock_history_tools, mock_context, mock_state
+):
+    """Providers that carry images in a HumanMessage need tool results contiguous."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    shot = [
+        {"type": "text", "text": "Step 3 screenshot"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}},
+    ]
+    events: list[str] = []
+    mock_history_tools.return_value = (
+        _recording_tool("search_history", "hit at step 3", events),
+        _recording_tool("replay_steps", "replay", events),
+        _recording_tool("get_step_screenshot", shot, events),
+    )
+    mock_llm, bound, _ = setup_mock_llm(mock_get_llm)
+    mock_llm.endpoint.provider = "openai"
+    turn = AIMessage(
+        content="",
+        tool_calls=[_tool_call("get_step_screenshot", "a"), _tool_call("search_history", "b")],
+    )
+    bound.ainvoke.side_effect = [turn, AIMessage("done")]
+
+    await outputter(ctx=mock_context, output_config=OutputConfig(), graph_output=mock_state)
+
+    sent = bound.ainvoke.call_args_list[1].args[0]
+    after = sent[sent.index(turn) + 1 : -1]
+    assert [type(m) for m in after] == [ToolMessage, ToolMessage, HumanMessage]
+    assert [m.tool_call_id for m in after[:2]] == ["a", "b"]
+
+
+_DEGRADE_CASES = [
+    pytest.param(
+        '{"achieved": true, "evidence": "Order placed"}',
+        {"achieved": True, "evidence": "Order placed"},
+        id="parsed_locally",
+    ),
+    pytest.param("The order was placed.", "The order was placed.", id="text_answer"),
+]
+
+
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer, expected", _DEGRADE_CASES)
+async def test_outputter_formatting_failure_degrades(
+    mock_get_llm, answer, expected, mock_context, mock_state
+):
+    _, _, structured = setup_mock_llm(mock_get_llm, react_response_content=answer)
+    structured.ainvoke.side_effect = RuntimeError("schema rejected")
+
+    result = await outputter(
+        ctx=mock_context,
+        output_config=OutputConfig(structured_output=_Verdict),
+        graph_output=mock_state,
+    )
+
+    assert result == expected
+
+
+@patch("artemis.agents.outputter.outputter.get_llm")
+@pytest.mark.asyncio
+async def test_outputter_shows_target_schema_while_investigating(
+    mock_get_llm, mock_context, mock_state
+):
+    _, bound, _ = setup_mock_llm(
+        mock_get_llm, structured_response={"achieved": True, "evidence": "e"}
+    )
+
+    await outputter(
+        ctx=mock_context,
+        output_config=OutputConfig(structured_output=_Verdict),
+        graph_output=mock_state,
+    )
+
+    prompt = bound.ainvoke.call_args.args[0][1].content[0]["text"]
+    assert "## Target Output Fields" in prompt
+    assert '"achieved"' in prompt and '"evidence"' in prompt

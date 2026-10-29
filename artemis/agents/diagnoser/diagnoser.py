@@ -48,12 +48,12 @@ from artemis.tools.tool_wrapper import (
 )
 from artemis.tools.video_tool import get_video_analyzer_tool
 from artemis.tools.wait_tool import get_wait_tool
-from artemis.utils.logger import get_logger
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import (
     get_active_subgoal_hashes,
     get_recent_subgoal_hashes,
 )
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

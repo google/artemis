@@ -37,7 +37,7 @@ from artemis.config.paths import ROOT_DIR, get_server_info_file
 from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.runtime.process_probe import pid_is_alive
 from artemis.runtime.supervisor import ProcessSupervisor
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

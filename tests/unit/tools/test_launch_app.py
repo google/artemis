@@ -13,9 +13,9 @@
 # limitations under the License.
 
 from unittest.mock import MagicMock, patch
-from artemis.agents.hopper.hopper import HopperOutput
 from artemis.context import ArtemisContext
 from artemis.tools.mobile.launch_app import find_package
+from third_party.mobile_use.agents.hopper.hopper import HopperOutput
 import pytest
 
 
@@ -27,8 +27,8 @@ def mock_context():
 
 
 @pytest.mark.asyncio
-@patch("artemis.tools.mobile.launch_app.list_packages_async")
-@patch("artemis.tools.mobile.launch_app.hopper")
+@patch("third_party.mobile_use.tools.mobile.launch_app.list_packages_async")
+@patch("third_party.mobile_use.tools.mobile.launch_app.hopper")
 async def test_find_package_cache_hit(mock_hopper, mock_list_packages, mock_context):
     mock_list_packages.return_value = "com.example.app1\ncom.example.app2"
 
@@ -53,8 +53,8 @@ async def test_find_package_cache_hit(mock_hopper, mock_list_packages, mock_cont
 
 
 @pytest.mark.asyncio
-@patch("artemis.tools.mobile.launch_app.list_packages_async")
-@patch("artemis.tools.mobile.launch_app.hopper")
+@patch("third_party.mobile_use.tools.mobile.launch_app.list_packages_async")
+@patch("third_party.mobile_use.tools.mobile.launch_app.hopper")
 async def test_find_package_not_found_caches_none(mock_hopper, mock_list_packages, mock_context):
     mock_list_packages.return_value = "com.example.app1\ncom.example.app2"
 
@@ -74,8 +74,8 @@ async def test_find_package_not_found_caches_none(mock_hopper, mock_list_package
 
 
 @pytest.mark.asyncio
-@patch("artemis.tools.mobile.launch_app.list_packages_async")
-@patch("artemis.tools.mobile.launch_app.hopper")
+@patch("third_party.mobile_use.tools.mobile.launch_app.list_packages_async")
+@patch("third_party.mobile_use.tools.mobile.launch_app.hopper")
 async def test_find_package_passes_use_fallback(mock_hopper, mock_list_packages, mock_context):
     mock_list_packages.return_value = "com.example.app1\ncom.example.app2"
     mock_hopper.return_value = HopperOutput(

@@ -61,7 +61,8 @@ from artemis.runtime import trace_store
 @pytest.fixture(scope="module", autouse=True)
 def ensure_daemon():
     """Ensure Artemis Daemon is running for E2E tests."""
-    assert ensure_daemon_running(wait_ready=True), "Artemis Daemon failed to start"
+    ok, _base_url = ensure_daemon_running(wait_ready=True)
+    assert ok, "Artemis Daemon failed to start"
     yield
 
 
@@ -174,64 +175,120 @@ def test_05_sdk_client_targeting_and_concurrency():
     client_phone = ArtemisClient(device_id=phone_serial, concurrency_mode="per_device")
     assert client_phone.device_serial == phone_serial
 
-    # Verify multi-device lock independence
+    # Verify multi-device lock independence. acquire() returns None and raises
+    # DeviceBusyError on failure, so success means "no exception + we own it".
     DeviceExecutionLock.cleanup_stale_locks()
-    lock_emu = DeviceExecutionLock(device_id=emulator_serial)
-    lock_phone = DeviceExecutionLock(device_id=phone_serial)
+    lock_emu = DeviceExecutionLock(
+        device_id=emulator_serial,
+        description="e2e lock emulator",
+        concurrency_mode=ConcurrencyMode.PER_DEVICE,
+    )
+    lock_phone = DeviceExecutionLock(
+        device_id=phone_serial,
+        description="e2e lock phone",
+        concurrency_mode=ConcurrencyMode.PER_DEVICE,
+    )
 
-    # Both locks can be acquired simultaneously because device serials differ
-    acq1 = lock_emu.acquire(timeout=5.0)
-    assert acq1 is True, "Failed to acquire emulator lock"
+    def _owned_by(lock: DeviceExecutionLock) -> bool:
+        owner = DeviceExecutionLock.get_active_owner(lock.device_id, lock.lock_scope)
+        return owner is not None and owner.pid == os.getpid() and owner.token == lock.token
+
+    # Both locks can be held simultaneously because device serials differ.
     try:
-        acq2 = lock_phone.acquire(timeout=5.0)
-        assert acq2 is True, (
-            "Failed to acquire phone lock concurrently (multi-device parallel mode)"
+        lock_emu.acquire(timeout=5.0)
+        assert _owned_by(lock_emu), "Emulator lock not held after acquire()"
+        lock_phone.acquire(timeout=5.0)
+        assert _owned_by(lock_phone), (
+            "Failed to hold phone lock concurrently (multi-device parallel mode)"
         )
-        lock_phone.release()
+        assert _owned_by(lock_emu), "Emulator lock lost while acquiring phone lock"
     finally:
+        lock_phone.release()
         lock_emu.release()
+    assert not _owned_by(lock_emu)
+    assert not _owned_by(lock_phone)
+
+
+def _run_cli(*args: str) -> subprocess.CompletedProcess:
+    # A wide, colorless console keeps Rich from wrapping or styling option names.
+    env = {**os.environ, "COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"}
+    return subprocess.run(
+        [sys.executable, "-m", "artemis.main", *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+    )
 
 
 def test_06_cli_daemon_and_standalone_options():
     """Verify CLI commands properly expose and route through Daemon or standalone."""
-    # artemis status
-    res = subprocess.run(
-        [sys.executable, "-m", "artemis.main", "status"], capture_output=True, text=True
-    )
-    assert res.returncode == 0
-    assert "online" in res.stdout.lower() or "running" in res.stdout.lower()
+    # artemis status renders the Daemon status panel ("● ONLINE / RUNNING").
+    res = _run_cli("status")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "online / running" in res.stdout.lower(), res.stdout
 
     # artemis run --help exposes --standalone and --device
-    res_run = subprocess.run(
-        [sys.executable, "-m", "artemis.main", "run", "--help"], capture_output=True, text=True
-    )
-    assert res_run.returncode == 0
+    res_run = _run_cli("run", "--help")
+    assert res_run.returncode == 0, res_run.stdout + res_run.stderr
     assert "--standalone" in res_run.stdout
     assert "--device" in res_run.stdout
 
     # artemis batch --help exposes --standalone
-    res_batch = subprocess.run(
-        [sys.executable, "-m", "artemis.main", "batch", "--help"], capture_output=True, text=True
-    )
-    assert res_batch.returncode == 0
+    res_batch = _run_cli("batch", "--help")
+    assert res_batch.returncode == 0, res_batch.stdout + res_batch.stderr
     assert "--standalone" in res_batch.stdout
+
+
+def _scheduler_session_ids() -> set[str]:
+    status = get_daemon_status() or {}
+    return {
+        str(item.get("session_id"))
+        for key in ("active_tasks", "queue")
+        for item in status.get(key) or []
+        if isinstance(item, dict)
+    }
 
 
 def test_07_daemon_session_details_api():
     """Verify Daemon GET /api/sessions/{session_id} API endpoint."""
+    goal = "E2E session query test: open Android Settings and do not change anything."
+    target_serial = os.environ.get("ARTEMIS_TEST_DEVICE_SERIAL") or next(
+        (d.serial for d in device_pool.list_devices() if d.is_emulator), None
+    )
+    assert target_serial, "No target device for the session details test"
+
     res = submit_task_to_daemon(
-        goal="E2E session query test",
+        goal=goal,
         profile="flash",
+        device_serial=target_serial,
         ingress="e2e_test",
     )
-    assert "session_id" in res
-    session_id = res["session_id"]
+    assert res is not None, "Daemon rejected or did not answer /api/run"
+    # /api/run returns {"status", "tasks": [{"session_id", ...}], "enqueued_count", ...}.
+    assert res.get("status") in ("started", "queued"), res
+    assert res.get("enqueued_count") == 1, res
+    tasks = res.get("tasks") or []
+    assert len(tasks) == 1 and tasks[0].get("session_id"), res
+    session_id = str(tasks[0]["session_id"])
 
-    # Poll session details
-    session_data = get_daemon_session(session_id)
-    assert session_data is not None
-    assert session_data["session_id"] == session_id
-    assert session_data["initial_goal"] == "E2E session query test"
-
-    # Clean up test task
-    stop_task_on_daemon(session_id=session_id)
+    try:
+        # The session row is persisted once the worker picks the task up.
+        session_data = None
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            session_data = get_daemon_session(session_id)
+            if session_data is not None:
+                break
+            time.sleep(1.0)
+        assert session_data is not None, f"Session {session_id} never became queryable"
+        assert session_data["session_id"] == session_id
+        assert session_data["initial_goal"] == goal
+    finally:
+        # Clean up: stop the task and wait until it no longer owns a scheduler slot.
+        stop_task_on_daemon(session_id=session_id)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and session_id in _scheduler_session_ids():
+            time.sleep(0.5)
+        DeviceExecutionLock.cleanup_stale_locks()
+    assert session_id not in _scheduler_session_ids(), "Stopped task still owns a slot"

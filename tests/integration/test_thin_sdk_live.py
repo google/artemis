@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 import asyncio
+import shutil
+import subprocess
 import time
 import uuid
 
@@ -39,6 +41,22 @@ def _live_client() -> tuple[ArtemisClient, str]:
     )
 
 
+def _device_prop(serial: str, prop: str) -> str:
+    adb = shutil.which("adb")
+    if not adb:
+        pytest.skip("adb is required to read the target device's properties")
+    result = subprocess.run(
+        [adb, "-s", serial, "shell", "getprop", prop],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value:
+        pytest.skip(f"Could not read {prop} from {serial}: {result.stderr.strip()}")
+    return value
+
+
 @pytest.mark.android
 @pytest.mark.asyncio
 async def test_thin_sdk_remote_contract_on_real_device():
@@ -53,25 +71,40 @@ async def test_thin_sdk_remote_contract_on_real_device():
     devices = await client.list_devices()
     assert any(device.serial == serial and device.state == "device" for device in devices)
 
+    # Verify against the target device's own values so the goal is achievable on
+    # any phone or emulator rather than one hardcoded model.
+    model = _device_prop(serial, "ro.product.model")
+    android_version = _device_prop(serial, "ro.build.version.release")
+    goal = (
+        "Open Android Settings, navigate to About phone (About emulated device on "
+        f"emulators), and verify that the visible model is {model} and the Android "
+        f"version is {android_version}. Do not change any setting. Stop after both "
+        "values are observed."
+    )
+
     task_id = str(uuid.uuid4())
     handle = await client.submit(
-        "Open Android Settings, navigate to About phone, and verify that the visible model is Pixel 10 "
-        "and the Android version is 16. Do not change any setting. Stop after both values are observed.",
+        goal,
         task_id=task_id,
         locked_app_package="com.android.settings",
     )
     assert handle.task_id == task_id
 
-    duplicate = await client.submit(
-        "Open Android Settings, navigate to About phone, and verify that the visible model is Pixel 10 "
-        "and the Android version is 16. Do not change any setting. Stop after both values are observed.",
-        task_id=task_id,
-        locked_app_package="com.android.settings",
-    )
-    assert duplicate.task_id == task_id
+    finished = False
+    try:
+        duplicate = await client.submit(
+            goal,
+            task_id=task_id,
+            locked_app_package="com.android.settings",
+        )
+        assert duplicate.task_id == task_id
 
-    result = await client.wait_for_task(task_id, timeout=600)
-    assert result.succeeded, result.error or result.raw
+        result = await client.wait_for_task(task_id, timeout=600)
+        finished = True
+        assert result.succeeded, result.error or result.raw
+    finally:
+        if not finished:
+            await client.stop(task_id)
 
     cleanup_deadline = time.monotonic() + 30
     while time.monotonic() < cleanup_deadline:

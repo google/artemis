@@ -27,8 +27,8 @@ from artemis.config.constants import (
 )
 from artemis.config.paths import ROOT_DIR, get_config_path
 from artemis.llm.google import VideoProcessing
-from artemis.utils.file import load_jsonc
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.file import load_jsonc
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

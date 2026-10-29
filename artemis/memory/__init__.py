@@ -28,7 +28,7 @@ from artemis.memory.context_policy import (
 )
 from artemis.memory.step_memory import StepLens, StepMemoryService
 from artemis.memory.transcript import TranscriptLedger, format_session_offset
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

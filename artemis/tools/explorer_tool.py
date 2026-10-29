@@ -58,10 +58,10 @@ from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.tools.types import CyFunctionDetector
+from artemis.utils.cython_compat import CyFunctionDetector
 from artemis.utils.element_hit_test import find_element_at_point
-from artemis.utils.logger import get_logger
 from artemis.utils.visualization import draw_dots
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

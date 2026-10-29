@@ -55,7 +55,7 @@ from typing import Any, Callable
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from artemis.memory.step_memory import StepMemoryService
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -37,7 +37,7 @@ from artemis.agents.video_analyzer.reliability import (
     is_agentic_rejection,
 )
 from artemis.llm.reliability import retry_policy_for
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

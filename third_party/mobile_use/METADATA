@@ -1,0 +1,27 @@
+name: "mobile-use"
+description:
+    "AI-powered multi-agent framework for mobile device automation. "
+    "Only the portions used by Artemis are included."
+
+third_party {
+  identifier {
+    type: "Git"
+    value: "https://github.com/minitap-ai/mobile-use"
+    version: "3.6.3"
+    primary_source: true
+  }
+  last_upgrade_date {
+    year: 2026
+    month: 9
+    day: 24
+  }
+  license_type: NOTICE
+
+  local_modifications:
+    "Only portions of upstream are included. Modifications by Google:\n"
+    "  - Renamed imports and identifiers to Artemis equivalents.\n"
+    "  - Removed code not used by Artemis (platform/cloud APIs, iOS, telemetry, etc.).\n"
+    "  - Restructured and extended some code for use by Artemis.\n"
+    "  - Added Apache-2.0 file headers carrying the upstream copyright.\n"
+    "All code derived from mobile-use lives in this directory.\n"
+}

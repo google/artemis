@@ -50,14 +50,14 @@ from pydantic import BaseModel, Field
 from artemis.core.tool_failure import ToolFailure
 from artemis.agents.log_analyzer.output_analyzer import TaskOutputAnalyzerNode
 from artemis.context import ArtemisContext
-from artemis.controllers.platform_specific_commands_controller import (
-    get_adb_device,
-)
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.controllers.platform_specific_commands_controller import (
+    get_adb_device,
+)
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

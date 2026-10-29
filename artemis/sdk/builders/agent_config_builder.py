@@ -11,68 +11,35 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
-# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
 """Builder for AgentConfig objects using a fluent interface."""
 
-import copy
 import os
-from typing import Any
+from typing import Any, cast
 
-from langchain_core.callbacks.base import Callbacks
 from artemis.config import (
     ExplorerVersion,
     checker_overrides_for_level,
-    get_default_llm_config,
     load_agent_config,
     settings,
 )
 from artemis.context import DevicePlatform
-from artemis.sdk.constants import DEFAULT_PROFILE_NAME
-from artemis.sdk.types.agent import (
-    AgentConfig,
-    AgentProfile,
-    ServerConfig,
-)
-from artemis.sdk.types.task import TaskRequestCommon
+from artemis.sdk.types.agent import AgentConfig, ServerConfig
 from artemis.utils.video import detect_video_tools_enabled
+from third_party.mobile_use.sdk.builders.agent_config_builder import AgentConfigBuilderBase
 
 
-class AgentConfigBuilder:
-    """Builder class providing a fluent interface for creating AgentConfig objects.
+class AgentConfigBuilder(AgentConfigBuilderBase):
+    """Artemis AgentConfig builder; see :class:`AgentConfigBuilderBase` for usage."""
 
-    This builder allows for step-by-step construction of an AgentConfig with
-    clear methods that make the configuration process intuitive and type-safe.
-
-    Examples:
-        >>> builder = AgentConfigBuilder()
-        >>> config = (builder
-        ...     .add_profile(AgentProfile(name="HighReasoning",
-        llm_config=LLMConfig(...)))
-        ...     .add_profile(AgentProfile(name="LowReasoning",
-        llm_config=LLMConfig(...)))
-        ...     .for_device(DevicePlatform.ANDROID, "device123")
-        ...     .with_default_task_config(TaskRequestCommon(max_steps=30))
-        ...     .with_default_profile("HighReasoning")
-        ...     .build()
-        ... )
-    """
+    config_class = AgentConfig
 
     def __init__(self):
-        """Initialize an empty AgentConfigBuilder."""
-        self._agent_profiles: dict[str, AgentProfile] = {}
-        self._task_request_defaults: TaskRequestCommon | None = None
-        self._default_profile: str | AgentProfile | None = None
-        self._device_id: str | None = None
-        self._device_platform: DevicePlatform | None = None
-        self._servers: ServerConfig = get_default_servers()
-        self._graph_config_callbacks: Callbacks = None
+        """Initialize an empty AgentConfigBuilder with Artemis defaults."""
+        super().__init__(servers=get_default_servers())
         self._video_recording_tools_enabled: bool = detect_video_tools_enabled()
         self._force_web_accessibility: bool = False
         self._disable_checker: bool = False
-        self._cloud_mobile_id_or_ref: str | None = None
         self._concurrency_mode: str = "per_device"
         self._max_concurrency: int | None = None
 
@@ -105,70 +72,6 @@ class AgentConfigBuilder:
         self._flash = agent_cfg.flash
         self._pro = agent_cfg.pro
 
-    def add_profile(self, profile: AgentProfile, validate: bool = True) -> "AgentConfigBuilder":
-        """Add an agent profile to the ARTEMIS agent.
-
-        Args:
-            profile: The agent profile to add
-        """
-        self._agent_profiles[profile.name] = profile
-        if validate:
-            profile.llm_config.validate_providers()
-        return self
-
-    def add_profiles(
-        self,
-        profiles: list[AgentProfile],
-        validate: bool = True,
-    ) -> "AgentConfigBuilder":
-        """Add multiple agent profiles to the ARTEMIS agent.
-
-        Args:
-            profiles: List of agent profiles to add
-        """
-        for profile in profiles:
-            self.add_profile(profile=profile, validate=validate)
-        return self
-
-    def with_default_profile(self, profile: str | AgentProfile) -> "AgentConfigBuilder":
-        """Set the default agent profile used for tasks.
-
-        Args:
-            profile: The name or instance of the default agent profile
-        """
-        self._default_profile = profile
-        return self
-
-    def for_device(
-        self,
-        platform_or_device_id: DevicePlatform | str,
-        device_id: str | None = None,
-    ) -> "AgentConfigBuilder":
-        """Configure the ARTEMIS agent for a specific device.
-
-        Supports both:
-            builder.for_device(DevicePlatform.ANDROID, "emulator-5554")
-        and:
-            builder.for_device("emulator-5554")  (defaults to DevicePlatform.ANDROID)
-
-        Args:
-            platform_or_device_id: DevicePlatform or unique identifier for the device
-            device_id: The unique identifier for the device (if platform was passed first)
-        """
-        if self._cloud_mobile_id_or_ref is not None:
-            raise ValueError(
-                "Device ID cannot be set when a cloud mobile is already"
-                " configured.\n> for_device() and for_cloud_mobile() are"
-                " mutually exclusive"
-            )
-        if isinstance(platform_or_device_id, DevicePlatform):
-            self._device_platform = platform_or_device_id
-            self._device_id = device_id
-        else:
-            self._device_platform = DevicePlatform.ANDROID
-            self._device_id = str(platform_or_device_id)
-        return self
-
     def for_device_serial(self, device_serial: str) -> "AgentConfigBuilder":
         """Target a specific Android device by its ADB serial number."""
         return self.for_device(DevicePlatform.ANDROID, device_serial)
@@ -181,45 +84,6 @@ class AgentConfigBuilder:
     def with_max_concurrency(self, max_concurrency: int) -> "AgentConfigBuilder":
         """Configure max concurrent tasks limit."""
         self._max_concurrency = max_concurrency
-        return self
-
-    def with_default_task_config(self, config: TaskRequestCommon) -> "AgentConfigBuilder":
-        """Set the default task configuration.
-
-        Args:
-            config: The task configuration to use as default
-        """
-        self._task_request_defaults = copy.deepcopy(config)
-        return self
-
-    def with_adb_server(self, host: str, port: int | None = None) -> "AgentConfigBuilder":
-        """Set the ADB server host and port.
-
-        Args:
-            host: The ADB server host
-            port: The ADB server port
-        """
-        self._servers.adb_host = host
-        if port is not None:
-            self._servers.adb_port = port
-        return self
-
-    def with_servers(self, servers: ServerConfig) -> "AgentConfigBuilder":
-        """Set the server settings.
-
-        Args:
-            servers: The server settings to use
-        """
-        self._servers = copy.deepcopy(servers)
-        return self
-
-    def with_graph_config_callbacks(self, callbacks: Callbacks) -> "AgentConfigBuilder":
-        """Set the graph config callbacks.
-
-        Args:
-            callbacks: The graph config callbacks to use
-        """
-        self._graph_config_callbacks = callbacks
         return self
 
     def with_video_recording_tools(self, enabled: bool = True) -> "AgentConfigBuilder":
@@ -554,94 +418,46 @@ class AgentConfigBuilder:
         self._denylisted_tools = tools
         return self
 
-    def build(self, validate_profiles: bool = True) -> AgentConfig:
-        """Build the ARTEMIS AgentConfig object.
-
-        Args:
-            default_profile: Name of the default agent profile to use
-
-        Returns:
-            A configured AgentConfig object
-
-        Raises:
-            ValueError: If default_profile is specified but not found in
-            configured profiles
-        """
-        nb_profiles = len(self._agent_profiles)
-
-        if isinstance(self._default_profile, str):
-            profile_name = self._default_profile
-            default_profile = self._agent_profiles.get(profile_name, None)
-            if default_profile is None:
-                raise ValueError(f"Profile '{profile_name}' not found in configured agents")
-        elif isinstance(self._default_profile, AgentProfile):
-            default_profile = self._default_profile
-            if default_profile.name not in self._agent_profiles:
-                self.add_profile(default_profile, validate=validate_profiles)
-        elif nb_profiles <= 0:
-            llm_config = get_default_llm_config()
-            default_profile = AgentProfile(
-                name=DEFAULT_PROFILE_NAME,
-                llm_config=llm_config,
-            )
-            self.add_profile(default_profile, validate=validate_profiles)
-        elif nb_profiles == 1:
-            # Select the only one available
-            default_profile = next(iter(self._agent_profiles.values()))
-        else:
-            available_profiles = ", ".join(self._agent_profiles.keys())
-            raise ValueError(
-                f"You must call with_default_profile() to select one among: {available_profiles}"
-            )
-
-        device_id = (
-            self._device_id
-            or os.environ.get("ARTEMIS_DEVICE_ID")
-            or os.environ.get("ADB_DEVICE_SERIAL")
-        )
-
-        return AgentConfig(
-            agent_profiles=self._agent_profiles,
-            task_request_defaults=self._task_request_defaults or TaskRequestCommon(),
-            default_profile=default_profile,
-            device_id=device_id,
-            device_platform=self._device_platform,
-            servers=self._servers,
-            graph_config_callbacks=self._graph_config_callbacks,
-            video_recording_tools_enabled=self._video_recording_tools_enabled,
-            force_web_accessibility=self._force_web_accessibility,
-            disable_checker=self._disable_checker,
-            disable_midway_checks=self._disable_midway_checks,
-            disable_final_check=self._disable_final_check,
-            checker_max_iterations=self._checker_max_iterations,
-            final_check_max_attempts=self._final_check_max_attempts,
-            checkpoint_max_repairs=self._checkpoint_max_repairs,
-            max_concurrent_checkpoints=self._max_concurrent_checkpoints,
-            checkpoint_timeout=self._checkpoint_timeout,
-            settlement_timeout=self._settlement_timeout,
-            assert_failure_policy=self._assert_failure_policy,
-            disable_device_probes=self._disable_device_probes,
-            disable_planner_validation=self._disable_planner_validation,
-            enable_committee=self._enable_committee,
-            committee_debate_rounds=self._committee_debate_rounds,
-            disable_outputter=self._disable_outputter,
-            outputter=self._outputter,
-            flash=self._flash,
-            pro=self._pro,
-            explorer=self._explorer,
-            explorer_versions=self._explorer_versions,
-            denylisted_tools=self._denylisted_tools,
-            enable_video_ledger=self._enable_video_ledger,
-            video_analyzer=self._video_analyzer.model_copy(
+    def _extra_config_fields(self) -> dict[str, Any]:
+        return {
+            "device_id": (
+                self._device_id
+                or os.environ.get("ARTEMIS_DEVICE_ID")
+                or os.environ.get("ADB_DEVICE_SERIAL")
+            ),
+            "video_recording_tools_enabled": self._video_recording_tools_enabled,
+            "force_web_accessibility": self._force_web_accessibility,
+            "disable_checker": self._disable_checker,
+            "disable_midway_checks": self._disable_midway_checks,
+            "disable_final_check": self._disable_final_check,
+            "checker_max_iterations": self._checker_max_iterations,
+            "final_check_max_attempts": self._final_check_max_attempts,
+            "checkpoint_max_repairs": self._checkpoint_max_repairs,
+            "max_concurrent_checkpoints": self._max_concurrent_checkpoints,
+            "checkpoint_timeout": self._checkpoint_timeout,
+            "settlement_timeout": self._settlement_timeout,
+            "assert_failure_policy": self._assert_failure_policy,
+            "disable_device_probes": self._disable_device_probes,
+            "disable_planner_validation": self._disable_planner_validation,
+            "enable_committee": self._enable_committee,
+            "committee_debate_rounds": self._committee_debate_rounds,
+            "disable_outputter": self._disable_outputter,
+            "outputter": self._outputter,
+            "flash": self._flash,
+            "pro": self._pro,
+            "explorer": self._explorer,
+            "explorer_versions": self._explorer_versions,
+            "denylisted_tools": self._denylisted_tools,
+            "enable_video_ledger": self._enable_video_ledger,
+            "video_analyzer": self._video_analyzer.model_copy(
                 update={"enable_ledger": self._enable_video_ledger}
             ),
-            concurrency_mode=self._concurrency_mode,
-            max_concurrency=self._max_concurrency,
-        )
+            "concurrency_mode": self._concurrency_mode,
+            "max_concurrency": self._max_concurrency,
+        }
 
-
-def get_default_agent_config():
-    return AgentConfigBuilder().build()
+    def build(self, validate_profiles: bool = True) -> AgentConfig:
+        return cast(AgentConfig, super().build(validate_profiles=validate_profiles))
 
 
 def get_default_servers():

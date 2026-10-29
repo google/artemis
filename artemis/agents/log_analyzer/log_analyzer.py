@@ -19,24 +19,7 @@ from typing import Annotated, Any
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
-
-
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
+from artemis.utils.cython_compat import CyFunctionDetector
 
 
 class SpawnLogReaderArgs(BaseModel):
@@ -71,7 +54,7 @@ from artemis.tools.tool_wrapper import (
     get_tool_result_content,
     invoke_tool_with_injection,
 )
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

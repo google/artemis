@@ -15,8 +15,8 @@
 from datetime import datetime, timedelta
 import time
 from artemis.context import ArtemisContext
-from artemis.controllers.platform_specific_commands_controller import get_adb_device
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.controllers.platform_specific_commands_controller import get_adb_device
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -48,7 +48,7 @@ from artemis.agents.video_analyzer.chunk_conversation import (
 from artemis.agents.video_analyzer.universal_tools import UNIVERSAL_SUBMIT_ANSWER_TOOL
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan
 from artemis.llm.google import normalize_usage
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

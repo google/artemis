@@ -15,6 +15,10 @@
 """☕ ARTEMIS: Autonomous Multimodal Android Agent & Testing Framework."""
 
 from artemis._version import __version__
+from artemis import _legacy_imports
+
+# Old import paths of the modules moved to third_party/ (deprecated).
+_legacy_imports.install()
 
 from artemis.interfaces.sdk.client import ArtemisClient, ConcurrencyMode
 from artemis.interfaces.sdk.task import StreamEvent, StreamEventType, Task

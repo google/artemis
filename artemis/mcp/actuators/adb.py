@@ -35,7 +35,7 @@ from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.mcp.action_manifest import DEVICE_ACTIONS, ExtensionTool
 from artemis.mcp.action_types import ActionCode, ActionResult
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -286,7 +286,7 @@ class AdbActuator:
     async def manage_app(self, action: str, app_name: str) -> ActionResult:
         # Imported lazily: launch_app pulls in tool wrappers that are costly at import.
         from artemis.tools.mobile.launch_app import find_package
-        from artemis.utils.app_launch_utils import launch_app_with_retries
+        from third_party.mobile_use.utils.app_launch_utils import launch_app_with_retries
 
         res = find_package(self.ctx, app_name, use_fallback=False)
         pkg = await res if inspect.iscoroutine(res) else res

@@ -33,7 +33,7 @@ from artemis.constants import VALIDATOR_UI_HIERARCHY_TIMEOUT
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.utils import visualization
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

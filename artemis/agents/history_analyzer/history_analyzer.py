@@ -40,9 +40,9 @@ from artemis.tools.tool_wrapper import (
     split_multimodal_result,
     tool_result_messages,
 )
-from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.task_tree import get_active_subgoal_hashes
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

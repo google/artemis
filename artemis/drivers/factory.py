@@ -23,7 +23,7 @@ from artemis.config import settings
 from artemis.drivers.android.adb_driver import AndroidAdbDriver
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from artemis.context import ArtemisContext

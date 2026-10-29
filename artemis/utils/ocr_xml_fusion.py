@@ -17,8 +17,8 @@ import difflib
 from io import BytesIO
 from typing import Any
 
-from artemis.utils.logger import get_logger
 from artemis.utils.ui_filter import _parse_bounds
+from third_party.mobile_use.utils.logger import get_logger
 from PIL import Image
 
 logger = get_logger(__name__)

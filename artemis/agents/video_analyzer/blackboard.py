@@ -29,8 +29,8 @@ from typing import Any, Iterator, Literal
 from uuid import uuid4
 
 from artemis.context import ArtemisContext
-from artemis.utils.logger import get_logger
-from artemis.utils.video import get_active_session
+from third_party.mobile_use.utils.logger import get_logger
+from third_party.mobile_use.utils.video import get_active_session
 
 logger = get_logger(__name__)
 

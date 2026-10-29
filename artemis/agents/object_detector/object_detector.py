@@ -25,7 +25,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 
 from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.services.llm import get_llm
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

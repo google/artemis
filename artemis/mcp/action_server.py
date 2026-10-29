@@ -45,7 +45,7 @@ from artemis.mcp.action_specs import (
 from artemis.mcp.action_types import ActionCode, ActionResult, ObserveResult
 from artemis.mcp.actuators.base import Actuator
 from artemis.mcp.observation import observe as observe_impl
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
