@@ -49,7 +49,7 @@ from artemis.config import settings
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
-from artemis.llm.google import is_gemini_model, strip_provider_prefix
+from artemis.llm.google import is_gemini_model, strip_provider_prefix, use_vertex_backend
 from artemis.utils.ocr_api import is_ocr_configured
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -129,6 +129,10 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         so such configurations run through the universal LangChain engine.
         """
         if not is_gemini_model(self.model_name):
+            return False
+        # On Vertex the universal engine (LangChain, routed to Vertex) is used;
+        # the native client here is built from the developer API key.
+        if use_vertex_backend():
             return False
         if getattr(self.ctx, "_genai_client", None) is not None:
             return True

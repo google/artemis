@@ -28,7 +28,12 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field
 
 from artemis.config.settings import settings
-from artemis.llm.google.provider import supports_thinking_level
+from artemis.llm.google.provider import (
+    supports_thinking_level,
+    use_vertex_backend,
+    vertex_location,
+    vertex_project,
+)
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -229,22 +234,39 @@ class ModelFactory:
                 HarmCategory,
             )
 
-            api_key = (
-                endpoint.api_key
-                or (settings.GOOGLE_API_KEY.get_secret_value() if settings.GOOGLE_API_KEY else None)
-                or os.environ.get("GOOGLE_API_KEY")
-                or os.environ.get("GEMINI_API_KEY")
-            )
             # Gemini 1.x/2.x only understand thinking_budget.
             thinking_level = (
                 endpoint.thinking_level if supports_thinking_level(endpoint.model_name) else None
             )
 
+            # GOOGLE_GENAI_USE_VERTEXAI moves every google endpoint, helper agents
+            # included, to Vertex AI with Application Default Credentials. The
+            # google-genai client keeps the developer-API message conversion.
+            if use_vertex_backend():
+                auth: dict[str, Any] = {
+                    "vertexai": True,
+                    "project": vertex_project(),
+                    "location": vertex_location(),
+                }
+            else:
+                auth = {
+                    "api_key": (
+                        endpoint.api_key
+                        or (
+                            settings.GOOGLE_API_KEY.get_secret_value()
+                            if settings.GOOGLE_API_KEY
+                            else None
+                        )
+                        or os.environ.get("GOOGLE_API_KEY")
+                        or os.environ.get("GEMINI_API_KEY")
+                    )
+                }
+
             kwargs: dict[str, Any] = {
                 "model": endpoint.model_name,
                 "temperature": endpoint.temperature,
                 "max_output_tokens": endpoint.max_tokens,
-                "api_key": api_key,
+                **auth,
                 "timeout": endpoint.timeout_seconds,
                 "thinking_budget": endpoint.thinking_budget,
                 "thinking_level": thinking_level,
