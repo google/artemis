@@ -178,6 +178,7 @@ class VideoAnalyzer:
         self.max_dense_action_frames = int(
             getattr(self.video_config, "max_dense_action_frames", 24)
         )
+        self.max_total_frames = getattr(self.video_config, "max_total_frames", None)
         self.native_max_retries = int(getattr(self.video_config, "native_max_retries", 1))
         self.model_call_timeout_seconds = float(
             getattr(self.video_config, "model_call_timeout_seconds", 120.0)
