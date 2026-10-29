@@ -822,6 +822,16 @@ class ExecutionConfig(BaseModel):
             " prompts for an update. Set to 0 to disable staleness checks."
         ),
     )
+    max_no_action_turns: int = Field(
+        default=4,
+        ge=1,
+        le=20,
+        description=(
+            "Maximum consecutive Operator turns without an executable action or a completed"
+            " plan. Reaching the limit fails the run; helper-only turns and missing tool"
+            " calls cannot indefinitely reset the per-turn tool budget."
+        ),
+    )
 
 
 class ProProfileConfig(BaseModel):

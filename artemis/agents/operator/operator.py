@@ -19,6 +19,7 @@ from uuid import uuid4
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
+from artemis.agents.operator.progress_guard import configured_progress_guard
 from artemis.core.tool_failure import is_tool_failure
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import (
@@ -145,6 +146,7 @@ class OperatorNode:
         # model call). Legacy-path fallback only: with a transcript ledger the
         # ledger's own ``last_turn_silent`` is authoritative.
         self._previous_turn_silent: bool = False
+        self._progress_guard = configured_progress_guard()
 
     def _previous_turn_was_silent(self) -> bool:
         """Whether the previous turn carried no visible reasoning text.
@@ -567,11 +569,14 @@ class OperatorNode:
                 except Exception as e:
                     logger.error(f"Failed to parse function_call fallback: {e}")
 
-            if not response.tool_calls:
-                logger.warning("LLM stopped without calling any tool. Encouraging action.")
-                break
-
             current_messages.append(response)
+
+            if not response.tool_calls:
+                # Preserve ordinary replies (including a refusal or a request
+                # for input) in the transcript instead of silently dropping
+                # them. A bounded cross-turn guard handles repeated no-ops.
+                logger.warning("LLM stopped without calling any tool; no action was proposed.")
+                break
 
             # Manifest-driven, so a backend's extension actions are classified as
             # turn-ending device actions without touching this file.
@@ -964,6 +969,12 @@ class OperatorNode:
         # tool-loop products) for commit at the next build, when the turn's
         # step id and validator result exist.
         self._stage_transcript_turn(messages)
+
+        self._progress_guard.record_turn(
+            action_result,
+            self._read_task_plan_text(),
+            user_stopped=bool(getattr(state, "user_stop_requested", False)),
+        )
 
         # 9. Update State
         structured_decisions = json.dumps(action_result) if action_result else None
