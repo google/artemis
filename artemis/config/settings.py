@@ -17,7 +17,7 @@
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
@@ -45,13 +45,6 @@ from artemis.config.paths import (
     get_temp_dir,
 )
 from third_party.mobile_use.utils.logger import get_logger
-
-# Installed wheels load .env from the user directory, outside site-packages.
-_canonical_env = get_env_file()
-load_dotenv(dotenv_path=_canonical_env, verbose=True)
-_global_env = GLOBAL_APP_DIR / ".env"
-if _global_env.exists() and _global_env.resolve() != _canonical_env.resolve():
-    load_dotenv(dotenv_path=_global_env, verbose=True)
 
 logger = get_logger(__name__)
 
@@ -87,6 +80,25 @@ def is_placeholder_key(val: str | SecretStr | None) -> bool:
     ):
         return True
     return False
+
+
+def _apply_dotenv_file(env_path: Path, *, override_non_empty: bool = False) -> None:
+    """Load a .env file, letting configured non-empty values override stale shell env."""
+    if not env_path.exists():
+        return
+    load_dotenv(dotenv_path=env_path, verbose=True)
+    if override_non_empty:
+        for k, v in dotenv_values(env_path).items():
+            if v is not None and not is_placeholder_key(v):
+                os.environ[k] = v.strip()
+
+
+# Installed wheels load .env from the user directory, outside site-packages.
+_canonical_env = get_env_file()
+_apply_dotenv_file(_canonical_env, override_non_empty=True)
+_global_env = GLOBAL_APP_DIR / ".env"
+if _global_env.exists() and _global_env.resolve() != _canonical_env.resolve():
+    _apply_dotenv_file(_global_env, override_non_empty=False)
 
 
 class Settings(BaseSettings):

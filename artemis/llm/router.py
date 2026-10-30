@@ -246,6 +246,7 @@ class ModelFactory:
                 "max_output_tokens": endpoint.max_tokens,
                 "api_key": api_key,
                 "timeout": endpoint.timeout_seconds,
+                "max_retries": 1,
                 "thinking_budget": endpoint.thinking_budget,
                 "thinking_level": thinking_level,
                 "include_thoughts": endpoint.include_thoughts,

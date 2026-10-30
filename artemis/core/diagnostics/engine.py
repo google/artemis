@@ -66,7 +66,10 @@ class ReadinessEngine:
         self._toolchain_probe = ToolchainProbe()
         self._credentials_probe = LLMCredentialsProbe()
         self._ocr_probe = VisionOCRProbe()
-        self._adb_probe = AdbDeviceProbe()
+        self._adb_probe = AdbDeviceProbe(
+            target_serial=os.environ.get("ARTEMIS_DEVICE_ID")
+            or os.environ.get("ADB_DEVICE_SERIAL")
+        )
         self._report_cache: SystemReadinessReport | None = None
         self._report_cache_time = 0.0
         self._report_cache_generation = -1

@@ -75,6 +75,12 @@ def extract_status_code(error: BaseException) -> int | None:
 
 
 _RATE_LIMIT_MARKERS = ("rate limit", "quota", "resource_exhausted")
+_HARD_QUOTA_MARKERS = (
+    "per day",
+    "perday",
+    "generaterequestsperday",
+    "check your plan and billing details",
+)
 _UNAVAILABLE_MARKERS = ("unavailable", "overloaded", "high demand", "service unavailable")
 _AUTH_MARKERS = ("unauthorized", "forbidden", "api key", "credential")
 # "deadline exceeded"/"deadline_exceeded" cover google-genai SDK timeouts that
@@ -91,6 +97,8 @@ def classify_failure(error: BaseException) -> Failure:
     message = str(error).lower()
 
     if code == 429 or any(marker in message for marker in _RATE_LIMIT_MARKERS):
+        if any(marker in message for marker in _HARD_QUOTA_MARKERS):
+            return Failure(FailureCategory.RATE_LIMIT, False, True)
         return Failure(FailureCategory.RATE_LIMIT, True, True)
     if code in {500, 502, 503, 504} or any(marker in message for marker in _UNAVAILABLE_MARKERS):
         return Failure(FailureCategory.PROVIDER_UNAVAILABLE, True, True)

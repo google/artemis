@@ -529,15 +529,19 @@ class RobustChatModelWrapper:
         base_model: BaseChatModel,
         ctx: ArtemisContext = None,
         endpoint: ModelEndpoint | None = None,
+        fallback_factory: Callable[[], Any] | None = None,
     ):
         self.base_model = base_model
         self.ctx = ctx
         self.endpoint = endpoint
+        self._fallback_factory = fallback_factory
 
     def __getattr__(self, item: str):
         return getattr(self.base_model, item)
 
     def bind_tools(self, *args, **kwargs):
+        orig_args = args
+        orig_kwargs = dict(kwargs)
         # Extract tools list from positional args or keyword args
         tools_list = None
         other_args = list(args)
@@ -584,32 +588,67 @@ class RobustChatModelWrapper:
             ]
 
         bound = self.base_model.bind_tools(processed_tools, *other_args, **kwargs)
-        return RobustChatModelWrapper(bound, self.ctx, endpoint=self.endpoint)
+        fb_factory = (
+            (lambda: self._fallback_factory().bind_tools(*orig_args, **orig_kwargs))
+            if self._fallback_factory is not None
+            else None
+        )
+        return RobustChatModelWrapper(
+            bound, self.ctx, endpoint=self.endpoint, fallback_factory=fb_factory
+        )
 
     def with_config(self, *args, **kwargs):
+        fb_factory = (
+            (lambda: self._fallback_factory().with_config(*args, **kwargs))
+            if self._fallback_factory is not None
+            else None
+        )
         return RobustChatModelWrapper(
             self.base_model.with_config(*args, **kwargs),
             self.ctx,
             endpoint=self.endpoint,
+            fallback_factory=fb_factory,
         )
 
     def with_structured_output(self, *args, **kwargs):
         if hasattr(self.base_model, "with_structured_output"):
+            fb_factory = (
+                (lambda: self._fallback_factory().with_structured_output(*args, **kwargs))
+                if self._fallback_factory is not None
+                else None
+            )
             return RobustChatModelWrapper(
                 self.base_model.with_structured_output(*args, **kwargs),
                 self.ctx,
                 endpoint=self.endpoint,
+                fallback_factory=fb_factory,
             )
         raise AttributeError(f"{type(self.base_model)} does not support with_structured_output")
 
     def __or__(self, other):
+        fb_factory = (
+            (lambda: self._fallback_factory().__or__(other))
+            if self._fallback_factory is not None
+            else None
+        )
         return RobustChatModelWrapper(
-            self.base_model.__or__(other), self.ctx, endpoint=self.endpoint
+            self.base_model.__or__(other),
+            self.ctx,
+            endpoint=self.endpoint,
+            fallback_factory=fb_factory,
         )
 
     def __ror__(self, other):
+        fb_factory = (
+            (lambda: self._fallback_factory().__ror__(other))
+            if self._fallback_factory is not None
+            else None
+        )
         return RobustChatModelWrapper(
-            self.base_model.__ror__(other), self.ctx, endpoint=self.endpoint
+            self.base_model.__ror__(other),
+            self.ctx,
+            endpoint=self.endpoint,
+            fallback_factory=fb_factory,
         )
 
     def _provider_value(self) -> str | None:
@@ -638,10 +677,29 @@ class RobustChatModelWrapper:
             engine = _get_current_data_engine()
         record_llm_usage(engine, response, source=self._endpoint_key())
 
-    async def ainvoke(self, *args, **kwargs):
+    async def _ainvoke_direct(self, *args, **kwargs):
         args, kwargs, _ = self._traced_call(args, kwargs)
         response = await _run_with_recovery(
             functools.partial(self.base_model.ainvoke, *args, **kwargs),
+            provider=self._provider_value(),
+            endpoint_key=self._endpoint_key(),
+        )
+        self._meter_usage(response)
+        return response
+
+    async def ainvoke(self, *args, **kwargs):
+        if self._fallback_factory is not None and not _FALLBACK_AVAILABLE.get():
+            return await with_fallback(
+                main_call=lambda: self._ainvoke_direct(*args, **kwargs),
+                fallback_call=lambda: self._fallback_factory().ainvoke(*args, **kwargs),
+            )
+        return await self._ainvoke_direct(*args, **kwargs)
+
+    async def _complete_direct(self, *args, **kwargs):
+        args, kwargs, _ = self._traced_call(args, kwargs)
+        emit_deltas = bool(self.ctx and self.ctx.data_engine)
+        response = await _run_with_recovery(
+            functools.partial(self._complete_attempt, emit_deltas, *args, **kwargs),
             provider=self._provider_value(),
             endpoint_key=self._endpoint_key(),
         )
@@ -658,15 +716,12 @@ class RobustChatModelWrapper:
         signals the UI to drop it, and retries the whole call per policy;
         partial or duplicated chunks can never reach message history.
         """
-        args, kwargs, _ = self._traced_call(args, kwargs)
-        emit_deltas = bool(self.ctx and self.ctx.data_engine)
-        response = await _run_with_recovery(
-            functools.partial(self._complete_attempt, emit_deltas, *args, **kwargs),
-            provider=self._provider_value(),
-            endpoint_key=self._endpoint_key(),
-        )
-        self._meter_usage(response)
-        return response
+        if self._fallback_factory is not None and not _FALLBACK_AVAILABLE.get():
+            return await with_fallback(
+                main_call=lambda: self._complete_direct(*args, **kwargs),
+                fallback_call=lambda: self._fallback_factory().complete(*args, **kwargs),
+            )
+        return await self._complete_direct(*args, **kwargs)
 
     def _emit_stream_delta(self, stream_exec_id, chunk) -> None:
         content = getattr(chunk, "content", None)
@@ -955,7 +1010,27 @@ def _get_llm(
     handler = DataEngineCallbackHandler(ctx)
     bound_model = raw_model.with_config(callbacks=[handler])
 
-    return RobustChatModelWrapper(bound_model, ctx, endpoint=endpoint)  # type: ignore
+    fallback_factory = None
+    if not use_fallback:
+        try:
+            fb_endpoint = _resolve_endpoint(ctx, name, is_utils=is_utils, use_fallback=True)
+            if (fb_endpoint.provider, fb_endpoint.model_name) != (
+                endpoint.provider,
+                endpoint.model_name,
+            ):
+                fallback_factory = lambda: _get_llm(  # noqa: E731
+                    ctx,
+                    name,
+                    is_utils=is_utils,
+                    use_fallback=True,
+                    temperature=temperature,
+                )
+        except Exception:
+            fallback_factory = None
+
+    return RobustChatModelWrapper(
+        bound_model, ctx, endpoint=endpoint, fallback_factory=fallback_factory
+    )  # type: ignore
 
 
 get_llm: GetLLM = _get_llm

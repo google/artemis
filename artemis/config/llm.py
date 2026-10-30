@@ -14,6 +14,7 @@
 
 """LLM provider, model hierarchy, fallback chaining, and configuration loaders."""
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -135,17 +136,30 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
     if "planner" in config_dict and "utils" in config_dict:
         return config_dict
 
-    default_model_cfg = config_dict.get(
-        "default",
-        {
-            "provider": "google",
-            "model": "gemini-3.8-flash",
-            "fallback": {
+    default_model_cfg = dict(
+        config_dict.get(
+            "default",
+            {
                 "provider": "google",
-                "model": "gemini-3.7-flash",
+                "model": "gemini-3.8-flash",
+                "fallback": {
+                    "provider": "google",
+                    "model": "gemini-3.7-flash",
+                },
             },
-        },
+        )
     )
+    env_default_model = os.environ.get("ARTEMIS_DEFAULT_MODEL", "").strip()
+    if env_default_model:
+        default_model_cfg["model"] = env_default_model
+    env_fallback_model = os.environ.get("ARTEMIS_FALLBACK_MODEL", "").strip()
+    if env_fallback_model:
+        fallback_cfg = dict(
+            default_model_cfg.get("fallback")
+            or {"provider": default_model_cfg.get("provider", "google")}
+        )
+        fallback_cfg["model"] = env_fallback_model
+        default_model_cfg["fallback"] = fallback_cfg
 
     nodes_override = config_dict.get("nodes", {})
 
