@@ -28,6 +28,12 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field
 
 from artemis.config.settings import settings
+from artemis.llm.claude import (
+    THINKING_BINDING_BETA,
+    binds_thinking_blocks,
+    effort_for,
+    is_adaptive_only,
+)
 from artemis.llm.google.provider import supports_thinking_level
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -195,6 +201,47 @@ def _patch_langchain_google_genai():
         logger.warning(f"Could not patch ChatGoogleGenerativeAI._process_tool_config: {e}")
 
 
+_ADAPTIVE_CLAUDE_MAX_TOKENS = 16000
+
+
+def _adaptive_claude_kwargs(endpoint: ModelEndpoint, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Builds ChatAnthropic kwargs for adaptive-only Claude models (Opus 4.7+, Sonnet 5+).
+
+    These models 400 on ``budget_tokens`` and non-default ``temperature``, so
+    the temperature is dropped and the endpoint's effort / budget becomes
+    ``output_config.effort`` with adaptive thinking.
+
+    Models that bind thinking blocks to their history (Sonnet 5.5, Opus 5.5,
+    Haiku 5.5, Fable 5.1) also get ``prefix_mismatch_behavior: "drop_block"``:
+    the transcript ledger scrubs old screenshots and UI lists from earlier
+    turns, which would otherwise make every later replayed thinking block a
+    400 ("bound to a different conversation"). With ``drop_block`` the API
+    drops the stale blocks and the request goes through.
+
+    ``max_tokens`` is set explicitly: thinking counts toward it, and
+    langchain-anthropic falls back to 4096 for models it has no profile for.
+    16000 leaves room for thinking and stays under the SDK's non-streaming
+    limit (structured-output calls do not stream).
+    """
+    kwargs = {k: v for k, v in kwargs.items() if k != "temperature"}
+    kwargs["max_tokens"] = endpoint.max_tokens or _ADAPTIVE_CLAUDE_MAX_TOKENS
+    effort = effort_for(endpoint.reasoning_effort, endpoint.thinking_budget)
+    thinking: dict[str, Any] | None = None
+    if binds_thinking_blocks(endpoint.model_name):
+        thinking = {
+            "type": "adaptive",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        }
+        kwargs["betas"] = [THINKING_BINDING_BETA]
+    elif effort:
+        thinking = {"type": "adaptive"}
+    if thinking:
+        kwargs["thinking"] = thinking
+    if effort:
+        kwargs["effort"] = effort
+    return {k: v for k, v in kwargs.items() if v is not None}
+
+
 class ModelFactory:
     """Unified factory for instantiating and caching LangChain chat models across providers."""
 
@@ -321,6 +368,8 @@ class ModelFactory:
                 "api_key": api_key,
                 "timeout": endpoint.timeout_seconds,
             }
+            if is_adaptive_only(endpoint.model_name):
+                return ChatAnthropic(**_adaptive_claude_kwargs(endpoint, kwargs))
             budget = endpoint.thinking_budget
             if not budget and endpoint.reasoning_effort:
                 effort_map = {"low": 2048, "medium": 8192, "high": 32768}

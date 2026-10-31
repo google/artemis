@@ -42,6 +42,7 @@ from artemis.config import (
 )
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandler
+from artemis.llm.claude import is_adaptive_only
 from artemis.llm.google import is_google_chat_model, is_google_provider
 from artemis.llm.reliability import (
     CircuitBreaker,
@@ -594,6 +595,16 @@ class RobustChatModelWrapper:
         )
 
     def with_structured_output(self, *args, **kwargs):
+        # ChatAnthropic defaults to forced tool calling, which adaptive-only
+        # Claude models (Sonnet 5.5, Opus 5.5, ...) reject with a 400; native
+        # structured outputs (output_config.format) work on all of them.
+        if (
+            "method" not in kwargs
+            and self.endpoint is not None
+            and ModelProvider.from_string(self.endpoint.provider) == ModelProvider.ANTHROPIC
+            and is_adaptive_only(self.endpoint.model_name)
+        ):
+            kwargs["method"] = "json_schema"
         if hasattr(self.base_model, "with_structured_output"):
             return RobustChatModelWrapper(
                 self.base_model.with_structured_output(*args, **kwargs),
