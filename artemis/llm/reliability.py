@@ -42,6 +42,10 @@ class FailureCategory(StrEnum):
     CONNECTION = "connection"
     AUTHENTICATION = "authentication"
     BAD_REQUEST = "bad_request"
+    #: The model's safety classifier declined the request (Claude
+    #: ``stop_reason: "refusal"``). Retrying the same endpoint returns the same
+    #: refusal; a fallback model may answer.
+    REFUSAL = "refusal"
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
 

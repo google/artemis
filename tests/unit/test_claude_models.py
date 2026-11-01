@@ -214,3 +214,44 @@ def test_structured_output_keeps_explicit_method():
         dict, method="function_calling"
     )
     assert base.with_structured_output.call_args.kwargs["method"] == "function_calling"
+
+
+def _wrapper_returning(message):
+    from unittest.mock import AsyncMock
+
+    from artemis.services.llm import RobustChatModelWrapper
+
+    base = MagicMock()
+    base.ainvoke = AsyncMock(return_value=message)
+    endpoint = ModelEndpoint(provider=ModelProvider.ANTHROPIC, model_name="claude-sonnet-5-5")
+    return RobustChatModelWrapper(base, None, endpoint=endpoint)
+
+
+@pytest.mark.asyncio
+async def test_refusal_raises_typed_error_that_allows_fallback():
+    """A refusal (HTTP 200, empty content) must not reach the agent loop as a silent turn."""
+    from artemis.llm.reliability import FailureCategory, LLMPermanentError
+
+    refused = AIMessage(
+        content=[],
+        response_metadata={"stop_reason": "refusal", "model_name": "claude-sonnet-5-5"},
+    )
+    with pytest.raises(LLMPermanentError) as excinfo:
+        await _wrapper_returning(refused).ainvoke([HumanMessage("hi")])
+    assert excinfo.value.failure.category is FailureCategory.REFUSAL
+    assert excinfo.value.failure.should_fallback
+    assert not excinfo.value.failure.retryable
+
+
+@pytest.mark.asyncio
+async def test_normal_reply_passes_through():
+    reply = AIMessage(content="ok", response_metadata={"stop_reason": "end_turn"})
+    assert await _wrapper_returning(reply).ainvoke([HumanMessage("hi")]) is reply
+
+
+def test_reasoning_reminder_does_not_ask_for_internal_thinking():
+    """Sonnet 5.5 refuses prompts that ask it to surface its thinking (reasoning_extraction)."""
+    from artemis.agents.operator.prompts import REASONING_REMINDER
+
+    assert "thinking" not in REASONING_REMINDER.lower()
+    assert "reasoning" not in REASONING_REMINDER.lower()

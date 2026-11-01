@@ -46,6 +46,7 @@ from artemis.llm.claude import is_adaptive_only
 from artemis.llm.google import is_google_chat_model, is_google_provider
 from artemis.llm.reliability import (
     CircuitBreaker,
+    Failure,
     FailureCategory,
     LLMCallError,
     LLMExhaustedError,
@@ -642,6 +643,25 @@ class RobustChatModelWrapper:
             args, kwargs = _inject_parent_trace_id(trace_id, *args, **kwargs)
         return args, kwargs, trace_id
 
+    @staticmethod
+    def _raise_on_refusal(response) -> None:
+        """Turns a model refusal into a typed error instead of an empty reply.
+
+        Claude's safety classifiers decline with HTTP 200, ``stop_reason:
+        "refusal"`` and no content. Returned as-is, the agent loop sees a turn
+        without a tool call, nudges and re-sends the same prompt, which is
+        refused again on every turn. Raising lets the fallback chain try the
+        next endpoint and otherwise fails the task with the reason.
+        """
+        meta = getattr(response, "response_metadata", None)
+        if isinstance(meta, dict) and meta.get("stop_reason") == "refusal":
+            model = meta.get("model_name") or meta.get("model") or "the model"
+            raise LLMPermanentError(
+                f"{model} declined the request (stop_reason 'refusal'): its safety"
+                " classifier flagged the prompt.",
+                failure=Failure(FailureCategory.REFUSAL, retryable=False, should_fallback=True),
+            )
+
     def _meter_usage(self, response) -> None:
         """Record measured token usage for this call (M0 metering, best-effort)."""
         engine = self.ctx.data_engine if self.ctx else None
@@ -657,6 +677,7 @@ class RobustChatModelWrapper:
             endpoint_key=self._endpoint_key(),
         )
         self._meter_usage(response)
+        self._raise_on_refusal(response)
         return response
 
     async def complete(self, *args, **kwargs):
@@ -677,6 +698,7 @@ class RobustChatModelWrapper:
             endpoint_key=self._endpoint_key(),
         )
         self._meter_usage(response)
+        self._raise_on_refusal(response)
         return response
 
     def _emit_stream_delta(self, stream_exec_id, chunk) -> None:

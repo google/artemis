@@ -694,12 +694,16 @@ _LEDGER_BOUNCE_TAIL = (
 #: One-line tail notice for the turn after a turn whose replies carried no visible
 #: reasoning text. Thinking-mode models satisfy "reason first" inside their thought
 #: channel and emit bare tool calls; the reminder costs no extra model call.
+# Phrased as a request for a progress note, not for the model's reasoning:
+# Claude Sonnet 5.5's safety classifiers decline a request that asks the model
+# to surface its internal thinking (stop_reason "refusal", category
+# "reasoning_extraction"), which the old wording ("internal thinking is not
+# shown") triggered on every silent turn.
 REASONING_REMINDER = (
     "--- Reminder ---\n"
-    "Your previous turn carried no visible reasoning text (internal thinking is not"
-    " shown). This turn, write one short paragraph of plain prose before calling a"
-    " Turn-Ending Action: what the screen shows, whether the last action worked, and"
-    " what you do next and why."
+    "Your previous turn went straight to a tool call. This turn, start with one short"
+    " progress note in plain prose before calling a Turn-Ending Action: what the screen"
+    " shows, whether the last action worked, and what you do next."
 )
 
 
