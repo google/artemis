@@ -42,9 +42,14 @@
       "fallback": { "provider": "google", "model": "gemini-3.1-flash-lite" }
     },
     "local-ollama": {
-      "provider": "openai",
+      "provider": "ollama",
       "model": "llama3.2-vision",
-      "fallback": { "provider": "openai", "model": "llama3.2-vision" }
+      "fallback": { "provider": "ollama", "model": "llama3.2-vision" }
+    },
+    "openrouter": {
+      "provider": "openrouter",
+      "model": "google/gemini-2.5-flash",
+      "fallback": { "provider": "openrouter", "model": "openai/gpt-4o-mini" }
     }
   },
 

@@ -298,12 +298,12 @@
       <div class="step-title-row">
         <h3 class="step-title">AI Model Setup</h3>
       </div>
-      <p class="step-desc">Google Gemini or custom LLM providers (OpenAI, Claude, Ollama)</p>
+      <p class="step-desc">Google Gemini, OpenRouter, local Ollama, or custom LLM providers (OpenAI, Claude)</p>
     </div>
   </div>
 
   <div class="guide-card-body">
-    <!-- 2 Big Visual Choice Cards -->
+    <!-- Visual Choice Cards: one per provider -->
     <div class="model-choice-cards-row">
       <!-- Card 1: Gemini (Recommended) -->
       <div class="choice-card" [class.selected]="modelSetupMode() === 'gemini'" (click)="setModelSetupMode('gemini')">
@@ -335,7 +335,49 @@
         </div>
       </div>
 
-      <!-- Card 2: Custom Configuration -->
+      <!-- Card 2: OpenRouter -->
+      <div class="choice-card" [class.selected]="modelSetupMode() === 'openrouter'" (click)="setModelSetupMode('openrouter')">
+        <div class="choice-card-top">
+          <div class="choice-radio">
+            <span class="radio-dot" [class.checked]="modelSetupMode() === 'openrouter'"></span>
+          </div>
+          <div class="choice-icon-wrap icon-gear">
+            <span class="material-symbols-outlined">hub</span>
+          </div>
+          <div class="choice-text">
+            <div class="choice-title-row">
+              <span class="choice-title">OpenRouter</span>
+              @if (isTabProviderActive('openrouter')) {
+              <span class="tag-badge tag-ready">Configured</span>
+              }
+            </div>
+            <p class="choice-desc">One API key for many models (Gemini, GPT, Claude &amp; more) via openrouter.ai.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3: Ollama (Local) -->
+      <div class="choice-card" [class.selected]="modelSetupMode() === 'ollama'" (click)="setModelSetupMode('ollama')">
+        <div class="choice-card-top">
+          <div class="choice-radio">
+            <span class="radio-dot" [class.checked]="modelSetupMode() === 'ollama'"></span>
+          </div>
+          <div class="choice-icon-wrap icon-gear">
+            <span class="material-symbols-outlined">computer</span>
+          </div>
+          <div class="choice-text">
+            <div class="choice-title-row">
+              <span class="choice-title">Ollama (Local)</span>
+              @if (isOllamaConfigured()) {
+              <span class="tag-badge tag-ready">Configured</span>
+              }
+            </div>
+            <p class="choice-desc">Run models on this PC — no API key. Needs <code>ollama serve</code> + a vision model.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4: Custom Configuration -->
       <div class="choice-card" [class.selected]="modelSetupMode() === 'custom'" (click)="setModelSetupMode('custom')">
         <div class="choice-card-top">
           <div class="choice-radio">
@@ -537,6 +579,126 @@
           }
         </div>
       </div>
+      }
+    </div>
+    } @else if (modelSetupMode() === 'openrouter') {
+    <!-- OpenRouter API Key Box -->
+    <div class="credentials-input-box">
+      <div class="input-box-header">
+        <div class="header-label">
+          <span class="material-symbols-outlined label-icon">vpn_key</span>
+          <span>Enter OpenRouter API Key:</span>
+        </div>
+        <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" class="btn-header-link">
+          <span class="material-symbols-outlined">open_in_new</span>
+          <span>Get API Key (openrouter.ai)</span>
+        </a>
+      </div>
+      <div class="unified-key-row">
+        <div class="unified-key-wrapper">
+          <span class="material-symbols-outlined key-prefix-icon">key</span>
+          <input [type]="showOpenRouterKey() ? 'text' : 'password'" class="unified-key-input"
+            [class.is-masked]="!showOpenRouterKey()" [ngModel]="openRouterKeyInput()"
+            (ngModelChange)="onOpenRouterKeyChange($event)" placeholder="Enter OpenRouter API Key (e.g. sk-or-v1-...)"
+            spellcheck="false" autocomplete="off" />
+          <button type="button" class="btn-icon-action" [title]="showOpenRouterKey() ? 'Mask Key' : 'Show Plaintext'"
+            (click)="toggleOpenRouterKeyVisibility()">
+            <span class="material-symbols-outlined">{{ showOpenRouterKey() ? 'visibility_off' : 'visibility' }}</span>
+          </button>
+          @if (openRouterKeyInput()) {
+          <button type="button" class="btn-icon-action" title="Copy API Key"
+            (click)="copyToClipboard(openRouterKeyInput(), 'openrouter_key_field')">
+            <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'openrouter_key_field'">
+              {{ copiedId() === 'openrouter_key_field' ? 'check' : 'content_copy' }}
+            </span>
+          </button>
+          }
+        </div>
+        <button type="button" class="btn-unified-save" [class.btn-dirty]="isOpenRouterModified()"
+          [disabled]="isSavingOpenRouterKey() || isTestingOpenRouterKey() || (!isOpenRouterModified() && !openRouterKeyInput().trim())" (click)="saveOpenRouterKey()">
+          @if (isSavingOpenRouterKey()) {
+          <span class="material-symbols-outlined spin">sync</span>
+          <span>{{ openRouterKeyInput().trim() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
+          } @else {
+          <span class="material-symbols-outlined">{{ openRouterKeyInput().trim() ? 'save' : 'delete_outline' }}</span>
+          <span>{{ !openRouterKeyInput().trim() ? 'Clear Key' : (isOpenRouterModified() ? 'Save & Apply' : 'Save Key') }}</span>
+          }
+        </button>
+        <button type="button" class="btn-unified-test" title="Test if OpenRouter API key is valid"
+          [disabled]="isTestingOpenRouterKey() || isSavingOpenRouterKey() || !openRouterKeyInput().trim()" (click)="testOpenRouterKey()">
+          @if (isTestingOpenRouterKey()) {
+          <span class="material-symbols-outlined spin">sync</span>
+          <span>Testing...</span>
+          } @else {
+          <span class="material-symbols-outlined">network_check</span>
+          <span>Test Key</span>
+          }
+        </button>
+      </div>
+      <p class="choice-desc">Saved as <code>OPEN_ROUTER_API_KEY</code> in <code>.env</code>. Then pick an OpenRouter model in
+        <code>config/artemis.jsonc</code> — e.g. preset <code>openrouter</code> (<code>provider: "openrouter"</code>).</p>
+      @if (openRouterSaveMessage()) {
+      <div class="feedback-msg success"><span class="material-symbols-outlined">check_circle</span><span>{{ openRouterSaveMessage() }}</span></div>
+      }
+      @if (openRouterSaveError()) {
+      <div class="feedback-msg error"><span class="material-symbols-outlined">error</span><span>{{ openRouterSaveError() }}</span></div>
+      }
+    </div>
+    } @else if (modelSetupMode() === 'ollama') {
+    <!-- Ollama (Local) Box: no API key, just base URL + model -->
+    <div class="credentials-input-box">
+      <div class="input-box-header">
+        <div class="header-label">
+          <span class="material-symbols-outlined label-icon">computer</span>
+          <span>Local Ollama Endpoint:</span>
+        </div>
+        <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" class="btn-header-link">
+          <span class="material-symbols-outlined">open_in_new</span>
+          <span>Install Ollama</span>
+        </a>
+      </div>
+      <div class="unified-key-row">
+        <div class="unified-key-wrapper">
+          <span class="material-symbols-outlined key-prefix-icon">link</span>
+          <input type="text" class="unified-key-input" [ngModel]="ollamaBaseUrl()"
+            (ngModelChange)="ollamaBaseUrl.set($event); onOllamaChange()" placeholder="http://localhost:11434/v1"
+            spellcheck="false" autocomplete="off" />
+        </div>
+        <div class="unified-key-wrapper">
+          <span class="material-symbols-outlined key-prefix-icon">smart_toy</span>
+          <input type="text" class="unified-key-input" [ngModel]="ollamaModel()"
+            (ngModelChange)="ollamaModel.set($event); onOllamaChange()" placeholder="llama3.2-vision"
+            spellcheck="false" autocomplete="off" />
+        </div>
+        <button type="button" class="btn-unified-save" [disabled]="isSavingOllama() || isTestingOllama() || !ollamaBaseUrl().trim()" (click)="saveOllama()">
+          @if (isSavingOllama()) {
+          <span class="material-symbols-outlined spin">sync</span><span>Saving...</span>
+          } @else {
+          <span class="material-symbols-outlined">save</span><span>Save Endpoint</span>
+          }
+        </button>
+        <button type="button" class="btn-unified-test" title="Test connection to local Ollama"
+          [disabled]="isTestingOllama() || isSavingOllama() || !ollamaBaseUrl().trim()" (click)="testOllama()">
+          @if (isTestingOllama()) {
+          <span class="material-symbols-outlined spin">sync</span><span>Testing...</span>
+          } @else {
+          <span class="material-symbols-outlined">network_check</span><span>Test Connection</span>
+          }
+        </button>
+      </div>
+      <p class="choice-desc">No API key needed. First run <code>ollama serve</code> and <code>ollama pull {{ ollamaModel() || 'llama3.2-vision' }}</code>
+        (vision model required), save the endpoint (stored as <code>OLLAMA_BASE_URL</code>), then set this as
+        <code>"default"</code> in <code>config/artemis.jsonc</code>:</p>
+      <div class="jsonc-viewer-box"><pre class="jsonc-code"><code>{{ ollamaConfigSnippet() }}</code></pre></div>
+      <button type="button" class="btn-file-action" (click)="copyToClipboard(ollamaConfigSnippet(), 'ollama_snippet_btn')">
+        <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'ollama_snippet_btn'">{{ copiedId() === 'ollama_snippet_btn' ? 'check' : 'content_copy' }}</span>
+        <span>Copy Config Snippet</span>
+      </button>
+      @if (ollamaMessage()) {
+      <div class="feedback-msg success"><span class="material-symbols-outlined">check_circle</span><span>{{ ollamaMessage() }}</span></div>
+      }
+      @if (ollamaError()) {
+      <div class="feedback-msg error"><span class="material-symbols-outlined">error</span><span>{{ ollamaError() }}</span></div>
       }
     </div>
     } @else {
