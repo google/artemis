@@ -121,8 +121,8 @@ export class HomeComponent implements OnInit, OnDestroy {
   public activeAdbGuideTab = signal<AdbGuideTab>('emulator');
   public emulatorSetupMode = signal<'studio' | 'cli'>('studio');
 
-  // Interactive guide tab for LLM / OCR credentials: 'gemini' | 'ocr'
-  public modelSetupMode = signal<'gemini' | 'custom'>('gemini');
+  // Interactive guide tab for LLM / OCR credentials
+  public modelSetupMode = signal<'gemini' | 'openrouter' | 'ollama' | 'custom'>('gemini');
   public showOcrConfig = signal<boolean>(false);
   public showFullConfigFile = signal<boolean>(false);
 
@@ -137,6 +137,26 @@ export class HomeComponent implements OnInit, OnDestroy {
   public geminiSaveMessage = signal<string | null>(null);
   public geminiSaveError = signal<string | null>(null);
   public isGeminiKeyEdited = signal<boolean>(false);
+
+  // OpenRouter API Key State (provider id 'openrouter', env OPEN_ROUTER_API_KEY)
+  public openRouterKeyInput = signal<string>('');
+  public showOpenRouterKey = signal<boolean>(false);
+  public isSavingOpenRouterKey = signal<boolean>(false);
+  public isTestingOpenRouterKey = signal<boolean>(false);
+  public openRouterSaveMessage = signal<string | null>(null);
+  public openRouterSaveError = signal<string | null>(null);
+  public isOpenRouterKeyEdited = signal<boolean>(false);
+
+  // Local Ollama State (no API key: an OpenAI-compatible base URL + model)
+  public ollamaBaseUrl = signal<string>('http://localhost:11434/v1');
+  public ollamaModel = signal<string>('llama3.2-vision');
+  public isTestingOllama = signal<boolean>(false);
+  public isSavingOllama = signal<boolean>(false);
+  public ollamaMessage = signal<string | null>(null);
+  public ollamaError = signal<string | null>(null);
+  public ollamaConfigSnippet = computed<string>(() =>
+    `"default": {\n  "provider": "ollama",\n  "model": "${this.ollamaModel().trim() || 'llama3.2-vision'}",\n  "fallback": { "provider": "ollama", "model": "${this.ollamaModel().trim() || 'llama3.2-vision'}" }\n}`
+  );
 
   // Vision OCR API Key State
   public ocrKeyInput = signal<string>('');
@@ -479,6 +499,20 @@ export class HomeComponent implements OnInit, OnDestroy {
     return this.geminiKeyInput().trim() !== this.savedGeminiKey().trim();
   });
 
+  public savedOpenRouterKey = computed<string>(() => {
+    const keys = this.apiKeysMap();
+    return keys['openrouter'] || '';
+  });
+
+  public isOpenRouterModified = computed<boolean>(() => {
+    return this.openRouterKeyInput().trim() !== this.savedOpenRouterKey().trim();
+  });
+
+  public isOllamaConfigured = computed<boolean>(() => {
+    return this.configuredLlmProviders().some(p => p.provider === 'ollama')
+      || (this.modelConfigEnv()?.env_vars || []).some(v => v.provider === 'ollama' && v.is_set);
+  });
+
   public savedOcrKey = computed<string>(() => {
     const keys = this.apiKeysMap();
     return keys['ocr'] || '';
@@ -581,12 +615,15 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.emulatorSetupMode.set(mode);
   }
 
-  public setModelSetupMode(mode: 'gemini' | 'custom'): void {
+  public setModelSetupMode(mode: 'gemini' | 'openrouter' | 'ollama' | 'custom'): void {
     this.modelSetupMode.set(mode);
-    if (mode === 'custom') {
+    if (mode === 'custom' || mode === 'ollama') {
+      // Custom/Ollama are configured via artemis.jsonc + .env (Ollama needs no
+      // API key), so the Gemini-key probe must not block these users.
       this.systemService.setSkipCredentialsCheck(true);
       this.systemService.fetchModelConfigEnv().subscribe();
     } else {
+      // Gemini / OpenRouter: the credentials probe passes once the key is saved.
       this.systemService.setSkipCredentialsCheck(false);
     }
   }
@@ -612,6 +649,110 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.isGeminiKeyEdited.set(true);
     this.geminiSaveError.set(null);
     this.geminiSaveMessage.set(null);
+  }
+
+  public toggleOpenRouterKeyVisibility(): void {
+    this.showOpenRouterKey.update(v => !v);
+  }
+
+  public onOpenRouterKeyChange(val: string): void {
+    this.openRouterKeyInput.set(val);
+    this.isOpenRouterKeyEdited.set(true);
+    this.openRouterSaveError.set(null);
+    this.openRouterSaveMessage.set(null);
+  }
+
+  public saveOpenRouterKey(): void {
+    const key = this.openRouterKeyInput().trim();
+    this.isSavingOpenRouterKey.set(true);
+    this.openRouterSaveError.set(null);
+    this.openRouterSaveMessage.set(null);
+    // Empty input clears the saved key (backend skips validation for empty).
+    this.systemService.updateApiKey('openrouter', key, true).subscribe({
+      next: (res) => {
+        this.isSavingOpenRouterKey.set(false);
+        this.isOpenRouterKeyEdited.set(false);
+        this.openRouterSaveMessage.set(res?.message || (key ? '✓ OpenRouter API key verified & saved successfully.' : '✓ OpenRouter API key cleared.'));
+        setTimeout(() => this.openRouterSaveMessage.set(null), 5000);
+      },
+      error: (err) => {
+        this.isSavingOpenRouterKey.set(false);
+        this.openRouterSaveError.set(err?.error?.detail || err?.message || 'Failed to update OpenRouter API key.');
+      }
+    });
+  }
+
+  public testOpenRouterKey(): void {
+    const key = this.openRouterKeyInput().trim();
+    if (!key) return;
+    this.isTestingOpenRouterKey.set(true);
+    this.openRouterSaveError.set(null);
+    this.openRouterSaveMessage.set(null);
+    this.systemService.testApiKey('openrouter', key).subscribe({
+      next: (res) => {
+        this.isTestingOpenRouterKey.set(false);
+        if (res?.valid) {
+          this.openRouterSaveMessage.set(res?.message || '✓ OpenRouter API key is valid!');
+        } else {
+          this.openRouterSaveError.set(res?.message || 'OpenRouter API key verification failed.');
+        }
+        setTimeout(() => this.openRouterSaveMessage.set(null), 5000);
+      },
+      error: (err) => {
+        this.isTestingOpenRouterKey.set(false);
+        this.openRouterSaveError.set(err?.error?.detail || err?.message || 'OpenRouter API key test failed.');
+      }
+    });
+  }
+
+  public onOllamaChange(): void {
+    this.ollamaMessage.set(null);
+    this.ollamaError.set(null);
+  }
+
+  public testOllama(): void {
+    const baseUrl = this.ollamaBaseUrl().trim();
+    if (!baseUrl) { this.ollamaError.set('Enter the Ollama base URL first.'); return; }
+    this.isTestingOllama.set(true);
+    this.ollamaError.set(null);
+    this.ollamaMessage.set(null);
+    // Ollama needs no key: 'EMPTY' is the OpenAI-compatible placeholder the
+    // backend validator accepts while it probes GET {baseUrl}/models.
+    this.systemService.testApiKey('ollama', 'EMPTY', baseUrl).subscribe({
+      next: (res) => {
+        this.isTestingOllama.set(false);
+        if (res?.valid) {
+          this.ollamaMessage.set(res?.message || `✓ Ollama reachable at ${baseUrl}`);
+        } else {
+          this.ollamaError.set(res?.message || 'Ollama connection failed.');
+        }
+      },
+      error: (err) => {
+        this.isTestingOllama.set(false);
+        this.ollamaError.set(err?.error?.detail || err?.message || `Cannot reach Ollama at ${baseUrl}. Is \`ollama serve\` running?`);
+      }
+    });
+  }
+
+  public saveOllama(): void {
+    const baseUrl = this.ollamaBaseUrl().trim();
+    if (!baseUrl) { this.ollamaError.set('Enter the Ollama base URL first.'); return; }
+    this.isSavingOllama.set(true);
+    this.ollamaError.set(null);
+    this.ollamaMessage.set(null);
+    // Provider 'ollama' persists the base URL as OLLAMA_BASE_URL in .env
+    // (no API key). Then set "default" in config/artemis.jsonc to the
+    // ollama snippet shown below so tasks actually run on this model.
+    this.systemService.updateApiKey('ollama', baseUrl, true).subscribe({
+      next: (res) => {
+        this.isSavingOllama.set(false);
+        this.ollamaMessage.set(res?.message || `✓ Ollama endpoint saved (${baseUrl}). Now set the ollama snippet in config/artemis.jsonc below.`);
+      },
+      error: (err) => {
+        this.isSavingOllama.set(false);
+        this.ollamaError.set(err?.error?.detail || err?.message || 'Failed to save Ollama endpoint.');
+      }
+    });
   }
 
   public onOcrKeyChange(val: string): void {
@@ -764,6 +905,8 @@ export class HomeComponent implements OnInit, OnDestroy {
   public getProviderDisplayName(tab: string): string {
     switch (tab) {
       case 'gemini': return 'Gemini';
+      case 'openrouter': return 'OpenRouter';
+      case 'ollama': return 'Ollama (Local)';
       case 'ocr': return 'Vision OCR';
       default: return tab;
     }

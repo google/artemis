@@ -369,11 +369,24 @@ if (-not (Test-Path ".env")) {
 Write-Host "   [INFO] Synchronizing Python runtime and project dependencies..." -ForegroundColor Cyan
 uv sync --quiet
 
-# 6. Check and build Showcase UI if not already compiled
+# 6. Check and build Showcase UI if not already compiled (or if sources are newer than the build)
 $ShowcaseIndex = "$RootDir\apps\showcase_ui\dist\frontend\browser\index.html"
 $ShowcaseIndexAlt1 = "$RootDir\apps\showcase_ui\dist\browser\index.html"
 $ShowcaseIndexAlt2 = "$RootDir\apps\showcase_ui\dist\index.html"
-if ((-not (Test-Path $ShowcaseIndex)) -and (-not (Test-Path $ShowcaseIndexAlt1)) -and (-not (Test-Path $ShowcaseIndexAlt2))) {
+$ShowcaseBuiltIndex = @($ShowcaseIndex, $ShowcaseIndexAlt1, $ShowcaseIndexAlt2) | Where-Object { Test-Path $_ } | Select-Object -First 1
+$ShowcaseNeedsBuild = -not $ShowcaseBuiltIndex
+if ($ShowcaseBuiltIndex) {
+    # Rebuild when any UI source changed after the last build, so provider/UI
+    # updates actually show up on the next start.bat run instead of serving a stale dist.
+    $builtAt = (Get-Item $ShowcaseBuiltIndex).LastWriteTime
+    $newerSrc = Get-ChildItem "$RootDir\apps\showcase_ui\src" -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt $builtAt } | Select-Object -First 1
+    if ($newerSrc) {
+        Write-Host "   [INFO] Showcase UI sources changed since last build ($($newerSrc.Name)). Rebuilding..." -ForegroundColor Yellow
+        $ShowcaseNeedsBuild = $true
+    }
+}
+if ($ShowcaseNeedsBuild) {
     if (-not (Test-NodeCompatible)) {
         if (Test-CommandExists "node") {
             $curVer = (& node -v 2>$null)

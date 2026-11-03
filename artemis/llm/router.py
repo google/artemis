@@ -370,8 +370,16 @@ class ModelFactory:
             from langchain_openai import ChatOpenAI
 
             api_key = endpoint.api_key or os.environ.get("OPENAI_API_KEY", "EMPTY")
-            base_url = endpoint.api_base or os.environ.get(
-                "OPENAI_BASE_URL", "http://localhost:8000/v1"
+            default_base = (
+                "http://localhost:11434/v1"
+                if provider == ModelProvider.OLLAMA
+                else "http://localhost:8000/v1"
+            )
+            base_url = (
+                endpoint.api_base
+                or getattr(settings, "OLLAMA_BASE_URL", None)
+                or os.environ.get("OLLAMA_BASE_URL")
+                or os.environ.get("OPENAI_BASE_URL", default_base)
             )
             kwargs = {
                 "model": endpoint.model_name,

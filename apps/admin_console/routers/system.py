@@ -294,7 +294,7 @@ async def get_credentials():
     """
     from artemis.config import settings
 
-    providers = ("google", "openai", "anthropic", "openrouter", "ocr")
+    providers = ("google", "openai", "anthropic", "openrouter", "xai", "ollama", "ocr")
     status = {name: bool(settings.get_api_key(name)) for name in providers}
     status["gemini"] = status["google"]
     return {
@@ -425,6 +425,11 @@ async def get_model_config_and_env():
     base_url_val = settings.OPENAI_BASE_URL or os.environ.get("OPENAI_BASE_URL")
     if base_url_val and is_placeholder_key(base_url_val):
         base_url_val = None
+    ollama_url_val = (
+        getattr(settings, "OLLAMA_BASE_URL", None) or os.environ.get("OLLAMA_BASE_URL")
+    )
+    if ollama_url_val and is_placeholder_key(ollama_url_val):
+        ollama_url_val = None
     ocr_real = get_real_env_value("OCR_API_KEY", "ocr") or get_real_env_value(
         "VISION_API_KEY", "ocr"
     )
@@ -464,6 +469,13 @@ async def get_model_config_and_env():
             "is_set": bool(xai_real),
             "preview": mask_key(xai_real),
             "description": "xAI Grok vision API key",
+        },
+        {
+            "name": "OLLAMA_BASE_URL",
+            "provider": "ollama",
+            "is_set": bool(ollama_url_val),
+            "preview": ollama_url_val,
+            "description": "Local Ollama endpoint (default http://localhost:11434/v1, no API key)",
         },
         {
             "name": "OPENAI_BASE_URL",

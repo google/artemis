@@ -108,6 +108,8 @@ class Settings(BaseSettings):
 
     # Custom Provider Endpoints
     OPENAI_BASE_URL: str | None = None
+    # Local Ollama endpoint (OpenAI-compatible, no API key required)
+    OLLAMA_BASE_URL: str | None = None
 
     # Android ADB Connectivity
     ADB_HOST: str | None = Field(default=DEFAULT_ADB_HOST)
@@ -206,6 +208,10 @@ class Settings(BaseSettings):
             key = self.ANTHROPIC_API_KEY
         elif provider_lower == "openrouter":
             key = self.OPEN_ROUTER_API_KEY
+        elif provider_lower == "ollama":
+            # Ollama has no API key; a configured base URL is its "credential".
+            base = self.OLLAMA_BASE_URL or os.environ.get("OLLAMA_BASE_URL")
+            key = SecretStr(base) if base and base.strip() else None
         elif provider_lower in ("xai", "grok"):
             key = self.XAI_API_KEY
 
@@ -247,6 +253,12 @@ class Settings(BaseSettings):
             self.OPEN_ROUTER_API_KEY = secret
             env_key_name = ENV_OPEN_ROUTER_API_KEY
             os.environ[ENV_OPEN_ROUTER_API_KEY] = key
+        elif provider_lower in ("ollama", "vllm", "custom"):
+            # For local/custom providers the "key" passed in is the base URL
+            # (e.g. http://localhost:11434/v1); Ollama requires no API key.
+            self.OLLAMA_BASE_URL = key or None
+            env_key_name = "OLLAMA_BASE_URL"
+            os.environ["OLLAMA_BASE_URL"] = key
         elif provider_lower == "xai":
             self.XAI_API_KEY = secret
             env_key_name = ENV_XAI_API_KEY
