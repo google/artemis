@@ -209,6 +209,46 @@ async def test_analyzer_clip_stays_continuous_across_orientation_segments(tmp_pa
     assert len(frames) >= 20
 
 
+@pytest.mark.asyncio
+async def test_analyzer_clip_renders_ycgco_tagged_recording(tmp_path):
+    """Some devices tag scrcpy recordings as YCgCo/log316, which swscale cannot
+    convert; the clip must still render instead of failing the whole graph."""
+    ffmpeg = get_ffmpeg_path()
+    recording = tmp_path / "recording.mkv"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:size=108x242:rate=15:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            # Tag the bitstream like the device does (matrix 8 = YCgCo,
+            # transfer 11 = log316) without asking the encoder to convert.
+            "-bsf:v",
+            "h264_metadata=matrix_coefficients=8:transfer_characteristics=11",
+            str(recording),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    output = tmp_path / "agent_clip.mp4"
+    assert await render_timeline_clip(
+        [{"path": recording, "start": 0.0, "end": 1.0}],
+        0.0,
+        1.0,
+        output,
+        canvas_width=180,
+        canvas_height=320,
+    )
+    assert _read_frames(output)
+
+
 def test_timeline_pieces_fill_restart_gaps(tmp_path):
     """Holes between segments (and a window starting in one) become black gaps."""
     first = tmp_path / "recording.mkv"
