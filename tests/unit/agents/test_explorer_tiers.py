@@ -18,7 +18,9 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from google import genai
 from google.genai import types
+import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
 
@@ -528,6 +530,88 @@ async def test_run_closes_http_client_on_both_engines(screenshot):
         await universal.run("t", "", screenshot, _state(screenshot), version="pro")
     http_client.aclose.assert_awaited_once()
     assert universal.http_client is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["pro", "ultra"])
+@pytest.mark.parametrize(
+    "first_candidate",
+    [
+        pytest.param({"finishReason": "STOP"}, id="missing-content"),
+        pytest.param({"content": {"role": "model"}, "finishReason": "STOP"}, id="missing-parts"),
+        pytest.param(
+            {"content": {}, "finishReason": "MALFORMED_FUNCTION_CALL"}, id="malformed-call"
+        ),
+        pytest.param(
+            {"content": {"role": "model", "parts": []}, "finishReason": "STOP"}, id="empty-parts"
+        ),
+        pytest.param(
+            {
+                "content": {"role": "model", "parts": [{"text": "Still looking."}]},
+                "finishReason": "STOP",
+            },
+            id="plain-text",
+        ),
+    ],
+)
+async def test_native_run_retries_missing_tool_calls(screenshot, first_candidate, version):
+    answer = {
+        "candidates": [{"label": "D1", "coords": [500, 600], "description": "target"}],
+        "fallback_message": "",
+    }
+    replies = iter(
+        [
+            {"candidates": [first_candidate]},
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "role": "model",
+                            "parts": [{"functionCall": {"name": "submit_answer", "args": answer}}],
+                        },
+                        "finishReason": "STOP",
+                    }
+                ]
+            },
+        ]
+    )
+    requests = []
+
+    def respond(request):
+        assert request.url.path.endswith(":generateContent")
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=next(replies))
+
+    ctx = _context()
+    storage = MagicMock()
+    storage.get_image.return_value = None
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+        with genai.Client(
+            api_key="test-key",
+            vertexai=False,
+            http_options=types.HttpOptions(httpx_async_client=http_client),
+        ) as client:
+            async with client.aio:
+                ctx._genai_client = client
+                with patch(f"{RUN_SETUP}.StorageManager", return_value=storage):
+                    raw = await Explorer(ctx).run(
+                        "target",
+                        "",
+                        screenshot,
+                        _state(screenshot),
+                        enable_caching=False,
+                        version=version,
+                    )
+
+    assert json.loads(raw) == answer
+    assert len(requests) == 2
+    assert all(content.get("parts") for request in requests for content in request["contents"])
+    retry_contents = requests[1]["contents"]
+    expected_content = first_candidate.get("content") or {}
+    if not expected_content.get("parts"):
+        expected_content = {"role": "model", "parts": [{"text": "(no response)"}]}
+    assert retry_contents[1] == expected_content
+    assert "submit_answer" in retry_contents[2]["parts"][0]["text"]
 
 
 def test_missing_tool_calls_without_candidates_does_not_crash():
