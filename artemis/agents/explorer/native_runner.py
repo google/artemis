@@ -547,9 +547,9 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
     ) -> None:
         """Handles a turn where the model produced plain text instead of tool calls.
 
-        Responses without candidates (safety blocks, empty replies) are
-        recorded as a synthetic model text part so the conversation history
-        stays well-formed for the retry.
+        Responses without candidates or content parts (safety blocks, empty
+        replies) are recorded as a synthetic model text part so the
+        conversation history stays well-formed for the retry.
         """
         logger.warning(f"Explorer turn {turn}: Model hallucinated plain text. Forcing retry.")
         model_text = "\n".join(text_parts) if text_parts else ""
@@ -568,7 +568,7 @@ Initial marked UI elements list (corresponding to numbers ①, ②... in the ima
 
         candidates = getattr(response, "candidates", None)
         model_content = getattr(candidates[0], "content", None) if candidates else None
-        if not model_content:
+        if not model_content or not getattr(model_content, "parts", None):
             model_content = types.Content(
                 role="model",
                 parts=[types.Part.from_text(text=model_text or "(no response)")],
