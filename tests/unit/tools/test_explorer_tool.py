@@ -109,11 +109,6 @@ def test_tool_contract_is_tier_agnostic():
     assert fields["context_feedback"].default == ""
     assert fields["context_feedback"].description == ASK_EXPLORER_CONTEXT_FEEDBACK_DESCRIPTION
 
-    declaration = ask_explorer.to_genai_declaration()
-    assert declaration.name == "ask_explorer"
-    assert set(declaration.parameters.properties) == {"query", "context_feedback"}
-    assert declaration.parameters.required == ["query"]
-
 
 @pytest.mark.parametrize("version", [None, "flash", "pro", "ultra"])
 def test_description_does_not_depend_on_the_tier(version):

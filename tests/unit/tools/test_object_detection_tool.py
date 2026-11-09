@@ -65,16 +65,6 @@ def test_object_detection_tool_subclass():
     assert operator_object_detection.category == "perception"
     assert operator_object_detection.args_schema == OperatorObjectDetectionArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = object_detection.to_genai_declaration()
-    assert declaration.name == "object_detection"
-    assert "image_path" in declaration.parameters.properties
-    assert "queries" in declaration.parameters.properties
-
-    op_declaration = operator_object_detection.to_genai_declaration()
-    assert op_declaration.name == "object_detection"
-    assert "queries" in op_declaration.parameters.properties
-
     # Wrappers
     assert object_detection_wrapper.tool_fn_getter == get_object_detector_tool
     assert operator_object_detection_wrapper.tool_fn_getter == get_operator_object_detector_tool

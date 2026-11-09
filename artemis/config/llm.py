@@ -65,7 +65,7 @@ def lightweight_judge_default(base: "LLM | None" = None) -> "LLMWithFallback":
     flash-lite equivalent, so the judge reuses the configured model instead of
     reaching for a Google endpoint the deployment does not have.
     """
-    if base is not None and str(base.provider) not in ("google", "vertexai"):
+    if base is not None and str(base.provider) != "google":
         return LLMWithFallback(
             provider=base.provider,
             model=base.model,

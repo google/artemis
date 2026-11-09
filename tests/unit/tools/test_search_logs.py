@@ -185,16 +185,6 @@ def test_search_logs_tool_subclass():
     assert search_logs.category == "diagnostic"
     assert search_logs.args_schema == SearchLogsArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = search_logs.to_genai_declaration()
-    assert declaration.name == "search_logs"
-    assert "keyword" in declaration.parameters.properties
-    assert "is_regex" in declaration.parameters.properties
-    assert "lines" in declaration.parameters.properties
-    assert "since_time" in declaration.parameters.properties
-    assert "until_time" in declaration.parameters.properties
-    assert "context_lines" in declaration.parameters.properties
-
 
 @pytest.mark.asyncio
 async def test_search_logs_direct_execution(mock_ctx):

@@ -33,47 +33,10 @@ async def test_video_analyzer_tools(artemis_context, mock_state, inputs_dir, tmp
 
     agent.local_files_to_cleanup = set()
     agent.local_dirs_to_cleanup = set()
-    agent.cloud_files_to_cleanup = set()
     agent.blackboard_entries = []
     agent.sub_system_prompt = "You are a sub agent"
     agent.audio_system_prompt = "You are an audio sub agent"
     agent.model_name = "gemini-3.7-flash"
-
-    # We must provide a valid FunctionDeclaration for the tool otherwise Pydantic will complain
-    from google.genai import types
-
-    agent.submit_answer_tool = types.FunctionDeclaration(
-        name="submit_answer",
-        description=("Submit the final findings for the requested segment analysis."),
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "summary": types.Schema(type=types.Type.STRING, description="summary"),
-                "analysis": types.Schema(type=types.Type.STRING, description="analysis"),
-                "timeline_events": types.Schema(
-                    type=types.Type.ARRAY,
-                    items=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "start_time": types.Schema(type=types.Type.NUMBER),
-                            "end_time": types.Schema(type=types.Type.NUMBER),
-                            "transcription": types.Schema(type=types.Type.STRING),
-                            "confidence_score": types.Schema(type=types.Type.NUMBER),
-                            "verification_timestamp_secs": types.Schema(type=types.Type.NUMBER),
-                        },
-                    ),
-                ),
-            },
-        ),
-    )
-
-    import google.genai as genai
-    from artemis.config import settings
-
-    agent.client = genai.Client(
-        api_key=settings.GOOGLE_API_KEY.get_secret_value() if settings.GOOGLE_API_KEY else None
-    )
-    artemis_context._genai_client = agent.client
 
     import shutil
     import uuid

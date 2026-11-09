@@ -37,7 +37,6 @@ logger = get_logger(__name__)
 class ModelProvider(StrEnum):
     GOOGLE = "google"
     GEMINI = "google"
-    VERTEX_AI = "vertexai"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     OPENROUTER = "openrouter"
@@ -64,8 +63,6 @@ class ModelProvider(StrEnum):
         mapping = {
             "google": cls.GOOGLE,
             "gemini": cls.GOOGLE,
-            "vertexai": cls.VERTEX_AI,
-            "vertex": cls.VERTEX_AI,
             "openai": cls.OPENAI,
             "anthropic": cls.ANTHROPIC,
             "claude": cls.ANTHROPIC,
@@ -257,28 +254,6 @@ class ModelFactory:
                 },
             }
             return ChatGoogleGenerativeAI(**{k: v for k, v in kwargs.items() if v is not None})
-
-        elif provider == ModelProvider.VERTEX_AI:
-            from langchain_google_vertexai import (
-                ChatVertexAI,
-                HarmBlockThreshold,
-                HarmCategory,
-            )
-
-            kwargs = {
-                "model_name": endpoint.model_name,
-                "temperature": endpoint.temperature,
-                "max_output_tokens": endpoint.max_tokens,
-                "timeout": endpoint.timeout_seconds,
-                "thinking_budget": endpoint.thinking_budget,
-                "safety_settings": {
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                },
-            }
-            return ChatVertexAI(**{k: v for k, v in kwargs.items() if v is not None})
 
         elif provider == ModelProvider.OPENAI:
             from langchain_openai import ChatOpenAI

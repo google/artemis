@@ -86,9 +86,3 @@ def test_ask_image_processor_tool_subclass():
     assert ask_image_processor.name == "ask_image_processor"
     assert ask_image_processor.category == "custom"
     assert ask_image_processor.args_schema == AskVisionCoderArgs
-
-    # GenAI FunctionDeclaration export
-    declaration = ask_image_processor.to_genai_declaration()
-    assert declaration.name == "ask_image_processor"
-    assert "instruction" in declaration.parameters.properties
-    assert "target_image_id" in declaration.parameters.properties

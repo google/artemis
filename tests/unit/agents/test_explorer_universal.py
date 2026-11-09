@@ -22,7 +22,6 @@ from langchain_core.messages import AIMessage
 
 from artemis.agents.explorer.explorer import Explorer
 from artemis.agents.explorer.tool_declarations import UNIVERSAL_EXPLORER_TOOLS
-from artemis.config import settings
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 
@@ -48,12 +47,10 @@ def mock_context(tmp_path):
     return ctx
 
 
-def test_explorer_universal_engine_detection(mock_context):
-    """Test that Explorer routes to Universal Engine when non-Gemini model is configured."""
-    with patch.object(settings, "GOOGLE_API_KEY", None):
-        agent = Explorer(mock_context)
-        assert agent.use_native_gemini is False
-        assert agent.model_name == "claude-3-7-sonnet"
+def test_explorer_resolves_model_name_without_provider_prefix(mock_context):
+    """The configured Explorer model name is stored without its provider prefix."""
+    agent = Explorer(mock_context)
+    assert agent.model_name == "claude-3-7-sonnet"
 
 
 def test_universal_explorer_tool_schemas():
@@ -72,7 +69,6 @@ def test_universal_explorer_tool_schemas():
 async def test_run_universal_explorer_success(mock_context, tmp_path):
     """Test universal Explorer tool invocation and submit_answer coordinate parsing."""
     agent = Explorer(mock_context)
-    agent.use_native_gemini = False
 
     fake_screenshot = tmp_path / "screenshot.jpg"
     fake_screenshot.write_bytes(b"fake_image_bytes")

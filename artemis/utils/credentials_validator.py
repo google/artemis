@@ -16,7 +16,7 @@
 
 import httpx
 
-from artemis.llm.google.provider import is_google_family_provider
+from artemis.llm.google.provider import is_google_provider
 
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -91,7 +91,7 @@ async def validate_api_key(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            if is_google_family_provider(clean_provider):
+            if is_google_provider(clean_provider):
                 # Test Google Gemini via generativelanguage API
                 # The key travels in a header, never in the URL: httpx logs request
                 # URLs at INFO level and those logs end up in files.

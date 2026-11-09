@@ -143,8 +143,7 @@ def analyzer_context():
 
 @pytest.mark.asyncio
 async def test_spawn_sub_agent_reuses_complete_persistent_coverage(analyzer_context):
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(analyzer_context)
+    analyzer = VideoAnalyzer(analyzer_context)
     claim = analyzer.blackboard.claim_segment(10.0, 20.0, "verify login")
     analyzer.blackboard.complete_segment(
         10.0,
@@ -165,8 +164,7 @@ async def test_spawn_sub_agent_reuses_complete_persistent_coverage(analyzer_cont
 
 @pytest.mark.asyncio
 async def test_spawn_sub_agent_returns_partial_and_keeps_prior_success(analyzer_context):
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(analyzer_context)
+    analyzer = VideoAnalyzer(analyzer_context)
     claim = analyzer.blackboard.claim_segment(0.0, 60.0, "summarize flow")
     analyzer.blackboard.complete_segment(
         0.0,
@@ -207,8 +205,7 @@ async def test_video_coordinator_retries_transient_failures():
 
 @pytest.mark.asyncio
 async def test_audio_analysis_reuses_exact_completed_coverage(analyzer_context):
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(analyzer_context)
+    analyzer = VideoAnalyzer(analyzer_context)
     claim = analyzer.blackboard.claim_segment(2.0, 6.0, "hear notification", modality="audio")
     analyzer.blackboard.complete_segment(
         2.0,

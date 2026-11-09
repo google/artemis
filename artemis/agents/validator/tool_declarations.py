@@ -23,7 +23,6 @@ import base64
 import json
 from typing import Any, Literal
 
-from google.genai import types as genai_types
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, Field
 
@@ -94,47 +93,8 @@ def prune_intermediate_screenshots(messages: list[Any]) -> None:
     """Prunes heavy binary screenshot blocks from intermediate observation messages.
 
     Keeps the latest screenshot across the conversation history to preserve context budget.
-    Supports both LangChain BaseMessage and google.genai.types.Content formats.
     """
     if not messages:
-        return
-
-    # Check for google.genai.types.Content objects
-    if hasattr(messages[0], "parts"):
-        user_indices_with_images = []
-        for idx in range(1, len(messages)):
-            content = messages[idx]
-            if getattr(content, "role", None) == "user" and getattr(content, "parts", None):
-                for part in content.parts:
-                    if getattr(part, "inline_data", None) is not None:
-                        user_indices_with_images.append(idx)
-                        break
-
-        if len(user_indices_with_images) > 1:
-            indices_to_prune = user_indices_with_images[:-1]
-            for idx in indices_to_prune:
-                content = messages[idx]
-                new_parts = []
-                for part in content.parts:
-                    if getattr(part, "inline_data", None) is not None:
-                        try:
-                            new_parts.append(
-                                genai_types.Part.from_text(
-                                    text=(
-                                        "[Screenshot of intermediate step omitted for performance]"
-                                    )
-                                )
-                            )
-                        except Exception as exc:
-                            logger.debug(
-                                "Could not build placeholder text part for pruned screenshot;"
-                                " dropping it: %s",
-                                exc,
-                                exc_info=True,
-                            )
-                    else:
-                        new_parts.append(part)
-                content.parts = new_parts
         return
 
     # LangChain BaseMessage format

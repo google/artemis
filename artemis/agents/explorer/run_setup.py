@@ -33,10 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from artemis.agents.explorer.constants import (
-    DEFAULT_EXPLORER_MODEL,
-    EXECUTION_CONSTRAINT_TEMPLATE,
-)
+from artemis.agents.explorer.constants import EXECUTION_CONSTRAINT_TEMPLATE
 from artemis.agents.explorer.geometry import resolve_screen_size
 from artemis.agents.explorer.perception_tools import load_detector_templates
 from artemis.agents.explorer.screen_index import ScreenElement, ScreenIndex
@@ -216,30 +213,6 @@ class RunSetupMixin:
             }
         }
         self.next_img_id = 1
-
-    def _resolve_model_params(self) -> tuple:
-        """Resolves model name, temperature, thinking level, and fallback model."""
-        llm_config = getattr(self.ctx, "llm_config", None)
-        llm_cfg = getattr(llm_config, "explorer", None) if llm_config else None
-        temperature = 0.1
-        fallback_model = None
-        thinking_level = None
-        if llm_cfg:
-            model_name = llm_cfg.model
-            if "/" in model_name:
-                model_name = model_name.split("/")[-1]
-            if getattr(llm_cfg, "temperature", None) is not None:
-                temperature = llm_cfg.temperature
-            if getattr(llm_cfg, "thinking_level", None) is not None:
-                thinking_level = llm_cfg.thinking_level
-            if getattr(llm_cfg, "fallback", None):
-                fallback_model = llm_cfg.fallback.model
-                if "/" in fallback_model:
-                    fallback_model = fallback_model.split("/")[-1]
-        else:
-            model_name = DEFAULT_EXPLORER_MODEL
-
-        return model_name, temperature, thinking_level, fallback_model
 
     def _exposed_tool_names(self, tier: ExplorerTier) -> set[str]:
         """Tools the model can actually call in this run (tier minus hidden)."""

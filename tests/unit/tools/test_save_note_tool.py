@@ -50,12 +50,6 @@ def test_save_note_tool_subclass():
     assert save_note.category == "memory"
     assert save_note.args_schema == SaveNoteArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = save_note.to_genai_declaration()
-    assert declaration.name == "save_note"
-    assert "key" in declaration.parameters.properties
-    assert "content" in declaration.parameters.properties
-
     # Wrapper check
     assert save_note_wrapper is not None
     assert save_note_wrapper.tool_fn_getter == get_save_note_tool

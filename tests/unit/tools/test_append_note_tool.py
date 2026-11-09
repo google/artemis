@@ -50,12 +50,6 @@ def test_append_note_tool_subclass():
     assert append_note.category == "memory"
     assert append_note.args_schema == AppendNoteArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = append_note.to_genai_declaration()
-    assert declaration.name == "append_note"
-    assert "key" in declaration.parameters.properties
-    assert "content" in declaration.parameters.properties
-
     # Wrapper check
     assert append_note_wrapper is not None
     assert append_note_wrapper.tool_fn_getter == get_append_note_tool

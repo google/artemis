@@ -51,12 +51,6 @@ def test_video_analyzer_tool_subclass():
     assert video_analyzer.category == "perception"
     assert video_analyzer.args_schema == VideoAnalyzerArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = video_analyzer.to_genai_declaration()
-    assert declaration.name == "video_analyzer"
-    assert "time_description" in declaration.parameters.properties
-    assert "purpose" in declaration.parameters.properties
-
 
 @pytest.mark.asyncio
 async def test_video_analyzer_direct_execution_success(mock_ctx):

@@ -50,13 +50,6 @@ def test_read_note_tool_subclass():
     assert read_note.category == "memory"
     assert read_note.args_schema == ReadNoteArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = read_note.to_genai_declaration()
-    assert declaration.name == "read_note"
-    assert "key" in declaration.parameters.properties
-    assert "start_line" in declaration.parameters.properties
-    assert "end_line" in declaration.parameters.properties
-
     # Wrapper check
     assert read_note_wrapper is not None
     assert read_note_wrapper.tool_fn_getter == get_read_note_tool

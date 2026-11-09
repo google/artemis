@@ -19,6 +19,9 @@ from pathlib import Path
 import shutil
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
 from artemis.agents.explorer.explorer import Explorer
 from tests.integration.agents.explorer.test_explorer_all_tools.helpers import (
     create_mock_context,
@@ -28,40 +31,21 @@ from tests.integration.agents.explorer.test_explorer_all_tools.helpers import (
 import pytest
 
 
-def _verify_all_tools_responses(contents: list, logger: logging.Logger):
-    """Parses the multi-turn conversational history payload and maps tool outputs."""
+def _verify_all_tools_responses(messages: list, logger: logging.Logger):
+    """Collects every tool result the loop fed back, plus the images it attached."""
     logger.info("=== VERIFYING TOOL RESPONSES IN CONVERSATION HISTORY ===")
     tool_responses = {}
-    for content in contents:
-        for part in content.parts:
-            if part.function_response:
-                name = part.function_response.name
-                response_data = part.function_response.response
-
-                # Extract result text
-                tool_text = None
-                if hasattr(response_data, "get"):
-                    tool_text = response_data.get("result")
-                elif hasattr(response_data, "fields"):
-                    tool_text = response_data.fields.get("result")
-                else:
-                    tool_text = getattr(response_data, "result", None)
-
-                if name not in tool_responses:
-                    tool_responses[name] = []
-                tool_responses[name].append({"text": tool_text, "has_image": False})
-                logger.info(f"Found tool response for '{name}':\n{tool_text}")
-
-            if part.inline_data and part.inline_data.mime_type == "image/jpeg":
-                # The image byte block corresponds to the preceding function response
-                if tool_responses:
-                    last_tool = list(tool_responses.keys())[-1]
-                    tool_responses[last_tool][-1]["has_image"] = True
-                    tool_responses[last_tool][-1]["img_bytes"] = part.inline_data.data
-                    logger.info(
-                        f"  -> Attached {len(part.inline_data.data)} bytes of"
-                        f" JPEG inline visual content to '{last_tool}'"
-                    )
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            tool_responses.setdefault(message.name, []).append({"text": message.content})
+            logger.info(f"Found tool response for '{message.name}':\n{message.content}")
+        if isinstance(message, HumanMessage) and isinstance(message.content, list):
+            blocks = [b for b in message.content if b.get("type") == "image_url"]
+            if blocks and tool_responses:
+                last_tool = list(tool_responses.keys())[-1]
+                tool_responses[last_tool][-1]["has_image"] = True
+                tool_responses[last_tool][-1]["img_bytes"] = blocks[0]["image_url"]["url"]
+                logger.info(f"  -> Attached {len(blocks)} image block(s) to '{last_tool}'")
 
     return tool_responses
 
@@ -119,78 +103,89 @@ async def test_explorer_all_tools_sequential_mocked():
     # =========================================================================
 
     # Turn 1: call get_ocr_list
-    mock_fc_ocr = MagicMock()
-    mock_fc_ocr.name = "get_ocr_list"
-    mock_fc_ocr.args = {}
-    mock_resp_ocr = MagicMock()
-    mock_resp_ocr.function_calls = [mock_fc_ocr]
-
-    # Turn 2: call ask_perception_tool
-    mock_fc_search = MagicMock()
-    mock_fc_search.name = "ask_perception_tool"
-    mock_fc_search.args = {
-        "search_query": "Settings",
-        "nx": 500,
-        "ny": 500,
-        "detect_queries": ["gear icon"],
-    }
-    mock_resp_search = MagicMock()
-    mock_resp_search.function_calls = [mock_fc_search]
-
-    # Turn 3: call detect_objects
-    mock_fc_detect = MagicMock()
-    mock_fc_detect.name = "detect_objects"
-    mock_fc_detect.args = {"queries": ["gear icon"], "target_image_id": "img_0"}
-    mock_resp_detect = MagicMock()
-    mock_resp_detect.function_calls = [mock_fc_detect]
-
-    # Turn 4: call inspect_region
-    mock_fc_coords = MagicMock()
-    mock_fc_coords.name = "inspect_region"
-    mock_fc_coords.args = {
-        "x_min": 100,
-        "y_min": 100,
-        "x_max": 300,
-        "y_max": 300,
-        "zoom_factor": 2.0,
-    }
-    mock_resp_coords = MagicMock()
-    mock_resp_coords.function_calls = [mock_fc_coords]
-
-    # Turn 5: call submit_answer to complete loop
-    mock_fc_submit = MagicMock()
-    mock_fc_submit.name = "submit_answer"
-    mock_fc_submit.args = {
-        "candidates": [
-            {
-                "label": "T1",
-                "coords": [462, 208],
-                "description": "Dashboard Button",
-            },
-            {
-                "label": "S1",
-                "coords": [462, 208],
-                "description": "Settings Button",
-            },
-            {"label": "D1", "coords": [200, 300], "description": "gear icon"},
-        ],
-        "fallback_message": ("Successfully verified all visual controls sequentially."),
-    }
-    mock_resp_submit = MagicMock()
-    mock_resp_submit.function_calls = [mock_fc_submit]
-
-    mock_client = MagicMock()
-    mock_client.aio.models.generate_content = AsyncMock(
-        side_effect=[
-            mock_resp_ocr,
-            mock_resp_search,
-            mock_resp_detect,
-            mock_resp_coords,
-            mock_resp_submit,
-        ]
+    turn_ocr = AIMessage(
+        content="", tool_calls=[{"name": "get_ocr_list", "args": {}, "id": "call_ocr"}]
     )
 
-    mock_ctx._genai_client = mock_client
+    # Turn 2: call ask_perception_tool
+    turn_search = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "ask_perception_tool",
+                "args": {
+                    "search_query": "Settings",
+                    "nx": 500,
+                    "ny": 500,
+                    "detect_queries": ["gear icon"],
+                },
+                "id": "call_search",
+            }
+        ],
+    )
+
+    # Turn 3: call detect_objects
+    turn_detect = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "detect_objects",
+                "args": {"queries": ["gear icon"], "target_image_id": "img_0"},
+                "id": "call_detect",
+            }
+        ],
+    )
+
+    # Turn 4: call inspect_region
+    turn_coords = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "inspect_region",
+                "args": {
+                    "x_min": 100,
+                    "y_min": 100,
+                    "x_max": 300,
+                    "y_max": 300,
+                    "zoom_factor": 2.0,
+                },
+                "id": "call_coords",
+            }
+        ],
+    )
+
+    # Turn 5: call submit_answer to complete loop
+    turn_submit = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "submit_answer",
+                "args": {
+                    "candidates": [
+                        {
+                            "label": "T1",
+                            "coords": [462, 208],
+                            "description": "Dashboard Button",
+                        },
+                        {
+                            "label": "S1",
+                            "coords": [462, 208],
+                            "description": "Settings Button",
+                        },
+                        {"label": "D1", "coords": [200, 300], "description": "gear icon"},
+                    ],
+                    "fallback_message": ("Successfully verified all visual controls sequentially."),
+                },
+                "id": "call_submit",
+            }
+        ],
+    )
+
+    llm = MagicMock()
+    llm.bind_tools.return_value.ainvoke = AsyncMock(
+        side_effect=[turn_ocr, turn_search, turn_detect, turn_coords, turn_submit]
+    )
+
     mock_ctx.llm_config.explorer = None
 
     # =========================================================================
@@ -234,8 +229,8 @@ async def test_explorer_all_tools_sequential_mocked():
 
     with (
         patch(
-            "artemis.agents.explorer.explorer.genai.Client",
-            return_value=mock_client,
+            "artemis.agents.explorer.universal_runner.get_llm",
+            return_value=llm,
         ),
         patch(
             "artemis.agents.explorer.run_setup.StorageManager",
@@ -253,11 +248,10 @@ async def test_explorer_all_tools_sequential_mocked():
             screenshot_path=str(input_screenshot),
             state=mock_state,
             version="ultra",
-            enable_caching=False,
         )
 
-        # Verify ReAct loop went through all 5 turns
-        assert mock_client.aio.models.generate_content.call_count == 5
+        # Verify the loop went through all 5 turns
+        assert llm.bind_tools.return_value.ainvoke.await_count == 5
         logger.info("Successfully completed all 5 ReAct turns.")
 
         # Retrieve final submission outcome
@@ -270,44 +264,30 @@ async def test_explorer_all_tools_sequential_mocked():
         logger.info("Submission response verified successfully.")
 
         # Extract all tool outputs from history to assert correctness
-        call_args_list = mock_client.aio.models.generate_content.call_args_list
+        call_args_list = llm.bind_tools.return_value.ainvoke.call_args_list
         # The fifth call receives the accumulated tool history
-        contents = call_args_list[4].kwargs.get("contents") or call_args_list[4].args[0]
-
-        tool_responses = _verify_all_tools_responses(contents, logger)
+        tool_responses = _verify_all_tools_responses(call_args_list[4].args[0], logger)
 
         # ASSERTIONS FOR EACH TOOL INDIVIDUALLY
 
-        # Verify each tool execution record in explorer.trace_history
-        assert len(explorer.trace_history) >= 4
         # 1. Verify get_ocr_list
-        ocr_trace = explorer.trace_history[0]["tool_calls"][0]
-        assert ocr_trace["name"] == "get_ocr_list"
-        assert "[O" in ocr_trace["response"]["text"]
-        assert "[462,208]" in ocr_trace["response"]["text"]
-        assert ocr_trace["response"]["image_path"] is not None
+        assert "[O" in tool_responses["get_ocr_list"][0]["text"]
+        assert "[462,208]" in tool_responses["get_ocr_list"][0]["text"]
+        assert tool_responses["get_ocr_list"][0]["has_image"]
 
         # 2. Verify ask_perception_tool
-        search_trace = explorer.trace_history[1]["tool_calls"][0]
-        assert search_trace["name"] == "ask_perception_tool"
-        assert "Text Search Results are" in search_trace["response"]["text"]
-        assert len(search_trace["response"]["image_paths"]) > 0
+        assert "Text Search Results are" in tool_responses["ask_perception_tool"][0]["text"]
+        assert tool_responses["ask_perception_tool"][0]["has_image"]
 
         # 3. Verify detect_objects
-        detect_trace = explorer.trace_history[2]["tool_calls"][0]
-        assert detect_trace["name"] == "detect_objects"
-        assert "[D" in detect_trace["response"]["text"]
-        assert detect_trace["response"]["image_path"] is not None
+        assert "[D" in tool_responses["detect_objects"][0]["text"]
+        assert tool_responses["detect_objects"][0]["has_image"]
 
         # 4. Verify inspect_region
-        coords_trace = explorer.trace_history[3]["tool_calls"][0]
-        assert coords_trace["name"] == "inspect_region"
-        assert coords_trace["response"]["image_path"] is not None
+        assert tool_responses["inspect_region"][0]["has_image"]
         # The coordinate audit at normalized [500, 500] (pixel [540, 1200]) is
         # answered from the in-memory index: the UI-tree button covers that point.
-        perception_trace = explorer.trace_history[1]["tool_calls"][0]
-        assert perception_trace["name"] == "ask_perception_tool"
-        assert "Settings Button" in perception_trace["response"]["text"]
+        assert "Settings Button" in tool_responses["ask_perception_tool"][0]["text"]
 
         logger.info(
             "All assertions passed! The entire suite of explorer tools is fully functional."

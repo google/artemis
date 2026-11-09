@@ -435,11 +435,6 @@ def test_run_adb_command_tool_subclass():
     assert run_adb_command.category == "system"
     assert run_adb_command.args_schema == RunAdbCommandArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = run_adb_command.to_genai_declaration()
-    assert declaration.name == "run_adb_command"
-    assert "CommandLine" in declaration.parameters.properties
-
 
 @pytest.mark.asyncio
 async def test_run_adb_command_tool_mock_driver_execute():
@@ -477,11 +472,6 @@ def test_manage_task_tool_subclass():
     assert manage_task.name == "manage_task"
     assert manage_task.category == "system"
     assert manage_task.args_schema == ManageTaskArgs
-
-    # GenAI FunctionDeclaration export
-    declaration = manage_task.to_genai_declaration()
-    assert declaration.name == "manage_task"
-    assert "Action" in declaration.parameters.properties
 
 
 @pytest.mark.asyncio
@@ -539,12 +529,6 @@ def test_analyze_task_output_tool_subclass():
     assert analyze_task_output.name == "analyze_task_output"
     assert analyze_task_output.category == "system"
     assert analyze_task_output.args_schema == AnalyzeTaskOutputArgs
-
-    # GenAI FunctionDeclaration export
-    declaration = analyze_task_output.to_genai_declaration()
-    assert declaration.name == "analyze_task_output"
-    assert "TaskId" in declaration.parameters.properties
-    assert "Query" in declaration.parameters.properties
 
 
 @pytest.mark.asyncio
@@ -604,11 +588,6 @@ def test_run_short_adb_command_tool_subclass():
     assert run_short_adb_command.name == "run_short_adb_command"
     assert run_short_adb_command.category == "system"
     assert run_short_adb_command.args_schema == RunShortAdbCommandArgs
-
-    # GenAI FunctionDeclaration export
-    declaration = run_short_adb_command.to_genai_declaration()
-    assert declaration.name == "run_short_adb_command"
-    assert "CommandLine" in declaration.parameters.properties
 
 
 @pytest.mark.asyncio

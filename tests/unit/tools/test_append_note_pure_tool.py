@@ -46,12 +46,6 @@ def test_append_note_pure_tool_subclass():
     assert append_note_pure.category == "memory"
     assert append_note_pure.args_schema == AppendNoteArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = append_note_pure.to_genai_declaration()
-    assert declaration.name == "append_note_pure"
-    assert "key" in declaration.parameters.properties
-    assert "content" in declaration.parameters.properties
-
 
 @pytest.mark.asyncio
 async def test_append_note_pure_direct_execution_success(mock_ctx, tmp_path):

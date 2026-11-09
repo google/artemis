@@ -46,11 +46,6 @@ def test_wait_tool_subclass():
     assert wait.category == "system"
     assert wait.args_schema == WaitArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = wait.to_genai_declaration()
-    assert declaration.name == "wait"
-    assert "seconds" in declaration.parameters.properties
-
     # Wrapper check
     assert wait_wrapper is not None
     assert wait_wrapper.tool_fn_getter == get_wait_tool

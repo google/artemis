@@ -54,11 +54,6 @@ def test_tool_declaration_mirrors_the_args_schema(tool):
     assert lc_tool.name == tool.name
     assert lc_tool.args_schema is tool.args_schema
 
-    # And the GenAI export agrees on names and required fields.
-    genai = tool.to_genai_declaration()
-    assert set(genai.parameters.properties) == set(properties)
-    assert list(genai.parameters.required or []) == declaration.parameters["required"]
-
 
 def test_declared_types_and_enums():
     search = SEARCH_HISTORY_TOOL.parameters["properties"]

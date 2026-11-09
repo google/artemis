@@ -17,19 +17,14 @@
 The :class:`Explorer` class combines the following modules:
 
 - ``tiers``: engine, tools and budgets for flash / pro / ultra.
-- ``tool_declarations``: static tool schemas (universal + native).
+- ``tool_declarations``: static tool schemas (universal).
 - ``perception_tools``: the ``exec_*`` perception/vision tool method group.
 - ``universal_runner``: the LangChain-based ``_run_universal`` loop.
 - ``run_setup``: flash mode and the pre-loop setup phases of ``run``.
-- ``native_runner``: the native Gemini reasoning loop of ``run``.
 """
 
 import json
-import os
 from typing import Any, Literal
-
-from google import genai
-from google.genai import types
 
 from artemis.agents.explorer.constants import DEFAULT_EXPLORER_MODEL
 from artemis.agents.explorer.geometry import (
@@ -38,18 +33,15 @@ from artemis.agents.explorer.geometry import (
     norm_to_pixel,
     pixel_to_norm,
 )
-from artemis.agents.explorer.native_runner import NativeRunnerMixin
 from artemis.agents.explorer.perception_tools import PerceptionToolsMixin
 from artemis.agents.explorer.run_setup import RunSetupMixin
 from artemis.agents.explorer.screen_index import normalize_text, ScreenElement, ScreenIndex
 from artemis.agents.explorer.tiers import ExplorerTier, get_tier
-from artemis.agents.explorer.tool_declarations import NATIVE_EXPLORER_TOOL_DECLARATIONS
 from artemis.agents.explorer.universal_runner import UniversalRunnerMixin
-from artemis.config import settings
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
-from artemis.llm.google import is_gemini_model, strip_provider_prefix
+from artemis.llm.google import strip_provider_prefix
 from artemis.utils.ocr_api import is_ocr_configured
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -57,28 +49,23 @@ logger = get_logger(__name__)
 
 __all__ = ["Explorer"]
 
-#: Environment override for Gemini explicit context caching ("true" / "false").
-CACHING_ENV_VAR = "ARTEMIS_EXPLORER_CACHING"
-
 #: How far outside its labeled element (as a fraction of the screen, per side)
 #: a candidate's point may fall and still inherit that element's bounds.
 LABEL_TOLERANCE_RATIO = 0.02
 
 
-class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, NativeRunnerMixin):
+class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin):
     """Locates UI elements on a screenshot for the ``ask_explorer`` tool.
 
     The tier (flash / pro / ultra) is applied per ``run`` call from
     :data:`artemis.agents.explorer.tiers.EXPLORER_TIERS`; it decides the
-    engine, the turn budget, the exposed perception tools and the caching
-    default.  Construction is side-effect free: no network client is created
-    until the native Gemini branch actually needs one.
+    turn budget and the exposed perception tools.  Construction is
+    side-effect free: no network client is created.
     """
 
     DENYLIST_TEMPLATE = (
         "\n# TOOL DENYLIST\n- The following tools are denylisted and cannot be used: {tools}\n"
     )
-    TOOLS = NATIVE_EXPLORER_TOOL_DECLARATIONS
 
     def __init__(self, ctx: ArtemisContext):
         self.ctx = ctx
@@ -89,10 +76,6 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         self.image_pool: dict[str, dict[str, Any]] = {}
         self.next_img_id = 1
         self.http_client = None
-        self.client = None
-        self.turn_latencies: list[float] = []
-        self.turn_cached_tokens: list[int] = []
-        self.trace_history: list[dict[str, Any]] = []
 
         # Rebuilt per ``run``: the queryable snapshot of the screen, and the
         # element behind every label the model has been shown so far.
@@ -107,11 +90,6 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         self.denylisted_tools = self._compute_denylist(None)
 
         self.model_name = self._resolve_model_name()
-        self.use_native_gemini = self._detect_native_engine()
-
-    # ------------------------------------------------------------------ #
-    # Engine selection (no side effects)
-    # ------------------------------------------------------------------ #
 
     def _resolve_model_name(self) -> str:
         """Returns the configured Explorer model name without a provider prefix."""
@@ -120,36 +98,6 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         model = getattr(llm_cfg, "model", None) if llm_cfg else None
         model_name = model if isinstance(model, str) and model else DEFAULT_EXPLORER_MODEL
         return strip_provider_prefix(model_name)
-
-    def _detect_native_engine(self) -> bool:
-        """True when the native google-genai SDK should drive the reasoning loop.
-
-        A Gemini model alone is not enough: without a Google API key (or a
-        client already shared on the context) the SDK cannot be constructed,
-        so such configurations run through the universal LangChain engine.
-        """
-        if not is_gemini_model(self.model_name):
-            return False
-        if getattr(self.ctx, "_genai_client", None) is not None:
-            return True
-        api_key = getattr(settings, "GOOGLE_API_KEY", None)
-        return bool(api_key and api_key.get_secret_value())
-
-    def _ensure_genai_client(self):
-        """Returns the context-level GenAI client, creating it on first use.
-
-        Only the native branch calls this, so universal configurations never
-        touch ``genai`` (and never fail on a missing Google key).  The client
-        is stored on the context for connection pooling across agents.
-        """
-        client = getattr(self.ctx, "_genai_client", None)
-        if client is None:
-            logger.info("Initializing GenAI client on context for connection pooling (Explorer)")
-            api_key = getattr(settings, "GOOGLE_API_KEY", None)
-            client = genai.Client(api_key=api_key.get_secret_value() if api_key else None)
-            self.ctx._genai_client = client
-        self.client = client
-        return client
 
     # ------------------------------------------------------------------ #
     # Tier application
@@ -180,32 +128,6 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         self.max_turns = tier.max_turns
         self.denylisted_tools = self._compute_denylist(tier)
 
-    def _resolve_caching(self, tier: ExplorerTier, enable_caching: bool | None) -> bool:
-        """Resolves Gemini explicit context caching for this run.
-
-        Precedence: explicit argument, ``ARTEMIS_EXPLORER_CACHING`` env
-        override, the agent configuration, the execution setup, the global
-        settings, then the tier default.  Configuration values are only
-        trusted when they are real booleans so a mocked or malformed config
-        (``None``, sentinel objects) falls through instead of forcing a value.
-        """
-        if isinstance(enable_caching, bool):
-            return enable_caching
-        env_value = os.getenv(CACHING_ENV_VAR, "").strip().lower()
-        if env_value in ("true", "false"):
-            return env_value == "true"
-        for source in (
-            getattr(self.ctx, "agent_config", None),
-            getattr(self.ctx, "execution_setup", None),
-        ):
-            value = getattr(getattr(source, "explorer", None), "caching", None)
-            if isinstance(value, bool):
-                return value
-        value = getattr(settings, "EXPLORER_CACHING", None)
-        if isinstance(value, bool):
-            return value
-        return tier.caching
-
     def _hidden_tool_names(self) -> set[str]:
         """Denylisted tools plus OCR when it is unconfigured, evaluated at call time.
 
@@ -217,34 +139,6 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         if not is_ocr_configured():
             hidden.add("get_ocr_list")
         return hidden
-
-    def get_exposed_tools(self, only_submit: bool = False) -> list[types.FunctionDeclaration]:
-        """Native tool declarations the model may see for the current tier."""
-        hidden = self._hidden_tool_names()
-        tools = [tool for tool in self.TOOLS if tool.name not in hidden]
-        if only_submit:
-            tools = [tool for tool in tools if tool.name == "submit_answer"]
-        return tools
-
-    def _prune_historical_images(self, contents, keep_last=1):
-        image_parts = []
-        for content in contents:
-            for part in content.parts:
-                if getattr(part, "inline_data", None) or getattr(part, "file_data", None):
-                    image_parts.append(part)
-        if len(image_parts) <= keep_last:
-            return
-        to_keep_ids = {id(p) for p in image_parts[-keep_last:]}
-        for content in contents:
-            content.parts = [
-                types.Part.from_text(
-                    text=("[Image pruned to maintain visual focus on latest state]")
-                )
-                if (getattr(p, "inline_data", None) or getattr(p, "file_data", None))
-                and id(p) not in to_keep_ids
-                else p
-                for p in content.parts
-            ]
 
     # ------------------------------------------------------------------ #
     # Label bounds and the structural pre-pass
@@ -366,7 +260,6 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         screenshot_path: str,
         state: State,
         minimal_list: str = "",
-        enable_caching: bool | None = None,
         version: Literal["flash", "pro", "ultra"] = "pro",
     ) -> str:
         """Locates ``query`` on ``screenshot_path`` under the ``version`` tier.
@@ -405,7 +298,6 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
                     screenshot_path,
                     state,
                     minimal_list,
-                    enable_caching,
                     fused_xml,
                 )
             return self._merge_prepass(prepass, raw)
@@ -420,10 +312,9 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
         screenshot_path: str,
         state: State,
         minimal_list: str,
-        enable_caching: bool | None,
         fused_xml: list[dict[str, Any]],
     ) -> str:
-        """Shared setup for the loop engines, then the engine-specific loop."""
+        """Prepares the run, then hands the unresolved query to the universal loop."""
         self._init_image_pool(screenshot_path)
 
         prompt_template, prompt_error = self._build_prompt_template(tier)
@@ -434,35 +325,18 @@ class Explorer(PerceptionToolsMixin, UniversalRunnerMixin, RunSetupMixin, Native
             fused_xml, screenshot_path, minimal_list, self.image_name
         )
 
-        if not self.use_native_gemini:
-            return await self._run_universal(
-                query=query,
-                context_feedback=context_feedback,
-                screenshot_path=img_to_read,
-                state=state,
-                minimal_list=minimal_list,
-                prompt_template=prompt_template,
-                max_turns=self.max_turns,
-            )
-
-        client = self._ensure_genai_client()
-        model_name, temperature, thinking_level, _fallback_model = self._resolve_model_params()
-        return await self._run_native(
-            client=client,
+        return await self._run_universal(
             query=query,
             context_feedback=context_feedback,
+            screenshot_path=img_to_read,
+            state=state,
             minimal_list=minimal_list,
-            img_to_read=img_to_read,
-            enable_caching=self._resolve_caching(tier, enable_caching),
             prompt_template=prompt_template,
-            model_name=model_name,
-            temperature=temperature,
-            thinking_level=thinking_level,
             max_turns=self.max_turns,
         )
 
     async def _close_http_client(self) -> None:
-        """Releases the on-demand OCR HTTP client; both engines share this path."""
+        """Releases the on-demand OCR HTTP client used by the perception tools."""
         client, self.http_client = self.http_client, None
         if client is None:
             return

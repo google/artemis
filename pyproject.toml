@@ -36,7 +36,6 @@ dependencies = [
     # LLM Providers & GenAI SDKs
     "google-genai>=2.22.0",
     "langchain-google-genai>=4.0.0",
-    "langchain-google-vertexai>=3.0.0",
     "langchain-openai>=1.0.0",
     # Configuration, Models & Validation
     "pydantic>=2.7.0",
@@ -257,5 +256,6 @@ dev = [
     "pytest-cov>=5.0.0",
     "pyright>=1.1.389",
     "pre-commit>=3.5.0",
+    "nuitka>=4.3.5",
 ]
 

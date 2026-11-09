@@ -301,34 +301,6 @@ def test_enrich_candidates_withholds_degenerate_bounds():
     assert explorer._enrich_candidates([cand]) == [cand]
 
 
-def test_native_submit_enriches_registered_candidates():
-    explorer = _indexed_explorer()
-    explorer._register_label("O2", explorer.screen_index.ocr_elements[0])
-    call = MagicMock()
-    call.name = "submit_answer"
-    call.args = {
-        "candidates": [
-            {"label": "O2", "coords": [185, 54], "description": "header"},
-            {"label": "D3", "coords": [900, 100], "description": "icon"},
-        ],
-        "fallback_message": "",
-    }
-    turn_record = {"tool_calls": []}
-
-    raw = explorer._process_submit_answer([call], turn_record, [])
-
-    data = json.loads(raw)
-    assert list(data) == ["candidates", "fallback_message"]
-    assert data["candidates"][0] == {
-        "label": "O2",
-        "coords": [185, 54],
-        "description": "header",
-        "bounds": [92, 41, 277, 66],
-        "source": "ocr",
-    }
-    assert data["candidates"][1] == call.args["candidates"][1]
-
-
 def test_universal_submit_enriches_registered_candidates():
     explorer = _indexed_explorer()
     explorer._register_label("1", explorer.screen_index.exact_matches("Settings")[0])

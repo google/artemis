@@ -38,6 +38,13 @@ def test_classifier_categories_and_recovery_decisions():
     assert not bad.retryable
     assert not bad.should_fallback  # Falling back would only hide the bug.
 
+    class ForbiddenError(Exception):
+        code = 403
+
+    forbidden = classify_failure(ForbiddenError("PERMISSION_DENIED: forbidden"))
+    assert forbidden.category is FailureCategory.AUTHENTICATION
+    assert not forbidden.retryable
+
     unknown = classify_failure(RuntimeError("something odd"))
     assert unknown.category is FailureCategory.UNKNOWN
     assert unknown.retryable

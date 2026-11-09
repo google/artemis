@@ -100,11 +100,6 @@ def test_analyze_logs_tool_subclass():
     assert analyze_logs.category == "custom"
     assert analyze_logs.args_schema == AnalyzeLogsArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = analyze_logs.to_genai_declaration()
-    assert declaration.name == "analyze_logs"
-    assert "specific_query" in declaration.parameters.properties
-
     # Wrapper check
     assert analyze_logs_wrapper is not None
     assert analyze_logs_wrapper.tool_fn_getter == get_analyze_logs_tool

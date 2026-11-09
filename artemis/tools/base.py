@@ -25,7 +25,6 @@ import concurrent.futures
 import inspect
 from typing import Annotated, Any, Literal
 
-from google.genai import types as genai_types
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel
@@ -147,45 +146,6 @@ class ArtemisTool:
             description=self.description,
             parameters={"type": "object", "properties": properties, "required": required},
         )
-
-    def to_genai_declaration(self) -> genai_types.FunctionDeclaration:
-        """Exports this tool to a Google GenAI FunctionDeclaration schema."""
-        flat_properties, required = self._flat_schema()
-        properties = {}
-        for prop_name, prop in flat_properties.items():
-            genai_type = _GENAI_TYPES.get(prop["type"], genai_types.Type.STRING)
-            items_schema = None
-            if genai_type == genai_types.Type.ARRAY:
-                item_type = (prop.get("items") or {}).get("type", "string")
-                items_schema = genai_types.Schema(
-                    type=_GENAI_TYPES.get(item_type, genai_types.Type.STRING)
-                )
-            properties[prop_name] = genai_types.Schema(
-                type=genai_type,
-                description=prop.get("description", ""),
-                items=items_schema,
-                enum=[str(v) for v in prop["enum"]] if prop.get("enum") else None,
-            )
-
-        return genai_types.FunctionDeclaration(
-            name=self.name,
-            description=self.description,
-            parameters=genai_types.Schema(
-                type=genai_types.Type.OBJECT,
-                properties=properties,
-                required=required,
-            ),
-        )
-
-
-_GENAI_TYPES = {
-    "string": genai_types.Type.STRING,
-    "integer": genai_types.Type.INTEGER,
-    "number": genai_types.Type.NUMBER,
-    "boolean": genai_types.Type.BOOLEAN,
-    "array": genai_types.Type.ARRAY,
-    "object": genai_types.Type.OBJECT,
-}
 
 
 def _flatten_property(prop_data: dict[str, Any]) -> dict[str, Any]:

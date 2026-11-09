@@ -170,7 +170,6 @@ class ArtemisContext(DeviceClientAccessors, BaseModel):
     result for a requirement the user withdrew: the run outcome reports it as
     retired instead of counting it as a pass or failure."""
 
-    _genai_client: Any | None = PrivateAttr(default=None)
     _video_blackboard: Any | None = PrivateAttr(default=None)
     _video_circuit_breaker: Any | None = PrivateAttr(default=None)
     _mobile_controller: Any | None = PrivateAttr(default=None)

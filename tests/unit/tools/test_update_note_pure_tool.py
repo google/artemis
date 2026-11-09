@@ -47,13 +47,6 @@ def test_update_note_pure_tool_subclass():
     assert update_note_pure.category == "memory"
     assert update_note_pure.args_schema == UpdateNoteArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = update_note_pure.to_genai_declaration()
-    assert declaration.name == "update_note_pure"
-    assert "key" in declaration.parameters.properties
-    assert "target" in declaration.parameters.properties
-    assert "replacement" in declaration.parameters.properties
-
 
 @pytest.mark.asyncio
 async def test_update_note_pure_direct_execution_success(mock_ctx, tmp_path):

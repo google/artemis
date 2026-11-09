@@ -46,14 +46,36 @@ def mock_context(tmp_path):
     return ctx
 
 
-def test_video_analyzer_universal_engine_detection(mock_context):
-    """Test that VideoAnalyzer routes to Universal Engine when non-Gemini model is set."""
-    from artemis.config import settings
+def test_video_analyzer_uses_the_static_chunk_ceiling(mock_context):
+    """The universal engine always plans chunks at the configured static ceiling."""
+    agent = VideoAnalyzer(mock_context)
 
-    with patch.object(settings, "GOOGLE_API_KEY", None):
-        agent = VideoAnalyzer(mock_context)
-        assert agent.use_native_gemini is False
-        assert agent.model_name == "claude-3-7-sonnet"
+    assert agent.model_name == "claude-3-7-sonnet"
+    assert agent.chunk_size_seconds == agent.static_chunk_size_seconds == 60.0
+
+
+@pytest.mark.asyncio
+async def test_run_drives_the_universal_engine_end_to_end(mock_context, tmp_path):
+    """``run`` resolves prompts, initializes the engine, and returns the model answer."""
+    mock_context.data_engine = None
+    agent = VideoAnalyzer(mock_context)
+
+    mock_llm = MagicMock()
+    mock_llm.bind_tools.return_value.ainvoke = AsyncMock(
+        return_value=AIMessage(content="The action succeeded.", tool_calls=[])
+    )
+
+    with patch(
+        "artemis.agents.video_analyzer.video_analyzer.get_llm",
+        return_value=mock_llm,
+    ):
+        result, status = await agent.run(
+            time_description="from 10s to 15s", purpose="Verify action"
+        )
+
+    assert status == "success"
+    assert "The action succeeded." in result
+    assert mock_llm.bind_tools.call_args.args[0] == UNIVERSAL_MAIN_TOOLS
 
 
 def test_universal_tool_schemas():
@@ -190,7 +212,6 @@ async def test_exec_analyze_audio_universal(mock_context, tmp_path):
 async def test_run_universal_multi_turn_reasoning(mock_context):
     """Test main reasoning loop of VideoAnalyzer in universal mode with tool dispatch."""
     agent = VideoAnalyzer(mock_context)
-    agent.use_native_gemini = False
 
     # Turn 1: Call extract_segment_metadata
     msg_turn1 = AIMessage(
@@ -259,9 +280,7 @@ _TEXT_ONLY = AIMessage(content="Prose answer: the toast appeared at 2.0s.", tool
 
 
 def _universal_agent(mock_context) -> VideoAnalyzer:
-    agent = VideoAnalyzer(mock_context)
-    agent.use_native_gemini = False
-    return agent
+    return VideoAnalyzer(mock_context)
 
 
 async def _run_chunk_with_response(agent, tmp_path, response):

@@ -45,13 +45,6 @@ def test_read_logs_tool_subclass():
     assert read_logs.category == "diagnostic"
     assert read_logs.args_schema == ReadLogsArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = read_logs.to_genai_declaration()
-    assert declaration.name == "read_logs"
-    assert "lines" in declaration.parameters.properties
-    assert "since_time" in declaration.parameters.properties
-    assert "until_time" in declaration.parameters.properties
-
 
 @pytest.mark.asyncio
 async def test_read_logs_direct_execution(mock_ctx):

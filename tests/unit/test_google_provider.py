@@ -19,7 +19,6 @@ from artemis.llm.google import (
     is_agentic_video_auto_eligible,
     is_gemini_model,
     is_google_chat_model,
-    is_google_family_provider,
     is_google_provider,
     resolve_video_processing,
     strip_provider_prefix,
@@ -31,38 +30,31 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "value, google, family",
+    "value, google",
     [
-        ("google", True, True),
-        ("Gemini", True, True),
-        (ModelProvider.GOOGLE, True, True),
-        (ModelProvider.GEMINI, True, True),
-        ("vertexai", False, True),
-        ("vertex-ai", False, True),
-        (ModelProvider.VERTEX_AI, False, True),
-        ("openai", False, False),
-        ("anthropic", False, False),
-        (None, False, False),
-        ("", False, False),
+        ("google", True),
+        ("Gemini", True),
+        (ModelProvider.GOOGLE, True),
+        (ModelProvider.GEMINI, True),
+        ("vertexai", False),
+        ("openai", False),
+        ("anthropic", False),
+        (None, False),
+        ("", False),
     ],
 )
-def test_provider_identity_tiers(value, google, family):
+def test_provider_identity(value, google):
     assert is_google_provider(value) is google
-    assert is_google_family_provider(value) is family
 
 
 def test_google_chat_model_is_detected_by_class_name():
     class ChatGoogleGenerativeAI:  # noqa: N801 - mirrors the real class name
         pass
 
-    class ChatVertexAI:
-        pass
-
     class ChatOpenAI:
         pass
 
     assert is_google_chat_model(ChatGoogleGenerativeAI()) is True
-    assert is_google_chat_model(ChatVertexAI()) is True
     assert is_google_chat_model(ChatOpenAI()) is False
     assert is_google_chat_model(None) is False
 

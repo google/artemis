@@ -46,13 +46,6 @@ def test_read_note_pure_tool_subclass():
     assert read_note_pure.category == "memory"
     assert read_note_pure.args_schema == ReadNoteArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = read_note_pure.to_genai_declaration()
-    assert declaration.name == "read_note_pure"
-    assert "key" in declaration.parameters.properties
-    assert "start_line" in declaration.parameters.properties
-    assert "end_line" in declaration.parameters.properties
-
 
 @pytest.mark.asyncio
 async def test_read_note_pure_direct_execution_success(mock_ctx, tmp_path):

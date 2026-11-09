@@ -50,10 +50,6 @@ def test_list_notes_tool_subclass():
     assert list_notes.category == "memory"
     assert list_notes.args_schema == ListNotesArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = list_notes.to_genai_declaration()
-    assert declaration.name == "list_notes"
-
     # Wrapper check
     assert list_notes_wrapper is not None
     assert list_notes_wrapper.tool_fn_getter == get_list_notes_tool

@@ -12,41 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Native Gemini execution path for a single video chunk sub-agent.
+"""Universal execution path for a single video chunk sub-agent.
 
-Extracted from ``video_analyzer.py`` as a pure structural split.  Patchable
-collaborators (``get_controller``, ``compress_video_for_api``, semaphores,
-LLM event recorders, ...) are looked up late through the facade module so
-``mock.patch("artemis.agents.video_analyzer.video_analyzer.<name>")`` targets
-keep working.  The sub-agent conversation itself lives in
-``chunk_conversation``.
+Patchable collaborators (``get_controller``, ``compress_video_for_api``,
+semaphores, LLM event recorders, ...) are looked up late through the facade
+module so ``mock.patch("artemis.agents.video_analyzer.video_analyzer.<name>")``
+targets keep working.
 """
 
 import asyncio
 from pathlib import Path
+from typing import NoReturn
 
 from artemis.agents.video_analyzer import video_analyzer as _va
-from artemis.agents.video_analyzer.chunk_agentic import run_agentic_chunk_conversation
-from artemis.agents.video_analyzer.chunk_conversation import (
-    _ChunkMedia,
-    _run_native_chunk_conversation,
-)
-from artemis.agents.video_analyzer.reliability import (
-    AgenticVideoDegraded,
-    classify_video_failure,
-    is_agentic_rejection,
-)
+from artemis.agents.video_analyzer.reliability import classify_video_failure
 from artemis.llm.reliability import retry_policy_for
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
+class _ChunkMedia:
+    """Mutable holder for per-attempt media artifacts shared with failure handling."""
+
+    __slots__ = ("path", "compressed_path", "actual_start", "prompt_with_context")
+
+    def __init__(self):
+        self.path: Path | None = None
+        self.compressed_path: Path | None = None
+        self.actual_start: float | None = None
+        self.prompt_with_context: str | None = None
+
+
 async def exec_single_chunk(
     analyzer, start_time: float, end_time: float | None, specific_query: str
 ) -> str:
     """Analyzes one closed chunk interval, with claim/lease and retry handling."""
-    max_retries = analyzer.native_max_retries
+    max_retries = analyzer.sub_agent_max_retries
     current_start = round(start_time, 1) if isinstance(start_time, (int, float)) else start_time
     current_end = round(end_time, 1) if isinstance(end_time, (int, float)) else end_time
 
@@ -83,17 +85,11 @@ async def exec_single_chunk(
 
     attempt = 0
     while attempt <= max_retries:
-        # The mode this attempt was launched in: a parallel chunk may degrade
-        # the run while this one is still in flight.
-        attempt_mode = analyzer.video_processing
         try:
             logger.info(
                 f"Attempt {attempt + 1}/{max_retries + 1} for sub-agent:"
                 f" start={current_start}, end={current_end}"
             )
-            # A sibling may switch the run to static during queuing or media
-            # preparation. Check the size before preparation and before dispatch.
-            _ensure_fits_static_ceiling(analyzer, current_start, current_end)
             result, slowdown_factor = await _prepare_chunk_media(
                 analyzer, media, current_start, current_end
             )
@@ -106,84 +102,42 @@ async def exec_single_chunk(
                 end_time,
                 specific_query,
             )
-            _ensure_fits_static_ceiling(analyzer, current_start, current_end)
 
-            if not analyzer.use_native_gemini:
-                chunk_result = await analyzer._exec_single_chunk_universal(
-                    compressed_path=media.compressed_path,
-                    raw_path=media.path,
-                    start_time=current_start,
-                    end_time=current_end,
-                    actual_start=media.actual_start,
-                    prompt_with_context=media.prompt_with_context,
-                    specific_query=specific_query,
-                )
-                summary, analysis = analyzer._parse_chunk_result(chunk_result)
-                analyzer.blackboard.complete_segment(
-                    current_start,
-                    current_end,
-                    specific_query,
-                    lease_owner,
-                    summary,
-                    analysis,
-                )
-                return chunk_result
-
-            if analyzer.video_processing == "agentic":
-                return await run_agentic_chunk_conversation(
-                    analyzer,
-                    media,
-                    current_start,
-                    current_end,
-                    start_time,
-                    end_time,
-                    specific_query,
-                    lease_owner,
-                )
-
-            return await _run_native_chunk_conversation(
-                analyzer,
-                media,
+            chunk_result = await analyzer._exec_single_chunk_universal(
+                compressed_path=media.compressed_path,
+                raw_path=media.path,
+                start_time=current_start,
+                end_time=current_end,
+                actual_start=media.actual_start,
+                prompt_with_context=media.prompt_with_context,
+                specific_query=specific_query,
+            )
+            summary, analysis = analyzer._parse_chunk_result(chunk_result)
+            analyzer.blackboard.complete_segment(
                 current_start,
                 current_end,
-                start_time,
-                end_time,
                 specific_query,
                 lease_owner,
+                summary,
+                analysis,
             )
+            return chunk_result
 
         except Exception as e:
             # Retry decisions are owned by the shared classification layer.
             # Every attempt restarts from scratch (segment re-extracted,
-            # file re-uploaded, stream re-consumed); partially accumulated
-            # stream output from the failed attempt is discarded, never
-            # surfaced as a complete answer.
+            # frames re-sampled, model re-invoked); partially accumulated
+            # output from the failed attempt is discarded, never surfaced as
+            # a complete answer.
             failure = classify_video_failure(e)
-            if attempt_mode == "agentic" and is_agentic_rejection(failure, e):
-                # Switch to static and let the coordinator resize the interval.
-                _degrade_agentic_to_static(analyzer, e, failure)
-                return await _finish_failed_chunk(
-                    analyzer,
-                    media,
-                    current_start,
-                    current_end,
-                    specific_query,
-                    lease_owner,
-                    AgenticVideoDegraded(
-                        f"Agentic video processing rejected ({e}); re-plan"
-                        f" {current_start:.1f}s-{current_end:.1f}s at the static chunk size"
-                    ),
-                    retryable=False,
-                )
             attempts_so_far = attempt + 1
             if not failure.retryable:
                 logger.warning(
                     f"Sub-agent non-retryable failure [{failure.category.value}]"
                     f" on attempt {attempts_so_far}: {e}"
                 )
-                return await _finish_failed_chunk(
+                _fail_chunk(
                     analyzer,
-                    media,
                     current_start,
                     current_end,
                     specific_query,
@@ -198,9 +152,8 @@ async def exec_single_chunk(
                     f"Sub-agent exhausted {attempts_so_far} attempt(s)"
                     f" [{failure.category.value}]: {e}"
                 )
-                return await _finish_failed_chunk(
+                _fail_chunk(
                     analyzer,
-                    media,
                     current_start,
                     current_end,
                     specific_query,
@@ -211,8 +164,8 @@ async def exec_single_chunk(
             logger.warning(
                 f"Sub-agent retryable failure [{failure.category.value}]"
                 f" ({attempts_so_far}/{allowed_attempts}): {e}; retrying"
-                f" from scratch in {delay:.2f}s (partial stream output"
-                " from the failed attempt is discarded)"
+                f" from scratch in {delay:.2f}s (partial output from the"
+                " failed attempt is discarded)"
             )
             _va._record_llm_retry(
                 str(e),
@@ -229,47 +182,8 @@ async def exec_single_chunk(
     )
 
 
-def _degrade_agentic_to_static(analyzer, error: Exception, failure) -> None:
-    """Switches the rest of this run to static video understanding (idempotent)."""
-    if analyzer.video_processing != "agentic":
-        return
-    logger.warning(
-        f"Agentic video processing rejected ({error}); the rest of this run"
-        " analyzes video in static mode"
-    )
-    _va._record_llm_event(
-        "llm_fallback",
-        {
-            "reason": "agentic_video_rejected",
-            "category": failure.category.value,
-            "error": str(error)[:500],
-        },
-    )
-    analyzer.video_processing = "static"
-    analyzer.chunk_size_seconds = analyzer.static_chunk_size_seconds
-
-
-def _ensure_fits_static_ceiling(analyzer, current_start: float, current_end: float) -> None:
-    """Refuses to analyze a clip sized for the agentic ceiling once the run is static.
-
-    Raises :class:`AgenticVideoDegraded`, which the attempt loop treats as a
-    non-retryable failure: the lease is released via ``fail_segment`` and the
-    coordinator re-plans the interval into static-sized pieces.
-    """
-    if analyzer.video_processing == "agentic":
-        return
-    if current_end - current_start <= analyzer.chunk_size_seconds + 1e-3:
-        return
-    raise AgenticVideoDegraded(
-        f"Run degraded to static video processing while {current_start:.1f}s-{current_end:.1f}s"
-        f" was pending; re-plan it at the static chunk size"
-        f" ({analyzer.chunk_size_seconds:.0f}s)"
-    )
-
-
-async def _finish_failed_chunk(
+def _fail_chunk(
     analyzer,
-    media: _ChunkMedia,
     current_start: float,
     current_end: float,
     specific_query: str,
@@ -277,51 +191,9 @@ async def _finish_failed_chunk(
     error: Exception,
     *,
     retryable: bool | None = None,
-):
-    """Records terminal failure, attempting the universal fallback first when eligible."""
+) -> NoReturn:
+    """Records a terminal chunk failure so a later claim can retry the interval."""
     failure = classify_video_failure(error)
-    if (
-        analyzer.use_native_gemini
-        and failure.should_fallback
-        and media.path is not None
-        and media.compressed_path is not None
-        and media.actual_start is not None
-        and media.prompt_with_context is not None
-    ):
-        try:
-            logger.warning("Native video chunk exhausted retries; using universal fallback")
-            _va._record_llm_event(
-                "llm_fallback",
-                {
-                    "reason": "native_video_chunk_failed",
-                    "category": failure.category.value,
-                    "error": str(error)[:500],
-                },
-            )
-            fallback_result = await analyzer._exec_single_chunk_universal(
-                compressed_path=media.compressed_path,
-                raw_path=media.path,
-                start_time=current_start,
-                end_time=current_end,
-                actual_start=media.actual_start,
-                prompt_with_context=media.prompt_with_context,
-                specific_query=specific_query,
-                force_fallback=True,
-            )
-            summary, analysis = analyzer._parse_chunk_result(fallback_result)
-            analyzer.blackboard.complete_segment(
-                current_start,
-                current_end,
-                specific_query,
-                lease_owner,
-                summary,
-                analysis,
-            )
-            return fallback_result
-        except Exception as fallback_error:
-            error = fallback_error
-            failure = classify_video_failure(error)
-            retryable = None
     analyzer.blackboard.fail_segment(
         current_start,
         current_end,
@@ -369,11 +241,6 @@ async def _prepare_chunk_media(
         analyzer.local_files_to_cleanup.add(compressed_path)
         analyzer.local_dirs_to_cleanup.add(compressed_path.parent)
     media.compressed_path = compressed_path
-
-    actual_start = getattr(result, "actual_start_relative_time", current_start)
-    if not isinstance(actual_start, (int, float)):
-        actual_start = current_start
-    media.actual_start = actual_start
     return result, slowdown_factor
 
 

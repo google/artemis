@@ -194,11 +194,6 @@ class TestCommitteeTool(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ask_committee.category, "custom")
         self.assertEqual(ask_committee.args_schema, AskCommitteeArgs)
 
-        # GenAI FunctionDeclaration export
-        declaration = ask_committee.to_genai_declaration()
-        self.assertEqual(declaration.name, "ask_committee")
-        self.assertIn("avatar_directive", declaration.parameters.properties)
-
         # Wrapper check
         self.assertIsNotNone(ask_committee_wrapper)
         self.assertEqual(ask_committee_wrapper.tool_fn_getter, get_ask_committee_tool)

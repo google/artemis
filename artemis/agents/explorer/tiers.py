@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Engine, turn budget, tools and caching settings for each Explorer tier.
+"""Engine, turn budget and tool exposure for each Explorer tier.
 
 User configuration selects the tier. The calling agent sees the same
 ``ask_explorer`` contract at every tier.
@@ -50,8 +50,6 @@ class ExplorerTier:
     max_turns: int
     #: Perception tools exposed to the loop engine (``submit_answer`` is implicit).
     tools: frozenset[str]
-    #: Default for Gemini explicit context caching when the user did not decide.
-    caching: bool
     #: One-line summary used in logs and configuration help.
     summary: str
 
@@ -71,7 +69,6 @@ EXPLORER_TIERS: dict[ExplorerVersion, ExplorerTier] = {
         engine="oneshot",
         max_turns=1,
         tools=frozenset(),
-        caching=False,
         summary="One-shot visual detection on the current screenshot; fastest, no reasoning loop.",
     ),
     "pro": ExplorerTier(
@@ -79,7 +76,6 @@ EXPLORER_TIERS: dict[ExplorerVersion, ExplorerTier] = {
         engine="loop",
         max_turns=3,
         tools=frozenset({"ask_perception_tool"}),
-        caching=False,
         summary=(
             "Short reasoning loop combining UI-tree search, coordinate audit and visual"
             " detection; balanced default."
@@ -90,7 +86,6 @@ EXPLORER_TIERS: dict[ExplorerVersion, ExplorerTier] = {
         engine="loop",
         max_turns=8,
         tools=PERCEPTION_TOOLS,
-        caching=True,
         summary=(
             "Deep reasoning loop with zooming, OCR and pixel-level image processing for"
             " layout-critical searches; slowest."

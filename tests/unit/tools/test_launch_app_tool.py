@@ -60,11 +60,6 @@ def test_launch_app_tool_subclass():
     assert launch_app.category == "action"
     assert launch_app.args_schema == LaunchAppArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = launch_app.to_genai_declaration()
-    assert declaration.name == "launch_app"
-    assert "app_name" in declaration.parameters.properties
-
     # Wrapper check
     assert launch_app_wrapper is not None
     assert launch_app_wrapper.tool_fn_getter == get_launch_app_tool

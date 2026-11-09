@@ -52,12 +52,6 @@ def test_submit_answer_tool_subclass():
     assert submit_answer.category == "custom"
     assert submit_answer.args_schema == SubmitAnswerArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = submit_answer.to_genai_declaration()
-    assert declaration.name == "submit_answer"
-    assert "analysis" in declaration.parameters.properties
-    assert "actionable_steps" in declaration.parameters.properties
-
 
 def test_ask_diagnoser_tool_subclass():
     """Verify AskDiagnoserTool is an ArtemisTool subclass."""
@@ -80,11 +74,6 @@ def test_ask_diagnoser_tool_subclass():
     assert ask_diagnoser.category == "custom"
     assert ask_diagnoser.args_schema == AskDiagnoserArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = ask_diagnoser.to_genai_declaration()
-    assert declaration.name == "ask_diagnoser"
-    assert "query" in declaration.parameters.properties
-
 
 def test_analyze_logs_tool_subclass():
     """Verify AnalyzeLogsTool is an ArtemisTool subclass."""
@@ -106,8 +95,3 @@ def test_analyze_logs_tool_subclass():
     assert analyze_logs.name == "analyze_logs"
     assert analyze_logs.category == "custom"
     assert analyze_logs.args_schema == AnalyzeLogsArgs
-
-    # GenAI FunctionDeclaration export
-    declaration = analyze_logs.to_genai_declaration()
-    assert declaration.name == "analyze_logs"
-    assert "specific_query" in declaration.parameters.properties

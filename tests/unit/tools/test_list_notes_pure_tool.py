@@ -46,10 +46,6 @@ def test_list_notes_pure_tool_subclass():
     assert list_notes_pure.category == "memory"
     assert list_notes_pure.args_schema == ListNotesArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = list_notes_pure.to_genai_declaration()
-    assert declaration.name == "list_notes_pure"
-
 
 @pytest.mark.asyncio
 async def test_list_notes_pure_direct_execution_empty(mock_ctx):

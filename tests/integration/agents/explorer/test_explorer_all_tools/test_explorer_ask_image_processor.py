@@ -18,6 +18,9 @@ import logging
 from pathlib import Path
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
 from artemis.agents.explorer.explorer import Explorer
 from tests.integration.agents.explorer.test_explorer_all_tools.helpers import (
     create_mock_context,
@@ -28,39 +31,21 @@ from PIL import Image
 import pytest
 
 
-def _verify_tool_responses(contents: list, logger: logging.Logger):
-    """Parses the multi-turn conversational history payload and maps tool outputs."""
+def _verify_tool_responses(messages: list, logger: logging.Logger):
+    """Collects every tool result the loop fed back, plus the images it attached."""
     logger.info("=== VERIFYING TOOL RESPONSES IN CONVERSATION HISTORY ===")
     tool_responses = {}
-    for content in contents:
-        for part in content.parts:
-            if part.function_response:
-                name = part.function_response.name
-                response_data = part.function_response.response
-
-                # Extract result text
-                tool_text = None
-                if hasattr(response_data, "get"):
-                    tool_text = response_data.get("result")
-                elif hasattr(response_data, "fields"):
-                    tool_text = response_data.fields.get("result")
-                else:
-                    tool_text = getattr(response_data, "result", None)
-
-                if name not in tool_responses:
-                    tool_responses[name] = []
-                tool_responses[name].append({"text": tool_text, "has_image": False})
-                logger.info(f"Found tool response for '{name}':\n{tool_text}")
-
-            if part.inline_data and part.inline_data.mime_type == "image/jpeg":
-                if tool_responses:
-                    last_tool = list(tool_responses.keys())[-1]
-                    tool_responses[last_tool][-1]["has_image"] = True
-                    tool_responses[last_tool][-1]["img_bytes"] = part.inline_data.data
-                    logger.info(
-                        f"  -> Attached {len(part.inline_data.data)} bytes of"
-                        f" JPEG inline visual content to '{last_tool}'"
-                    )
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            tool_responses.setdefault(message.name, []).append({"text": message.content})
+            logger.info(f"Found tool response for '{message.name}':\n{message.content}")
+        if isinstance(message, HumanMessage) and isinstance(message.content, list):
+            blocks = [b for b in message.content if b.get("type") == "image_url"]
+            if blocks and tool_responses:
+                last_tool = list(tool_responses.keys())[-1]
+                tool_responses[last_tool][-1]["has_image"] = True
+                tool_responses[last_tool][-1]["img_bytes"] = blocks[0]["image_url"]["url"]
+                logger.info(f"  -> Attached {len(blocks)} image block(s) to '{last_tool}'")
 
     return tool_responses
 
@@ -115,33 +100,41 @@ async def test_explorer_ask_image_processor_tool():
     # =========================================================================
 
     # Turn 1: call ask_image_processor
-    mock_fc_coder = MagicMock()
-    mock_fc_coder.name = "ask_image_processor"
-    mock_fc_coder.args = {
-        "instruction": (
-            "Crop the top-right area, convert to HSV, resize, then convert to grayscale."
-        ),
-        "target_image_id": "img_0",
-    }
-    mock_resp_coder = MagicMock()
-    mock_resp_coder.function_calls = [mock_fc_coder]
-
-    # Turn 2: call submit_answer to complete loop immediately after vision coder responds
-    mock_fc_submit = MagicMock()
-    mock_fc_submit.name = "submit_answer"
-    mock_fc_submit.args = {
-        "candidates": [],
-        "fallback_message": ("Successfully processed the image via Vision Coder."),
-    }
-    mock_resp_submit = MagicMock()
-    mock_resp_submit.function_calls = [mock_fc_submit]
-
-    mock_client = MagicMock()
-    mock_client.aio.models.generate_content = AsyncMock(
-        side_effect=[mock_resp_coder, mock_resp_submit]
+    turn_coder = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "ask_image_processor",
+                "args": {
+                    "instruction": (
+                        "Crop the top-right area, convert to HSV, resize,"
+                        " then convert to grayscale."
+                    ),
+                    "target_image_id": "img_0",
+                },
+                "id": "call_coder",
+            }
+        ],
     )
 
-    mock_ctx._genai_client = mock_client
+    # Turn 2: call submit_answer to complete loop immediately after vision coder responds
+    turn_submit = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "submit_answer",
+                "args": {
+                    "candidates": [],
+                    "fallback_message": ("Successfully processed the image via Vision Coder."),
+                },
+                "id": "call_submit",
+            }
+        ],
+    )
+
+    llm = MagicMock()
+    llm.bind_tools.return_value.ainvoke = AsyncMock(side_effect=[turn_coder, turn_submit])
+
     mock_ctx.llm_config.explorer = None
 
     # =========================================================================
@@ -190,8 +183,8 @@ async def test_explorer_ask_image_processor_tool():
 
     with (
         patch(
-            "artemis.agents.explorer.explorer.genai.Client",
-            return_value=mock_client,
+            "artemis.agents.explorer.universal_runner.get_llm",
+            return_value=llm,
         ),
         patch(
             "artemis.agents.explorer.perception_tools.ImageProcessor",
@@ -212,8 +205,8 @@ async def test_explorer_ask_image_processor_tool():
         assert "img_0" in explorer.image_pool
         assert explorer.image_pool["img_0"]["path"] == str(input_screenshot)
 
-        # Verify ReAct loop went through exactly 2 turns
-        assert mock_client.aio.models.generate_content.call_count == 2
+        # Verify the loop went through exactly 2 turns
+        assert llm.bind_tools.return_value.ainvoke.await_count == 2
         logger.info("Successfully completed both ReAct turns.")
 
         # Verify ImageProcessor run was called with correct parameters
@@ -246,11 +239,9 @@ async def test_explorer_ask_image_processor_tool():
         logger.info("Submission response verified successfully.")
 
         # Extract all tool outputs from history to assert correctness
-        call_args_list = mock_client.aio.models.generate_content.call_args_list
+        call_args_list = llm.bind_tools.return_value.ainvoke.call_args_list
         # The second call receives the accumulated tool history
-        contents = call_args_list[1].kwargs.get("contents") or call_args_list[1].args[0]
-
-        tool_responses = _verify_tool_responses(contents, logger)
+        tool_responses = _verify_tool_responses(call_args_list[1].args[0], logger)
 
         # Assertions for ask_image_processor tool response (Turn 1 output)
         assert "ask_image_processor" in tool_responses
@@ -262,7 +253,7 @@ async def test_explorer_ask_image_processor_tool():
         assert "- [V1]: [208, 440]" in coder_resp["text"]
         assert "- [V2]: [468, 720]" in coder_resp["text"]
         assert coder_resp["has_image"]
-        assert len(coder_resp["img_bytes"]) > 0
+        assert coder_resp["img_bytes"].startswith("data:image/jpeg;base64,")
         logger.info(
             "Verified tool response contains the response text, annotations"
             " list, and the attached image bytes."

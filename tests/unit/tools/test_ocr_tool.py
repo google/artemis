@@ -76,10 +76,6 @@ def test_ocr_tool_subclass():
     assert ocr_recognition.category == "explorer"
     assert ocr_recognition.args_schema == OcrArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = ocr_recognition.to_genai_declaration()
-    assert declaration.name == "ocr_recognition"
-
     # Wrapper check
     assert ocr_recognition_wrapper is not None
     assert ocr_recognition_wrapper.tool_fn_getter == get_ocr_tool

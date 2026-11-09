@@ -51,13 +51,6 @@ def test_update_note_tool_subclass():
     assert update_note.category == "memory"
     assert update_note.args_schema == UpdateNoteArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = update_note.to_genai_declaration()
-    assert declaration.name == "update_note"
-    assert "key" in declaration.parameters.properties
-    assert "target" in declaration.parameters.properties
-    assert "replacement" in declaration.parameters.properties
-
     # Wrapper check
     assert update_note_wrapper is not None
     assert update_note_wrapper.tool_fn_getter == get_update_note_tool

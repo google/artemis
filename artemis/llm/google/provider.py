@@ -14,13 +14,9 @@
 
 """Google provider identity and the Gemini model capability table.
 
-Provider identity has two tiers:
-
-* :func:`is_google_provider` - the Gemini Developer API (``google`` /
-  ``gemini``). Native ``google-genai`` features (Files API, explicit caching,
-  the Interactions API) are only reachable here.
-* :func:`is_google_family_provider` - additionally Vertex AI, which shares
-  Google credentials but not the developer-API-only features.
+Provider identity covers the Gemini Developer API (``google`` / ``gemini``).
+Native ``google-genai`` features (Files API, explicit caching, the Interactions
+API) are only reachable there.
 
 Model IDs use ``gemini-<major>.<minor>-<tier>[<suffix>]``. Release suffixes
 (``preview``, ``latest``, ``exp``, and numeric tokens) retain base-family
@@ -37,7 +33,6 @@ VideoProcessing = Literal["auto", "agentic", "static"]
 ResolvedVideoProcessing = Literal["agentic", "static"]
 
 _GOOGLE_API_PROVIDERS = frozenset({"google", "gemini"})
-_GOOGLE_FAMILY_PROVIDERS = _GOOGLE_API_PROVIDERS | frozenset({"vertexai", "vertex"})
 
 _GEMINI_MODEL_RE = re.compile(r"gemini-(\d+)\.(\d+)-(flash-lite|flash|pro)", re.IGNORECASE)
 _RELEASE_SUFFIX_TOKENS = frozenset({"preview", "latest", "exp"})
@@ -73,11 +68,6 @@ def is_google_provider(value: Any) -> bool:
     return _normalize_provider(value) in _GOOGLE_API_PROVIDERS
 
 
-def is_google_family_provider(value: Any) -> bool:
-    """True for every provider that authenticates with Google credentials."""
-    return _normalize_provider(value) in _GOOGLE_FAMILY_PROVIDERS
-
-
 def is_google_chat_model(model: Any) -> bool:
     """True when a LangChain chat model is backed by Google (by class name).
 
@@ -86,7 +76,7 @@ def is_google_chat_model(model: Any) -> bool:
     """
     cls = getattr(model, "__class__", None)
     name = cls.__name__ if cls else ""
-    return "Google" in name or "Gemini" in name or "VertexAI" in name
+    return "Google" in name or "Gemini" in name
 
 
 def strip_provider_prefix(model_name: Any) -> str:

@@ -73,7 +73,7 @@ def test_planner_validation_node_defaults_to_lightweight_judge():
     assert node.model == safety_net.model
     assert node.provider == safety_net.provider
     assert node.temperature == 0.0
-    if str(node.provider) in ("google", "vertexai"):
+    if str(node.provider) == "google":
         assert "lite" in node.model
     else:
         assert node.model == llm_cfg.planner.model

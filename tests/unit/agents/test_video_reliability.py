@@ -3,7 +3,6 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,7 +10,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 import pytest
 
 from artemis.agents.video_analyzer.reliability import (
-    AgenticVideoDegraded,
     VideoCircuitBreaker,
     VideoFailureCategory,
     classify_video_failure,
@@ -80,8 +78,7 @@ def test_circuit_breaker_opens_and_half_opens():
 
 @pytest.mark.asyncio
 async def test_timeout_chunk_is_bisected_and_successful_leaves_survive():
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(_context())
+    analyzer = VideoAnalyzer(_context())
 
     async def analyze(start: float, end: float, query: str) -> str:
         if end - start > 4.0:
@@ -98,8 +95,7 @@ async def test_timeout_chunk_is_bisected_and_successful_leaves_survive():
 
 @pytest.mark.asyncio
 async def test_universal_primary_failure_uses_configured_fallback():
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(_context())
+    analyzer = VideoAnalyzer(_context())
 
     primary = MagicMock()
     primary_bound = MagicMock()
@@ -126,58 +122,8 @@ async def test_universal_primary_failure_uses_configured_fallback():
     assert get_model.call_args_list[1].kwargs["use_fallback"] is True
 
 
-@pytest.mark.asyncio
-async def test_native_chunk_exhaustion_commits_universal_fallback(tmp_path):
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(_context())
-    analyzer.use_native_gemini = True
-    raw_video = tmp_path / "segment.mp4"
-    raw_video.write_bytes(b"video")
-    extracted = SimpleNamespace(
-        success=True,
-        video_path=raw_video,
-        actual_start_relative_time=0.0,
-        duration_seconds=5.0,
-        warning=None,
-    )
-    controller = SimpleNamespace(extract_segment_metadata=AsyncMock(return_value=extracted))
-    fallback_text = "[from 0.0s to 5.0s] Summary: fallback recovered Analysis: grounded"
-
-    with (
-        patch(
-            "artemis.agents.video_analyzer.video_analyzer.get_controller",
-            return_value=controller,
-        ),
-        patch(
-            "artemis.agents.video_analyzer.video_analyzer.compress_video_for_api",
-            new=AsyncMock(return_value=raw_video),
-        ),
-        patch.object(
-            analyzer,
-            "upload_and_poll_file",
-            new=AsyncMock(side_effect=RuntimeError("503 provider unavailable")),
-        ) as upload,
-        patch.object(
-            analyzer,
-            "_exec_single_chunk_universal",
-            new=AsyncMock(return_value=fallback_text),
-        ) as fallback,
-        patch(
-            "artemis.agents.video_analyzer.video_analyzer.asyncio.sleep",
-            new=AsyncMock(),
-        ),
-    ):
-        result = await analyzer._exec_single_chunk(0.0, 5.0, "verify transition")
-
-    assert result == fallback_text
-    assert upload.await_count == 2
-    fallback.assert_awaited_once()
-    assert analyzer.blackboard.missing_intervals(0.0, 5.0, "verify transition") == []
-
-
 def test_action_timestamps_drive_dense_sampling():
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(_context())
+    analyzer = VideoAnalyzer(_context())
     step = SimpleNamespace(timestamp=104.0, action_taken={"name": "tap"})
     storage = SimpleNamespace(get_steps=lambda _session: [step])
     analyzer.ctx.data_engine = SimpleNamespace(
@@ -292,163 +238,3 @@ async def test_invoke_with_retry_caps_unknown_failures_by_policy():
             await va._invoke_with_retry(op, "test-op", max_attempts=5)
     # UNKNOWN failures follow the shared policy, not the caller's outer cap.
     assert calls == retry_policy_for(FailureCategory.UNKNOWN).max_attempts
-
-
-# ------------------------------------------------ mid-run agentic degrade
-
-
-class _AgenticRejected(Exception):
-    status_code = 400
-
-
-@pytest.mark.asyncio
-async def test_pending_chunk_sized_for_agentic_ceiling_is_not_run_statically(tmp_path):
-    """A chunk planned at 600s whose run degraded before it started is handed back."""
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(_context())
-    analyzer.use_native_gemini = True
-    # A sibling chunk already flipped the run to static (60s ceiling).
-    analyzer.video_processing = "static"
-    analyzer.chunk_size_seconds = analyzer.static_chunk_size_seconds
-    controller = SimpleNamespace(extract_segment_metadata=AsyncMock())
-
-    with (
-        patch(
-            "artemis.agents.video_analyzer.video_analyzer.get_controller",
-            return_value=controller,
-        ),
-        patch(
-            "artemis.agents.video_analyzer.chunk_native._run_native_chunk_conversation",
-            new=AsyncMock(),
-        ) as static_path,
-        patch.object(analyzer, "_exec_single_chunk_universal", new=AsyncMock()) as universal,
-        pytest.raises(AgenticVideoDegraded) as raised,
-    ):
-        await analyzer._exec_single_chunk(0.0, 150.0, "verify toggle")
-
-    # Refused before any extraction/upload; no static or fallback analysis.
-    controller.extract_segment_metadata.assert_not_awaited()
-    static_path.assert_not_awaited()
-    universal.assert_not_awaited()
-    assert classify_video_failure(raised.value).should_split
-    # The lease is released so the re-planned pieces can be claimed.
-    assert analyzer.blackboard.missing_intervals(0.0, 150.0, "verify toggle") == [(0.0, 150.0)]
-
-
-@pytest.mark.asyncio
-async def test_sibling_chunk_degraded_mid_run_is_replanned_into_static_pieces(tmp_path):
-    """Two 600s chunks: the first is rejected while the second is still in media prep."""
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(_context())
-    analyzer.use_native_gemini = True
-    analyzer.video_processing = "agentic"
-    analyzer.chunk_size_seconds = analyzer.agentic_chunk_size_seconds
-    assert analyzer.chunk_size_seconds == 600.0
-
-    raw_video = tmp_path / "segment.mp4"
-    raw_video.write_bytes(b"video")
-    first_rejected = asyncio.Event()
-
-    async def extract(start: float, end: float):
-        if start >= 600.0 and analyzer.video_processing == "agentic":
-            # The second 600s chunk is mid-prep when the first one degrades.
-            await first_rejected.wait()
-        return SimpleNamespace(
-            success=True,
-            video_path=raw_video,
-            actual_start_relative_time=start,
-            duration_seconds=end - start,
-            warning=None,
-        )
-
-    controller = SimpleNamespace(extract_segment_metadata=AsyncMock(side_effect=extract))
-    agentic_calls: list[tuple[float, float]] = []
-
-    async def agentic(analyzer_, media, cs, ce, *rest):
-        agentic_calls.append((cs, ce))
-        first_rejected.set()
-        raise _AgenticRejected("400 INVALID_ARGUMENT: processing 'agentic' is not supported")
-
-    async def static_answer(analyzer_, media, cs, ce, *rest):
-        return f"[from {cs:.1f}s to {ce:.1f}s] Summary: static Analysis: ok"
-
-    with (
-        patch(
-            "artemis.agents.video_analyzer.video_analyzer.get_controller",
-            return_value=controller,
-        ),
-        patch(
-            "artemis.agents.video_analyzer.video_analyzer.compress_video_for_api",
-            new=AsyncMock(return_value=raw_video),
-        ),
-        patch(
-            "artemis.agents.video_analyzer.chunk_native.run_agentic_chunk_conversation",
-            new=AsyncMock(side_effect=agentic),
-        ),
-        patch(
-            "artemis.agents.video_analyzer.chunk_native._run_native_chunk_conversation",
-            new=AsyncMock(side_effect=static_answer),
-        ) as static_path,
-        patch.object(analyzer, "_exec_single_chunk_universal", new=AsyncMock()) as universal,
-        patch("artemis.agents.video_analyzer.video_analyzer._record_llm_event"),
-    ):
-        result = await analyzer.exec_spawn_sub_agent(0.0, 1200.0, "verify toggle")
-
-    # Only the first chunk ever reached the agentic API; the second never ran
-    # its 600s clip statically and neither went to the universal fallback.
-    assert agentic_calls == [(0.0, 600.0)]
-    universal.assert_not_awaited()
-    segments = sorted((call.args[2], call.args[3]) for call in static_path.await_args_list)
-    assert len(segments) == 20
-    assert segments[0] == (0.0, 60.0)
-    assert segments[-1] == (1140.0, 1200.0)
-    assert all(ce - cs <= 60.0 for cs, ce in segments)
-    assert "PARTIAL" not in result
-    assert result.count("Summary: static") == 20
-    assert analyzer.video_processing == "static"
-
-
-@pytest.mark.asyncio
-async def test_short_degraded_chunk_is_retried_statically_once():
-    """A 5s chunk (below min_chunk*2) is re-run as-is instead of failing."""
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(_context())
-    calls: list[tuple[float, float]] = []
-
-    async def analyze(start: float, end: float, query: str) -> str:
-        calls.append((start, end))
-        if len(calls) == 1:
-            analyzer.video_processing = "static"
-            analyzer.chunk_size_seconds = analyzer.static_chunk_size_seconds
-            raise AgenticVideoDegraded("agentic rejected")
-        return f"[from {start:.1f}s to {end:.1f}s] Summary: static {query}"
-
-    with patch.object(analyzer, "_exec_single_chunk", side_effect=analyze) as child:
-        result = await analyzer.exec_spawn_sub_agent(0.0, 5.0, "find toggle")
-
-    assert child.await_count == 2
-    assert calls == [(0.0, 5.0), (0.0, 5.0)]
-    assert "PARTIAL" not in result
-    assert "failed" not in result.lower()
-    assert result.count("Summary: static find toggle") == 1
-
-
-@pytest.mark.asyncio
-async def test_static_retry_of_degraded_chunk_is_bounded():
-    """A second degrade on the same interval is terminal: no loop, no bisect."""
-    with patch("artemis.agents.video_analyzer.video_analyzer.settings.GOOGLE_API_KEY", None):
-        analyzer = VideoAnalyzer(_context())
-    calls: list[tuple[float, float]] = []
-
-    async def analyze(start: float, end: float, query: str) -> str:
-        calls.append((start, end))
-        raise AgenticVideoDegraded("agentic rejected again")
-
-    with patch.object(analyzer, "_exec_single_chunk", side_effect=analyze) as child:
-        # 30s is above min_chunk*2, so a bisect would otherwise be legal.
-        result = await analyzer.exec_spawn_sub_agent(0.0, 30.0, "find toggle")
-
-    assert child.await_count == 2
-    assert calls == [(0.0, 30.0), (0.0, 30.0)]
-    assert result.startswith("All sub-agent chunks failed")
-    assert "0.0s-30.0s [bad_request]" in result

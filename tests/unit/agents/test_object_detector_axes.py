@@ -44,7 +44,7 @@ async def _detect_with(provider: str | None) -> list[int]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider", ["google", "vertexai", "openai", None])
+@pytest.mark.parametrize("provider", ["google", "openai", None])
 async def test_point_is_returned_as_reported(provider):
     assert await _detect_with(provider) == [800, 200]
 

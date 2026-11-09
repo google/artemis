@@ -129,7 +129,6 @@ class LLMCredentialsProbe(BaseProbe):
             ("OPENAI_BASE_URL", "Custom OpenAI Endpoint", "custom"),
             ("OLLAMA_BASE_URL", "Local Ollama", "ollama"),
             ("VLLM_BASE_URL", "vLLM Endpoint", "vllm"),
-            ("VERTEX_AI_PROJECT", "Google Cloud Vertex AI", "vertexai"),
         ]:
             val = os.environ.get(env_var)
             if val and val.strip() and not is_placeholder_key(val.strip()):

@@ -14,10 +14,9 @@
 
 """VideoAnalyzer facade: entry point and shared runtime state.
 
-The execution engines live in sibling modules (``chunk_native``,
-``audio_native``, ``universal_engine``, ``native_coordinator``,
-``gemini_files``, ``universal_tools``) and resolve their patchable
-collaborators through THIS module's namespace, so existing
+The execution engines live in sibling modules (``chunk_runner``,
+``audio_runner``, ``universal_engine``, ``universal_tools``) and resolve
+their patchable collaborators through THIS module's namespace, so existing
 ``mock.patch("artemis.agents.video_analyzer.video_analyzer.<name>")``
 targets keep working.  Keep the imports below in place even when the facade
 body no longer references them directly.
@@ -36,8 +35,6 @@ import tempfile
 import time
 from typing import Any
 
-from google import genai
-from google.genai import types
 from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
@@ -49,30 +46,19 @@ from artemis.agents.video_analyzer.conflict_resolution import (
     ConflictResolutionService,
 )
 from artemis.agents.video_analyzer.blackboard import get_video_blackboard
-from artemis.agents.video_analyzer.gemini_files import (
-    cleanup_abandoned_gemini_files,
-)
 from artemis.agents.video_analyzer.reliability import (
-    AgenticVideoDegraded,
     VideoCircuitBreaker,
     classify_video_failure,
 )
 from artemis.agents.video_analyzer.universal_tools import (
     UNIVERSAL_MAIN_TOOLS,
     UNIVERSAL_SUBMIT_ANSWER_TOOL,
-    build_native_tools_declaration,
-    build_submit_answer_declaration,
 )
-from artemis.config import get_temp_dir, settings
-from artemis.constants import SAFETY_SETTINGS_BLOCK_NONE
+from artemis.config import get_temp_dir
 from artemis.context import ArtemisContext
 from artemis.controllers.controller_factory import get_controller
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan, trace
-from artemis.llm.google import (
-    is_gemini_model,
-    resolve_video_processing,
-    strip_provider_prefix,
-)
+from artemis.llm.google import strip_provider_prefix
 from artemis.llm.reliability import retry_policy_for
 from artemis.services.llm import _record_llm_event, _record_llm_retry, get_llm
 from artemis.utils.video import extract_frames_at_timestamps, extract_keyframes_from_video
@@ -161,16 +147,7 @@ class VideoAnalyzer:
         self.static_chunk_size_seconds = float(
             getattr(self.video_config, "chunk_size_seconds", 60.0)
         )
-        self.agentic_chunk_size_seconds = float(
-            getattr(self.video_config, "agentic_chunk_size_seconds", 600.0)
-        )
-        self.agentic_call_timeout_seconds = float(
-            getattr(self.video_config, "agentic_call_timeout_seconds", 300.0)
-        )
-        # Effective chunk ceiling; re-derived once the engine picks a
-        # video-processing mode (agentic sub-agents take long clips).
         self.chunk_size_seconds = self.static_chunk_size_seconds
-        self.video_processing = "static"
         self.min_chunk_seconds = float(getattr(self.video_config, "min_chunk_seconds", 4.0))
         self.max_split_depth = int(getattr(self.video_config, "max_split_depth", 4))
         self.action_window_seconds = float(getattr(self.video_config, "action_window_seconds", 2.0))
@@ -178,7 +155,7 @@ class VideoAnalyzer:
         self.max_dense_action_frames = int(
             getattr(self.video_config, "max_dense_action_frames", 24)
         )
-        self.native_max_retries = int(getattr(self.video_config, "native_max_retries", 1))
+        self.sub_agent_max_retries = int(getattr(self.video_config, "native_max_retries", 1))
         self.model_call_timeout_seconds = float(
             getattr(self.video_config, "model_call_timeout_seconds", 120.0)
         )
@@ -198,7 +175,6 @@ class VideoAnalyzer:
         self.circuit_breaker = breaker
         self.local_files_to_cleanup = set()
         self.local_dirs_to_cleanup = set()
-        self.cloud_files_to_cleanup = set()
 
         sub_prompt_path = Path(__file__).parent / "video_sub_agent.md"
         self.sub_system_prompt = (
@@ -210,7 +186,6 @@ class VideoAnalyzer:
             audio_prompt_path.read_text(encoding="utf-8") if audio_prompt_path.exists() else ""
         )
 
-        self._init_tools()
         self._init_engine()
 
     def _get_universal_llm(self, *, use_fallback: bool = False):
@@ -406,13 +381,8 @@ class VideoAnalyzer:
         analysis = match.group(2).strip() if match.group(2) else None
         return summary, analysis
 
-    def _init_tools(self) -> None:
-        """Initializes native and sub-agent tool declarations."""
-        self.tools_declaration = build_native_tools_declaration()
-        self.submit_answer_tool = build_submit_answer_declaration()
-
     def _init_engine(self) -> None:
-        """Initializes model engine and decides whether to use native Gemini or Universal path."""
+        """Resolves the configured video model used by the universal engine."""
         ctx = self.ctx
         llm_config = getattr(ctx, "llm_config", None)
         utils_cfg = getattr(llm_config, "utils", None) if llm_config else None
@@ -420,51 +390,7 @@ class VideoAnalyzer:
         self.model_name = strip_provider_prefix(
             llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.8-flash"
         )
-
-        has_google_key = bool(
-            settings.GOOGLE_API_KEY and settings.GOOGLE_API_KEY.get_secret_value()
-        )
-
-        # If client is already set on ctx or explicit Gemini configuration
-        self.client = getattr(ctx, "_genai_client", None)
-        if self.client is not None:
-            self.use_native_gemini = True
-        elif has_google_key and is_gemini_model(self.model_name):
-            try:
-                self.client = genai.Client(api_key=settings.GOOGLE_API_KEY.get_secret_value())
-                ctx._genai_client = self.client
-                self.use_native_gemini = True
-                asyncio.create_task(cleanup_abandoned_gemini_files(self.client))
-            except Exception as e:
-                logger.warning(
-                    f"Failed to initialize native Gemini client: {e}. Using universal engine."
-                )
-                self.use_native_gemini = False
-        else:
-            self.use_native_gemini = False
-        self._resolve_video_processing()
-
-    def _resolve_video_processing(self) -> None:
-        """Picks static vs agentic video understanding for the sub-agents.
-
-        Agentic processing (Gemini Interactions API) needs the native client
-        and a supporting model; the configured knob (``auto`` / ``agentic`` /
-        ``static``) decides the rest. The chunk ceiling follows the mode
-        because agentic sub-agents are built to take long clips.
-        """
-        configured = getattr(self.video_config, "processing", "auto")
-        mode = "static"
-        if self.use_native_gemini:
-            mode = resolve_video_processing(configured, self.model_name)
-        self.video_processing = mode
-        self.chunk_size_seconds = (
-            self.agentic_chunk_size_seconds if mode == "agentic" else self.static_chunk_size_seconds
-        )
-        if mode == "agentic":
-            logger.info(
-                f"Video sub-agents use agentic video understanding on {self.model_name}"
-                f" (chunk ceiling {self.chunk_size_seconds:.0f}s)"
-            )
+        self.chunk_size_seconds = self.static_chunk_size_seconds
 
     @property
     def blackboard_ledger(self) -> str:
@@ -475,13 +401,6 @@ class VideoAnalyzer:
         for e in self.blackboard_entries:
             lines.append(f"{e['start']}s - {e['end']}s: {e['summary']}")
         return " | ".join(lines)
-
-    async def upload_and_poll_file(self, compressed_path: Path) -> any:
-        from artemis.agents.video_analyzer import gemini_files
-
-        return await gemini_files.upload_and_poll_file(
-            self.client, compressed_path, self.cloud_files_to_cleanup
-        )
 
     def get_overlapping_warnings(self, start_time: float, end_time: float | None) -> list[dict]:
         warnings = []
@@ -638,7 +557,7 @@ class VideoAnalyzer:
         )
 
         async def analyze_with_recovery(
-            cs: float, ce: float, depth: int = 0, *, retried_static: bool = False
+            cs: float, ce: float, depth: int = 0
         ) -> tuple[list[str], list[str]]:
             try:
                 async with API_SEMAPHORE:
@@ -647,40 +566,8 @@ class VideoAnalyzer:
             except Exception as error:
                 failure = classify_video_failure(error)
                 duration = ce - cs
-                fits_ceiling = duration <= self.chunk_size_seconds + 1e-3
-                degraded = isinstance(error, AgenticVideoDegraded)
-                if degraded and fits_ceiling and not retried_static:
-                    # Retry short intervals once in static mode without splitting.
-                    logger.warning(
-                        f"Retrying {cs:.1f}s-{ce:.1f}s in static mode: it already fits"
-                        f" the {self.chunk_size_seconds:.0f}s chunk ceiling"
-                    )
-                    return await analyze_with_recovery(cs, ce, depth, retried_static=True)
-                pieces = (
-                    self._plan_chunks([(cs, ce)])
-                    if failure.should_split and not fits_ceiling
-                    else []
-                )
-                if len(pieces) > 1:
-                    # Split clips planned before a downgrade at the new ceiling.
-                    logger.warning(
-                        f"Re-planning failed {cs:.1f}s-{ce:.1f}s chunk into {len(pieces)}"
-                        f" piece(s) of at most {self.chunk_size_seconds:.0f}s"
-                        f" after {failure.category.value}"
-                    )
-                    parts = await asyncio.gather(
-                        *(analyze_with_recovery(ps, pe, depth) for ps, pe in pieces)
-                    )
-                    return (
-                        [item for values, _ in parts for item in values],
-                        [item for _, failures in parts for item in failures],
-                    )
-                # Bisecting only helps genuine size/timeout failures; a
-                # degraded interval that fits the ceiling has had its one
-                # static retry and is terminal.
                 can_split = (
                     failure.should_split
-                    and not degraded
                     and depth < self.max_split_depth
                     and duration >= self.min_chunk_seconds * 2
                 )
@@ -723,17 +610,17 @@ class VideoAnalyzer:
     async def _exec_single_chunk(
         self, start_time: float, end_time: float | None, specific_query: str
     ) -> str:
-        from artemis.agents.video_analyzer import chunk_native
+        from artemis.agents.video_analyzer import chunk_runner
 
-        return await chunk_native.exec_single_chunk(self, start_time, end_time, specific_query)
+        return await chunk_runner.exec_single_chunk(self, start_time, end_time, specific_query)
 
     @trace(type="tool", name="analyze_audio_only")
     async def exec_analyze_audio_only(
         self, start_time: float, end_time: float | None, specific_query: str
     ) -> str:
-        from artemis.agents.video_analyzer import audio_native
+        from artemis.agents.video_analyzer import audio_runner
 
-        return await audio_native.exec_analyze_audio_only(
+        return await audio_runner.exec_analyze_audio_only(
             self, start_time, end_time, specific_query
         )
 
@@ -805,7 +692,6 @@ class VideoAnalyzer:
 
     @trace(type="agent", name="video_analyzer")
     async def run(self, time_description: str, purpose: str) -> tuple[str, str]:
-        ctx = self.ctx
         async with MAIN_AGENT_SEMAPHORE:
             logger.info(
                 f"Video analyzer invoked with time: '{time_description}', purpose: '{purpose}'"
@@ -813,28 +699,10 @@ class VideoAnalyzer:
 
             self._refresh_blackboard()
 
-            # Initialize engine & cleanup tracking
             self._init_engine()
 
-            # Resolve model name and temperature from config
-            llm_config = getattr(ctx, "llm_config", None)
-            utils_cfg = getattr(llm_config, "utils", None) if llm_config else None
-            llm_cfg = getattr(utils_cfg, "video_analyzer", None) if utils_cfg else None
-            temperature = 0.2
-            thinking_level = None
-            if llm_cfg:
-                self.model_name = strip_provider_prefix(llm_cfg.model)
-                if getattr(llm_cfg, "temperature", None) is not None:
-                    temperature = llm_cfg.temperature
-                if getattr(llm_cfg, "thinking_level", None) is not None:
-                    thinking_level = llm_cfg.thinking_level
-            else:
-                self.model_name = "gemini-3.8-flash"
-
-            # Track files for cleanup
             self.local_files_to_cleanup = set()
             self.local_dirs_to_cleanup = set()
-            self.cloud_files_to_cleanup = set()
 
         sub_prompt_path = Path(__file__).parent / "video_sub_agent.md"
         self.sub_system_prompt = sub_prompt_path.read_text(encoding="utf-8")
@@ -852,24 +720,11 @@ class VideoAnalyzer:
                 " proceeding.\n"
             )
 
-        if not self.use_native_gemini:
-            try:
-                return await self._run_universal(
-                    time_description=time_description,
-                    purpose=purpose,
-                    system_prompt=system_prompt,
-                )
-            finally:
-                await self._cleanup_universal_resources()
-
-        from artemis.agents.video_analyzer import native_coordinator
-
-        return await native_coordinator.run_native(
-            self,
-            ctx,
-            time_description,
-            purpose,
-            system_prompt,
-            temperature,
-            thinking_level,
-        )
+        try:
+            return await self._run_universal(
+                time_description=time_description,
+                purpose=purpose,
+                system_prompt=system_prompt,
+            )
+        finally:
+            await self._cleanup_universal_resources()

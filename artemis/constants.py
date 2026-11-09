@@ -20,28 +20,3 @@ VALIDATOR_POLL_TIMEOUT = 2.0
 VALIDATOR_POLL_INTERVAL = 0.2
 VALIDATOR_OCR_INTERVAL = 1.0
 VALIDATOR_UI_HIERARCHY_TIMEOUT = 1.0
-
-from google.genai import types as _genai_types
-
-SAFETY_SETTINGS_BLOCK_NONE = [
-    _genai_types.SafetySetting(
-        category=_genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-        threshold=_genai_types.HarmBlockThreshold.BLOCK_NONE,
-    ),
-    _genai_types.SafetySetting(
-        category=_genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-        threshold=_genai_types.HarmBlockThreshold.BLOCK_NONE,
-    ),
-    _genai_types.SafetySetting(
-        category=_genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-        threshold=_genai_types.HarmBlockThreshold.BLOCK_NONE,
-    ),
-    _genai_types.SafetySetting(
-        category=_genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-        threshold=_genai_types.HarmBlockThreshold.BLOCK_NONE,
-    ),
-    _genai_types.SafetySetting(
-        category=_genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-        threshold=_genai_types.HarmBlockThreshold.BLOCK_NONE,
-    ),
-]

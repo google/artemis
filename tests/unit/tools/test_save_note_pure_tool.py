@@ -46,12 +46,6 @@ def test_save_note_pure_tool_subclass():
     assert save_note_pure.category == "memory"
     assert save_note_pure.args_schema == SaveNoteArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = save_note_pure.to_genai_declaration()
-    assert declaration.name == "save_note_pure"
-    assert "key" in declaration.parameters.properties
-    assert "content" in declaration.parameters.properties
-
 
 @pytest.mark.asyncio
 async def test_save_note_pure_direct_execution_success(mock_ctx, tmp_path):

@@ -58,10 +58,6 @@ def test_get_ui_hierarchy_tool_subclass():
     assert get_ui_hierarchy.category == "diagnostic"
     assert get_ui_hierarchy.args_schema == GetUiHierarchyArgs
 
-    # GenAI FunctionDeclaration export
-    declaration = get_ui_hierarchy.to_genai_declaration()
-    assert declaration.name == "get_ui_hierarchy"
-
     # Wrapper check
     assert ui_hierarchy_wrapper is not None
     assert ui_hierarchy_wrapper.tool_fn_getter == get_ui_hierarchy_tool

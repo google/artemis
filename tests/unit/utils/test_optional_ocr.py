@@ -123,8 +123,8 @@ def test_explorer_does_not_expose_get_ocr_list_when_unconfigured():
         explorer = Explorer(mock_ctx)
         explorer.denylisted_tools = set()
 
-        exposed = explorer.get_exposed_tools()
-        exposed_names = [t.name for t in exposed]
+        exposed = explorer._universal_exposed_tools()
+        exposed_names = [t["function"]["name"] for t in exposed]
         assert "get_ocr_list" not in exposed_names
 
 
