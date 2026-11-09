@@ -7,44 +7,24 @@
   // 1. Global Default Model (Applied to all sub-agents unless overridden below)
   // ------------------------------------------------------------------------------
   "default": {
-    "provider": "google",
-    "model": "gemini-3.8-flash",
+    "provider": "openai",
+    "model": "qwen3.6-flash",
     "thinking_level": "medium",
     "fallback": {
-      "provider": "google",
-      "model": "gemini-3.7-flash",
+      "provider": "openai",
+      "model": "qwen3.6-flash",
       "thinking_level": "medium"
     }
   },
 
   // ------------------------------------------------------------------------------
-  // 2. Ready-to-Use Presets (Switch easily in code or CLI)
+  // 2. Ready-to-Use Presets (displayed by the admin console)
   // ------------------------------------------------------------------------------
   "presets": {
-    "gemini-flagship": {
-      "provider": "google",
-      "model": "gemini-3.8-flash",
-      "fallback": { "provider": "google", "model": "gemini-3.7-flash" }
-    },
-    "gemini-flash": {
-      "provider": "google",
-      "model": "gemini-2.5-flash",
-      "fallback": { "provider": "google", "model": "gemini-2.0-flash" }
-    },
-    "openai-gpt4o": {
+    "qwen-flash": {
       "provider": "openai",
-      "model": "gpt-4o",
-      "fallback": { "provider": "openai", "model": "gpt-4o-mini" }
-    },
-    "cost-saving": {
-      "provider": "google",
-      "model": "gemini-3.5-flash-lite",
-      "fallback": { "provider": "google", "model": "gemini-3.1-flash-lite" }
-    },
-    "local-ollama": {
-      "provider": "openai",
-      "model": "llama3.2-vision",
-      "fallback": { "provider": "openai", "model": "llama3.2-vision" }
+      "model": "qwen3.6-flash",
+      "fallback": { "provider": "openai", "model": "qwen3.6-flash" }
     }
   },
 
@@ -64,28 +44,25 @@
     },
 
     // 🎬 Video Analyzer: Multimodal screen recording verification and temporal analysis
-    // NOTE: Dual-path engine automatically routes:
-    //  - Native Gemini Files API for Gemini models with Google API keys (long video file stream);
-    //    Gemini 3.6+ Flash sub-agents use agentic video understanding by default (see video_analyzer.processing below)
-    //  - Universal Multi-Model Engine for Claude 3.5/3.7, GPT-4o, OpenRouter, Vertex AI (dynamic keyframe extraction + multimodal tool calling)
+    // NOTE: the native path needs a Google API key and the Gemini Files API; without
+    // one every clip is analysed by the universal engine (keyframes + multimodal calls).
     "video_analyzer": {},
 
     // 👁️ Object Detector & Explorer (Flash Mode): Visual coordinates grounding and bounding boxes
-    // CRITICAL REQUIREMENT: Standard LLMs (including standard Gemini Flash, GPT-4o, Claude 3.7) lack sub-pixel spatial coordinate fine-tuning.
-    // To achieve accurate [x, y] point and bounding box localization, this node MUST use specialized Gemini ER (Embodied Reasoning / Robotics) models:
-    // e.g., "gemini-robotics-er-2-preview". Non-ER models will fail spatial coordinate detection.
+    // Measured on a 1920x1080 device, a general VLM reaches the target within 0-11 px,
+    // so this node does not need a specialised Gemini ER model; any vision endpoint works.
     "object_detector": {
-      "model": "gemini-robotics-er-2-preview",
+      "model": "qwen3.6-flash",
       "fallback": {
-        "provider": "google",
-        "model": "gemini-robotics-er-2-preview"
+        "provider": "openai",
+        "model": "qwen3.6-flash"
       }
     },
 
     // 🔍 Explorer: Deep element grounding and multi-candidate visual search
     // NOTE:
-    //  - "flash" version delegates directly to object_detector (requires Gemini ER model above).
-    //  - "pro" / "ultra" versions run multi-turn ReAct loops (supports both Native Gemini and Universal Multi-Model LangChain engines).
+    //  - "flash" version delegates directly to object_detector.
+    //  - "pro" / "ultra" versions run multi-turn ReAct loops on the universal LangChain engine.
     "explorer": {
       "thinking_level": "medium"
     },
@@ -95,10 +72,10 @@
 
     // 🔽 Hopper: Fast lightweight package name locator
     "hopper": {
-      "model": "gemini-3.5-flash-lite",
+      "model": "qwen3.6-flash",
       "fallback": {
-        "provider": "google",
-        "model": "gemini-3.1-flash-lite"
+        "provider": "openai",
+        "model": "qwen3.6-flash"
       }
     },
 
@@ -124,8 +101,8 @@
       "include_thoughts": true
     }
     // 🎯 Planner Validation: Advisory review of milestone changes.
-    // Defaults to the same lightweight model as the pixel safety net
-    // (gemini-3.5-flash-lite, temperature 0); add "planner_validation": {...} here to override.
+    // Defaults to the configured default endpoint at temperature 0 (see
+    // lightweight_judge_default); add "planner_validation": {...} here to override.
   },
 
   // ------------------------------------------------------------------------------
@@ -144,8 +121,8 @@
       // Summarizes intermediate steps in background without blocking the runner,
       // replacing images only after strictly objective, high-density summaries are ready.
       "step_summarizer": {
-        "enabled": true, // Whether background step summarization is active
-        "model": "gemini-3.5-flash-lite", // Lightweight model for fast background inference
+        "enabled": false, // Off by default: one model call per step; flip on to trade latency for lighter history
+        "model": "qwen3.6-flash", // Lightweight model for fast background inference
         "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
       }
     },
@@ -185,7 +162,7 @@
       },
       // 🎬 Video Analyzer & Screen Recording: Continuous screen recording via scrcpy and temporal analysis
       "video_analyzer": {
-        "enabled": true, // Whether continuous video recording and video tools are active (default: auto-detected)
+        "enabled": false, // Off for the local stack: audio analysis needs an audio-capable model
         "enable_ledger": true
       }
     },
@@ -221,8 +198,8 @@
         // screenshot reaching the edge is replaced in place by its visual
         // summary (the 'Current Screenshot' label leaves with it) and never
         // restored; the depth only decides how long new ones stay.
-        "image_scrub_depth": 3,
-        "image_scrub_depth_relaxed": 6,
+        "image_scrub_depth": 2,
+        "image_scrub_depth_relaxed": 3,
         "pending_grace_steps": 3,
         // Text edge: once a newer observation exists (depth 1) the UI element
         // list, the plan recitation and the per-turn ephemeral blocks
@@ -246,7 +223,7 @@
         // call each); milestone closes are exempt, the hard line waives it.
         "min_steps": 3,
         "target_source_tokens": 2000,
-        "model": "gemini-3.8-flash",
+        "model": "qwen3.6-flash",
         "max_chunks": 8
         // "max_eras": 8 // independent era cap; omitted = follows max_chunks
       },
@@ -265,7 +242,7 @@
     },
     // 🎬 Screen Recording & Video Analyzer Configuration
     "video_analyzer": {
-      "enabled": true, // Whether continuous screen recording via scrcpy is active (default: auto-detected)
+      "enabled": false, // Off for the local stack: native Gemini video and audio paths are Google-only
       "enable_ledger": true
       // "processing": "auto", // How Gemini sub-agents watch a clip: auto (agentic on Gemini 3.6+ Flash, static elsewhere) | agentic | static
       // "agentic_chunk_size_seconds": 600, // Longest clip one agentic sub-agent takes; static mode keeps chunk_size_seconds (60)
@@ -285,8 +262,8 @@
     // `flash.explorer_mode` and `pro.explorer.mode` above are the per-profile knobs;
     // `caching` (Gemini explicit context caching) defaults per tier: off for pro, on for ultra.
     "explorer": {
+      "caching": false, // Context caching is a Gemini feature; there is nothing local to cache
       "default_version": "flash" // Fallback tier when no profile knob applies
-      // "caching": true, // Uncomment to force context caching for pro/ultra
     },
     // Advanced: per-agent tier override, e.g. {"validator": "ultra"}. Takes
     // precedence over the profile knobs; leave empty to let them decide.

@@ -57,9 +57,25 @@ __all__ = [
 ]
 
 
-def lightweight_judge_default() -> "LLMWithFallback":
+def lightweight_judge_default(base: "LLM | None" = None) -> "LLMWithFallback":
     """Factory default for the lightweight judge nodes (pixel safety net and
-    planner validation): a flash-lite model at temperature 0."""
+    planner validation): a flash-lite model at temperature 0.
+
+    ``base`` is the configured default endpoint. A non-Google stack has no
+    flash-lite equivalent, so the judge reuses the configured model instead of
+    reaching for a Google endpoint the deployment does not have.
+    """
+    if base is not None and str(base.provider) not in ("google", "vertexai"):
+        return LLMWithFallback(
+            provider=base.provider,
+            model=base.model,
+            temperature=0.0,
+            fallback=LLM(
+                provider=base.provider,
+                model=base.model,
+                temperature=0.0,
+            ),
+        )
     return LLMWithFallback(
         provider="google",
         model="gemini-3.5-flash-lite",
@@ -124,7 +140,7 @@ class LLMConfig(LLMConfigBase):
                 # Both are cheap, high-frequency judges: the pixel safety net
                 # runs before actions, the planner validator after every
                 # milestone edit. They share one lightweight default.
-                return lightweight_judge_default()
+                return lightweight_judge_default(self.planner)
             elif item == "output_analyzer":
                 return self.log_analyzer
         return val

@@ -18,23 +18,28 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from apps.admin_console.services.model_service import ModelService
+from artemis.config import parse_llm_config
 
 
 def test_get_active_model_info_pro_architecture():
     """Verify that pro profile returns Pro architecture while keeping real LLM model."""
+    ModelService._llm_info_cache = None
+    configured = parse_llm_config().operator
     info = ModelService.get_active_model_info("pro")
     assert info["name"] == "Pro"
     assert info["architecture"] == "ARTEMIS Pro"
-    assert info["provider"] == "google"
-    assert "id" in info
+    assert info["provider"] == str(configured.provider)
+    assert info["id"] == str(configured.model)
 
 
 def test_get_active_model_info_flash_architecture():
     """Verify that flash profile returns Flash architecture."""
+    ModelService._llm_info_cache = None
+    configured = parse_llm_config().operator
     info = ModelService.get_active_model_info("flash")
     assert info["name"] == "Flash"
     assert info["architecture"] == "ARTEMIS Flash"
-    assert info["provider"] == "google"
+    assert info["provider"] == str(configured.provider)
 
 
 def test_resolve_session_profile_from_device_info():

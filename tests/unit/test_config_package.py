@@ -178,7 +178,9 @@ def test_agent_config_loading():
     assert agent_cfg.explorer.default_version == "flash"
     assert agent_cfg.explorer.flash_mode == "flash"
     assert agent_cfg.explorer.pro_mode == "flash"
-    assert agent_cfg.explorer.caching is None
+    # Not forced on: the local stack disables Gemini context caching in the
+    # shipped config, and an unset value still lets each tier decide.
+    assert agent_cfg.explorer.caching is not True
     assert "explorer" in agent_cfg.denylisted_tools
     assert agent_cfg.video_analyzer.enable_ledger is True
     assert agent_cfg.planner_validation.enabled is True
@@ -458,7 +460,9 @@ def test_explorer_builder_and_resolution(monkeypatch):
     assert cfg.explorer.default_version == "flash"
     assert cfg.explorer.flash_mode == "flash"
     assert cfg.explorer.pro_mode == "flash"
-    assert cfg.explorer.caching is None
+    # Not forced on: the local stack disables Gemini context caching in the
+    # shipped config, and an unset value still lets each tier decide.
+    assert cfg.explorer.caching is not True
     assert cfg.explorer_versions == {}
 
     # With the shipped (empty) override the profile knobs actually win: the
