@@ -13,16 +13,21 @@
 # limitations under the License.
 
 import ast
+import json
 import logging
+import os
 from pathlib import Path
 import queue
 import subprocess
+import sys
 import time
 from typing import IO
 
 import jupyter_client
 from jupyter_client.blocking import BlockingKernelClient
 from zmq import ZMQError
+
+from artemis.config.paths import get_app_dir, is_frozen_bundle
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +37,39 @@ EXECUTION_TIMEOUT_S = 120.0
 # Poll frequently enough to detect a dead kernel or an expired deadline.
 IOPUB_POLL_INTERVAL_S = 1.0
 INTERRUPT_DRAIN_TIMEOUT_S = 5.0
+
+SOURCE_KERNEL_NAME = "python3"
+BUNDLED_KERNEL_NAME = "artemis-bundled"
+
+
+def _bundled_kernel_spec_root() -> Path | None:
+    """Publish a kernelspec that re-enters this executable as a kernel host.
+
+    A compiled bundle cannot run ``-m ipykernel_launcher``, so the launcher
+    takes a ``--kernel`` flag and ipykernel starts inside the same binary. The
+    spec lives under the app dir and reaches jupyter through ``JUPYTER_PATH``.
+    """
+    if not is_frozen_bundle():
+        return None
+    spec_root = get_app_dir() / "kernels"
+    spec_dir = spec_root / BUNDLED_KERNEL_NAME
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    spec = {
+        "argv": [sys.executable, "--kernel", "-f", "{connection_file}"],
+        "display_name": "Artemis Python",
+        "language": "python",
+    }
+    (spec_dir / "kernel.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    return spec_root
+
+
+def resolve_kernel_name() -> str:
+    """Return the kernelspec name usable on this installation."""
+    spec_root = _bundled_kernel_spec_root()
+    if spec_root is None:
+        return SOURCE_KERNEL_NAME
+    os.environ["JUPYTER_PATH"] = str(spec_root)
+    return BUNDLED_KERNEL_NAME
 
 
 def validate_coder_script(code_str: str) -> bool:
@@ -72,7 +110,7 @@ class PythonExecutor:
                 self._kernel_log = (self.session_dir / "kernel.log").open("ab")
             kernel_output = self._kernel_log if self._kernel_log is not None else subprocess.DEVNULL
 
-            self.km = jupyter_client.KernelManager(kernel_name="python3")
+            self.km = jupyter_client.KernelManager(kernel_name=resolve_kernel_name())
             self.km.start_kernel(stdout=kernel_output, stderr=kernel_output)
             self.kc = self.km.client()
             self.kc.start_channels()

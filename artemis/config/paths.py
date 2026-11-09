@@ -42,8 +42,10 @@ CONFIG_DIR = ROOT_DIR / "config"
 
 
 def is_frozen_bundle() -> bool:
-    """Check if running inside a PyInstaller / Nuitka standalone compiled binary."""
-    return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+    """Check if running inside a PyInstaller or Nuitka standalone compiled binary."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return True
+    return "__compiled__" in globals()
 
 
 def is_source_checkout() -> bool:
