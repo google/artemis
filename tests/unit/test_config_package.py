@@ -81,17 +81,11 @@ def test_config_file_resolver():
 def test_settings_and_api_key_fallbacks(monkeypatch):
     """Test Settings model, API key lookups, and get/set methods."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("VISION_API_KEY", raising=False)
 
     custom_settings = Settings(
         _env_file=None,
         OPENAI_API_KEY=SecretStr("openai_key_456"),
-        VISION_API_KEY=SecretStr("ocr_key_789"),
     )
-    # The Vision key is the OCR fallback.
-    assert custom_settings.OCR_API_KEY is not None
-    assert custom_settings.OCR_API_KEY.get_secret_value() == "ocr_key_789"
-    assert custom_settings.get_api_key("ocr").get_secret_value() == "ocr_key_789"
 
     assert custom_settings.get_api_key("openai").get_secret_value() == "openai_key_456"
     assert custom_settings.get_api_key("nonexistent") is None

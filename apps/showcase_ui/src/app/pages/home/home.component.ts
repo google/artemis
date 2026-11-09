@@ -122,7 +122,7 @@ export class HomeComponent implements OnInit, OnDestroy {
   public emulatorSetupMode = signal<'studio' | 'cli'>('studio');
 
   public modelSetupMode = signal<'openai' | 'custom'>('openai');
-  public showOcrConfig = signal<boolean>(false);
+
   public showFullConfigFile = signal<boolean>(false);
 
   // Model & Environment configuration from backend
@@ -136,14 +136,12 @@ export class HomeComponent implements OnInit, OnDestroy {
   public openaiSaveError = signal<string | null>(null);
   public isOpenaiKeyEdited = signal<boolean>(false);
 
-  // Vision OCR API Key State
-  public ocrKeyInput = signal<string>('');
-  public showOcrKey = signal<boolean>(false);
-  public isSavingOcrKey = signal<boolean>(false);
-  public isTestingOcrKey = signal<boolean>(false);
-  public ocrSaveMessage = signal<string | null>(null);
-  public ocrSaveError = signal<string | null>(null);
-  public isOcrKeyEdited = signal<boolean>(false);
+
+
+
+
+
+
 
   // Clipboard copy state tracker for interactive feedback
   public copiedId = signal<string | null>(null);
@@ -356,7 +354,7 @@ export class HomeComponent implements OnInit, OnDestroy {
   public configProbe = computed(() => this.systemService.configProbe());
   public adbProbe = computed(() => this.systemService.adbProbe());
   public llmProbe = computed(() => this.systemService.llmProbe());
-  public ocrProbe = computed(() => this.systemService.ocrProbe());
+
   public toolchainProbe = computed(() => this.systemService.toolchainProbe());
 
   // Step-level readiness
@@ -450,11 +448,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     return 'avdmanager create avd -n Pixel_8_API_34 -k "system-images;android-34;google_apis;x86_64" --device "pixel_8"';
   });
 
-  // Flag indicating whether Google Cloud Vision OCR is configured
-  public isOcrConfigured = computed<boolean>(() => {
-    const meta = this.ocrProbe()?.metadata;
-    return meta?.['configured'] === true;
-  });
 
   public apiKeysMap = computed<Record<string, string>>(() => this.systemService.apiKeysMap());
 
@@ -467,14 +460,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     return this.openaiKeyInput().trim() !== this.savedOpenaiKey().trim();
   });
 
-  public savedOcrKey = computed<string>(() => {
-    const keys = this.apiKeysMap();
-    return keys['ocr'] || '';
-  });
 
-  public isOcrModified = computed<boolean>(() => {
-    return this.ocrKeyInput().trim() !== this.savedOcrKey().trim();
-  });
 
   // Rich Smart Suggestions Library (Device-Aware, Flash vs Pro Tailored)
   public readonly allSuggestions = this.taskRecService.allTasks;
@@ -512,12 +498,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     effect(() => {
       const keys = this.systemService.apiKeysMap();
       const openaiKey = keys['openai'] || '';
-      const ocrKey = keys['ocr'] || '';
       if (!this.isOpenaiKeyEdited()) {
         this.openaiKeyInput.set(openaiKey);
-      }
-      if (!this.isOcrKeyEdited()) {
-        this.ocrKeyInput.set(ocrKey);
       }
     });
   }
@@ -586,13 +568,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.showOpenaiKey.update(v => !v);
   }
 
-  public toggleOcrKeyVisibility(): void {
-    this.showOcrKey.update(v => !v);
-  }
 
-  public toggleOcrConfig(): void {
-    this.showOcrConfig.update(v => !v);
-  }
 
   public onOpenaiKeyChange(val: string): void {
     this.openaiKeyInput.set(val);
@@ -601,12 +577,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.openaiSaveMessage.set(null);
   }
 
-  public onOcrKeyChange(val: string): void {
-    this.ocrKeyInput.set(val);
-    this.isOcrKeyEdited.set(true);
-    this.ocrSaveError.set(null);
-    this.ocrSaveMessage.set(null);
-  }
 
   public saveOpenaiKey(): void {
     const key = this.openaiKeyInput().trim();
@@ -654,51 +624,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
   }
 
-  public saveOcrKey(): void {
-    const key = this.ocrKeyInput().trim();
-    if (!key) return;
-    this.isSavingOcrKey.set(true);
-    this.ocrSaveError.set(null);
-    this.ocrSaveMessage.set(null);
 
-    this.systemService.updateApiKey('ocr', key, true).subscribe({
-      next: (res) => {
-        this.isSavingOcrKey.set(false);
-        this.isOcrKeyEdited.set(false);
-        this.ocrSaveMessage.set(res?.message || '✓ Vision OCR API key verified & saved.');
-        setTimeout(() => this.ocrSaveMessage.set(null), 5000);
-      },
-      error: (err) => {
-        this.isSavingOcrKey.set(false);
-        this.ocrSaveError.set(err?.error?.detail || err?.message || 'Failed to update Vision OCR key.');
-      }
-    });
-  }
-
-  public clearOcrKey(): void {
-    this.ocrKeyInput.set('');
-    this.isOcrKeyEdited.set(false);
-    this.ocrSaveError.set(null);
-    this.ocrSaveMessage.set(null);
-
-    if (this.savedOcrKey().trim()) {
-      this.isSavingOcrKey.set(true);
-      this.systemService.updateApiKey('ocr', '', true).subscribe({
-        next: (res) => {
-          this.isSavingOcrKey.set(false);
-          this.ocrSaveMessage.set(res?.message || '✓ Vision OCR API key cleared.');
-          setTimeout(() => this.ocrSaveMessage.set(null), 5000);
-        },
-        error: (err) => {
-          this.isSavingOcrKey.set(false);
-          this.ocrSaveError.set(err?.error?.detail || err?.message || 'Failed to clear Vision OCR key.');
-        }
-      });
-    } else {
-      this.ocrSaveMessage.set('✓ Vision OCR API key cleared.');
-      setTimeout(() => this.ocrSaveMessage.set(null), 3000);
-    }
-  }
 
   public testOpenaiKey(): void {
     const key = this.openaiKeyInput().trim();
@@ -724,29 +650,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     });
   }
 
-  public testOcrKey(): void {
-    const key = this.ocrKeyInput().trim();
-    if (!key) return;
-    this.isTestingOcrKey.set(true);
-    this.ocrSaveError.set(null);
-    this.ocrSaveMessage.set(null);
-
-    this.systemService.testApiKey('ocr', key).subscribe({
-      next: (res) => {
-        this.isTestingOcrKey.set(false);
-        if (res?.valid) {
-          this.ocrSaveMessage.set(res?.message || '✓ Vision OCR API key is valid!');
-        } else {
-          this.ocrSaveError.set(res?.message || 'Vision OCR API key verification failed.');
-        }
-        setTimeout(() => this.ocrSaveMessage.set(null), 5000);
-      },
-      error: (err) => {
-        this.isTestingOcrKey.set(false);
-        this.ocrSaveError.set(err?.error?.detail || err?.message || 'Vision OCR API key test failed.');
-      }
-    });
-  }
 
   public skipCredentialsCheck(): void {
     this.systemService.skipCredentialsCheck();

@@ -63,7 +63,7 @@ async def validate_api_key(
     """Tests if the provided API key is valid and usable with the corresponding provider.
 
     Args:
-        provider: Provider identifier (e.g. 'ocr', 'openai', 'anthropic', etc.)
+        provider: Provider identifier (e.g. 'openai', 'anthropic', etc.)
         api_key: Secret API key string.
         base_url: Optional custom endpoint URL.
         timeout: Request timeout in seconds.
@@ -87,28 +87,7 @@ async def validate_api_key(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            if clean_provider in ("ocr", "vision", "google_vision"):
-                # Test Google Cloud Vision OCR API
-                url = "https://vision.googleapis.com/v1/images:annotate"
-                payload = {
-                    "requests": [
-                        {
-                            "image": {"content": _TINY_PNG_B64},
-                            "features": [{"type": "TEXT_DETECTION"}],
-                        }
-                    ]
-                }
-                resp = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json", "x-goog-api-key": clean_key},
-                )
-                if resp.status_code == 200:
-                    return True, "Google Cloud Vision OCR API key verified successfully."
-                err_msg = _extract_error_message(resp)
-                return False, f"Vision OCR API verification failed ({resp.status_code}): {err_msg}"
-
-            elif clean_provider == "openai":
+            if clean_provider == "openai":
                 endpoint = (
                     f"{base_url.rstrip('/')}/models"
                     if base_url

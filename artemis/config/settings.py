@@ -28,10 +28,8 @@ from artemis.config.constants import (
     DEFAULT_PROFILE,
     ENV_ANTHROPIC_API_KEY,
     ENV_DATA_ENGINE_DB_PATH,
-    ENV_OCR_API_KEY,
     ENV_OPEN_ROUTER_API_KEY,
     ENV_OPENAI_API_KEY,
-    ENV_VISION_API_KEY,
     ENV_XAI_API_KEY,
 )
 from artemis.config.paths import (
@@ -93,9 +91,6 @@ class Settings(BaseSettings):
     XAI_API_KEY: SecretStr | None = None
     OPEN_ROUTER_API_KEY: SecretStr | None = None
 
-    # Vision OCR Authentication
-    OCR_API_KEY: SecretStr | None = None
-    VISION_API_KEY: SecretStr | None = None
     API_KEY: SecretStr | None = None
 
     # Custom Provider Endpoints
@@ -153,17 +148,12 @@ class Settings(BaseSettings):
             "ANTHROPIC_API_KEY",
             "XAI_API_KEY",
             "OPEN_ROUTER_API_KEY",
-            "OCR_API_KEY",
-            "VISION_API_KEY",
             "API_KEY",
         ):
             val = getattr(self, attr, None)
             if val and is_placeholder_key(val):
                 setattr(self, attr, None)
 
-        # Fallback for OCR & Vision API keys
-        if not self.OCR_API_KEY and self.VISION_API_KEY:
-            self.OCR_API_KEY = self.VISION_API_KEY
         return self
 
     def get_api_key(self, provider: str) -> SecretStr | None:
@@ -177,9 +167,7 @@ class Settings(BaseSettings):
         """
         provider_lower = provider.lower()
         key: SecretStr | None = None
-        if provider_lower in ("ocr", "vision", "google_vision"):
-            key = self.OCR_API_KEY or self.VISION_API_KEY
-        elif provider_lower == "openai":
+        if provider_lower == "openai":
             key = self.OPENAI_API_KEY
         elif provider_lower in ("anthropic", "claude"):
             key = self.ANTHROPIC_API_KEY
@@ -221,12 +209,6 @@ class Settings(BaseSettings):
             self.XAI_API_KEY = secret
             env_key_name = ENV_XAI_API_KEY
             os.environ[ENV_XAI_API_KEY] = key
-        elif provider_lower in ("ocr", "vision", "google_vision"):
-            self.OCR_API_KEY = secret
-            self.VISION_API_KEY = secret
-            env_key_name = ENV_OCR_API_KEY
-            os.environ[ENV_OCR_API_KEY] = key
-            os.environ[ENV_VISION_API_KEY] = key
 
         if persist_to_env and env_key_name:
             target_env_files = [get_env_file()]
@@ -245,8 +227,6 @@ class Settings(BaseSettings):
 
                     # Determine keys to update
                     keys_to_update = [env_key_name]
-                    if provider_lower in ("ocr", "vision", "google_vision"):
-                        keys_to_update = [ENV_OCR_API_KEY, ENV_VISION_API_KEY]
 
                     new_lines = []
                     updated_set = set()

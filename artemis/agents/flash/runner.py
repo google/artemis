@@ -727,7 +727,7 @@ class FlashRunner:
             recorded_step_id = self.ctx.data_engine.record_step(
                 pre_screenshot_bytes=pre_screenshot_bytes,
                 post_screenshot_bytes=post_img_bytes,
-                ui_tree=(exec_result.ui_elements_text or xml_list),
+                ui_tree=xml_list,
                 action_taken=action_dict,
                 operator_raw_thinking=raw_text,
                 operator_native_thinking=native_text or None,

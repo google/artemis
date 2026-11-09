@@ -55,7 +55,6 @@ class LLMCredentialsProbe(BaseProbe):
         claude_key = settings.get_api_key("anthropic")
         openrouter_key = settings.get_api_key("openrouter")
         xai_key = settings.get_api_key("xai")
-        ocr_key = settings.get_api_key("ocr")
 
         configured_providers: list[dict[str, Any]] = []
         api_keys_map: dict[str, str] = {}
@@ -129,15 +128,11 @@ class LLMCredentialsProbe(BaseProbe):
                 )
                 api_keys_map[prov_id] = val.strip()
 
-        if ocr_key and not is_placeholder_key(ocr_key):
-            api_keys_map["ocr"] = ocr_key.get_secret_value()
-
         current_active_key = configured_providers[0]["key"] if configured_providers else ""
 
         metadata = {
             "configured_count": len(configured_providers),
             "providers": configured_providers,
-            "has_ocr_key": ocr_key is not None,
             "current_key": current_active_key,
             "api_keys": api_keys_map,
         }

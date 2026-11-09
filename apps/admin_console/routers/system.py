@@ -308,7 +308,7 @@ async def get_credentials():
     """
     from artemis.config import settings
 
-    providers = ("openai", "anthropic", "openrouter", "xai", "ocr")
+    providers = ("openai", "anthropic", "openrouter", "xai")
     status = {name: bool(settings.get_api_key(name)) for name in providers}
     return {
         "providers": [

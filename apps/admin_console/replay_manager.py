@@ -1168,7 +1168,10 @@ class ReplayManager:
         """Dynamically extracts state prepopulation fields from chunked test step files."""
         latest_ui_hierarchy = None
         if pre_image_meta and "ui_tree" in pre_image_meta:
-            latest_ui_hierarchy = pre_image_meta["ui_tree"]
+            recorded_tree = pre_image_meta["ui_tree"]
+            # Traces written before the writer stopped storing the rendered
+            # text carry a string here, which the replay state cannot hold.
+            latest_ui_hierarchy = recorded_tree if isinstance(recorded_tree, list) else None
 
         structured_decisions = None
         traces_json_path = step_dir / "traces.json"

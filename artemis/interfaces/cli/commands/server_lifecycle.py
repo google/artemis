@@ -281,9 +281,7 @@ def stop_command(
 def status_command(
     port: Annotated[
         int | None,
-        typer.Option(
-            "--port", "-p", help="Port to query. Defaults to the running server's own."
-        ),
+        typer.Option("--port", "-p", help="Port to query. Defaults to the running server's own."),
     ] = None,
 ) -> None:
     """Check whether the Artemis server is currently running and display runtime metadata."""
