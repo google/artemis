@@ -19,13 +19,13 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_coordinate_normalization_swap():
-    """Verify that _run_object_detection correctly swaps coordinates from [y, x] to [x, y]."""
+    """Verify that _run_object_detection returns points in the reported [x, y] order."""
 
-    # 1. Define the mock output returned by the VLM task (VLM native format: [y_norm, x_norm])
+    # 1. Define the mock output returned by the VLM task
     mock_vlm_output = [
         {
             "label": "settings icon",
-            "point": [800, 200],  # [y, x] -> y = 800, x = 200
+            "point": [800, 200],  # [x, y] -> x = 800, y = 200
         }
     ]
 
@@ -58,5 +58,5 @@ async def test_coordinate_normalization_swap():
         assert detected_items[0]["label"] == "settings icon"
 
         # CRITICAL ASSERTION:
-        # The coordinate MUST be swapped from [800, 200] (y, x) to [200, 800] (x, y)
-        assert detected_items[0]["point"] == [200, 800]
+        # The point must reach the caller exactly as the model reported it.
+        assert detected_items[0]["point"] == [800, 200]

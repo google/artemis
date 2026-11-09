@@ -124,7 +124,7 @@ async def _run_object_detection(
     queries = queries or []
     templates = templates or ["Point to the following objects: {labels_str}"]
     try:
-        llm = get_llm(ctx, name="object_detector")
+        llm = get_llm(ctx, name="object_detector", is_utils=True)
     except Exception:
         llm = get_llm(ctx, name="operator")
 
@@ -164,17 +164,6 @@ async def _run_object_detection(
                 fused_results.extend(res)
         except Exception as e:
             logger.error(f"Task raised exception: {e}")
-
-    # Swap coordinates from [y, x] normalized to [x, y] normalized if needed
-    for item in fused_results:
-        if (
-            isinstance(item, dict)
-            and "point" in item
-            and isinstance(item["point"], list)
-            and len(item["point"]) == 2
-        ):
-            y_norm, x_norm = item["point"]
-            item["point"] = [x_norm, y_norm]
 
     detected_labels = set(
         item["label"] for item in fused_results if isinstance(item, dict) and "label" in item

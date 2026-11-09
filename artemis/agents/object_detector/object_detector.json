@@ -5,5 +5,5 @@
     "Locate the following UI components on the screen: {labels_str}."
   ],
   "global_timeout": 30.0,
-  "instructions": "Return a JSON list containing the detected objects. Each object must have a 'point' array [y, x] (normalized to 0-1000) and a 'label' string.\n\nExample output:\n[\n  {\"point\": [500, 250], \"label\": \"search icon\"}\n]\n\nIf no objects are found, return an empty list []."
+  "instructions": "Return a JSON list containing the detected objects. Each object must have a 'point' array [x, y] (normalized to 0-1000) and a 'label' string.\n\nExample output:\n[\n  {\"point\": [500, 250], \"label\": \"search icon\"}\n]\n\nIf no objects are found, return an empty list []."
 }
