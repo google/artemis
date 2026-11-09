@@ -973,7 +973,7 @@ limitations under the License.
                                     </div>
                                   </div>
                                 }
-                                <!-- Only SDK-observed Gemini retries are shown as quiet stream notes. -->
+                                <!-- Only SDK-observed transport retries are shown as quiet stream notes. -->
                                 @if (isLLMRetry(item.data)) {
                                   <div class="llm-retry-notes">
                                     @for (retry of getLLMRetryEntries(item.data); track retry; let retryIndex = $index) {

@@ -322,7 +322,7 @@ export function getUniqueGenericTools(tools: any[] | undefined): any[] {
     && tool?.status === 'retrying'
     && (tool?.name === 'llm_retry' || tool?.name === 'llm_retry_group')
     && tool?.payload?.source === 'provider_sdk'
-    && ['google', 'gemini'].includes(String(tool?.payload?.provider || '').toLowerCase())
+    && String(tool?.payload?.provider || '').toLowerCase() !== ''
   );
   const retryKey = (tool: any) => String(
     tool?.payload?.request_id || `legacy-${tool?.step_id || 'unassigned'}`

@@ -142,7 +142,7 @@ describe('getUniqueGenericTools retry aggregation', () => {
         name: 'llm_retry',
         status: 'retrying',
         timestamp: 100,
-        payload: { error: '503 first', delay: 1.18, provider: 'google', source: 'provider_sdk', request_id: 'request-1' }
+        payload: { error: '503 first', delay: 1.18, provider: 'openai', source: 'provider_sdk', request_id: 'request-1' }
       },
       {
         trace_id: 'retry-2',
@@ -150,7 +150,7 @@ describe('getUniqueGenericTools retry aggregation', () => {
         name: 'llm_retry',
         status: 'retrying',
         timestamp: 101,
-        payload: { error: '503 second', delay: 2.96, provider: 'google', source: 'provider_sdk', request_id: 'request-1' }
+        payload: { error: '503 second', delay: 2.96, provider: 'openai', source: 'provider_sdk', request_id: 'request-1' }
       }
     ];
 
@@ -173,7 +173,7 @@ describe('getUniqueGenericTools retry aggregation', () => {
         type: 'llm_call',
         name: 'llm_retry',
         status: 'retrying',
-        payload: { error: '503', delay: 1, provider: 'google', source: 'provider_sdk', request_id: 'request-1' }
+        payload: { error: '503', delay: 1, provider: 'openai', source: 'provider_sdk', request_id: 'request-1' }
       },
       {
         trace_id: 'failure-1',

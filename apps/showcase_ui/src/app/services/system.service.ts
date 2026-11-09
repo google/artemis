@@ -57,7 +57,6 @@ export class SystemService {
   public toolchainProbe = computed(() => this.probes().find(p => p.id === 'toolchain') || null);
   public adbProbe = computed(() => this.probes().find(p => p.id === 'android_adb') || null);
   public llmProbe = computed(() => this.probes().find(p => p.id === 'gemini_api_key' || p.id === 'llm_api_key') || null);
-  public geminiProbe = computed(() => this.llmProbe());
   public ocrProbe = computed(() => this.probes().find(p => p.id === 'vision_ocr_key' || p.id === 'ocr_api_key') || null);
 
   // Grouped readiness helpers for the 3-step onboarding flow

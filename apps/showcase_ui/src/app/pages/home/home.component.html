@@ -298,39 +298,28 @@
       <div class="step-title-row">
         <h3 class="step-title">AI Model Setup</h3>
       </div>
-      <p class="step-desc">Google Gemini or custom LLM providers (OpenAI, Claude, Ollama)</p>
+      <p class="step-desc">OpenAI-compatible endpoint, self-hosted or hosted, or a custom model stack</p>
     </div>
   </div>
 
   <div class="guide-card-body">
     <!-- 2 Big Visual Choice Cards -->
     <div class="model-choice-cards-row">
-      <!-- Card 1: Gemini (Recommended) -->
-      <div class="choice-card" [class.selected]="modelSetupMode() === 'gemini'" (click)="setModelSetupMode('gemini')">
+      <!-- Card 1: OpenAI-compatible endpoint (default) -->
+      <div class="choice-card" [class.selected]="modelSetupMode() === 'openai'" (click)="setModelSetupMode('openai')">
         <div class="choice-card-top">
           <div class="choice-radio">
-            <span class="radio-dot" [class.checked]="modelSetupMode() === 'gemini'"></span>
+            <span class="radio-dot" [class.checked]="modelSetupMode() === 'openai'"></span>
           </div>
-          <div class="choice-icon-wrap">
-            <svg class="brand-svg gemini-svg" viewBox="0 0 24 24" fill="none">
-              <defs>
-                <linearGradient id="geminiChoiceGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stop-color="#4285F4" />
-                  <stop offset="50%" stop-color="#9B72CB" />
-                  <stop offset="100%" stop-color="#D96570" />
-                </linearGradient>
-              </defs>
-              <path
-                d="M12 2C12 7.523 7.523 12 2 12C7.523 12 12 16.477 12 22C12 16.477 16.477 12 22 12C16.477 12 12 7.523 12 2Z"
-                fill="url(#geminiChoiceGrad)" />
-            </svg>
+          <div class="choice-icon-wrap icon-gear">
+            <span class="material-symbols-outlined">hub</span>
           </div>
           <div class="choice-text">
             <div class="choice-title-row">
-              <span class="choice-title">Google Gemini</span>
+              <span class="choice-title">OpenAI-compatible API</span>
               <span class="tag-badge tag-rec">Recommended</span>
             </div>
-            <p class="choice-desc">Fast multimodal reasoning with free API key from Google AI Studio.</p>
+            <p class="choice-desc">Any endpoint that speaks the OpenAI API: OpenAI, a gateway, or a self-hosted server.</p>
           </div>
         </div>
       </div>
@@ -356,64 +345,64 @@
     </div>
 
     <!-- Dynamic Panel Based on Choice -->
-    @if (modelSetupMode() === 'gemini') {
-    <!-- 1. Gemini API Key Box -->
+    @if (modelSetupMode() === 'openai') {
+    <!-- 1. OpenAI-compatible API Key Box -->
     <div class="credentials-input-box">
       <div class="input-box-header">
         <div class="header-label">
           <span class="material-symbols-outlined label-icon">vpn_key</span>
-          <span>Enter Gemini API Key:</span>
+          <span>Enter OpenAI-compatible API key:</span>
         </div>
-        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
+        <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"
           class="btn-header-link">
           <span class="material-symbols-outlined">open_in_new</span>
-          <span>Get Free API Key (Google AI Studio)</span>
+          <span>Get API Key (OpenAI Platform)</span>
         </a>
       </div>
 
       <div class="unified-key-row">
         <div class="unified-key-wrapper">
           <span class="material-symbols-outlined key-prefix-icon">key</span>
-          <input [type]="showGeminiKey() ? 'text' : 'password'" class="unified-key-input"
-            [class.is-masked]="!showGeminiKey()" [ngModel]="geminiKeyInput()"
-            (ngModelChange)="onGeminiKeyChange($event)" placeholder="Enter Gemini API Key (e.g. AIzaSy...)"
+          <input [type]="showOpenaiKey() ? 'text' : 'password'" class="unified-key-input"
+            [class.is-masked]="!showOpenaiKey()" [ngModel]="openaiKeyInput()"
+            (ngModelChange)="onOpenaiKeyChange($event)" placeholder="Enter API key (e.g. sk-...)"
             spellcheck="false" autocomplete="off" />
 
           <!-- Visibility Toggle -->
-          <button type="button" class="btn-icon-action" [title]="showGeminiKey() ? 'Mask Key' : 'Show Plaintext'"
-            (click)="toggleGeminiKeyVisibility()">
+          <button type="button" class="btn-icon-action" [title]="showOpenaiKey() ? 'Mask Key' : 'Show Plaintext'"
+            (click)="toggleOpenaiKeyVisibility()">
             <span class="material-symbols-outlined">
-              {{ showGeminiKey() ? 'visibility_off' : 'visibility' }}
+              {{ showOpenaiKey() ? 'visibility_off' : 'visibility' }}
             </span>
           </button>
 
           <!-- Copy Button -->
-          @if (geminiKeyInput()) {
+          @if (openaiKeyInput()) {
           <button type="button" class="btn-icon-action" title="Copy API Key"
-            (click)="copyToClipboard(geminiKeyInput(), 'gemini_key_field')">
-            <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'gemini_key_field'">
-              {{ copiedId() === 'gemini_key_field' ? 'check' : 'content_copy' }}
+            (click)="copyToClipboard(openaiKeyInput(), 'openai_key_field')">
+            <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'openai_key_field'">
+              {{ copiedId() === 'openai_key_field' ? 'check' : 'content_copy' }}
             </span>
           </button>
           }
         </div>
 
         <!-- Save Button -->
-        <button type="button" class="btn-unified-save" [class.btn-dirty]="isGeminiModified()"
-          [disabled]="isSavingGeminiKey() || isTestingGeminiKey() || (!isGeminiModified() && !geminiKeyInput().trim())" (click)="saveGeminiKey()">
-          @if (isSavingGeminiKey()) {
+        <button type="button" class="btn-unified-save" [class.btn-dirty]="isOpenaiModified()"
+          [disabled]="isSavingOpenaiKey() || isTestingOpenaiKey() || (!isOpenaiModified() && !openaiKeyInput().trim())" (click)="saveOpenaiKey()">
+          @if (isSavingOpenaiKey()) {
           <span class="material-symbols-outlined spin">sync</span>
-          <span>{{ geminiKeyInput().trim() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
+          <span>{{ openaiKeyInput().trim() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
           } @else {
-          <span class="material-symbols-outlined">{{ geminiKeyInput().trim() ? 'save' : 'delete_outline' }}</span>
-          <span>{{ !geminiKeyInput().trim() ? 'Clear Key' : (isGeminiModified() ? 'Save & Apply' : 'Save Key') }}</span>
+          <span class="material-symbols-outlined">{{ openaiKeyInput().trim() ? 'save' : 'delete_outline' }}</span>
+          <span>{{ !openaiKeyInput().trim() ? 'Clear Key' : (isOpenaiModified() ? 'Save & Apply' : 'Save Key') }}</span>
           }
         </button>
 
         <!-- Test Button -->
-        <button type="button" class="btn-unified-test" title="Test if Gemini API key is valid"
-          [disabled]="isTestingGeminiKey() || isSavingGeminiKey() || !geminiKeyInput().trim()" (click)="testGeminiKey()">
-          @if (isTestingGeminiKey()) {
+        <button type="button" class="btn-unified-test" title="Test if the OpenAI-compatible key is valid"
+          [disabled]="isTestingOpenaiKey() || isSavingOpenaiKey() || !openaiKeyInput().trim()" (click)="testOpenaiKey()">
+          @if (isTestingOpenaiKey()) {
           <span class="material-symbols-outlined spin">sync</span>
           <span>Testing...</span>
           } @else {
@@ -423,21 +412,21 @@
         </button>
       </div>
 
-      @if (geminiSaveMessage()) {
+      @if (openaiSaveMessage()) {
       <div class="feedback-msg success">
         <span class="material-symbols-outlined">check_circle</span>
-        <span>{{ geminiSaveMessage() }}</span>
+        <span>{{ openaiSaveMessage() }}</span>
       </div>
       }
-      @if (geminiSaveError()) {
+      @if (openaiSaveError()) {
       <div class="feedback-msg error">
         <span class="material-symbols-outlined">error</span>
-        <span>{{ geminiSaveError() }}</span>
+        <span>{{ openaiSaveError() }}</span>
       </div>
       }
     </div>
 
-    <!-- 2. OCR Enhancement Option for Gemini Mode -->
+    <!-- 2. OCR Enhancement Option -->
     <div class="ocr-enhancement-card">
       <div class="ocr-card-toggle-bar" (click)="toggleOcrConfig()">
         <div class="toggle-bar-left">
@@ -578,9 +567,9 @@
               <span class="metric-label">Default Model</span>
               <div class="metric-val-pill">
                 <span class="provider-dot"></span>
-                <span class="provider-name">{{ modelConfigEnv()?.default_model?.provider || 'google' }}</span>
+                <span class="provider-name">{{ modelConfigEnv()?.default_model?.provider || 'unset' }}</span>
                 <span class="model-divider">/</span>
-                <span class="model-name">{{ modelConfigEnv()?.default_model?.model || 'gemini-3.8-flash' }}</span>
+                <span class="model-name">{{ modelConfigEnv()?.default_model?.model || 'unset' }}</span>
               </div>
             </div>
           

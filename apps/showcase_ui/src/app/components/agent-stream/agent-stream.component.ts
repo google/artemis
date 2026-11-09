@@ -1875,7 +1875,7 @@ export class AgentStreamComponent implements AfterViewInit {
     return tool?.type === 'llm_call'
       && tool?.status === 'retrying'
       && tool?.payload?.source === 'provider_sdk'
-      && ['google', 'gemini'].includes(String(tool?.payload?.provider || '').toLowerCase());
+      && String(tool?.payload?.provider || '').toLowerCase() !== '';
   }
 
   public getLLMRetryEntries(tool: any): any[] {
@@ -1888,7 +1888,7 @@ export class AgentStreamComponent implements AfterViewInit {
     if (!Array.isArray(retries)) return [];
     return retries.filter((retry: any) =>
       retry?.source === 'provider_sdk'
-      && ['google', 'gemini'].includes(String(retry?.provider || '').toLowerCase())
+      && String(retry?.provider || '').toLowerCase() !== ''
     );
   }
 
@@ -2169,7 +2169,7 @@ export class AgentStreamComponent implements AfterViewInit {
       ? 'ARTEMIS Pro (Multi-Agent Cognitive State Graph)'
       : 'ARTEMIS Flash (Reactive Fast Loop)';
     if (model.id) {
-      return `Agent Architecture: ${archDesc} · LLM: ${model.id} (${model.provider || 'google'})`;
+      return `Agent Architecture: ${archDesc} · LLM: ${model.id} (${model.provider || 'unknown'})`;
     }
     return `Agent Architecture: ${archDesc}`;
   }

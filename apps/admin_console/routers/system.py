@@ -260,6 +260,19 @@ async def dismiss_emulator():
     return readiness_engine.dismiss_emulator()
 
 
+def _default_base_url(provider: str) -> str | None:
+    """The endpoint a key is valid against when the caller names none.
+
+    A self-hosted deployment sets OPENAI_BASE_URL, so verifying its key against
+    api.openai.com would reject a working key.
+    """
+    if provider != "openai":
+        return None
+    from artemis.config import settings
+
+    return settings.OPENAI_BASE_URL or os.environ.get("OPENAI_BASE_URL") or None
+
+
 class UpdateCredentialsRequest(BaseModel):
     """Payload to update and configure LLM or Vision OCR API credentials."""
 
@@ -268,6 +281,7 @@ class UpdateCredentialsRequest(BaseModel):
         description="Provider identifier (e.g. openai, anthropic, openrouter, ocr)",
     )
     api_key: str = Field(description="The secret API key string to configure")
+    base_url: str | None = Field(default=None, description="Optional custom base URL")
     persist_to_env: bool = Field(
         default=True, description="Whether to persist the key to .env file"
     )
@@ -339,7 +353,11 @@ async def update_credentials(request: UpdateCredentialsRequest):
 
     # If a non-empty key is provided, verify it before saving
     if key:
-        is_valid, validation_msg = await validate_api_key(provider=provider, api_key=key)
+        is_valid, validation_msg = await validate_api_key(
+            provider=provider,
+            api_key=key,
+            base_url=request.base_url or _default_base_url(provider),
+        )
         if not is_valid:
             raise HTTPException(
                 status_code=400,

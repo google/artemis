@@ -121,22 +121,20 @@ export class HomeComponent implements OnInit, OnDestroy {
   public activeAdbGuideTab = signal<AdbGuideTab>('emulator');
   public emulatorSetupMode = signal<'studio' | 'cli'>('studio');
 
-  // Interactive guide tab for LLM / OCR credentials: 'gemini' | 'ocr'
-  public modelSetupMode = signal<'gemini' | 'custom'>('gemini');
+  public modelSetupMode = signal<'openai' | 'custom'>('openai');
   public showOcrConfig = signal<boolean>(false);
   public showFullConfigFile = signal<boolean>(false);
 
   // Model & Environment configuration from backend
   public modelConfigEnv = computed(() => this.systemService.modelConfigEnv());
 
-  // Google Gemini API Key State
-  public geminiKeyInput = signal<string>('');
-  public showGeminiKey = signal<boolean>(false);
-  public isSavingGeminiKey = signal<boolean>(false);
-  public isTestingGeminiKey = signal<boolean>(false);
-  public geminiSaveMessage = signal<string | null>(null);
-  public geminiSaveError = signal<string | null>(null);
-  public isGeminiKeyEdited = signal<boolean>(false);
+  public openaiKeyInput = signal<string>('');
+  public showOpenaiKey = signal<boolean>(false);
+  public isSavingOpenaiKey = signal<boolean>(false);
+  public isTestingOpenaiKey = signal<boolean>(false);
+  public openaiSaveMessage = signal<string | null>(null);
+  public openaiSaveError = signal<string | null>(null);
+  public isOpenaiKeyEdited = signal<boolean>(false);
 
   // Vision OCR API Key State
   public ocrKeyInput = signal<string>('');
@@ -358,7 +356,6 @@ export class HomeComponent implements OnInit, OnDestroy {
   public configProbe = computed(() => this.systemService.configProbe());
   public adbProbe = computed(() => this.systemService.adbProbe());
   public llmProbe = computed(() => this.systemService.llmProbe());
-  public geminiProbe = computed(() => this.systemService.geminiProbe());
   public ocrProbe = computed(() => this.systemService.ocrProbe());
   public toolchainProbe = computed(() => this.systemService.toolchainProbe());
 
@@ -380,14 +377,6 @@ export class HomeComponent implements OnInit, OnDestroy {
   public passedBlockerCount = computed(() => this.systemService.passedBlockerCount());
 
   // Configured LLM providers from probe metadata
-  public configuredLlmProviders = computed<any[]>(() => {
-    const meta = this.llmProbe()?.metadata;
-    if (meta && Array.isArray(meta['providers'])) {
-      return meta['providers'];
-    }
-    return [];
-  });
-
   // Multi-OS detection & active OS selection
   public selectedOs = signal<'linux' | 'darwin' | 'windows' | null>(null);
   public effectiveOs = computed<'linux' | 'darwin' | 'windows'>(() => {
@@ -467,16 +456,15 @@ export class HomeComponent implements OnInit, OnDestroy {
     return meta?.['configured'] === true;
   });
 
-  public currentApiKey = computed<string>(() => this.systemService.currentApiKey());
   public apiKeysMap = computed<Record<string, string>>(() => this.systemService.apiKeysMap());
 
-  public savedGeminiKey = computed<string>(() => {
+  public savedOpenaiKey = computed<string>(() => {
     const keys = this.apiKeysMap();
-    return keys['google'] || this.currentApiKey() || '';
+    return keys['openai'] || '';
   });
 
-  public isGeminiModified = computed<boolean>(() => {
-    return this.geminiKeyInput().trim() !== this.savedGeminiKey().trim();
+  public isOpenaiModified = computed<boolean>(() => {
+    return this.openaiKeyInput().trim() !== this.savedOpenaiKey().trim();
   });
 
   public savedOcrKey = computed<string>(() => {
@@ -523,11 +511,10 @@ export class HomeComponent implements OnInit, OnDestroy {
   constructor() {
     effect(() => {
       const keys = this.systemService.apiKeysMap();
-      const current = this.systemService.currentApiKey();
-      const googleKey = keys['google'] || current || '';
+      const openaiKey = keys['openai'] || '';
       const ocrKey = keys['ocr'] || '';
-      if (!this.isGeminiKeyEdited()) {
-        this.geminiKeyInput.set(googleKey);
+      if (!this.isOpenaiKeyEdited()) {
+        this.openaiKeyInput.set(openaiKey);
       }
       if (!this.isOcrKeyEdited()) {
         this.ocrKeyInput.set(ocrKey);
@@ -581,7 +568,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.emulatorSetupMode.set(mode);
   }
 
-  public setModelSetupMode(mode: 'gemini' | 'custom'): void {
+  public setModelSetupMode(mode: 'openai' | 'custom'): void {
     this.modelSetupMode.set(mode);
     if (mode === 'custom') {
       this.systemService.setSkipCredentialsCheck(true);
@@ -595,8 +582,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.showFullConfigFile.update(v => !v);
   }
 
-  public toggleGeminiKeyVisibility(): void {
-    this.showGeminiKey.update(v => !v);
+  public toggleOpenaiKeyVisibility(): void {
+    this.showOpenaiKey.update(v => !v);
   }
 
   public toggleOcrKeyVisibility(): void {
@@ -607,11 +594,11 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.showOcrConfig.update(v => !v);
   }
 
-  public onGeminiKeyChange(val: string): void {
-    this.geminiKeyInput.set(val);
-    this.isGeminiKeyEdited.set(true);
-    this.geminiSaveError.set(null);
-    this.geminiSaveMessage.set(null);
+  public onOpenaiKeyChange(val: string): void {
+    this.openaiKeyInput.set(val);
+    this.isOpenaiKeyEdited.set(true);
+    this.openaiSaveError.set(null);
+    this.openaiSaveMessage.set(null);
   }
 
   public onOcrKeyChange(val: string): void {
@@ -621,49 +608,49 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.ocrSaveMessage.set(null);
   }
 
-  public saveGeminiKey(): void {
-    const key = this.geminiKeyInput().trim();
+  public saveOpenaiKey(): void {
+    const key = this.openaiKeyInput().trim();
     if (!key) return;
-    this.isSavingGeminiKey.set(true);
-    this.geminiSaveError.set(null);
-    this.geminiSaveMessage.set(null);
+    this.isSavingOpenaiKey.set(true);
+    this.openaiSaveError.set(null);
+    this.openaiSaveMessage.set(null);
 
-    this.systemService.updateApiKey('google', key, true).subscribe({
+    this.systemService.updateApiKey('openai', key, true).subscribe({
       next: (res) => {
-        this.isSavingGeminiKey.set(false);
-        this.isGeminiKeyEdited.set(false);
-        this.geminiSaveMessage.set(res?.message || '✓ Gemini API key verified & saved successfully.');
-        setTimeout(() => this.geminiSaveMessage.set(null), 5000);
+        this.isSavingOpenaiKey.set(false);
+        this.isOpenaiKeyEdited.set(false);
+        this.openaiSaveMessage.set(res?.message || '✓ OpenAI-compatible API key verified & saved successfully.');
+        setTimeout(() => this.openaiSaveMessage.set(null), 5000);
       },
       error: (err) => {
-        this.isSavingGeminiKey.set(false);
-        this.geminiSaveError.set(err?.error?.detail || err?.message || 'Failed to update Gemini API key.');
+        this.isSavingOpenaiKey.set(false);
+        this.openaiSaveError.set(err?.error?.detail || err?.message || 'Failed to update OpenAI-compatible API key.');
       }
     });
   }
 
-  public clearGeminiKey(): void {
-    this.geminiKeyInput.set('');
-    this.isGeminiKeyEdited.set(false);
-    this.geminiSaveError.set(null);
-    this.geminiSaveMessage.set(null);
+  public clearOpenaiKey(): void {
+    this.openaiKeyInput.set('');
+    this.isOpenaiKeyEdited.set(false);
+    this.openaiSaveError.set(null);
+    this.openaiSaveMessage.set(null);
 
-    if (this.savedGeminiKey().trim()) {
-      this.isSavingGeminiKey.set(true);
-      this.systemService.updateApiKey('google', '', true).subscribe({
+    if (this.savedOpenaiKey().trim()) {
+      this.isSavingOpenaiKey.set(true);
+      this.systemService.updateApiKey('openai', '', true).subscribe({
         next: (res) => {
-          this.isSavingGeminiKey.set(false);
-          this.geminiSaveMessage.set(res?.message || '✓ Gemini API key cleared.');
-          setTimeout(() => this.geminiSaveMessage.set(null), 5000);
+          this.isSavingOpenaiKey.set(false);
+          this.openaiSaveMessage.set(res?.message || '✓ OpenAI-compatible API key cleared.');
+          setTimeout(() => this.openaiSaveMessage.set(null), 5000);
         },
         error: (err) => {
-          this.isSavingGeminiKey.set(false);
-          this.geminiSaveError.set(err?.error?.detail || err?.message || 'Failed to clear Gemini API key.');
+          this.isSavingOpenaiKey.set(false);
+          this.openaiSaveError.set(err?.error?.detail || err?.message || 'Failed to clear OpenAI-compatible API key.');
         }
       });
     } else {
-      this.geminiSaveMessage.set('✓ Gemini API key cleared.');
-      setTimeout(() => this.geminiSaveMessage.set(null), 3000);
+      this.openaiSaveMessage.set('✓ OpenAI-compatible API key cleared.');
+      setTimeout(() => this.openaiSaveMessage.set(null), 3000);
     }
   }
 
@@ -713,26 +700,26 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
   }
 
-  public testGeminiKey(): void {
-    const key = this.geminiKeyInput().trim();
+  public testOpenaiKey(): void {
+    const key = this.openaiKeyInput().trim();
     if (!key) return;
-    this.isTestingGeminiKey.set(true);
-    this.geminiSaveError.set(null);
-    this.geminiSaveMessage.set(null);
+    this.isTestingOpenaiKey.set(true);
+    this.openaiSaveError.set(null);
+    this.openaiSaveMessage.set(null);
 
-    this.systemService.testApiKey('google', key).subscribe({
+    this.systemService.testApiKey('openai', key).subscribe({
       next: (res) => {
-        this.isTestingGeminiKey.set(false);
+        this.isTestingOpenaiKey.set(false);
         if (res?.valid) {
-          this.geminiSaveMessage.set(res?.message || '✓ Gemini API key is valid!');
+          this.openaiSaveMessage.set(res?.message || '✓ OpenAI-compatible API key is valid!');
         } else {
-          this.geminiSaveError.set(res?.message || 'Gemini API key verification failed.');
+          this.openaiSaveError.set(res?.message || 'OpenAI-compatible API key verification failed.');
         }
-        setTimeout(() => this.geminiSaveMessage.set(null), 5000);
+        setTimeout(() => this.openaiSaveMessage.set(null), 5000);
       },
       error: (err) => {
-        this.isTestingGeminiKey.set(false);
-        this.geminiSaveError.set(err?.error?.detail || err?.message || 'Gemini API key test failed.');
+        this.isTestingOpenaiKey.set(false);
+        this.openaiSaveError.set(err?.error?.detail || err?.message || 'OpenAI-compatible API key test failed.');
       }
     });
   }
@@ -761,52 +748,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     });
   }
 
-  public getProviderDisplayName(tab: string): string {
-    switch (tab) {
-      case 'gemini': return 'Gemini';
-      case 'ocr': return 'Vision OCR';
-      default: return tab;
-    }
-  }
-
-  public getProviderEnvVar(tab: string): string {
-    switch (tab) {
-      case 'gemini': return 'GEMINI_API_KEY';
-      case 'ocr': return 'GOOGLE_VISION_API_KEY';
-      default: return 'API_KEY';
-    }
-  }
-
-  public getProviderHint(tab: string): string {
-    switch (tab) {
-      case 'gemini':
-        return 'For a quick start, Google Gemini provides a free API key. Artemis also supports other models (OpenAI, Claude, OpenRouter, etc.)—you can configure your own API keys directly in .env or your environment.';
-      case 'ocr':
-        return 'Google Cloud Vision API key for on-screen OCR text detection and UI grounding.';
-      default:
-        return 'Configure your API key or use environment definitions.';
-    }
-  }
-
   public skipCredentialsCheck(): void {
     this.systemService.skipCredentialsCheck();
-  }
-
-  public getApiKeyPlaceholder(tab: string): string {
-    switch (tab) {
-      case 'gemini': return 'Enter Gemini API Key (e.g. AIzaSy...)';
-      case 'ocr': return 'Enter Vision OCR API Key (e.g. AIzaSy...)';
-      default: return 'Enter API Key...';
-    }
-  }
-
-  public isTabProviderActive(tab: string): boolean {
-    if (tab === 'ocr') {
-      return this.isOcrConfigured();
-    }
-    const targetProvider = tab === 'gemini' ? 'google' : tab;
-    const providers = this.configuredLlmProviders();
-    return providers.some(p => p.provider === targetProvider);
   }
 
   public refreshReadiness(): void {

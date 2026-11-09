@@ -52,7 +52,7 @@ describe('AgentService live LLM retry timeline', () => {
       timestamp: 100,
       error: '503 high demand',
       delay: 1.5,
-      provider: 'google',
+      provider: 'openai',
       source: 'provider_sdk',
       recoverable: true,
       request_id: 'request-1',
@@ -74,7 +74,7 @@ describe('AgentService live LLM retry timeline', () => {
     expect(log.data.payload).toEqual(jasmine.objectContaining({
       error: '503 high demand',
       delay: 1.5,
-      provider: 'google',
+      provider: 'openai',
       source: 'provider_sdk',
       request_id: 'request-1'
     }));
@@ -86,7 +86,7 @@ describe('AgentService live LLM retry timeline', () => {
       trace_id: 'retry-1',
       timestamp: 100,
       delay: 1.5,
-      provider: 'google',
+      provider: 'openai',
       source: 'provider_sdk',
       request_id: 'request-1',
       scheduled_at: 100
