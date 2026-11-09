@@ -103,6 +103,25 @@ def _described(value: Any) -> str | None:
     return None
 
 
+def fold_reminder_into_system_prompt(messages: list, reminder: str) -> list:
+    """Add a late reminder to the leading system message instead of appending one.
+
+    Single-system backends (vLLM and SGLang serving Qwen templates) reject a
+    system message anywhere but the first position, so the reminder has to ride
+    the prompt that is already there. Returns a new list; the input is untouched.
+    """
+    if messages and isinstance(messages[0], SystemMessage):
+        first = messages[0]
+        if isinstance(first.content, str):
+            merged: Any = f"{first.content}\n\n{reminder}"
+        elif isinstance(first.content, list):
+            merged = list(first.content) + [{"type": "text", "text": reminder}]
+        else:
+            merged = reminder
+        return [first.model_copy(update={"content": merged})] + list(messages[1:])
+    return [SystemMessage(content=reminder)] + list(messages)
+
+
 class OperatorNode:
     def __init__(
         self,
@@ -491,15 +510,12 @@ class OperatorNode:
                 logger.warning(
                     "Operator has reached the maximum number of tool calls. Adding reminder."
                 )
-                current_messages.append(
-                    SystemMessage(
-                        content=(
-                            "You have reached the maximum number of tool calls"
-                            " for this turn. You must make a final action, or"
-                            " save your current research results via notes to"
-                            " continue later."
-                        )
-                    )
+                current_messages = fold_reminder_into_system_prompt(
+                    current_messages,
+                    "You have reached the maximum number of tool calls"
+                    " for this turn. You must make a final action, or"
+                    " save your current research results via notes to"
+                    " continue later.",
                 )
 
             bound_llm = base_llm.bind_tools(tools=traced_tools)

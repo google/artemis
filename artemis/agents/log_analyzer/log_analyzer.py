@@ -351,23 +351,18 @@ class LogAnalyzerNode:
         # Extract the list of keys (metadata) currently stored in _log_cache.
         cache_keys = list(self._log_cache.keys())
 
-        current_messages = [
-            SystemMessage(content=sub_system_prompt),
-        ]
-
-        # Append a system message listing the available cache keys so the sub-agent knows what data can be retrieved instantly.
+        # Single-system backends (vLLM/SGLang with Qwen templates) reject a second
+        # system message, so the cache listing rides the leading prompt.
         if cache_keys:
-            current_messages.append(
-                SystemMessage(
-                    content=(
-                        "The following log reads are already cached and can be"
-                        " retrieved instantly without cost:\n"
-                    )
-                    + "\n".join(f"- {k}" for k in cache_keys)
-                )
+            sub_system_prompt += (
+                "\n\nThe following log reads are already cached and can be"
+                " retrieved instantly without cost:\n" + "\n".join(f"- {k}" for k in cache_keys)
             )
 
-        current_messages.append(HumanMessage(content=specific_query))
+        current_messages = [
+            SystemMessage(content=sub_system_prompt),
+            HumanMessage(content=specific_query),
+        ]
 
         return await self._run_agent_loop(
             base_llm=llm,
