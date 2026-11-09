@@ -32,8 +32,8 @@ SHOT = [{"type": "text", "text": "Screenshot of step 7 (pre-action) is attached.
 
 
 class _Provider(StrEnum):
-    GOOGLE = "google"
-    VERTEX_AI = "vertexai"
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
 
 
 def _llm(provider):
@@ -43,9 +43,8 @@ def _llm(provider):
 @pytest.mark.parametrize(
     ("provider", "carrier"),
     [
-        ("google", "tool"),
         ("anthropic", "tool"),
-        ("vertexai", "human"),
+        ("openai", "human"),
         ("openai", "human"),
         ("openrouter", "human"),
         ("xai", "human"),
@@ -59,8 +58,8 @@ def test_resolve_image_carrier_by_provider_name(provider, carrier):
 
 
 def test_resolve_image_carrier_accepts_enums_and_endpoint_less_llms():
-    assert resolve_image_carrier(_Provider.GOOGLE) == "tool"
-    assert resolve_image_carrier(_llm(_Provider.VERTEX_AI)) == "human"
+    assert resolve_image_carrier(_Provider.ANTHROPIC) == "tool"
+    assert resolve_image_carrier(_llm(_Provider.OPENAI)) == "human"
     assert resolve_image_carrier(SimpleNamespace()) == "human"
 
 
@@ -89,7 +88,7 @@ def test_text_only_results_stay_a_single_tool_message():
 
 
 def test_tool_carrier_puts_the_image_inside_the_tool_message():
-    msgs = tool_result_messages("tc-2", SHOT, name="get_step_screenshot", llm=_llm("google"))
+    msgs = tool_result_messages("tc-2", SHOT, name="get_step_screenshot", llm=_llm("anthropic"))
     assert len(msgs) == 1
     assert isinstance(msgs[0], ToolMessage)
     assert msgs[0].content == SHOT

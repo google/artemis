@@ -62,9 +62,6 @@ from artemis.config.constants import (
     ENV_ANTIGRAVITY_LS_ADDRESS,
     ENV_DATA_ENGINE_DB_PATH,
     ENV_EVENTS_OUTPUT_PATH,
-    ENV_GCP_API_KEY,
-    ENV_GEMINI_API_KEY,
-    ENV_GOOGLE_API_KEY,
     ENV_KEEP_VIDEOS,
     ENV_ARTEMIS_APP_DIR,
     ENV_ARTEMIS_CLOUD_GATEWAY_URL,
@@ -110,7 +107,6 @@ from artemis.config.llm import (
     initialize_llm_config,
     load_llm_config_override,
     parse_llm_config,
-    validate_vertex_ai_credentials,
 )
 from artemis.config.paths import (
     CONFIG_DIR,
@@ -206,7 +202,6 @@ __all__ = [
     "get_default_llm_config",
     "deep_merge_llm_config",
     "load_llm_config_override",
-    "validate_vertex_ai_credentials",
     # Agent & Tool Config
     "AgentGlobalConfig",
     "CheckerConfig",
@@ -290,9 +285,6 @@ __all__ = [
     "ENV_ADB_HOST",
     "ENV_ADB_PORT",
     "ENV_ADB_SERVER_SOCKET",
-    "ENV_GOOGLE_API_KEY",
-    "ENV_GEMINI_API_KEY",
-    "ENV_GCP_API_KEY",
     "ENV_OPENAI_API_KEY",
     "ENV_OPENAI_BASE_URL",
     "ENV_ANTHROPIC_API_KEY",

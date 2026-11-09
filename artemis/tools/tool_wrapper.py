@@ -174,7 +174,7 @@ def get_tool_result_content(result: Any) -> Any:
 ImageCarrier = Literal["tool", "human"]
 
 #: Providers whose tool-result messages may carry image parts directly.
-_TOOL_IMAGE_PROVIDERS = frozenset({"google", "anthropic"})
+_TOOL_IMAGE_PROVIDERS = frozenset({"anthropic"})
 
 _STEP_RE = re.compile(r"\bstep\s+(\d+)", re.IGNORECASE)
 
@@ -206,11 +206,10 @@ def split_multimodal_result(result: Any) -> tuple[str, list[dict[str, Any]]]:
 def resolve_image_carrier(llm_or_provider: Any) -> ImageCarrier:
     """Which message carries images returned by a tool for this LLM.
 
-    Gemini (direct API) and Anthropic accept image parts inside the tool
-    result message itself (``"tool"``). Vertex AI and the OpenAI-compatible
-    providers (openai / openrouter / xai / ...) reject them there, so the
-    image travels in a ``HumanMessage`` that immediately follows the textual
-    tool result (``"human"``). Accepts a provider name, a provider enum, or an
+    Anthropic accepts image parts inside the tool result message itself
+    (``"tool"``). The OpenAI-compatible providers (openai / openrouter / xai /
+    ...) reject them there, so the image travels in a ``HumanMessage`` that
+    immediately follows the textual tool result (``"human"``). Accepts a provider name, a provider enum, or an
     LLM whose ``endpoint.provider`` names the provider that actually issues
     the request (a fallback model is judged by its own provider).
     """

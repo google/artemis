@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Token-usage normalization across the LangChain, generate_content and Interactions shapes."""
+"""Token-usage normalization across the LangChain and provider response shapes."""
 
 from types import SimpleNamespace
 
-from artemis.llm.google import normalize_usage, usage_from_message
+from artemis.llm.usage import normalize_usage, usage_from_message
 from langchain_core.messages import AIMessage
 
 

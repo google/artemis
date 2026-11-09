@@ -31,7 +31,7 @@ from artemis.data_engine.trace import (
     trace_langchain_tool,
 )
 from artemis.graph.state import State
-from artemis.llm.google import usage_from_message
+from artemis.llm.usage import usage_from_message
 from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
 from artemis.tools.command_tool import get_run_short_adb_command_tool
 from artemis.tools.diagnoser_submit_answer_tool import get_submit_answer_tool

@@ -58,7 +58,7 @@ from artemis.config import get_temp_dir
 from artemis.context import ArtemisContext
 from artemis.controllers.controller_factory import get_controller
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan, trace
-from artemis.llm.google import strip_provider_prefix
+from artemis.llm.naming import strip_provider_prefix
 from artemis.llm.reliability import retry_policy_for
 from artemis.services.llm import _record_llm_event, _record_llm_retry, get_llm
 from artemis.utils.video import extract_frames_at_timestamps, extract_keyframes_from_video
@@ -388,7 +388,7 @@ class VideoAnalyzer:
         utils_cfg = getattr(llm_config, "utils", None) if llm_config else None
         llm_cfg = getattr(utils_cfg, "video_analyzer", None) if utils_cfg else None
         self.model_name = strip_provider_prefix(
-            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gemini-3.8-flash"
+            llm_cfg.model if (llm_cfg and hasattr(llm_cfg, "model")) else "gpt-4o-mini"
         )
         self.chunk_size_seconds = self.static_chunk_size_seconds
 

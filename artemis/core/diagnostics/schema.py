@@ -78,7 +78,7 @@ class ProbeResult(BaseModel):
     """Outcome of a single readiness probe check."""
 
     id: str = Field(
-        description="Unique identifier for the probe (e.g. 'android_adb', 'gemini_api_key')"
+        description="Unique identifier for the probe (e.g. 'android_adb', 'llm_api_key')"
     )
     category: ProbeCategory = Field(description="Category of the probe")
     title: str = Field(description="Human-readable title (e.g. 'Device / Emulator Connected')")

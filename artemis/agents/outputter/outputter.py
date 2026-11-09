@@ -426,7 +426,7 @@ async def _run_react_loop(
             logger.warning("Outputter reply was empty again after a nudge.")
             return None
 
-        # An empty model turn is not kept: Gemini rejects messages without parts.
+        # An empty model turn is never kept: it carries no parts for the next call.
         logger.warning("Outputter reply was empty; asking once more for an answer.")
         messages.append(HumanMessage(content=_EMPTY_REPLY_NUDGE))
         nudged = True

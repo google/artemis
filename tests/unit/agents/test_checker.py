@@ -332,25 +332,6 @@ async def _run_with_screenshot(tmp_path, provider):
 
 
 @pytest.mark.asyncio
-async def test_step_screenshot_rides_inside_the_tool_message_for_gemini(tmp_path):
-    from langchain_core.messages import HumanMessage, ToolMessage
-
-    report, messages = await _run_with_screenshot(tmp_path, "google")
-    assert report.verdicts[0].status == "passed"
-
-    tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
-    assert len(tool_msgs) == 1
-    assert tool_msgs[0].tool_call_id == "tc-shot"
-    assert tool_msgs[0].name == "get_step_screenshot"
-    assert tool_msgs[0].status == "success"
-    blocks = tool_msgs[0].content
-    assert blocks[0]["text"] == "Screenshot of step 2 (pre-action) is attached."
-    assert blocks[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
-    # No extra human turn was spliced in for this provider.
-    assert sum(isinstance(m, HumanMessage) for m in messages) == 1
-
-
-@pytest.mark.asyncio
 async def test_step_screenshot_follows_as_a_human_message_for_openai(tmp_path):
     from langchain_core.messages import HumanMessage, ToolMessage
 
@@ -381,7 +362,7 @@ async def test_replay_steps_result_is_a_plain_tool_message(tmp_path):
         }
     ]
     llm, acomplete = _screenshot_then_verdict(
-        "google", {"name": "replay_steps", "args": {"start_step": 3}, "id": "tc-replay"}
+        "openai", {"name": "replay_steps", "args": {"start_step": 3}, "id": "tc-replay"}
     )
     with (
         patch("artemis.agents.checker.checker.get_llm", return_value=llm),

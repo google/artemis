@@ -24,7 +24,7 @@ call into the DataEngine, carrying:
   Planner, Validator, Checker, sub-agents included — so the compaction
   thresholds do NOT read it; the operator records its own prompt size on the
   transcript ledger (``TranscriptLedger.record_prompt_tokens``);
-- provider-reported cache hits (Gemini ``cached_content_token_count`` /
+- provider-reported cache hits (``cached_content_token_count`` /
   LangChain ``input_token_details.cache_read``) to establish the cache-hit-rate
   baseline;
 - running per-session totals, including ``session_cached_ratio``
@@ -40,7 +40,7 @@ import threading
 from typing import Any
 
 from artemis.data_engine.context_vars import CURRENT_NODE_NAME
-from artemis.llm.google import usage_from_message
+from artemis.llm.usage import usage_from_message
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -62,7 +62,7 @@ OPERATOR_NODE_NAMES = frozenset({"operator", "flashrunner"})
 def extract_usage(response: Any) -> dict[str, int] | None:
     """Extracts unified token usage from an LLM response message, best-effort.
 
-    Thin wrapper over :func:`artemis.llm.google.usage.usage_from_message`
+    Thin wrapper over :func:`artemis.llm.usage.usage_from_message`
     that keeps the meter's historical four-key shape. Returns None when the
     response carries no usable usage numbers.
     """

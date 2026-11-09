@@ -67,7 +67,7 @@ playground/artemis_container/
 | `ADB_DEVICE_SERIAL` | `host.docker.internal:6520` | TCP host and port of the target Cuttlefish emulator |
 | `PORT` | `8080` | Port for Artemis Admin & Stream server |
 | `PYTHONUNBUFFERED` | `1` | Ensures immediate stdout logging |
-| `GEMINI_API_KEY` | - | Google Gemini API key for agent reasoning |
+| `OPENAI_API_KEY` | - | OpenAI-compatible model endpoint key for agent reasoning |
 | `OPENAI_API_KEY` | - | Optional OpenAI API key |
 
 ---
@@ -92,7 +92,7 @@ docker run -d \
   --add-host host.docker.internal:host-gateway \
   -e SESSION_ID=sample-123 \
   -e ADB_DEVICE_SERIAL=host.docker.internal:6520 \
-  -e GEMINI_API_KEY="your-gemini-key" \
+  -e OPENAI_API_KEY="your-openai-key" \
   -p 8080:8080 \
   artemis:latest
 ```

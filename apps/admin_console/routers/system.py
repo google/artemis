@@ -264,8 +264,8 @@ class UpdateCredentialsRequest(BaseModel):
     """Payload to update and configure LLM or Vision OCR API credentials."""
 
     provider: str = Field(
-        default="google",
-        description="Provider identifier (e.g. google, gemini, openai, anthropic, openrouter, ocr)",
+        default="openai",
+        description="Provider identifier (e.g. openai, anthropic, openrouter, ocr)",
     )
     api_key: str = Field(description="The secret API key string to configure")
     persist_to_env: bool = Field(
@@ -277,8 +277,8 @@ class ValidateCredentialsRequest(BaseModel):
     """Payload to test and verify LLM or Vision OCR API credentials without saving."""
 
     provider: str = Field(
-        default="google",
-        description="Provider identifier (e.g. google, gemini, openai, anthropic, openrouter, ocr)",
+        default="openai",
+        description="Provider identifier (e.g. openai, anthropic, openrouter, ocr)",
     )
     api_key: str = Field(description="The secret API key string to test")
     base_url: str | None = Field(default=None, description="Optional custom base URL")
@@ -294,9 +294,8 @@ async def get_credentials():
     """
     from artemis.config import settings
 
-    providers = ("google", "openai", "anthropic", "openrouter", "ocr")
+    providers = ("openai", "anthropic", "openrouter", "xai", "ocr")
     status = {name: bool(settings.get_api_key(name)) for name in providers}
-    status["gemini"] = status["google"]
     return {
         "providers": [
             {"name": name, "configured": configured} for name, configured in status.items()
@@ -415,9 +414,6 @@ async def get_model_config_and_env():
             return "****"
         return f"****{k[-4:]}"
 
-    gemini_real = get_real_env_value("GEMINI_API_KEY", "google") or get_real_env_value(
-        "GOOGLE_API_KEY", "google"
-    )
     openai_real = get_real_env_value("OPENAI_API_KEY", "openai")
     anthropic_real = get_real_env_value("ANTHROPIC_API_KEY", "anthropic")
     openrouter_real = get_real_env_value("OPEN_ROUTER_API_KEY", "openrouter")
@@ -430,13 +426,6 @@ async def get_model_config_and_env():
     )
 
     env_vars = [
-        {
-            "name": "GEMINI_API_KEY",
-            "provider": "google",
-            "is_set": bool(gemini_real),
-            "preview": mask_key(gemini_real),
-            "description": "Google Gemini multimodal vision API key (free tier available)",
-        },
         {
             "name": "OPENAI_API_KEY",
             "provider": "openai",

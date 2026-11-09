@@ -42,7 +42,6 @@ from artemis.config import (
 )
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandler
-from artemis.llm.google import is_google_chat_model, is_google_provider
 from artemis.llm.reliability import (
     CircuitBreaker,
     FailureCategory,
@@ -240,7 +239,7 @@ def _record_llm_event(name: str, payload: dict[str, Any], *, status: str = "retr
 
 
 class _ProviderRetryTelemetryHandler(logging.Handler):
-    """Turn provider SDK retry log records into structured Artemis telemetry."""
+    """Turn OpenAI SDK retry log records into structured Artemis telemetry."""
 
     _DELAY_PATTERN = re.compile(r"\bin\s+(?P<delay>\d+(?:\.\d+)?)\s+seconds?\b", re.IGNORECASE)
     _ERROR_PATTERN = re.compile(r"\bas it raised\s+(?P<error>.+)$", re.IGNORECASE)
@@ -258,7 +257,7 @@ class _ProviderRetryTelemetryHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             request = _ACTIVE_LLM_REQUEST.get()
-            if not request or request.get("provider") != ModelProvider.GOOGLE.value:
+            if not request or not request.get("provider"):
                 return
 
             message = record.getMessage()
@@ -284,12 +283,16 @@ class _ProviderRetryTelemetryHandler(logging.Handler):
 
 
 def _install_provider_retry_telemetry() -> None:
-    provider_logger = logging.getLogger("google_genai._api_client")
+    # The OpenAI SDK logs one WARNING per transport retry under this logger.
+    provider_logger = logging.getLogger("openai._base_client")
     if any(
         isinstance(handler, _ProviderRetryTelemetryHandler) for handler in provider_logger.handlers
     ):
         return
-    provider_logger.addHandler(_ProviderRetryTelemetryHandler(level=logging.INFO))
+    provider_logger.addHandler(_ProviderRetryTelemetryHandler(level=logging.WARNING))
+
+
+_install_provider_retry_telemetry()
 
 
 _install_provider_retry_telemetry()
@@ -548,40 +551,11 @@ class RobustChatModelWrapper:
 
         processed_tools = list(tools_list) if tools_list is not None else []
 
-        # Determine if the underlying model provider is Google / Gemini
-        if self.endpoint is not None:
-            google_backed = is_google_provider(self.endpoint.provider)
-        else:
-            google_backed = is_google_chat_model(self.base_model)
-
-        has_explicit_google_search = any(
-            isinstance(t, dict) and "google_search" in t for t in processed_tools
-        )
-        should_ground = (
-            self.endpoint is not None and self.endpoint.enable_grounding
-        ) or has_explicit_google_search
-
-        if google_backed:
-            if should_ground:
-                # Add native Google Search Grounding tool if not already present
-                if not has_explicit_google_search:
-                    processed_tools.append({"google_search": {}})
-
-                # Ensure include_server_side_tool_invocations is True in tool_config
-                # to satisfy Gemini API requirements when mixing built-in tools and function calling
-                tool_config = kwargs.get("tool_config")
-                if tool_config is None:
-                    kwargs["tool_config"] = {"include_server_side_tool_invocations": True}
-                elif isinstance(tool_config, dict):
-                    tool_config = dict(tool_config)
-                    tool_config.setdefault("include_server_side_tool_invocations", True)
-                    kwargs["tool_config"] = tool_config
-        else:
-            # If not Gemini/Google (e.g. OpenAI, Anthropic, Ollama, OpenRouter, XAI):
-            # Ignore grounding and filter out any Gemini-specific built-in dict tools to avoid provider errors
-            processed_tools = [
-                t for t in processed_tools if not (isinstance(t, dict) and "google_search" in t)
-            ]
+        # Drop the Google built-in tool dicts LangChain would otherwise forward to
+        # an endpoint that cannot serve them.
+        processed_tools = [
+            t for t in processed_tools if not (isinstance(t, dict) and "google_search" in t)
+        ]
 
         bound = self.base_model.bind_tools(processed_tools, *other_args, **kwargs)
         return RobustChatModelWrapper(bound, self.ctx, endpoint=self.endpoint)
@@ -871,28 +845,6 @@ invoke_llm_with_timeout_message = LLMWaitNotice(
 
 
 # Backward compatible factory functions delegating to ModelFactory
-def get_google_llm(
-    model_name: str = "gemini-3.8-flash",
-    temperature: float | None = None,
-    timeout: float | None = None,
-    thinking_budget: int | None = None,
-    thinking_level: str | None = "medium",
-    include_thoughts: bool | None = None,
-    enable_grounding: bool = False,
-) -> BaseChatModel:
-    ep = ModelEndpoint(
-        provider=ModelProvider.GOOGLE,
-        model_name=model_name,
-        temperature=temperature or 0.0,
-        timeout_seconds=timeout or 60.0,
-        thinking_budget=thinking_budget,
-        thinking_level=thinking_level,
-        include_thoughts=include_thoughts,
-        enable_grounding=enable_grounding,
-    )
-    return ModelFactory.create_model(ep)
-
-
 def get_configured_llm(
     ctx: Any,
     name: str,
@@ -903,9 +855,9 @@ def get_configured_llm(
 ) -> BaseChatModel:
     """Build the LLM configured for ``name``, with an optional model-name override.
 
-    Prefer this over the Google-only :func:`get_google_llm` wherever the caller
-    holds a context: provider, endpoint and credentials then come from the
-    deployment's own configuration instead of a hardcoded provider.
+    Prefer this over the provider-specific factories wherever the caller holds a
+    context: provider, endpoint and credentials then come from the deployment's
+    own configuration instead of a hardcoded provider.
     """
     endpoint = _resolve_endpoint(ctx, name, is_utils=is_utils)
     updates: dict[str, Any] = {"temperature": temperature}
@@ -947,8 +899,8 @@ def _resolve_endpoint(
         val = getattr(obj, attr, None)
         return val if isinstance(val, expected_type) else None
 
-    provider_val = getattr(cfg, "provider", "google")
-    model_val = getattr(cfg, "model", "gemini-2.5-flash")
+    provider_val = getattr(cfg, "provider", "openai")
+    model_val = getattr(cfg, "model", "gpt-4o-mini")
 
     return ModelEndpoint(
         provider=ModelProvider.from_string(provider_val),
@@ -956,10 +908,7 @@ def _resolve_endpoint(
         temperature=_get_val(cfg, "temperature", (int, float)) or 0.0,
         timeout_seconds=_get_val(cfg, "timeout", (int, float)) or 60.0,
         thinking_budget=_get_val(cfg, "thinking_budget", int),
-        thinking_level=_get_val(cfg, "thinking_level", str),
         reasoning_effort=_get_val(cfg, "reasoning_effort", str),
-        include_thoughts=_get_val(cfg, "include_thoughts", bool),
-        enable_grounding=_get_val(cfg, "enable_grounding", bool) or False,
     )
 
 

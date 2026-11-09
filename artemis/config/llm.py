@@ -32,7 +32,6 @@ from third_party.mobile_use.config.llm import (
     LLMConfigUtils,
     LLMUtilsNodeWithFallback,
     LLMWithFallback,
-    validate_vertex_ai_credentials,
 )
 from third_party.mobile_use.utils.file import load_jsonc
 from third_party.mobile_use.utils.logger import get_logger
@@ -53,19 +52,18 @@ __all__ = [
     "lightweight_judge_default",
     "load_llm_config_override",
     "parse_llm_config",
-    "validate_vertex_ai_credentials",
 ]
 
 
 def lightweight_judge_default(base: "LLM | None" = None) -> "LLMWithFallback":
     """Factory default for the lightweight judge nodes (pixel safety net and
-    planner validation): a flash-lite model at temperature 0.
+    planner validation): a small model at temperature 0.
 
-    ``base`` is the configured default endpoint. A non-Google stack has no
-    flash-lite equivalent, so the judge reuses the configured model instead of
-    reaching for a Google endpoint the deployment does not have.
+    ``base`` is the configured default endpoint, reused so the judge never
+    reaches for a provider the deployment does not have. Without one, fall back
+    to ``gpt-4o-mini``.
     """
-    if base is not None and str(base.provider) != "google":
+    if base is not None:
         return LLMWithFallback(
             provider=base.provider,
             model=base.model,
@@ -77,12 +75,12 @@ def lightweight_judge_default(base: "LLM | None" = None) -> "LLMWithFallback":
             ),
         )
     return LLMWithFallback(
-        provider="google",
-        model="gemini-3.5-flash-lite",
+        provider="openai",
+        model="gpt-4o-mini",
         temperature=0.0,
         fallback=LLM(
-            provider="google",
-            model="gemini-3.1-flash-lite",
+            provider="openai",
+            model="gpt-4o-mini",
             temperature=0.0,
         ),
     )
@@ -154,11 +152,11 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
     default_model_cfg = config_dict.get(
         "default",
         {
-            "provider": "google",
-            "model": "gemini-3.8-flash",
+            "provider": "openai",
+            "model": "gpt-4o-mini",
             "fallback": {
-                "provider": "google",
-                "model": "gemini-3.7-flash",
+                "provider": "openai",
+                "model": "gpt-4o-mini",
             },
         },
     )

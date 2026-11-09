@@ -53,9 +53,6 @@ ENV_ARTEMIS_HIERARCHY_BACKEND = "ARTEMIS_HIERARCHY_BACKEND"
 ENV_ARTEMIS_HELPER_AUTO_INSTALL = "ARTEMIS_HELPER_AUTO_INSTALL"
 
 # LLM & Vision OCR API Keys
-ENV_GOOGLE_API_KEY = "GOOGLE_API_KEY"
-ENV_GEMINI_API_KEY = "GEMINI_API_KEY"
-ENV_GCP_API_KEY = "GCP_API_KEY"
 ENV_OCR_API_KEY = "OCR_API_KEY"
 ENV_VISION_API_KEY = "VISION_API_KEY"
 ENV_API_KEY = "API_KEY"
@@ -110,7 +107,7 @@ DEFAULT_ACTION_TIMEOUT = 30.0
 DEFAULT_STREAM_PING_INTERVAL = 15.0
 
 DEFAULT_PROFILE = "pro"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_EXPLORER_VERSION: Literal["flash", "pro", "ultra"] = "flash"
 
 
@@ -118,9 +115,7 @@ DEFAULT_EXPLORER_VERSION: Literal["flash", "pro", "ultra"] = "flash"
 # Literals and Type Aliases
 # ==============================================================================
 
-LLMProvider = Literal[
-    "openai", "google", "openrouter", "xai", "anthropic", "ollama", "vllm", "custom"
-]
+LLMProvider = Literal["openai", "openrouter", "xai", "anthropic", "ollama", "vllm", "custom"]
 ExplorerVersion = Literal["flash", "pro", "ultra"]
 
 LLMUtilsNode = Literal[

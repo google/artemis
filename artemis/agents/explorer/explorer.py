@@ -41,7 +41,7 @@ from artemis.agents.explorer.universal_runner import UniversalRunnerMixin
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import trace
 from artemis.graph.state import State
-from artemis.llm.google import strip_provider_prefix
+from artemis.llm.naming import strip_provider_prefix
 from artemis.utils.ocr_api import is_ocr_configured
 from third_party.mobile_use.utils.logger import get_logger
 

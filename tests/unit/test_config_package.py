@@ -79,26 +79,20 @@ def test_config_file_resolver():
 
 
 def test_settings_and_api_key_fallbacks(monkeypatch):
-    """Test Settings model, API key fallbacks, and get/set methods."""
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GCP_API_KEY", raising=False)
+    """Test Settings model, API key lookups, and get/set methods."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("VISION_API_KEY", raising=False)
 
     custom_settings = Settings(
         _env_file=None,
-        GOOGLE_API_KEY=None,
-        GEMINI_API_KEY=SecretStr("gemini_key_123"),
         OPENAI_API_KEY=SecretStr("openai_key_456"),
-        OCR_API_KEY=SecretStr("ocr_key_789"),
+        VISION_API_KEY=SecretStr("ocr_key_789"),
     )
-    # Automatic fallback should populate GOOGLE_API_KEY from GEMINI_API_KEY
-    assert custom_settings.GOOGLE_API_KEY is not None
-    assert custom_settings.GOOGLE_API_KEY.get_secret_value() == "gemini_key_123"
+    # The Vision key is the OCR fallback.
+    assert custom_settings.OCR_API_KEY is not None
+    assert custom_settings.OCR_API_KEY.get_secret_value() == "ocr_key_789"
     assert custom_settings.get_api_key("ocr").get_secret_value() == "ocr_key_789"
 
-    assert custom_settings.get_api_key("google").get_secret_value() == "gemini_key_123"
-    assert custom_settings.get_api_key("gemini").get_secret_value() == "gemini_key_123"
     assert custom_settings.get_api_key("openai").get_secret_value() == "openai_key_456"
     assert custom_settings.get_api_key("nonexistent") is None
 
@@ -111,8 +105,6 @@ def test_placeholder_api_key_filtering(monkeypatch):
     """Test that default template placeholders are filtered out and treated as unconfigured."""
     from artemis.config.settings import is_placeholder_key
 
-    assert is_placeholder_key("your_gemini_api_key_here") is True
-    assert is_placeholder_key("your_google_cloud_vision_api_key_here") is True
     assert is_placeholder_key("your_openai_api_key_here") is True
     assert is_placeholder_key("your_custom_key_here") is True
     assert is_placeholder_key("<your-api-key>") is True
@@ -120,12 +112,9 @@ def test_placeholder_api_key_filtering(monkeypatch):
     assert is_placeholder_key("API_KEY") is True
     assert is_placeholder_key("") is True
     assert is_placeholder_key(None) is True
-    assert is_placeholder_key("AIzaSyValidGeminiKey12345") is False
+    assert is_placeholder_key("sk-ValidOpenAiKey12345") is False
 
     for env_k in (
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-        "GCP_API_KEY",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
         "OPEN_ROUTER_API_KEY",
@@ -138,12 +127,9 @@ def test_placeholder_api_key_filtering(monkeypatch):
 
     placeholder_settings = Settings(
         _env_file=None,
-        GEMINI_API_KEY=SecretStr("your_gemini_api_key_here"),
         OPENAI_API_KEY=SecretStr("your_openai_api_key_here"),
-        OCR_API_KEY=SecretStr("your_google_cloud_vision_api_key_here"),
+        OCR_API_KEY=SecretStr("your_ocr_api_key_here"),
     )
-    assert placeholder_settings.get_api_key("google") is None
-    assert placeholder_settings.get_api_key("gemini") is None
     assert placeholder_settings.get_api_key("openai") is None
     assert placeholder_settings.get_api_key("ocr") is None
 

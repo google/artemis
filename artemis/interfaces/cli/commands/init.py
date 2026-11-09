@@ -38,17 +38,15 @@ def init_command() -> None:
 
     # 1. Select Provider
     console.print("\n[bold]Step 1: Choose Primary LLM Provider[/bold]")
-    console.print("  [1] Google Gemini (Recommended - Default)")
-    console.print("  [2] OpenAI (GPT-4o)")
-    console.print("  [3] Anthropic (Claude 3.5 Sonnet)")
-    console.print("  [4] OpenRouter")
+    console.print("  [1] OpenAI (Recommended - Default)")
+    console.print("  [2] Anthropic (Claude)")
+    console.print("  [3] OpenRouter")
 
-    choice = Prompt.ask("Select provider", choices=["1", "2", "3", "4"], default="1")
+    choice = Prompt.ask("Select provider", choices=["1", "2", "3"], default="1")
     provider_map = {
-        "1": ("GEMINI_API_KEY", "Google Gemini"),
-        "2": ("OPENAI_API_KEY", "OpenAI"),
-        "3": ("ANTHROPIC_API_KEY", "Anthropic"),
-        "4": ("OPEN_ROUTER_API_KEY", "OpenRouter"),
+        "1": ("OPENAI_API_KEY", "OpenAI"),
+        "2": ("ANTHROPIC_API_KEY", "Anthropic"),
+        "3": ("OPEN_ROUTER_API_KEY", "OpenRouter"),
     }
     env_key, provider_name = provider_map[choice]
 
@@ -126,7 +124,7 @@ def init_command() -> None:
             "",
             "# Execution Defaults",
             "ARTEMIS_DEFAULT_PROFILE=pro",
-            "ARTEMIS_DEFAULT_MODEL=gemini-2.5-flash",
+            "ARTEMIS_DEFAULT_MODEL=gpt-4o-mini",
             "ARTEMIS_TRACES_DIR=./traces",
             "",
         ]

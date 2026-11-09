@@ -159,7 +159,8 @@ class StepRepository:
                     resp_text += t
                     resp_images += imgs
 
-        # Standard Gemini multimodal token pricing: 258 tokens per image
+        # Flat per-image charge, matching the prompt-estimate constant in
+        # artemis.memory.transcript (IMAGE_BLOCK_TOKENS).
         pr = (len(prompt_text) // 4) + (prompt_images * 258)
         co = (len(resp_text) // 4) + (resp_images * 258)
         return int(pr), int(co), int(pr + co)

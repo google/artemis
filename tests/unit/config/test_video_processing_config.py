@@ -12,15 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The video-processing knob is typed once, in the Google provider module."""
+"""The video-processing knob is typed once, next to the config that uses it."""
 
 from typing import get_args
 
 from pydantic import ValidationError
 import pytest
 
-from artemis.config.agent import VideoAnalyzerConfig
-from artemis.llm.google import VideoProcessing
+from artemis.config.agent import VideoAnalyzerConfig, VideoProcessing
 
 
 def test_processing_field_reuses_the_provider_literal():

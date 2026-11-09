@@ -21,8 +21,6 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from google import genai
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 from artemis.clients.screen_client_factory import (
     describe_backend,
@@ -125,56 +123,6 @@ class Agent(AgentBase):
         self._tmp_traces_dir = Path(settings.TRACES_PATH)
         self._initialized = False
         self._task_lock = asyncio.Lock()
-
-    async def _prewarm_llm_connections(self, api_key: str | None = None):
-        """Pre-warms the HTTP2/gRPC connection pools for both Native GenAI and LangChain clients in the background."""
-        if os.environ.get("ARTEMIS_FAKE_LLM") == "1":
-            logger.info("ARTEMIS_FAKE_LLM=1 — skipping real LLM connection pre-warming.")
-            publish_startup_progress(
-                "model_ready", "Model connection is ready (fake LLM)", session_id=self._session_id
-            )
-            return
-        publish_startup_progress(
-            "model_warmup", "Warming the model connection", session_id=self._session_id
-        )
-        logger.info("Starting background pre-warming of Gemini API connection pools...")
-        try:
-            key = api_key
-            if not key and settings.GOOGLE_API_KEY:
-                key = settings.GOOGLE_API_KEY.get_secret_value()
-
-            if not key:
-                logger.warning("Skipping LLM pre-warming: No API key available.")
-                publish_startup_progress(
-                    "model_ready",
-                    "Model connection will initialize on first use",
-                    session_id=self._session_id,
-                )
-                return
-
-            # 1. Pre-warm Native SDK client
-            client = genai.Client(api_key=key)
-
-            # 2. Pre-warm LangChain client
-            chat = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=key)
-
-            # Fire both calls concurrently in the background
-            await asyncio.gather(
-                client.aio.models.count_tokens(model="gemini-3.8-flash", contents="ping"),
-                chat.ainvoke("ping"),
-                return_exceptions=True,
-            )
-            logger.success("Gemini API connection pools successfully pre-warmed.")
-            publish_startup_progress(
-                "model_ready", "Model connection is ready", session_id=self._session_id
-            )
-        except Exception as e:
-            logger.warning(f"Failed to pre-warm LLM connections: {e}")
-            publish_startup_progress(
-                "model_ready",
-                "Model connection will initialize on first use",
-                session_id=self._session_id,
-            )
 
     async def _watch_external_cancel(self, task_name: str) -> None:
         """Cancel the running task when another process drops a cancel marker.

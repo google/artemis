@@ -108,28 +108,26 @@ def _credentials_metadata() -> dict:
     return {
         "providers": [
             {
-                "provider": "google",
-                "label": "Gemini",
-                "masked": "AIza...abcd",
-                "raw_key": "SECRET-GOOGLE",
-                "key": "SECRET-GOOGLE",
-            },
-            {
                 "provider": "openai",
                 "label": "ChatGPT",
                 "masked": "sk-...wxyz",
                 "raw_key": "SECRET-OPENAI",
                 "key": "SECRET-OPENAI",
             },
+            {
+                "provider": "anthropic",
+                "label": "Claude",
+                "masked": "AIza...abcd",
+                "raw_key": "SECRET-ANTHROPIC",
+                "key": "SECRET-ANTHROPIC",
+            },
         ],
         "api_keys": {
-            "google": "SECRET-GOOGLE",
-            "gemini": "SECRET-GOOGLE",
             "openai": "SECRET-OPENAI",
+            "anthropic": "SECRET-ANTHROPIC",
             "ocr": "SECRET-OCR",
         },
-        "current_key": "SECRET-GOOGLE",
-        "current_gemini_key": "SECRET-GOOGLE",
+        "current_key": "SECRET-OPENAI",
         "has_ocr_key": True,
     }
 
@@ -140,7 +138,7 @@ def _healthy_probes() -> list[ProbeResult]:
         _probe("system_config", ProbeStatus.PASS),
         _probe("toolchain", ProbeStatus.PASS, blocker=False, category=ProbeCategory.TOOLCHAIN),
         _probe(
-            "gemini_api_key",
+            "llm_api_key",
             ProbeStatus.PASS,
             category=ProbeCategory.CREDENTIALS,
             metadata=_credentials_metadata(),
@@ -462,7 +460,7 @@ def test_ready_environment_reports_ready_with_slim_shape(temp_trace_env):
         "python_runtime",
         "system_config",
         "integration_host",
-        "gemini_api_key",
+        "llm_api_key",
         "android_adb",
     ]
     assert result["device"] == {
@@ -508,11 +506,11 @@ def test_failing_checks_keep_scrubbed_facts_and_fix_list(temp_trace_env):
     probes[5].status = ProbeStatus.WARN
     result = _run(probes)
 
-    creds = next(c for c in result["checks"] if c["id"] == "gemini_api_key")
+    creds = next(c for c in result["checks"] if c["id"] == "llm_api_key")
     assert creds["category"] == "auth"
     assert creds["facts"]["providers"] == [
-        {"provider": "google", "label": "Gemini", "masked": "AIza...abcd"},
         {"provider": "openai", "label": "ChatGPT", "masked": "sk-...wxyz"},
+        {"provider": "anthropic", "label": "Claude", "masked": "AIza...abcd"},
     ]
     assert "api_keys" not in creds["facts"]
     assert creds["fix"] == []
@@ -635,13 +633,13 @@ def test_default_emulator_command_without_installed_avd_is_not_run(temp_trace_en
 def test_missing_credentials_point_to_env_file_not_chat(temp_trace_env):
     probes = _healthy_probes()
     probes[3] = _probe(
-        "gemini_api_key",
+        "llm_api_key",
         ProbeStatus.FAIL,
         category=ProbeCategory.CREDENTIALS,
         summary="Key Missing",
         actions=[
             ProbeAction(action_type="command", label="Init", payload="artemis init"),
-            ProbeAction(action_type="link", label="Key", payload="https://aistudio.google.com"),
+            ProbeAction(action_type="link", label="Key", payload="https://platform.openai.com"),
         ],
     )
     result = _run(probes, host=_host(env_file="/home/u/artemis/.env"))
@@ -816,12 +814,16 @@ def test_verify_credentials_reports_every_provider_without_leaking_keys(temp_tra
 
     assert result["verdict"] == "ready"
     assert result["credentials"] == [
-        {"provider": "google", "label": "Gemini", "valid": True, "message": "verified"},
         {"provider": "openai", "label": "ChatGPT", "valid": True, "message": "verified"},
+        {"provider": "anthropic", "label": "Claude", "valid": True, "message": "verified"},
         {"provider": "ocr", "label": "Vision OCR", "valid": True, "message": "verified"},
     ]
     called = {call.args[0]: call.args[1] for call in validate.await_args_list}
-    assert called == {"google": "SECRET-GOOGLE", "openai": "SECRET-OPENAI", "ocr": "SECRET-OCR"}
+    assert called == {
+        "openai": "SECRET-OPENAI",
+        "anthropic": "SECRET-ANTHROPIC",
+        "ocr": "SECRET-OCR",
+    }
     assert all(call.kwargs["timeout"] == 12.0 for call in validate.await_args_list)
     assert "SECRET" not in repr(result)
 
@@ -832,7 +834,7 @@ def test_verify_credentials_calls_endpoint_providers_by_url(temp_trace_env):
     URL as if it were an API key."""
     validate = AsyncMock(return_value=(True, "verified"))
     cred = _probe(
-        "gemini_api_key",
+        "llm_api_key",
         ProbeStatus.PASS,
         category=ProbeCategory.CREDENTIALS,
         metadata={
@@ -842,25 +844,25 @@ def test_verify_credentials_calls_endpoint_providers_by_url(temp_trace_env):
                     "label": "Local Ollama",
                     "raw_key": "http://localhost:11434/v1",
                 },
-                {"provider": "google", "label": "Gemini", "raw_key": "SECRET-GOOGLE"},
+                {"provider": "anthropic", "label": "Claude", "raw_key": "SECRET-ANTHROPIC"},
             ],
             "api_keys": {},
         },
     )
-    probes = [p for p in _healthy_probes() if p.id != "gemini_api_key"] + [cred]
+    probes = [p for p in _healthy_probes() if p.id != "llm_api_key"] + [cred]
     _run(probes, validate=validate, verify_credentials=True)
 
     calls = {call.args[0]: call for call in validate.await_args_list}
     assert calls["ollama"].args[1] == "EMPTY"
     assert calls["ollama"].kwargs["base_url"] == "http://localhost:11434/v1"
-    assert calls["google"].args[1] == "SECRET-GOOGLE"
-    assert "base_url" not in calls["google"].kwargs
+    assert calls["anthropic"].args[1] == "SECRET-ANTHROPIC"
+    assert "base_url" not in calls["anthropic"].kwargs
 
 
 def test_invalid_primary_credential_blocks_and_redacts_message(temp_trace_env):
     async def _validate(provider, api_key, timeout=12.0):
-        if provider == "google":
-            return False, f"Gemini API verification failed (400): key {api_key} invalid"
+        if provider == "openai":
+            return False, f"OpenAI API verification failed (400): key {api_key} invalid"
         if provider == "ocr":
             raise RuntimeError("boom SECRET-OCR")
         return True, "ok"
@@ -874,29 +876,29 @@ def test_invalid_primary_credential_blocks_and_redacts_message(temp_trace_env):
 
     assert result["verdict"] == "blocked"
     assert "SECRET" not in repr(result)
-    google, openai, ocr = result["credentials"]
-    assert google["valid"] is False and "***" in google["message"]
-    assert openai["valid"] is True
+    openai, anthropic, ocr = result["credentials"]
+    assert openai["valid"] is False and "***" in openai["message"]
+    assert anthropic["valid"] is True
     assert ocr["valid"] is False and ocr["message"].startswith("verification raised RuntimeError")
     steps = result["next_steps"]
-    required = next(s for s in steps if s.startswith("[REQUIRED] Gemini API key (google)"))
+    required = next(s for s in steps if s.startswith("[REQUIRED] ChatGPT API key (openai)"))
     assert "failed live verification" in required
     assert steps[steps.index(required) + 1].startswith("  Ask the user to add a provider key")
     assert any("/home/u/.env" in s for s in steps)
     assert any(s.startswith("[OPTIONAL] Vision OCR API key (ocr)") for s in steps)
     assert steps[-1].startswith("After changing the env file")
-    assert "Gemini key verification" in result["summary"]
+    assert "ChatGPT key verification" in result["summary"]
 
 
 def test_invalid_secondary_credential_only_degrades(temp_trace_env):
     async def _validate(provider, api_key, timeout=12.0):
-        return (provider != "openai", "ok" if provider != "openai" else "401 unauthorized")
+        return (provider != "anthropic", "ok" if provider != "anthropic" else "401 unauthorized")
 
     result = _run(
         _healthy_probes(), validate=AsyncMock(side_effect=_validate), verify_credentials=True
     )
     assert result["verdict"] == "degraded"
-    assert any(s.startswith("[OPTIONAL] ChatGPT API key (openai)") for s in result["next_steps"])
+    assert any(s.startswith("[OPTIONAL] Claude API key (anthropic)") for s in result["next_steps"])
 
 
 # --------------------------------------------------------------------------- #

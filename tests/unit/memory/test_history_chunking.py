@@ -1005,34 +1005,6 @@ async def test_capsule_outage_without_fallback_exhausts_to_failed():
     assert service.get_summary("chunk:1-2") is None
 
 
-def test_capsule_fallback_model_resolution_google_only_and_not_primary():
-    mgr = HistoryChunkManager(
-        capsule_service=StubCapsuleService(),
-        chunking_config=SimpleNamespace(
-            max_steps=12,
-            target_source_tokens=2000,
-            model="gemini-3.7-flash",
-            max_chunks=8,
-        ),
-    )
-
-    def ctx_with(provider, model):
-        return SimpleNamespace(
-            llm_config=SimpleNamespace(
-                summarizer=SimpleNamespace(fallback=SimpleNamespace(provider=provider, model=model))
-            )
-        )
-
-    assert (
-        mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.6-flash"))
-        == "gemini-3.6-flash"
-    )
-    # Non-google fallbacks cannot ride the raw google model path.
-    assert mgr._resolve_capsule_fallback_model(ctx_with("openai", "gpt-4o-mini")) is None
-    # A fallback identical to the primary adds nothing.
-    assert mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.7-flash")) is None
-
-
 @pytest.mark.asyncio
 async def test_flush_harvests_late_capsule_and_persists_ready_version():
     """Short-session backstop: a capsule that becomes ready after the last

@@ -76,13 +76,13 @@ def test_provider_sdk_retry_is_persisted_and_published(monkeypatch):
     engine = _RecordingEngine()
     monkeypatch.setattr(llm, "_CURRENT_DATA_ENGINE", engine)
     record = logging.LogRecord(
-        name="google_genai._api_client",
-        level=logging.INFO,
+        name="openai._base_client",
+        level=logging.WARNING,
         pathname=__file__,
         lineno=1,
         msg=(
-            "Retrying google.genai request in 1.18 seconds as it raised "
-            "ServerError: 503 UNAVAILABLE: high demand"
+            "Retrying request to /chat/completions in 1.18 seconds as it raised "
+            "InternalServerError: 503 high demand"
         ),
         args=(),
         exc_info=None,
@@ -91,7 +91,7 @@ def test_provider_sdk_retry_is_persisted_and_published(monkeypatch):
     request_token = llm._ACTIVE_LLM_REQUEST.set(
         {
             "request_id": "request-1",
-            "provider": "google",
+            "provider": "openai",
             "started_at": 100.0,
             "retries": [],
         }
@@ -105,9 +105,9 @@ def test_provider_sdk_retry_is_persisted_and_published(monkeypatch):
     assert engine.trace_kwargs["name"] == "llm_retry"
     assert engine.trace_kwargs["status"] == "retrying"
     assert engine.trace_kwargs["payload"] == {
-        "error": "ServerError: 503 UNAVAILABLE: high demand",
+        "error": "InternalServerError: 503 high demand",
         "delay": 1.18,
-        "provider": "google",
+        "provider": "openai",
         "source": "provider_sdk",
         "recoverable": True,
         "request_id": "request-1",
@@ -117,33 +117,23 @@ def test_provider_sdk_retry_is_persisted_and_published(monkeypatch):
     assert event_type == "llm_retrying"
     assert payload["trace_id"] == "trace-1"
     assert payload["delay"] == 1.18
-    assert payload["error"].startswith("ServerError: 503")
+    assert payload["error"].startswith("InternalServerError: 503")
 
 
-def test_provider_sdk_retry_is_hidden_for_non_gemini_request(monkeypatch):
+def test_provider_sdk_retry_is_hidden_without_an_active_request(monkeypatch):
     engine = _RecordingEngine()
     monkeypatch.setattr(llm, "_CURRENT_DATA_ENGINE", engine)
     record = logging.LogRecord(
-        name="google_genai._api_client",
-        level=logging.INFO,
+        name="openai._base_client",
+        level=logging.WARNING,
         pathname=__file__,
         lineno=1,
-        msg="Retrying request in 2 seconds as it raised 503 UNAVAILABLE",
+        msg="Retrying request to /chat/completions in 2 seconds as it raised 503",
         args=(),
         exc_info=None,
     )
-    request_token = llm._ACTIVE_LLM_REQUEST.set(
-        {
-            "request_id": "request-openai",
-            "provider": "openai",
-            "started_at": 100.0,
-            "retries": [],
-        }
-    )
-    try:
-        llm._ProviderRetryTelemetryHandler().emit(record)
-    finally:
-        llm._ACTIVE_LLM_REQUEST.reset(request_token)
+
+    llm._ProviderRetryTelemetryHandler().emit(record)
 
     assert engine.trace_kwargs is None
     assert engine.published is None
@@ -158,7 +148,7 @@ def test_terminal_failure_aggregates_observed_retries_and_total_wait(monkeypatch
         {
             "error": "503 high demand",
             "delay": 10.0,
-            "provider": "google",
+            "provider": "openai",
             "source": "provider_sdk",
             "request_id": "request-2",
             "scheduled_at": 101.0,
@@ -168,7 +158,7 @@ def test_terminal_failure_aggregates_observed_retries_and_total_wait(monkeypatch
     request_token = llm._ACTIVE_LLM_REQUEST.set(
         {
             "request_id": "request-2",
-            "provider": "google",
+            "provider": "openai",
             "started_at": 100.0,
             "retries": retries,
         }
@@ -180,6 +170,6 @@ def test_terminal_failure_aggregates_observed_retries_and_total_wait(monkeypatch
 
     payload = engine.trace_kwargs["payload"]
     assert payload["request_id"] == "request-2"
-    assert payload["provider"] == "google"
+    assert payload["provider"] == "openai"
     assert payload["waited_seconds"] == 20.0
     assert payload["retries"] == retries

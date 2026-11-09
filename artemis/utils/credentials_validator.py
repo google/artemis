@@ -16,8 +16,6 @@
 
 import httpx
 
-from artemis.llm.google.provider import is_google_provider
-
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,7 +29,7 @@ def _extract_error_message(resp: httpx.Response) -> str:
     try:
         data = resp.json()
         if isinstance(data, dict):
-            # Google style: {"error": {"message": "..."}}
+            # Provider style carried by OpenAI, Anthropic and the OCR endpoints.
             err_obj = data.get("error")
             if isinstance(err_obj, dict):
                 msg = err_obj.get("message")
@@ -65,7 +63,7 @@ async def validate_api_key(
     """Tests if the provided API key is valid and usable with the corresponding provider.
 
     Args:
-        provider: Provider identifier (e.g. 'google', 'gemini', 'ocr', 'openai', 'anthropic', etc.)
+        provider: Provider identifier (e.g. 'ocr', 'openai', 'anthropic', etc.)
         api_key: Secret API key string.
         base_url: Optional custom endpoint URL.
         timeout: Request timeout in seconds.
@@ -82,8 +80,6 @@ async def validate_api_key(
     # Placeholders / default template values should be rejected
     if clean_key in (
         "API_KEY",
-        "your_gemini_api_key_here",
-        "your_google_cloud_vision_api_key_here",
         "your_openai_api_key_here",
         "your_anthropic_api_key_here",
     ):
@@ -91,18 +87,7 @@ async def validate_api_key(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            if is_google_provider(clean_provider):
-                # Test Google Gemini via generativelanguage API
-                # The key travels in a header, never in the URL: httpx logs request
-                # URLs at INFO level and those logs end up in files.
-                url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1"
-                resp = await client.get(url, headers={"x-goog-api-key": clean_key})
-                if resp.status_code == 200:
-                    return True, "Google Gemini API key verified successfully."
-                err_msg = _extract_error_message(resp)
-                return False, f"Gemini API verification failed ({resp.status_code}): {err_msg}"
-
-            elif clean_provider in ("ocr", "vision", "google_vision"):
+            if clean_provider in ("ocr", "vision", "google_vision"):
                 # Test Google Cloud Vision OCR API
                 url = "https://vision.googleapis.com/v1/images:annotate"
                 payload = {

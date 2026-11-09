@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Video Analyzer utility for analyzing video content using Gemini models.
+"""Video Analyzer utility for analyzing video content with a video-capable model.
 
-This utility sends video files to video-capable Gemini models for analysis
+This utility sends video files to the configured video model for analysis
 and returns text descriptions based on the provided prompt.
 It also exposes a tool for agents to perform structured video analysis.
 """
@@ -111,7 +111,7 @@ DIAGNOSER_VIDEO_ANALYZER_DOCSTRING = (
 
 
 class VideoAnalyzerTool(ArtemisTool):
-    """Universal tool for analyzing video content using Gemini models."""
+    """Universal tool for analyzing video content with a video-capable model."""
 
     def __init__(
         self,

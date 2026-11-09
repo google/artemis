@@ -93,8 +93,8 @@ def test_retry_policy_accepts_extension_category_values():
     )
 
 
-def test_classifier_recognizes_genai_deadline_exceeded_shapes():
-    # google-genai SDK timeouts can surface without a status code attached.
+def test_classifier_recognizes_sdk_deadline_exceeded_shapes():
+    # SDK timeouts can surface without a status code attached.
     for message in ("DEADLINE_EXCEEDED", "deadline exceeded while awaiting response"):
         failure = classify_failure(RuntimeError(message))
         assert failure.category is FailureCategory.TIMEOUT

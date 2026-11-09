@@ -44,31 +44,6 @@ async def test_validate_empty_and_placeholder():
 
 
 @pytest.mark.asyncio
-async def test_validate_gemini_success():
-    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_get.return_value = mock_resp
-
-        is_valid, msg = await validate_api_key("google", "valid_key_12345")
-        assert is_valid
-        assert "verified successfully" in msg
-
-
-@pytest.mark.asyncio
-async def test_validate_gemini_failure():
-    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 400
-        mock_resp.json.return_value = {"error": {"message": "API key not valid."}}
-        mock_get.return_value = mock_resp
-
-        is_valid, msg = await validate_api_key("google", "bad_key_12345")
-        assert not is_valid
-        assert "API key not valid" in msg
-
-
-@pytest.mark.asyncio
 async def test_validate_ocr_success():
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
         mock_resp = MagicMock()

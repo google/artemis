@@ -52,7 +52,7 @@ async def test_readiness_engine_run_all():
     assert "python_runtime" in probe_ids
     assert "system_config" in probe_ids
     assert "android_adb" in probe_ids
-    assert "gemini_api_key" in probe_ids
+    assert "llm_api_key" in probe_ids
     assert "vision_ocr_key" in probe_ids
     assert "toolchain" in probe_ids
 
@@ -357,7 +357,7 @@ async def test_adb_probe_prefers_unlocked_device_when_one_is_locked(monkeypatch)
 async def test_llm_credentials_probe_structure():
     """Verify LLMCredentialsProbe returns correct category and schema."""
     probe = LLMCredentialsProbe()
-    assert probe.probe_id == "gemini_api_key"
+    assert probe.probe_id == "llm_api_key"
     assert probe.category == ProbeCategory.CREDENTIALS
     assert probe.is_blocker is True
 
@@ -397,15 +397,15 @@ async def test_credentials_probe_and_dynamic_update():
     """Verify dynamic API key updates and metadata reflection."""
     from artemis.config import settings
 
-    settings.set_api_key("google", "test_gemini_key_1234567890", persist_to_env=False)
+    settings.set_api_key("openai", "test_openai_key_1234567890", persist_to_env=False)
 
     probe = LLMCredentialsProbe()
     result = await probe.probe()
     assert result.status == ProbeStatus.PASS
     assert "current_key" in result.metadata
-    assert result.metadata["current_key"] == "test_gemini_key_1234567890"
+    assert result.metadata["current_key"] == "test_openai_key_1234567890"
     assert "api_keys" in result.metadata
-    assert result.metadata["api_keys"]["google"] == "test_gemini_key_1234567890"
+    assert result.metadata["api_keys"]["openai"] == "test_openai_key_1234567890"
 
 
 @pytest.mark.asyncio

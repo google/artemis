@@ -129,7 +129,7 @@ def test_sort_by_fix_order_follows_check_order_and_appends_unknown_ids():
         "python_runtime",
         "system_config",
         "integration_host",
-        "gemini_api_key",
+        "llm_api_key",
         "android_adb",
         "toolchain",
         "vision_ocr_key",

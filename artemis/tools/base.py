@@ -15,8 +15,8 @@
 """Universal Tool Protocol for ARTEMIS.
 
 Enables tools to be authored once using standard Pydantic schemas and async handlers,
-then automatically exported to LangChain Tools (Pro Graph), Google GenAI FunctionDeclarations
-(FlashRunner), and MCP Tools (FastMCP) with zero code duplication.
+then automatically exported to LangChain Tools (Pro Graph), FlashRunner
+function declarations and MCP Tools (FastMCP) with zero code duplication.
 """
 
 import asyncio

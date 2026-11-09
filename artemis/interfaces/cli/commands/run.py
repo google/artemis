@@ -442,7 +442,7 @@ def run_command(
                 Panel(
                     f"[bold red]✖ Authentication Error:[/bold red] {err_msg}\n\n"
                     "💡 [bold cyan]Quick Fix:[/bold cyan] Run [bold green]artemis init[/bold green] to configure your API key in 10 seconds,\n"
-                    "or add [bold]GEMINI_API_KEY=your_key[/bold] to [dim].env[/dim].",
+                    "or add [bold]OPENAI_API_KEY=your_key[/bold] to [dim].env[/dim].",
                     title="Missing API Key",
                     expand=False,
                 )

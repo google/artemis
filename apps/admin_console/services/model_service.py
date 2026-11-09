@@ -35,8 +35,8 @@ class ModelService:
         now = time.monotonic()
         if cached and now - cached[0] < cls._LLM_INFO_TTL:
             return cached[1], cached[2]
-        provider = "google"
-        model_id = "gemini-3.7-flash"
+        provider = "openai"
+        model_id = "gpt-4o-mini"
         try:
             from artemis.config import parse_llm_config
 

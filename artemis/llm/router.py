@@ -15,8 +15,8 @@
 """Dynamic Multi-Provider Model Router for ARTEMIS.
 
 Provides role-based LLM/VLM dispatching, dynamic fallback chains,
-and unified provider configuration across Gemini, Vertex AI, OpenAI,
-Anthropic, OpenRouter, and local Ollama/vLLM endpoints.
+and unified provider configuration across OpenAI, Anthropic, OpenRouter,
+Ollama and any OpenAI-compatible endpoint.
 """
 
 from enum import StrEnum
@@ -28,15 +28,12 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field
 
 from artemis.config.settings import settings
-from artemis.llm.google.provider import supports_thinking_level
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class ModelProvider(StrEnum):
-    GOOGLE = "google"
-    GEMINI = "google"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     OPENROUTER = "openrouter"
@@ -49,20 +46,18 @@ class ModelProvider(StrEnum):
     def from_string(cls, val: Any) -> "ModelProvider":
         """Converts a string or enum into a canonical ModelProvider.
 
-        ``None``/empty means "use the default" (Google); an unrecognized
-        non-empty value raises instead of silently routing to Gemini with
-        the wrong credentials.
+        ``None``/empty means "use the default" (OpenAI); an unrecognized
+        non-empty value raises instead of silently routing to the wrong
+        provider with the wrong credentials.
         """
         if isinstance(val, cls):
             return val
         if val is None:
-            return cls.GOOGLE
+            return cls.OPENAI
         s = str(val).lower().replace("_", "").replace("-", "").strip()
         if not s:
-            return cls.GOOGLE
+            return cls.OPENAI
         mapping = {
-            "google": cls.GOOGLE,
-            "gemini": cls.GOOGLE,
             "openai": cls.OPENAI,
             "anthropic": cls.ANTHROPIC,
             "claude": cls.ANTHROPIC,
@@ -84,8 +79,8 @@ class ModelProvider(StrEnum):
 class ModelEndpoint(BaseModel):
     """Configuration definition for an LLM/VLM model endpoint."""
 
-    provider: ModelProvider = Field(default=ModelProvider.GOOGLE, description="Model provider")
-    model_name: str = Field(default="gemini-2.5-flash", description="Model name identifier")
+    provider: ModelProvider = Field(default=ModelProvider.OPENAI, description="Model provider")
+    model_name: str = Field(default="gpt-4o-mini", description="Model name identifier")
     api_key: str | None = Field(default=None, description="API Key or secret")
     api_base: str | None = Field(default=None, description="Custom API endpoint base URL")
     temperature: float = Field(default=0.0, description="Sampling temperature")
@@ -98,16 +93,6 @@ class ModelEndpoint(BaseModel):
         default=None, description="Reasoning effort: 'low', 'medium', 'high'"
     )
     thinking_budget: int | None = Field(default=None, description="Thinking budget token count")
-    thinking_level: str | None = Field(
-        default=None, description="Thinking level: 'minimal', 'low', 'medium', 'high'"
-    )
-    include_thoughts: bool | None = Field(
-        default=None, description="Whether to include thought traces in response"
-    )
-    enable_grounding: bool = Field(
-        default=False,
-        description="Whether to enable Google Search grounding for Gemini endpoints",
-    )
 
     def cache_key(self) -> tuple:
         """Key the client cache by endpoint settings, hashing the API key."""
@@ -121,75 +106,10 @@ class ModelEndpoint(BaseModel):
             self.max_tokens,
             self.timeout_seconds,
             self.thinking_budget,
-            self.thinking_level,
-            self.include_thoughts,
             self.reasoning_effort,
-            self.enable_grounding,
             self.api_base,
             api_key_digest,
         )
-
-
-def _patch_langchain_google_genai():
-    """Patches ChatGoogleGenerativeAI._process_tool_config to preserve and ensure include_server_side_tool_invocations."""
-    try:
-        from langchain_google_genai.chat_models import ChatGoogleGenerativeAI
-        from google.genai.types import ToolConfig
-
-        if getattr(ChatGoogleGenerativeAI, "_is_artemis_patched", False):
-            return
-
-        original_process = ChatGoogleGenerativeAI._process_tool_config
-
-        def patched_process_tool_config(self, tool_choice, tool_config, formatted_tools):
-            config = original_process(self, tool_choice, tool_config, formatted_tools)
-
-            has_builtin = False
-            has_functions = False
-            if formatted_tools:
-                for tool in formatted_tools:
-                    tool_dict = tool if isinstance(tool, dict) else getattr(tool, "__dict__", {})
-                    if any(
-                        tool_dict.get(k) is not None
-                        for k in (
-                            "google_search",
-                            "code_execution",
-                            "google_maps",
-                            "google_search_retrieval",
-                        )
-                    ):
-                        has_builtin = True
-                    if tool_dict.get("function_declarations"):
-                        has_functions = True
-
-            if tool_config:
-                normalized = (
-                    ToolConfig.model_validate(tool_config)
-                    if isinstance(tool_config, dict)
-                    else tool_config
-                )
-                if getattr(normalized, "include_server_side_tool_invocations", None) is not None:
-                    if config is None:
-                        config = ToolConfig(
-                            include_server_side_tool_invocations=normalized.include_server_side_tool_invocations
-                        )
-                    else:
-                        config.include_server_side_tool_invocations = (
-                            normalized.include_server_side_tool_invocations
-                        )
-
-            if has_builtin and has_functions:
-                if config is None:
-                    config = ToolConfig(include_server_side_tool_invocations=True)
-                else:
-                    config.include_server_side_tool_invocations = True
-
-            return config
-
-        ChatGoogleGenerativeAI._process_tool_config = patched_process_tool_config
-        ChatGoogleGenerativeAI._is_artemis_patched = True
-    except Exception as e:
-        logger.warning(f"Could not patch ChatGoogleGenerativeAI._process_tool_config: {e}")
 
 
 class ModelFactory:
@@ -218,44 +138,7 @@ class ModelFactory:
 
         provider = ModelProvider.from_string(endpoint.provider)
 
-        if provider == ModelProvider.GOOGLE:
-            _patch_langchain_google_genai()
-            from langchain_google_genai import (
-                ChatGoogleGenerativeAI,
-                HarmBlockThreshold,
-                HarmCategory,
-            )
-
-            api_key = (
-                endpoint.api_key
-                or (settings.GOOGLE_API_KEY.get_secret_value() if settings.GOOGLE_API_KEY else None)
-                or os.environ.get("GOOGLE_API_KEY")
-                or os.environ.get("GEMINI_API_KEY")
-            )
-            # Gemini 1.x/2.x only understand thinking_budget.
-            thinking_level = (
-                endpoint.thinking_level if supports_thinking_level(endpoint.model_name) else None
-            )
-
-            kwargs: dict[str, Any] = {
-                "model": endpoint.model_name,
-                "temperature": endpoint.temperature,
-                "max_output_tokens": endpoint.max_tokens,
-                "api_key": api_key,
-                "timeout": endpoint.timeout_seconds,
-                "thinking_budget": endpoint.thinking_budget,
-                "thinking_level": thinking_level,
-                "include_thoughts": endpoint.include_thoughts,
-                "safety_settings": {
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                },
-            }
-            return ChatGoogleGenerativeAI(**{k: v for k, v in kwargs.items() if v is not None})
-
-        elif provider == ModelProvider.OPENAI:
+        if provider == ModelProvider.OPENAI:
             from langchain_openai import ChatOpenAI
 
             api_key = (

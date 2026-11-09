@@ -121,7 +121,7 @@ class SystemConfigProbe(BaseProbe):
     async def probe(self) -> ProbeResult:
         try:
             cfg = parse_llm_config()
-            planner_model = getattr(getattr(cfg, "planner", None), "model", "Gemini 2.5 Flash")
+            planner_model = getattr(getattr(cfg, "planner", None), "model", "gpt-4o-mini")
             metadata = {
                 "valid": True,
                 "config_file": "config/artemis.jsonc",

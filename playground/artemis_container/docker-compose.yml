@@ -29,7 +29,6 @@ services:
       - PORT=8080
       - PYTHONUNBUFFERED=1
       # Model & Perception API Keys (pass from host environment)
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     networks:
       - artemis-net

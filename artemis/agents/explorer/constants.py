@@ -23,7 +23,7 @@ Explorer tier the user configured.  Tier behavior lives in
 ASK_EXPLORER_TOOL_NAME = "ask_explorer"
 
 #: Model used when the LLM configuration carries no Explorer entry.
-DEFAULT_EXPLORER_MODEL = "gemini-3.8-flash"
+DEFAULT_EXPLORER_MODEL = "gpt-4o-mini"
 
 ASK_EXPLORER_DESCRIPTION = (
     "[EXPLORER] Ask the UI Explorer to locate elements on the current screen"

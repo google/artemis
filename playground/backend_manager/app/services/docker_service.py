@@ -102,8 +102,6 @@ class DockerManagerService:
             }
             # Automatically forward LLM credentials configured on backend
             for key in (
-                "GEMINI_API_KEY",
-                "GOOGLE_API_KEY",
                 "OPENAI_API_KEY",
                 "ANTHROPIC_API_KEY",
                 "OPEN_ROUTER_API_KEY",

@@ -26,11 +26,12 @@ from artemis.config.constants import (
     ExplorerVersion,
 )
 from artemis.config.paths import ROOT_DIR, get_config_path
-from artemis.llm.google import VideoProcessing
 from third_party.mobile_use.utils.file import load_jsonc
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+VideoProcessing = Literal["auto", "agentic", "static"]
 
 
 class VideoAnalyzerConfig(BaseModel):
@@ -113,10 +114,10 @@ class VideoAnalyzerConfig(BaseModel):
     processing: VideoProcessing = Field(
         default="auto",
         description=(
-            "How Gemini sub-agents watch a clip. 'agentic' lets the model search,"
-            " scan and re-watch the clip on demand (Gemini Interactions API);"
-            " 'static' samples it at a fixed frame rate; 'auto' picks agentic on"
-            " Gemini 3.6+ Flash models and static everywhere else."
+            "How video sub-agents watch a clip. 'agentic' lets the model search,"
+            " scan and re-watch the clip on demand; 'static' samples it at a"
+            " fixed frame rate; 'auto' picks the mode from the model's"
+            " capabilities."
         ),
     )
     agentic_chunk_size_seconds: float = Field(
@@ -343,8 +344,9 @@ class ExplorerConfig(BaseModel):
     caching: bool | None = Field(
         default=None,
         description=(
-            "Gemini explicit context caching for multi-turn Explorer tiers. ``None``"
-            " (default) uses the tier's own default: off for pro, on for ultra."
+            "Explicit provider-side context caching for multi-turn Explorer tiers."
+            " ``None`` (default) uses the tier's own default: off for pro, on for"
+            " ultra."
         ),
     )
     model_config = {"extra": "allow"}
@@ -391,7 +393,7 @@ class StepSummarizerConfig(BaseModel):
         description="Whether to asynchronously summarize historical steps to replace pruned images.",
     )
     model: str = Field(
-        default="gemini-2.5-flash-lite",
+        default="gpt-4o-mini",
         description="Lightweight model used for background step state summarization.",
     )
     prune_history_xml: bool = Field(
@@ -688,7 +690,7 @@ class MemoryChunkingConfig(BaseModel):
         ),
     )
     model: str = Field(
-        default="gemini-3.8-flash",
+        default="gpt-4o-mini",
         description="Model used for the chunk-level StepCapsuleLens (bands ①+②).",
     )
     max_chunks: int = Field(

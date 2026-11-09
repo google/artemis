@@ -33,9 +33,7 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-mcp-adapters>=0.2.0",
     "mcp>=1.26.0",
-    # LLM Providers & GenAI SDKs
-    "google-genai>=2.22.0",
-    "langchain-google-genai>=4.0.0",
+    # LLM Providers
     "langchain-openai>=1.0.0",
     # Configuration, Models & Validation
     "pydantic>=2.7.0",

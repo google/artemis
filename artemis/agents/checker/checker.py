@@ -409,7 +409,7 @@ def _format_check_items(check_items: list) -> str:
 
 async def _structured_report(llm, messages) -> CheckReport:
     structured_llm = llm.with_structured_output(CheckReport)
-    # A conversation must end with a user turn: Gemini rejects requests whose
+    # A conversation must end with a user turn: providers reject requests whose
     # last message is the model's own answer ("Requests ending with a model
     # turn are not supported"), which is exactly the state after the loop's
     # final tool-free reply. Nudge with an explicit verdict request instead.

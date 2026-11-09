@@ -505,7 +505,7 @@ async def ask_explorer_text(
 
 
 class AskExplorerTool(ArtemisTool):
-    """``ask_explorer`` as an :class:`ArtemisTool` (LangChain / GenAI / MCP export)."""
+    """``ask_explorer`` as an :class:`ArtemisTool` (LangChain / MCP export)."""
 
     def __init__(
         self,

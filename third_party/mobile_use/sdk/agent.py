@@ -191,9 +191,6 @@ class AgentBase:
             "device_ready", "Android device connected", session_id=self._session_id
         )
 
-        # Asynchronously pre-warm LLM connection pools in the background
-        asyncio.create_task(self._prewarm_llm_connections(api_key))
-
         logger.info("✅ Artemis agent initialized.")
         self._initialized = True
 

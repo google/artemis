@@ -23,8 +23,6 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-import google.auth
-from google.auth.exceptions import DefaultCredentialsError
 from pydantic import BaseModel, ValidationError
 
 from artemis.config.constants import AgentNode, LLMProvider, LLMUtilsNode
@@ -37,18 +35,6 @@ logger = get_logger(__name__)
 
 LLMUtilsNodeWithFallback = LLMUtilsNode
 AgentNodeWithFallback = AgentNode
-
-
-def validate_vertex_ai_credentials() -> None:
-    """Validate Google Application Default Credentials for VertexAI provider."""
-    try:
-        _, project = google.auth.default()
-        if not project:
-            raise Exception("VertexAI requires a Google Cloud project to be set.")
-    except DefaultCredentialsError as e:
-        raise Exception(
-            f"VertexAI requires valid Google Application Default Credentials (ADC): {e}"
-        )
 
 
 class LLM(BaseModel):
@@ -69,11 +55,6 @@ class LLM(BaseModel):
         if self.provider == "openai":
             if not settings.OPENAI_API_KEY:
                 raise Exception(f"{name} requires OPENAI_API_KEY in .env")
-        elif self.provider == "google":
-            if not settings.GOOGLE_API_KEY:
-                raise Exception(f"{name} requires GOOGLE_API_KEY in .env")
-        elif self.provider == "vertexai":
-            validate_vertex_ai_credentials()
         elif self.provider == "anthropic":
             if not (settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")):
                 raise Exception(f"{name} requires ANTHROPIC_API_KEY in .env")

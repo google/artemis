@@ -14,11 +14,12 @@
 
 """Token-usage normalization across every response shape ARTEMIS sees.
 
-Google alone reports usage under three different vocabularies:
+Each provider reports the same numbers under a different vocabulary:
 
 * LangChain ``usage_metadata`` - ``input_tokens`` / ``output_tokens`` /
-  ``input_token_details.cache_read`` (OpenAI-style names appear via
-  ``response_metadata.token_usage``).
+  ``input_token_details.cache_read``.
+* OpenAI-compatible ``response_metadata.token_usage`` - ``prompt_tokens`` /
+  ``completion_tokens`` / ``total_tokens``.
 * ``generate_content`` ``usage_metadata`` - ``prompt_token_count`` /
   ``candidates_token_count`` / ``cached_content_token_count`` /
   ``thoughts_token_count`` / ``tool_use_prompt_token_count``.

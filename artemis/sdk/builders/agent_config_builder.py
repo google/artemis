@@ -378,8 +378,8 @@ class AgentConfigBuilder(AgentConfigBuilderBase):
             default_version: Alias for version
             flash_mode: Tier for the Flash execution profile (FlashRunner)
             pro_mode: Tier for the Pro execution profile (Operator / Validator)
-            caching: Gemini explicit context caching for the multi-turn tiers;
-                None keeps the per-tier default (off for pro, on for ultra)
+            caching: Explicit provider-side context caching for the multi-turn
+                tiers; None keeps the per-tier default (off for pro, on for ultra)
             versions: Advanced per-agent override, e.g. ``{"validator": "ultra"}``;
                 empty by default so the profile knobs decide
         """

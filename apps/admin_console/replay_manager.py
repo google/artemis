@@ -86,14 +86,13 @@ class ReplayManager:
     It reconstructs historical execution states (SQLite database records, trace
     histories, and screenshots) and replays a single agent step in an isolated,
     deterministic sandbox environment while interacting live with a physical
-    Android device and Gemini.
+    Android device and the configured model provider.
 
     Key Responsibilities:
         - Reconstructs and preloads historical SQLite states up to a specific
         step.
         - Establishes sandboxed `ArtemisContext` and `DataEngine` instances.
         - Integrates with physical devices via ADB and UIAutomator.
-        - Hooks and spies on the Gemini API to capture thoughts and raw outputs.
         - Reconciles live and preloaded traces into unified chronological trees.
 
     Attributes:
@@ -1881,122 +1880,6 @@ class ReplayManager:
 
         data_engine = ctx.data_engine
 
-        print("Executing using Live Gemini Client...")
-
-        from google.genai.models import AsyncModels
-        from unittest.mock import patch
-
-        original_generate_content = AsyncModels.generate_content
-
-        async def wrapped_generate_content(self, *, model, contents, config=None, **kwargs):
-            system_instruction = None
-            if config and config.system_instruction:
-                if isinstance(config.system_instruction, str):
-                    system_instruction = config.system_instruction
-                elif hasattr(config.system_instruction, "parts"):
-                    parts = []
-                    for p in config.system_instruction.parts:
-                        if hasattr(p, "text") and p.text:
-                            parts.append(p.text)
-                    system_instruction = " ".join(parts)
-                else:
-                    system_instruction = str(config.system_instruction)
-
-            prompt_data = {
-                "model": model,
-                "system_instruction": system_instruction,
-                "contents": [],
-            }
-
-            contents_list = contents if isinstance(contents, list) else [contents]
-            for content in contents_list:
-                parts_desc = []
-                if hasattr(content, "parts") and content.parts:
-                    for part in content.parts:
-                        if hasattr(part, "text") and part.text:
-                            parts_desc.append({"type": "text", "text": part.text})
-                        elif hasattr(part, "inline_data") and part.inline_data:
-                            parts_desc.append(
-                                {
-                                    "type": "image",
-                                    "mime_type": part.inline_data.mime_type,
-                                    "length": len(part.inline_data.data),
-                                }
-                            )
-                        elif hasattr(part, "function_call") and part.function_call:
-                            parts_desc.append(
-                                {
-                                    "type": "function_call",
-                                    "name": part.function_call.name,
-                                    "args": (
-                                        dict(part.function_call.args)
-                                        if part.function_call.args
-                                        else {}
-                                    ),
-                                }
-                            )
-                        elif hasattr(part, "function_call") and part.function_response:
-                            parts_desc.append(
-                                {
-                                    "type": "function_response",
-                                    "name": part.function_response.name,
-                                    "response": (
-                                        dict(part.function_response.response)
-                                        if part.function_response.response
-                                        else {}
-                                    ),
-                                }
-                            )
-                else:
-                    parts_desc.append({"type": "raw", "value": str(content)})
-
-                prompt_data["contents"].append(
-                    {
-                        "role": getattr(content, "role", "unknown"),
-                        "parts": parts_desc,
-                    }
-                )
-
-            record = {"prompt": prompt_data, "response": None, "error": None}
-            llm_calls_log.append(record)
-
-            try:
-                res = await original_generate_content(
-                    self,
-                    model=model,
-                    contents=contents,
-                    config=config,
-                    **kwargs,
-                )
-
-                thinking_parts = []
-                if hasattr(res, "candidates") and res.candidates and res.candidates[0].content:
-                    for part in res.candidates[0].content.parts:
-                        if getattr(part, "thought", False):
-                            thinking_parts.append(part.text)
-
-                resp_data = {
-                    "text": res.text if hasattr(res, "text") else None,
-                    "function_calls": [],
-                    "thought": ("\n".join(thinking_parts) if thinking_parts else None),
-                }
-                if hasattr(res, "function_calls") and res.function_calls:
-                    for fc in res.function_calls:
-                        resp_data["function_calls"].append(
-                            {
-                                "name": fc.name,
-                                "args": dict(fc.args) if fc.args else {},
-                            }
-                        )
-                record["response"] = resp_data
-                return res
-            except Exception as err:
-                err_str = str(err)
-                record["error"] = (
-                    f"{err.__class__.__name__}: {err_str}" if err_str else err.__class__.__name__
-                )
-                raise err
-
         try:
             try:
                 import inspect
@@ -2038,8 +1921,7 @@ class ReplayManager:
                                 val = resolved_val
                         tool_args[name] = val
 
-                with patch.object(AsyncModels, "generate_content", wrapped_generate_content):
-                    outcome = await tool_fn(**tool_args)
+                outcome = await tool_fn(**tool_args)
 
                 replay_result["success"] = True
                 replay_result["result"] = outcome

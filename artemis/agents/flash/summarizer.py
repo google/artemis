@@ -339,11 +339,11 @@ class VisualStepSummarizer(StepMemoryService):
     def _meter_lens_call(self, response: Any) -> None:
         """Meter one raw-model lens call as an ``llm_usage`` trace, best-effort.
 
-        Gateway-wrapped models already meter at the wrapper exit; only the raw
-        ``get_google_llm`` bypass needs explicit metering here. Lens prompts
-        are tiny and must not overwrite the session's ``last_prompt_tokens``
-        (the compaction thresholds' live context base), hence
-        ``update_last_prompt=False``.
+        Gateway-wrapped models already meter at the wrapper exit; only a raw
+        model built outside the gateway needs explicit metering here. Lens
+        prompts are tiny and must not overwrite the session's
+        ``last_prompt_tokens`` (the compaction thresholds' live context base),
+        hence ``update_last_prompt=False``.
         """
         if isinstance(self._resolve_llm(), RobustChatModelWrapper):
             return

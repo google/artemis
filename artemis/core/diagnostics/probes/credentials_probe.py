@@ -26,11 +26,11 @@ from artemis.core.diagnostics.schema import (
 
 
 class LLMCredentialsProbe(BaseProbe):
-    """Probe verifying Gemini and multi-provider multimodal LLM credentials."""
+    """Probe verifying multi-provider multimodal LLM credentials."""
 
     @property
     def probe_id(self) -> str:
-        return "gemini_api_key"
+        return "llm_api_key"
 
     @property
     def category(self) -> ProbeCategory:
@@ -51,7 +51,6 @@ class LLMCredentialsProbe(BaseProbe):
 
         from artemis.config.settings import is_placeholder_key
 
-        gemini_key = settings.get_api_key("google")
         openai_key = settings.get_api_key("openai")
         claude_key = settings.get_api_key("anthropic")
         openrouter_key = settings.get_api_key("openrouter")
@@ -60,19 +59,6 @@ class LLMCredentialsProbe(BaseProbe):
 
         configured_providers: list[dict[str, Any]] = []
         api_keys_map: dict[str, str] = {}
-        if gemini_key and not is_placeholder_key(gemini_key):
-            g_val = gemini_key.get_secret_value()
-            configured_providers.append(
-                {
-                    "provider": "google",
-                    "label": "Gemini",
-                    "masked": self._mask_key(g_val),
-                    "raw_key": g_val,
-                    "key": g_val,
-                }
-            )
-            api_keys_map["google"] = g_val
-            api_keys_map["gemini"] = g_val
         if openai_key and not is_placeholder_key(openai_key):
             o_val = openai_key.get_secret_value()
             configured_providers.append(
@@ -146,43 +132,17 @@ class LLMCredentialsProbe(BaseProbe):
         if ocr_key and not is_placeholder_key(ocr_key):
             api_keys_map["ocr"] = ocr_key.get_secret_value()
 
-        current_active_key = (
-            gemini_key.get_secret_value()
-            if gemini_key
-            else (configured_providers[0]["key"] if configured_providers else "")
-        )
+        current_active_key = configured_providers[0]["key"] if configured_providers else ""
 
         metadata = {
             "configured_count": len(configured_providers),
             "providers": configured_providers,
             "has_ocr_key": ocr_key is not None,
             "current_key": current_active_key,
-            "current_gemini_key": gemini_key.get_secret_value() if gemini_key else "",
             "api_keys": api_keys_map,
         }
 
-        # Case 1: Gemini API Key configured (Standard / Recommended)
-        if gemini_key:
-            masked = self._mask_key(gemini_key.get_secret_value())
-            return ProbeResult(
-                id=self.probe_id,
-                category=self.category,
-                title="Multimodal LLM API Key",
-                status=ProbeStatus.PASS,
-                is_blocker=self.is_blocker,
-                summary="Active (Gemini)",
-                description=f"Gemini multimodal API credential is active ({masked}) and ready for vision and reasoning.",
-                metadata=metadata,
-                actions=[
-                    ProbeAction(
-                        action_type="hint",
-                        label="Provider Active",
-                        payload="Gemini 2.5 Flash / Pro Multimodal Engine is enabled.",
-                    )
-                ],
-            )
-
-        # Case 2: Other LLM provider configured
+        # Case 1: An LLM provider is configured
         if configured_providers:
             first_p = configured_providers[0]
             return ProbeResult(
@@ -203,7 +163,7 @@ class LLMCredentialsProbe(BaseProbe):
                 ],
             )
 
-        # Case 3: No LLM key configured
+        # Case 2: No LLM key configured
         return ProbeResult(
             id=self.probe_id,
             category=self.category,
@@ -211,7 +171,7 @@ class LLMCredentialsProbe(BaseProbe):
             status=ProbeStatus.FAIL,
             is_blocker=self.is_blocker,
             summary="Key Missing",
-            description="No Multimodal LLM credential (e.g. GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY) found in environment or .env file.",
+            description="No Multimodal LLM credential (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY) found in environment or .env file.",
             metadata=metadata,
             actions=[
                 ProbeAction(
@@ -221,8 +181,8 @@ class LLMCredentialsProbe(BaseProbe):
                 ),
                 ProbeAction(
                     action_type="link",
-                    label="Get Google AI Studio Key",
-                    payload="https://aistudio.google.com/app/apikey",
+                    label="Get OpenAI Key",
+                    payload="https://platform.openai.com/api-keys",
                 ),
             ],
         )

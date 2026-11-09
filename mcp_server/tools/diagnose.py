@@ -69,7 +69,7 @@ _ENDPOINT_PROVIDERS = frozenset({"custom", "ollama", "vllm"})
 #: prefill its settings form; an MCP caller is an LLM context and must never
 #: see them.
 _SECRET_METADATA_KEYS = frozenset(
-    {"raw_key", "key", "api_keys", "current_key", "current_gemini_key"}
+    {"raw_key", "key", "api_keys", "current_key"}
 )
 
 _ERROR_MARKERS = ("traceback", "error", "exception", "failed", "critical")
@@ -227,7 +227,7 @@ def _render_action_lines(action: Any, *, installed_avds: list[str]) -> list[str]
 def _credential_steps(env_file: str | None) -> list[str]:
     location = env_file or "the project's .env file"
     return [
-        "  Ask the user to add a provider key (for example GEMINI_API_KEY=...) to "
+        "  Ask the user to add a provider key (for example OPENAI_API_KEY=...) to "
         f"{location}, or to the MCP server's env block in the IDE's MCP config. "
         "Never ask them to paste the key into the chat.",
         "  `artemis init` is interactive and cannot run from a tool call; edit the env file instead.",
@@ -747,7 +747,7 @@ def _next_steps(
             tag = "REQUIRED" if result.is_blocker else "OPTIONAL"
             steps.append(f"[{tag}] {result.title}: {result.description}")
 
-            if result.id == "gemini_api_key" and result.status is ProbeStatus.FAIL:
+            if result.id == "llm_api_key" and result.status is ProbeStatus.FAIL:
                 steps.extend(_credential_steps(env_file))
                 needs_restart = True
             elif result.id == "android_adb" and in_progress and emulator is not None:
@@ -769,7 +769,7 @@ def _next_steps(
             if result.id in ("system_config", "integration_host", "python_runtime"):
                 needs_restart = True
 
-        if result.id == "gemini_api_key":
+        if result.id == "llm_api_key":
             steps.extend(credential_lines)
             needs_restart = needs_restart or credential_restart
 
@@ -986,7 +986,7 @@ async def _run_extras(
 
     helper_serial = _helper_target(adb_result, requested_device)
     credentials, device_probe, accessibility_helper = await asyncio.gather(
-        _verify_credentials(_find(results, "gemini_api_key")) if verify_credentials else _none(),
+        _verify_credentials(_find(results, "llm_api_key")) if verify_credentials else _none(),
         _run_device_probe(adb_result, requested_device) if probe_device else _none(),
         asyncio.to_thread(_helper_status, helper_serial) if helper_serial else _none(),
     )

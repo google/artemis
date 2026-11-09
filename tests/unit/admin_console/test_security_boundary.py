@@ -57,7 +57,7 @@ async def test_credentials_endpoint_never_returns_key_material(monkeypatch):
     assert res.status_code == 200
     assert honeytoken not in res.text
     providers = {entry["name"]: entry["configured"] for entry in res.json()["providers"]}
-    assert providers.get("google") is True
+    assert providers.get("openai") is True
 
 
 @pytest.mark.asyncio

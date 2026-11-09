@@ -14,8 +14,8 @@
 
 """Universal Multi-Model FlashRunner for Artemis.
 
-Executes autonomous reactive mobile workflows across Google Gemini,
-OpenAI GPT-4o/o3, Anthropic Claude 3.5/3.7, and OpenRouter endpoints.
+Executes autonomous reactive mobile workflows across OpenAI GPT-4o/o3,
+Anthropic Claude and OpenRouter endpoints.
 
 Conversation shape (shared with the Pro operator, history redesign §3.2):
 the prompt is built every turn from a session :class:`TranscriptLedger` —

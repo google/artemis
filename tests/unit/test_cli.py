@@ -728,12 +728,12 @@ def _all_pass_probes():
         _probe("toolchain", blocker=False),
         _probe("android_adb", metadata={"installed": True, "adb_keys": {"is_corrupted": False}}),
         _probe(
-            "gemini_api_key",
-            summary="Active (Gemini)",
-            description="Gemini credential is active (sk-RAW...cdef).",
+            "llm_api_key",
+            summary="Active (ChatGPT)",
+            description="ChatGPT credential is active (sk-RAW...cdef).",
             metadata={
                 "current_key": _RAW_SECRET,
-                "api_keys": {"google": _RAW_SECRET},
+                "api_keys": {"openai": _RAW_SECRET},
                 "providers": [{"raw_key": _RAW_SECRET, "key": _RAW_SECRET}],
             },
         ),
@@ -815,7 +815,7 @@ def test_cli_doctor_all_pass_renders_table_in_fix_order(monkeypatch):
         "Title python_runtime",
         "Title system_config",
         "Title integration_host",
-        "Title gemini_api_key",
+        "Title llm_api_key",
         "Title android_adb",
         "Title toolchain",
         "Title vision_ocr_key",
@@ -917,7 +917,7 @@ def test_cli_doctor_json_shape_and_ready_verdict(monkeypatch):
         "python_runtime",
         "system_config",
         "integration_host",
-        "gemini_api_key",
+        "llm_api_key",
         "android_adb",
         "toolchain",
         "vision_ocr_key",
@@ -935,16 +935,16 @@ def test_cli_doctor_json_blocked_verdict_and_exit_code(monkeypatch):
     """A blocker that is not PASS makes the verdict 'blocked' and the exit code 1."""
     import json
 
-    probes = [p for p in _all_pass_probes() if p.id != "gemini_api_key"]
+    probes = [p for p in _all_pass_probes() if p.id != "llm_api_key"]
     probes.append(
         _probe(
-            "gemini_api_key",
+            "llm_api_key",
             status="fail",
             summary="Key Missing",
             description="No LLM credential found.",
             actions=[
                 ("command", "Run Artemis Init", "artemis init"),
-                ("link", "Get Key", "https://aistudio.google.com/app/apikey"),
+                ("link", "Get Key", "https://platform.openai.com/api-keys"),
             ],
         )
     )
@@ -954,12 +954,12 @@ def test_cli_doctor_json_blocked_verdict_and_exit_code(monkeypatch):
     assert result.exit_code == 1, result.output
     doc = json.loads(result.output)
     assert doc["verdict"] == "blocked"
-    key_check = next(c for c in doc["checks"] if c["id"] == "gemini_api_key")
+    key_check = next(c for c in doc["checks"] if c["id"] == "llm_api_key")
     assert key_check["status"] == "fail"
     assert key_check["required"] is True
     assert key_check["fix"] == [
         {"type": "command", "label": "Run Artemis Init", "payload": "artemis init"},
-        {"type": "link", "label": "Get Key", "payload": "https://aistudio.google.com/app/apikey"},
+        {"type": "link", "label": "Get Key", "payload": "https://platform.openai.com/api-keys"},
     ]
 
 
