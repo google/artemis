@@ -893,6 +893,30 @@ def get_google_llm(
     return ModelFactory.create_model(ep)
 
 
+def get_configured_llm(
+    ctx: Any,
+    name: str,
+    model_name: str | None = None,
+    *,
+    temperature: float = 0.0,
+    is_utils: bool = False,
+) -> BaseChatModel:
+    """Build the LLM configured for ``name``, with an optional model-name override.
+
+    Prefer this over the Google-only :func:`get_google_llm` wherever the caller
+    holds a context: provider, endpoint and credentials then come from the
+    deployment's own configuration instead of a hardcoded provider.
+    """
+    endpoint = _resolve_endpoint(ctx, name, is_utils=is_utils)
+    updates: dict[str, Any] = {"temperature": temperature}
+    if model_name:
+        updates["model_name"] = str(model_name)
+    endpoint = endpoint.model_copy(update=updates)
+    raw_model = ModelFactory.get_model(endpoint)
+    bound_model = raw_model.with_config(callbacks=[DataEngineCallbackHandler(ctx)])
+    return RobustChatModelWrapper(bound_model, ctx, endpoint=endpoint)  # type: ignore
+
+
 def _resolve_endpoint(
     ctx: ArtemisContext,
     name: str,

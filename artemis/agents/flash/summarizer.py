@@ -36,7 +36,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from artemis.context import ArtemisContext
 from artemis.memory.step_memory import JobKey, StepMemoryService
-from artemis.services.llm import RobustChatModelWrapper, get_google_llm, get_llm
+from artemis.services.llm import RobustChatModelWrapper
 from artemis.services.token_meter import record_llm_usage
 from artemis.utils.task_tree import format_actions_clean
 from artemis.utils.visualization import draw_action_overlay_on_image
@@ -161,27 +161,8 @@ class VisualStepSummarizer(StepMemoryService):
             flush_timeout_s=flush_timeout_s,
         )
 
-        # Initialize lightweight VLM: prioritize explicit model_name
-        target_model = model_name or "gemini-2.5-flash-lite"
-        self._model_name = target_model
-        try:
-            if model_name:
-                self._llm = get_google_llm(model_name=target_model, temperature=0.0)
-            else:
-                self._llm = get_llm(ctx, name="summarizer", is_utils=True)
-        except Exception:
-            self._llm = get_google_llm(model_name=target_model, temperature=0.0)
-        try:
-            configured = getattr(self._llm, "model", None) or getattr(self._llm, "model_name", None)
-            if isinstance(configured, str) and configured:
-                self._model_name = configured
-        except Exception as exc:
-            logger.debug(
-                "Could not read the configured summarizer model name; keeping %s: %s",
-                self._model_name,
-                exc,
-                exc_info=True,
-            )
+        self._model_name = model_name or ""
+        self._llm: Any = None
 
         # Load system prompt templates: the dual-frame transition prompt and
         # the single-frame variant (§5 revision: describe whichever frames
@@ -210,6 +191,24 @@ class VisualStepSummarizer(StepMemoryService):
                 " the post-action state.\n"
                 "Strictly avoid subjective validation words: successfully, completed, failed, achieved, navigated to."
             )
+
+    def _resolve_llm(self):
+        """Resolve the summarizer model from the deployment config on first use.
+
+        Constructing eagerly required a Google credential even when the
+        deployment configures another provider, so resolution waits until a
+        call is actually made.
+        """
+        if self._llm is None:
+            from artemis.services.llm import get_configured_llm
+
+            llm = get_configured_llm(self.ctx, "summarizer", self._model_name or None)
+            self._llm = llm
+            endpoint = getattr(llm, "endpoint", None)
+            resolved = getattr(endpoint, "model_name", None)
+            if isinstance(resolved, str) and resolved:
+                self._model_name = resolved
+        return self._llm
 
     def dispatch(
         self,
@@ -346,7 +345,7 @@ class VisualStepSummarizer(StepMemoryService):
         (the compaction thresholds' live context base), hence
         ``update_last_prompt=False``.
         """
-        if isinstance(self._llm, RobustChatModelWrapper):
+        if isinstance(self._resolve_llm(), RobustChatModelWrapper):
             return
         engine = getattr(self.ctx, "data_engine", None) if self.ctx else None
         record_llm_usage(
@@ -458,7 +457,7 @@ class VisualStepSummarizer(StepMemoryService):
                 HumanMessage(content=content_blocks),
             ]
 
-            response = await asyncio.wait_for(self._llm.ainvoke(messages), timeout=25.0)
+            response = await asyncio.wait_for(self._resolve_llm().ainvoke(messages), timeout=25.0)
             self._meter_lens_call(response)
             summary_raw = response.content if isinstance(response.content, str) else ""
             if isinstance(response.content, list):

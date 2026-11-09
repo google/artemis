@@ -81,9 +81,7 @@ from artemis.mcp.action_executor import McpActionExecutor
 from artemis.mcp.observation import observe
 from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger, mark_ephemeral
 from artemis.services.llm import (
-    RobustChatModelWrapper,
     acomplete,
-    get_google_llm,
     get_llm,
     invoke_llm_with_timeout_message,
 )
@@ -279,12 +277,7 @@ class FlashRunner:
 
     def _init_llm(self):
         """Initializes the Universal LLM via the Service Layer."""
-        try:
-            return get_llm(self.ctx, name="operator")
-        except Exception as e:
-            logger.warning(f"Failed to get operator LLM from config, using default: {e}")
-
-            return RobustChatModelWrapper(get_google_llm(model_name="gemini-2.5-flash"), self.ctx)
+        return get_llm(self.ctx, name="operator")
 
     def _render_system_prompt(self, tools_declaration: list) -> str:
         """Renders the system prompt from the flash_runner.md template.
