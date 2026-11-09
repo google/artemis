@@ -47,8 +47,9 @@ uv run python -m nuitka \
 DIST="$ROOT/$OUTPUT_DIR/launcher.dist"
 SITE_PACKAGES="$(uv run python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
 
-mkdir -p "$DIST/imageio_ffmpeg/binaries" "$DIST/packages/artemis-accessibility-helper"
-cp "$SITE_PACKAGES"/imageio_ffmpeg/binaries/ffmpeg-* "$DIST/imageio_ffmpeg/binaries/"
+mkdir -p "$DIST/toolchain" "$DIST/packages/artemis-accessibility-helper"
+cp "$SITE_PACKAGES"/imageio_ffmpeg/binaries/ffmpeg-* "$DIST/toolchain/ffmpeg"
+chmod +x "$DIST/toolchain/ffmpeg"
 cp packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk \
    packages/artemis-accessibility-helper/helper_manifest.json \
    "$DIST/packages/artemis-accessibility-helper/"
