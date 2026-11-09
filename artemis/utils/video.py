@@ -504,8 +504,13 @@ async def render_timeline_clip(
         else:
             _kind, path, local_start, local_end = piece
             command.extend(["-i", str(path)])
+            # Some devices (e.g. Nothing A063 via scrcpy 3.3) tag the stream as
+            # YCgCo/log316, which swscale cannot convert, so `scale` fails the
+            # whole graph. Re-tag as BT.709 before scaling (pixels are untouched).
             filter_parts.append(
-                f"[{index}:v:0]trim=start={local_start:.6f}:end={local_end:.6f},"
+                f"[{index}:v:0]setparams=colorspace=bt709:color_trc=bt709:"
+                "color_primaries=bt709,"
+                f"trim=start={local_start:.6f}:end={local_end:.6f},"
                 "setpts=PTS-STARTPTS,"
                 f"scale={canvas_width}:{canvas_height}:force_original_aspect_ratio=decrease:"
                 "force_divisible_by=2,"
