@@ -69,6 +69,7 @@ from artemis.config import (
     MemoryRuntimeConfig,
     MemoryTranscriptConfig,
     StepSummarizerConfig,
+    get_default_llm_config,
     load_agent_config,
 )
 from artemis.context import ArtemisContext
@@ -83,7 +84,7 @@ from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger, mark
 from artemis.services.llm import (
     RobustChatModelWrapper,
     acomplete,
-    get_google_llm,
+    get_llm_for_model_id,
     get_llm,
     invoke_llm_with_timeout_message,
 )
@@ -284,7 +285,16 @@ class FlashRunner:
         except Exception as e:
             logger.warning(f"Failed to get operator LLM from config, using default: {e}")
 
-            return RobustChatModelWrapper(get_google_llm(model_name="gemini-2.5-flash"), self.ctx)
+            # Fall back to the operator model named in config rather than a
+            # hardcoded Gemini id: on a non-Google setup the hardcoded one is
+            # unusable, which turns a recoverable config error into a hard
+            # failure. Only if the config cannot be read at all do we keep the
+            # historical default.
+            try:
+                model_name = get_default_llm_config().get_agent("operator").model
+            except Exception:
+                model_name = "gemini-2.5-flash"
+            return RobustChatModelWrapper(get_llm_for_model_id(model_name), self.ctx)
 
     def _render_system_prompt(self, tools_declaration: list) -> str:
         """Renders the system prompt from the flash_runner.md template.
