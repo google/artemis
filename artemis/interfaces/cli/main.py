@@ -23,7 +23,6 @@ from artemis.interfaces.cli.commands.helper import helper_app
 from artemis.interfaces.cli.commands.init import init_command
 from artemis.interfaces.cli.commands.mcp import mcp_command
 from artemis.interfaces.cli.commands.run import run_command
-from artemis.interfaces.cli.commands.server import server_app
 from artemis.interfaces.cli.commands.server_lifecycle import (
     restart_command,
     status_command,
@@ -47,9 +46,8 @@ app = typer.Typer(
 )
 
 # Register subcommands
-app.command(name="ui", help="Launch the unified Showcase UI & Admin Console in your browser.")(
-    ui_command
-)
+app.command(name="start", help="Start the Artemis HTTP API and admin console.")(ui_command)
+app.command(name="ui", hidden=True)(ui_command)
 app.command(name="restart", help="Restart running Artemis Web UI & server.")(restart_command)
 app.command(name="stop", help="Stop running Artemis Web UI & server.")(stop_command)
 app.command(name="status", help="Display Artemis Web UI & server status.")(status_command)
@@ -62,7 +60,6 @@ app.command(name="doctor", help="Check system prerequisites, device status, and 
 )
 app.command(name="batch", help="Execute a batch sequence of automation tasks.")(batch_command)
 app.command(name="mcp", help="Start the Artemis Model Context Protocol (MCP) server.")(mcp_command)
-app.add_typer(server_app, name="server", help="Cloud Run proxy and web dashboard server.")
 app.add_typer(trace_app, name="trace", help="Inspect and query execution traces.")
 app.add_typer(
     helper_app, name="helper", help="Manage the Accessibility Helper APK on attached devices."

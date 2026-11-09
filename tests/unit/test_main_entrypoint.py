@@ -38,7 +38,7 @@ from artemis.interfaces.cli.main import app
         "doctor",
         "batch",
         "mcp",
-        "server",
+        "start",
         "trace",
         "--version",
         "-v",

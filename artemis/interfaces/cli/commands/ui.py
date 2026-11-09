@@ -280,7 +280,7 @@ def ui_command(
             "--open/--no-open",
             help="Automatically open the Showcase UI in default web browser.",
         ),
-    ] = True,
+    ] = False,
     reload: Annotated[
         bool,
         typer.Option(
@@ -297,7 +297,7 @@ def ui_command(
         ),
     ] = False,
 ) -> None:
-    """Launch the unified Artemis Showcase UI & Admin Console in one click."""
+    """Start the Artemis HTTP API and admin console."""
     console = Console()
     local_url = f"http://localhost:{port}"
 
