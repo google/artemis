@@ -69,6 +69,11 @@ logger = get_logger(__name__)
 # Kept for callers that imported these from here.
 DEFAULT_PORT = DEVICE_PORT
 TOKEN_HEADER = "X-Artemis-Token"
+
+#: Wireless adb runs the same screencap in 14 to 19 seconds on a device that
+#: answers a USB capture in under two, so a 10 second ceiling dropped every
+#: frame and drove the agents blind.
+SCREENSHOT_TIMEOUT_SECONDS = 30.0
 __all__ = [
     "AccessibilityClient",
     "DEFAULT_PORT",
@@ -324,7 +329,7 @@ class AccessibilityClient:
                 adb_command(["-s", self._device_id, "exec-out", "screencap", "-p"]),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                timeout=10,
+                timeout=SCREENSHOT_TIMEOUT_SECONDS,
                 check=True,
             )
             return Image.open(BytesIO(result.stdout))

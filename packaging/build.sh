@@ -16,22 +16,40 @@ uv run python -m nuitka \
   --assume-yes-for-downloads \
   --jobs=8 \
   --output-dir="$OUTPUT_DIR" \
-  --output-filename=artemis \
+  --output-filename=artemis-cli \
+  --include-package=langchain \
+  --include-package=langchain_core \
+  --include-package=langchain_openai \
+  --include-package=langchain_community \
+  --include-package=langgraph \
+  --include-package=mcp \
+  --nofollow-import-to=pytest \
+  --nofollow-import-to=_pytest \
   --include-package=artemis \
   --include-package-data=artemis \
   --include-package=ipykernel \
   --include-package-data=ipykernel \
   --include-package=jupyter_client \
+  --include-package-data=debugpy \
   --include-package-data=jupyter_client \
-  --include-package=onnxruntime \
   --include-package-data=onnxruntime \
   --include-package-data=rapidocr \
   --include-package-data=cv2 \
-  --include-package-data=matplotlib \
   --include-package-data=adbutils \
   --include-package-data=uiautomator2 \
   --include-package=uvicorn \
   --include-package=apps.admin_console \
   --include-package-data=apps \
   --include-data-file=config/artemis.jsonc=config/artemis.jsonc \
+  --include-package-data=third_party \
   packaging/launcher.py
+
+DIST="$ROOT/$OUTPUT_DIR/launcher.dist"
+SITE_PACKAGES="$(uv run python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+
+mkdir -p "$DIST/imageio_ffmpeg/binaries" "$DIST/packages/artemis-accessibility-helper"
+cp "$SITE_PACKAGES"/imageio_ffmpeg/binaries/ffmpeg-* "$DIST/imageio_ffmpeg/binaries/"
+cp packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk \
+   packages/artemis-accessibility-helper/helper_manifest.json \
+   "$DIST/packages/artemis-accessibility-helper/"
+echo "Staged imageio ffmpeg and the accessibility helper APK into $DIST"
