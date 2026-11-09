@@ -9,11 +9,9 @@
   "default": {
     "provider": "openai",
     "model": "qwen3.6-flash",
-    "thinking_level": "medium",
     "fallback": {
       "provider": "openai",
-      "model": "qwen3.6-flash",
-      "thinking_level": "medium"
+      "model": "qwen3.6-flash"
     }
   },
 
@@ -34,13 +32,10 @@
   "nodes": {
     // 🧠 Planner: High-level goal decomposition and strategic step planning
     "planner": {
-      "thinking_level": "high"
     },
 
     // 🎯 Operator: Screen perception, element interaction, and direct execution
     "operator": {
-      "thinking_level": "medium",
-      "include_thoughts": true
     },
 
     // 🎬 Video Analyzer: Multimodal screen recording verification and temporal analysis
@@ -64,7 +59,6 @@
     //  - "flash" version delegates directly to object_detector.
     //  - "pro" / "ultra" versions run multi-turn ReAct loops on the universal LangChain engine.
     "explorer": {
-      "thinking_level": "medium"
     },
 
     // 📋 Summarizer: Aggregates step history and generates structured outcome
@@ -84,12 +78,10 @@
 
     // 🪵 Log Analyzer: Error log diagnosis with search grounding
     "log_analyzer": {
-      "enable_grounding": true
     },
 
     // 🩺 Diagnoser Expert: Failure root cause diagnosis with search grounding
     "diagnoser_expert": {
-      "enable_grounding": true
     },
     // 🏛️ Committee Council Members
     "planner_avatar": {},
@@ -97,8 +89,6 @@
     // 🔎 Checker: Plan-declared checkpoint verification and exit final review.
     // Thoughts are streamed so the verifier's reasoning shows live in the timeline.
     "checker": {
-      "thinking_level": "medium",
-      "include_thoughts": true
     }
     // 🎯 Planner Validation: Advisory review of milestone changes.
     // Defaults to the configured default endpoint at temperature 0 (see
