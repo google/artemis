@@ -20,7 +20,7 @@ import subprocess
 import time
 from typing import Any
 
-from artemis.core.diagnostics.adb_server_connection import adb_server_connection
+from artemis.core.diagnostics.adb_server_connection import get_adb_server_connection
 from artemis.core.diagnostics.probes.adb_probe import AdbDeviceProbe
 from artemis.core.diagnostics.probes.base import BaseProbe
 from artemis.core.diagnostics.probes.credentials_probe import (
@@ -298,7 +298,7 @@ class ReadinessEngine:
         """Execute adb kill-server && adb start-server to recover connectivity, auto-healing corrupted keys if needed."""
         from artemis.core.diagnostics.adb_keys import heal_adb_keys, inspect_adb_keys
 
-        endpoint = adb_server_connection.current_endpoint()
+        endpoint = get_adb_server_connection().current_endpoint()
         if not endpoint.is_local_default:
             return {
                 "success": True,
@@ -357,7 +357,7 @@ class ReadinessEngine:
 
     async def launch_emulator(self, avd_name: str) -> dict[str, Any]:
         """Launch an Android emulator by AVD name in the background and track its lifecycle."""
-        if not adb_server_connection.current_endpoint().is_local_default:
+        if not get_adb_server_connection().current_endpoint().is_local_default:
             return {
                 "avd_name": avd_name,
                 "status": "failed",
@@ -396,7 +396,7 @@ class ReadinessEngine:
 
     async def connect_wireless_adb(self, host: str, port: int = 5555) -> dict[str, Any]:
         """Connect to an Android device over Wi-Fi via adb connect."""
-        if not adb_server_connection.current_endpoint().is_local_default:
+        if not get_adb_server_connection().current_endpoint().is_local_default:
             return {
                 "success": False,
                 "message": "Switch to local ADB before connecting a Wireless ADB device.",

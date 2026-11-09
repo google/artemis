@@ -133,9 +133,11 @@ def test_run_batch_tasks_applies_pro_tuning_to_agent_config(monkeypatch):
     fake_agent.clean = AsyncMock()
 
     monkeypatch.setattr(batch_module, "initialize_llm_config", lambda: MagicMock())
-    monkeypatch.setattr(batch_module, "AgentProfile", MagicMock())
-    monkeypatch.setattr(batch_module, "Builders", fake_builders)
-    monkeypatch.setattr(batch_module, "Agent", MagicMock(return_value=fake_agent))
+    monkeypatch.setattr(
+        batch_module,
+        "_agent_classes",
+        lambda: (MagicMock(return_value=fake_agent), fake_builders, MagicMock()),
+    )
 
     import asyncio
 

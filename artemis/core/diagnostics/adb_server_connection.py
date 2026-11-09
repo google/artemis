@@ -326,5 +326,19 @@ class AdbServerConnectionManager:
         return unique_files
 
 
-adb_server_connection = AdbServerConnectionManager()
-adb_server_connection.synchronize_environment()
+_connection: AdbServerConnectionManager | None = None
+
+
+def get_adb_server_connection() -> AdbServerConnectionManager:
+    """The process-wide endpoint manager, discovered on first use.
+
+    Constructing it reads and rewrites the environment and the `.env` file, so
+    doing that at import time meant every CLI invocation, `--help` included,
+    touched a user file before doing any work.
+    """
+    global _connection
+    if _connection is None:
+        manager = AdbServerConnectionManager()
+        manager.synchronize_environment()
+        _connection = manager
+    return _connection

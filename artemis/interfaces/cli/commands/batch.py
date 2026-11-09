@@ -21,9 +21,6 @@ from pathlib import Path
 from typing import Annotated
 
 from artemis.config import initialize_llm_config
-from artemis.sdk import Agent
-from artemis.sdk.builders import Builders
-from third_party.mobile_use.sdk.types.task import AgentProfile
 from third_party.mobile_use.utils.logger import get_logger
 from rich.console import Console
 from rich.table import Table
@@ -52,6 +49,7 @@ async def run_batch_tasks(
     """
     if not os.environ.get("ARTEMIS_TASK_INGRESS"):
         os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
+    Agent, Builders, AgentProfile = _agent_classes()
     llm_config = initialize_llm_config()
     profile = AgentProfile(name="default", llm_config=llm_config)
     config_builder = Builders.AgentConfig.with_default_profile(profile)
@@ -103,6 +101,19 @@ async def run_batch_tasks(
         table.add_row(str(i), res["task"], status_styled, res["error"])
 
     console.print(table)
+
+
+def _agent_classes():
+    """Import the agent SDK only when a batch actually runs.
+
+    The SDK pulls the graph, the flash runner, and the trace engine, which no
+    other command needs and every `--help` would otherwise pay for.
+    """
+    from artemis.sdk import Agent
+    from artemis.sdk.builders import Builders
+    from third_party.mobile_use.sdk.types.task import AgentProfile
+
+    return Agent, Builders, AgentProfile
 
 
 def batch_command(

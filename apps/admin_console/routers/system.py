@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from artemis.core.diagnostics import readiness_engine
 from artemis.core.diagnostics.adb_server_connection import (
     InvalidAdbServerEndpoint,
-    adb_server_connection,
+    get_adb_server_connection,
 )
 from artemis.core.diagnostics.schema import SystemReadinessReport
 
@@ -174,7 +174,7 @@ class ConnectAdbServerRequest(BaseModel):
 @router.get("/adb/server")
 async def get_adb_server_status():
     """Return the process-wide ADB server endpoint currently used by Artemis."""
-    return adb_server_connection.status()
+    return get_adb_server_connection().status()
 
 
 @router.post("/adb/server/connect")
@@ -182,7 +182,7 @@ async def connect_adb_server(payload: ConnectAdbServerRequest, request: Request)
     """Validate and activate an ADB server endpoint."""
     _require_local_admin_request(request)
     try:
-        connection_result = await adb_server_connection.connect(
+        connection_result = await get_adb_server_connection().connect(
             payload.host,
             payload.port,
             persist=payload.persist,
@@ -203,7 +203,7 @@ async def probe_adb_server(payload: ConnectAdbServerRequest, request: Request):
     """Test an ADB server endpoint without changing the active endpoint."""
     _require_local_admin_request(request)
     try:
-        connection_result = await adb_server_connection.probe(payload.host, payload.port)
+        connection_result = await get_adb_server_connection().probe(payload.host, payload.port)
     except InvalidAdbServerEndpoint as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"connection_result": connection_result}
@@ -213,7 +213,7 @@ async def probe_adb_server(payload: ConnectAdbServerRequest, request: Request):
 async def use_local_adb_server(request: Request, persist: bool = True):
     """Restore the standard local ADB server without touching a remote daemon."""
     _require_local_admin_request(request)
-    connection_result = await adb_server_connection.use_local_server(persist=persist)
+    connection_result = await get_adb_server_connection().use_local_server(persist=persist)
     readiness_engine.set_probe_target_serial(None)
     readiness_engine.invalidate_cache()
     updated_report = await readiness_engine.run_all(force_refresh=True)

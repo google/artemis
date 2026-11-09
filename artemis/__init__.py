@@ -20,12 +20,46 @@ from artemis import _legacy_imports
 # Old import paths of the modules moved to third_party/ (deprecated).
 _legacy_imports.install()
 
-from artemis.interfaces.sdk.client import ArtemisClient, ConcurrencyMode
-from artemis.interfaces.sdk.task import StreamEvent, StreamEventType, Task
-from artemis_client import Capabilities, Device, TaskHandle, TaskResult
-from artemis.sdk.agent import Agent
-from artemis.sdk.builders import Builders
-from artemis.drivers.base import BaseDeviceDriver
+import importlib
+from typing import Any
+
+_LAZY_EXPORTS = {
+    "ArtemisClient": ("artemis.interfaces.sdk.client", "ArtemisClient"),
+    "ConcurrencyMode": ("artemis.interfaces.sdk.client", "ConcurrencyMode"),
+    "StreamEvent": ("artemis.interfaces.sdk.task", "StreamEvent"),
+    "StreamEventType": ("artemis.interfaces.sdk.task", "StreamEventType"),
+    "Task": ("artemis.interfaces.sdk.task", "Task"),
+    "Agent": ("artemis.sdk.agent", "Agent"),
+    "Builders": ("artemis.sdk.builders", "Builders"),
+    "BaseDeviceDriver": ("artemis.drivers.base", "BaseDeviceDriver"),
+}
+
+_CLIENT_EXPORTS = ("Capabilities", "Device", "TaskHandle", "TaskResult")
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve the public names on first use.
+
+    Importing the package used to pull the agent graph, the flash runner, and
+    the SDK stack, which made every CLI command pay for them. Only the version
+    and the legacy import shim are needed at import time.
+    """
+    if name in _LAZY_EXPORTS:
+        module_name, attr = _LAZY_EXPORTS[name]
+        value = getattr(importlib.import_module(module_name), attr)
+        globals()[name] = value
+        return value
+    if name in _CLIENT_EXPORTS:
+        module = importlib.import_module("artemis_client")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted([*globals(), *__all__])
+
 
 __all__ = [
     "__version__",

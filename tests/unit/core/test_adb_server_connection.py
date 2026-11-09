@@ -24,7 +24,7 @@ from artemis.core.diagnostics.adb_server_connection import (
     AdbServerConnectionManager,
     AdbServerEndpoint,
     InvalidAdbServerEndpoint,
-    adb_server_connection,
+    get_adb_server_connection,
 )
 from artemis.core.diagnostics.engine import ReadinessEngine
 from artemis.runtime.adb_endpoint import ADB_ENDPOINT_ID_ENV, AdbSession
@@ -259,7 +259,7 @@ async def test_use_local_server_restores_standard_endpoint(monkeypatch):
 @pytest.mark.asyncio
 async def test_restart_skips_kill_server_for_forwarded_endpoint(monkeypatch):
     endpoint = AdbServerEndpoint("127.0.0.1", 5038)
-    monkeypatch.setattr(adb_server_connection, "current_endpoint", lambda: endpoint)
+    monkeypatch.setattr(get_adb_server_connection(), "current_endpoint", lambda: endpoint)
 
     result = await ReadinessEngine().restart_adb_server()
 
@@ -271,7 +271,7 @@ async def test_restart_skips_kill_server_for_forwarded_endpoint(monkeypatch):
 @pytest.mark.asyncio
 async def test_remote_endpoint_blocks_local_wireless_connection(monkeypatch):
     monkeypatch.setattr(
-        adb_server_connection,
+        get_adb_server_connection(),
         "current_endpoint",
         lambda: AdbServerEndpoint("127.0.0.1", 5038),
     )
@@ -285,7 +285,7 @@ async def test_remote_endpoint_blocks_local_wireless_connection(monkeypatch):
 @pytest.mark.asyncio
 async def test_remote_endpoint_blocks_local_emulator_launch(monkeypatch):
     monkeypatch.setattr(
-        adb_server_connection,
+        get_adb_server_connection(),
         "current_endpoint",
         lambda: AdbServerEndpoint("127.0.0.1", 5038),
     )

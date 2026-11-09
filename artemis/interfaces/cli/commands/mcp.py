@@ -23,10 +23,6 @@ import threading
 import tomllib
 from typing import Annotated
 
-from mcp_server.base import mcp as agent_mcp
-import mcp_server.tools  # noqa: F401
-from mcp_server.utils import env_utils
-from artemis.mcp.adb_server import mcp as adb_mcp
 from artemis.runtime import shutdown_awake_service, start_awake_service
 from third_party.mobile_use.utils.logger import get_logger
 from rich.console import Console
@@ -740,6 +736,8 @@ def mcp_command(
     ] = None,
 ) -> None:
     """Launch or configure the ARTEMIS Model Context Protocol (MCP) server."""
+    from mcp_server.utils import env_utils
+
     project_root = env_utils.get_project_root()
     python_exe = env_utils.resolve_python_executable(project_root)
 
@@ -823,6 +821,12 @@ def mcp_command(
         console.print(f"[bold cyan]MCP Configuration for {client.upper()}:[/bold cyan]")
         console.print(syntax)
         raise typer.Exit(0)
+
+    # The MCP servers register their tools at import time, which builds the whole
+    # device tool surface. Only a real run needs it.
+    from mcp_server.base import mcp as agent_mcp
+    import mcp_server.tools  # noqa: F401
+    from artemis.mcp.adb_server import mcp as adb_mcp
 
     threading.Thread(target=start_awake_service, daemon=True, name="artemis-awake-init").start()
     try:
