@@ -74,6 +74,8 @@ dependencies = [
     "jupyter-client>=8.6.0",
     "ipykernel>=6.29.0",
     "langchain-anthropic>=1.5.4",
+    "rapidocr>=3.10.0",
+    "onnxruntime>=1.31.1",
 ]
 
 [project.optional-dependencies]

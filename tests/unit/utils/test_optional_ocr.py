@@ -32,62 +32,46 @@ from artemis.utils.visualization import format_minimal_list_with_elements
 
 
 @pytest.mark.asyncio
-async def test_is_ocr_configured_false_when_unset(monkeypatch):
-    """Verify is_ocr_configured returns False when keys are unset or placeholder."""
-    monkeypatch.delenv("OCR_API_KEY", raising=False)
-    monkeypatch.delenv("VISION_API_KEY", raising=False)
-    monkeypatch.delenv("API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+async def test_is_ocr_configured_true_with_local_engine(monkeypatch):
+    """Verify local OCR reports itself available without any credential."""
+    for name in ("OCR_API_KEY", "VISION_API_KEY", "API_KEY"):
+        monkeypatch.delenv(name, raising=False)
 
     with patch.object(Settings, "get_api_key", return_value=None):
+        assert is_ocr_configured()
+
+
+@pytest.mark.asyncio
+async def test_is_ocr_configured_false_when_engine_missing():
+    """Verify is_ocr_configured reports False when the recognizer is not installed."""
+    with patch.dict("sys.modules", {"rapidocr": None}):
         assert not is_ocr_configured()
 
 
 @pytest.mark.asyncio
-async def test_perform_ocr_returns_empty_list_when_unconfigured(monkeypatch):
-    """Verify perform_ocr returns [] when no OCR key is present."""
-    with (
-        patch.object(Settings, "get_api_key", return_value=None),
-        patch.dict("os.environ", {}, clear=True),
-    ):
+async def test_perform_ocr_returns_empty_list_when_detection_fails():
+    """Verify perform_ocr degrades to [] instead of raising."""
+    with patch("artemis.utils.ocr_api._recognize", side_effect=RuntimeError("model exploded")):
         result = await perform_ocr(screenshot_b64="dummy_b64")
         assert result == []
 
 
 @pytest.mark.asyncio
-async def test_perform_ocr_executes_api_call_when_configured():
-    """Verify perform_ocr makes API request and parses responses when configured."""
-    mock_key = MagicMock()
-    mock_key.get_secret_value.return_value = "test_key"
+async def test_perform_ocr_shapes_engine_output():
+    """Verify recognized lines become the text/position contract the callers read."""
+    engine_result = MagicMock()
+    engine_result.txts = ("Login", "Register")
+    engine_result.boxes = [
+        [[100, 200], [300, 200], [300, 250], [100, 250]],
+        [[100, 300], [300, 300], [300, 350], [100, 350]],
+    ]
 
-    with (
-        patch.object(Settings, "get_api_key", return_value=mock_key),
-        patch("artemis.utils.ocr_api.get_http_client") as mock_client,
-    ):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "responses": [
-                {
-                    "textAnnotations": [
-                        {"description": "Full text\nLogin", "boundingPoly": {}},
-                        {
-                            "description": "Login",
-                            "boundingPoly": {
-                                "vertices": [{"x": 100, "y": 200}, {"x": 300, "y": 250}]
-                            },
-                        },
-                    ]
-                }
-            ]
-        }
-        mock_http = AsyncMock()
-        mock_http.post.return_value = mock_resp
-        mock_client.return_value = mock_http
-
+    with patch("artemis.utils.ocr_api._get_engine", return_value=lambda _payload: engine_result):
         result = await perform_ocr(screenshot_b64="dummy_b64")
-        assert len(result) == 1
-        assert result[0]["text"] == "Login"
+
+    assert [item["text"] for item in result] == ["Login", "Register"]
+    assert result[0]["position"][0] == {"x": 100.0, "y": 200.0}
+    assert result[1]["position"][2] == {"x": 300.0, "y": 350.0}
 
 
 def test_fuse_ocr_with_xml_empty_ocr_retains_xml_pruning():

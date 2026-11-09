@@ -253,49 +253,31 @@ async def test_perception_node_async_offloading(mock_artemis_ctx, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ocr_api_persistent_http_client_singleton_and_tls_reuse():
-    """Verify get_http_client returns a persistent singleton httpx.AsyncClient that reuses TLS connections across OCR calls."""
-    import httpx
+async def test_ocr_engine_is_loaded_once_across_calls():
+    """Verify the local OCR engine is built once and reused by every call."""
     from artemis.utils import ocr_api
 
-    # Reset singleton to test fresh creation & persistence
-    ocr_api._HTTP_CLIENT = None
-    client1 = ocr_api.get_http_client()
-    client2 = ocr_api.get_http_client()
+    ocr_api._ENGINE = None
+    built = []
 
-    assert isinstance(client1, httpx.AsyncClient)
-    assert client1 is client2
+    class FakeEngine:
+        def __init__(self):
+            built.append(1)
 
-    # Verify perform_ocr uses this exact persistent client
-    fake_ocr_resp = MagicMock()
-    fake_ocr_resp.status_code = 200
-    fake_ocr_resp.json.return_value = {
-        "responses": [
-            {
-                "textAnnotations": [
-                    {
-                        "description": "Combined text block",
-                        "boundingPoly": {"vertices": []},
-                    },
-                    {
-                        "description": "Hello World",
-                        "boundingPoly": {"vertices": [{"x": 10, "y": 20}, {"x": 100, "y": 200}]},
-                    },
-                ]
-            }
-        ]
-    }
+        def __call__(self, _payload):
+            result = MagicMock()
+            result.txts = ("Hello World",)
+            result.boxes = [[[10, 20], [100, 20], [100, 60], [10, 60]]]
+            return result
 
-    with (
-        patch.object(client1, "post", new_callable=AsyncMock) as mock_post,
-        patch.dict("os.environ", {"OCR_API_KEY": "mock_api_key"}),
-    ):
-        mock_post.return_value = fake_ocr_resp
-        result = await ocr_api.perform_ocr(screenshot_b64="ZHVtbXlfYjY0")
+    with patch("rapidocr.RapidOCR", FakeEngine):
+        first = await ocr_api.perform_ocr(screenshot_b64="ZHVtbXlfYjY0")
+        second = await ocr_api.perform_ocr(screenshot_b64="ZHVtbXlfYjY0")
 
-        mock_post.assert_called_once()
-        assert len(result) == 1
-        assert result[0]["text"] == "Hello World"
+    assert len(built) == 1
+    assert first[0]["text"] == "Hello World"
+    assert second[0]["text"] == "Hello World"
+    ocr_api._ENGINE = None
 
 
 @pytest.mark.asyncio

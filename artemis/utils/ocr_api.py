@@ -12,94 +12,85 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
+"""Local OCR for screen text detection.
+
+Recognition runs on RapidOCR through onnxruntime. The models ship inside the
+wheel, so text detection needs no credential and no network call.
+"""
+
+import asyncio
+import base64
+import threading
 from typing import Any
 
-import httpx
-from artemis.config import settings
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
-_HTTP_CLIENT: httpx.AsyncClient | None = None
+
+_ENGINE: Any = None
+_ENGINE_LOCK = threading.Lock()
 
 
-def get_http_client() -> httpx.AsyncClient:
-    global _HTTP_CLIENT
-    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
-        _HTTP_CLIENT = httpx.AsyncClient(timeout=30.0)
-    return _HTTP_CLIENT
+def _get_engine() -> Any:
+    """Return the process-wide recognizer, loading its models on first use."""
+    global _ENGINE
+    if _ENGINE is None:
+        with _ENGINE_LOCK:
+            if _ENGINE is None:
+                from rapidocr import RapidOCR
+
+                _ENGINE = RapidOCR()
+    return _ENGINE
 
 
 def is_ocr_configured() -> bool:
-    """Checks if a valid Google Vision OCR API key is configured."""
-    ocr_secret = settings.get_api_key("ocr")
-    if ocr_secret and ocr_secret.get_secret_value().strip():
-        val = ocr_secret.get_secret_value().strip()
-        if val not in ("API_KEY", "your_google_cloud_vision_api_key_here"):
-            return True
-    for env_var in ("OCR_API_KEY", "VISION_API_KEY"):
-        val = os.environ.get(env_var)
-        if (
-            val
-            and val.strip()
-            and val.strip() not in ("API_KEY", "your_google_cloud_vision_api_key_here")
-        ):
-            return True
-    return False
+    """Whether local OCR is importable in this installation."""
+    try:
+        import rapidocr  # noqa: F401
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug(f"Local OCR is unavailable: {exc}")
+        return False
+    return True
+
+
+def _recognize(screenshot_b64: str) -> list[dict[str, Any]]:
+    """Run recognition in this thread and shape the result for the callers."""
+    engine = _get_engine()
+    result = engine(base64.b64decode(screenshot_b64))
+    texts = getattr(result, "txts", None)
+    boxes = getattr(result, "boxes", None)
+    if not texts or boxes is None:
+        return []
+    return [
+        {
+            "text": str(text),
+            "position": [{"x": float(point[0]), "y": float(point[1])} for point in box],
+        }
+        for text, box in zip(texts, boxes)
+        if text
+    ]
 
 
 async def perform_ocr(
     screenshot_b64: str,
-    client: httpx.AsyncClient | None = None,
+    client: Any = None,
 ) -> list[dict[str, Any]]:
-    """Calls Google Vision API for text recognition on an image.
+    """Recognize on-screen text in a base64 encoded screenshot.
 
     Args:
         screenshot_b64: Base64 encoded screenshot image.
-        client: Optional persistent httpx.AsyncClient.
+        client: Retained for backward compatibility; local OCR needs no client.
 
     Returns:
-        A list of dictionaries containing detected text and position vertices.
+        One entry per detected text line: ``{"text": ..., "position": [...]}``
+        with four pixel corners taken from the image as sent. Empty when the
+        image carries no text or recognition fails, so callers degrade to the
+        UI hierarchy.
     """
-    ocr_secret = settings.get_api_key("ocr")
-    api_key = (
-        (ocr_secret.get_secret_value() if ocr_secret else None)
-        or os.environ.get("OCR_API_KEY")
-        or os.environ.get("VISION_API_KEY")
-    )
-    if not api_key:
+    if not screenshot_b64:
         return []
-
-    url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "requests": [
-            {
-                "image": {"content": screenshot_b64},
-                "features": [{"type": "TEXT_DETECTION"}],
-            }
-        ]
-    }
-
-    active_client = client if client is not None else get_http_client()
-    response = await active_client.post(url, json=data, headers=headers, timeout=30.0)
-    return _parse_ocr_response(response)
-
-
-def _parse_ocr_response(response: httpx.Response) -> list[dict[str, Any]]:
-    if response.status_code == 200:
-        res_json = response.json()
-        responses = res_json.get("responses", [])
-        if responses and "textAnnotations" in responses[0]:
-            annotations = responses[0]["textAnnotations"]
-            results = []
-            # Skip the first annotation (index 0) as it is the full-screen combined text
-            for ann in annotations[1:]:
-                desc = ann.get("description", "")
-                vertices = ann.get("boundingPoly", {}).get("vertices", [])
-                results.append({"text": desc, "position": vertices})
-            return results
-        else:
-            return []
-    else:
-        raise Exception(f"Vision API returned status {response.status_code}: {response.text}")
+    try:
+        return await asyncio.to_thread(_recognize, screenshot_b64)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning(f"Local OCR failed; continuing without text: {exc}")
+        return []

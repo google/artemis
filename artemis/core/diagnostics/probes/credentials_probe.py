@@ -230,7 +230,7 @@ class LLMCredentialsProbe(BaseProbe):
 
 
 class VisionOCRProbe(BaseProbe):
-    """Probe verifying optional Google Cloud Vision OCR credentials."""
+    """Probe verifying that local OCR is importable and usable."""
 
     @property
     def probe_id(self) -> str:
@@ -244,30 +244,22 @@ class VisionOCRProbe(BaseProbe):
     def is_blocker(self) -> bool:
         return False
 
-    def _mask_key(self, key_str: str) -> str:
-        """Helper to safely mask an API credential for display."""
-        if len(key_str) > 10:
-            return f"{key_str[:6]}...{key_str[-4:]}"
-        return "***"
-
     async def probe(self) -> ProbeResult:
         from artemis.utils.ocr_api import is_ocr_configured
 
-        ocr_key = settings.get_api_key("ocr")
-        is_configured = is_ocr_configured() and ocr_key is not None
-
-        if is_configured and ocr_key:
-            val = ocr_key.get_secret_value()
-            masked = self._mask_key(val)
+        if is_ocr_configured():
             return ProbeResult(
                 id=self.probe_id,
                 category=self.category,
-                title="Vision OCR API Key (Optional)",
+                title="Screen Text OCR (Optional)",
                 status=ProbeStatus.PASS,
                 is_blocker=False,
-                summary="Active & Configured",
-                description=f"Google Cloud Vision OCR ({masked}) is active for image text recognition.",
-                metadata={"configured": True, "masked_key": masked, "key": val, "raw_key": val},
+                summary="Active (Local OCR)",
+                description=(
+                    "Local OCR (RapidOCR on onnxruntime) reads on-screen text with no"
+                    " credential and no network call."
+                ),
+                metadata={"configured": True, "engine": "rapidocr", "needs_key": False},
                 actions=[
                     ProbeAction(
                         action_type="hint",
@@ -280,12 +272,15 @@ class VisionOCRProbe(BaseProbe):
         return ProbeResult(
             id=self.probe_id,
             category=self.category,
-            title="Vision OCR API Key (Optional)",
+            title="Screen Text OCR (Optional)",
             status=ProbeStatus.PASS,
             is_blocker=False,
-            summary="Not Configured (Optional)",
-            description="OCR_API_KEY is not set. Perception uses the UI XML hierarchy without OCR.",
-            metadata={"configured": False},
+            summary="Not Installed (Optional)",
+            description=(
+                "rapidocr is not installed. Perception uses the UI XML hierarchy without OCR."
+                " Install it with `uv sync`."
+            ),
+            metadata={"configured": False, "engine": None},
             actions=[
                 ProbeAction(
                     action_type="hint",
