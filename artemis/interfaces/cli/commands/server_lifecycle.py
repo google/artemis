@@ -35,6 +35,7 @@ from artemis.runtime.daemon_client import daemon_log_path, is_daemon_running, sp
 from artemis.runtime.server_lifecycle import (
     find_server_pids,
     get_server_status,
+    read_server_info,
     stop_server,
 )
 
@@ -125,6 +126,7 @@ def restart_command(
     )
 
     # 1. Stop existing server
+    port = _recorded_port(port)
     existing_pids = find_server_pids(port)
     if existing_pids:
         pid_str = ", ".join(map(str, existing_pids))
@@ -199,11 +201,29 @@ def restart_command(
     ui_command(host=host, port=port, open_browser=open_browser, reload=reload)
 
 
+def _recorded_port(port: int | None) -> int:
+    """The port the running server recorded, so callers need not repeat it.
+
+    A server started on a non-default port writes it to the runtime info file,
+    and asking someone to retype it for every status or stop call invites
+    querying the wrong port.
+    """
+    if port is not None:
+        return port
+    info = read_server_info()
+    recorded = info.get("port") if info else None
+    return recorded if isinstance(recorded, int) else 8000
+
+
 def stop_command(
     port: Annotated[
-        int,
-        typer.Option("--port", "-p", help="Port of the Artemis server to stop."),
-    ] = 8000,
+        int | None,
+        typer.Option(
+            "--port",
+            "-p",
+            help="Port of the Artemis server to stop. Defaults to the running server's own.",
+        ),
+    ] = None,
     force: Annotated[
         bool,
         typer.Option(
@@ -215,6 +235,7 @@ def stop_command(
 ) -> None:
     """Stop any running Artemis Web UI / server instance on the given port."""
     console.print()
+    port = _recorded_port(port)
     existing_pids = find_server_pids(port)
     if existing_pids:
         pid_str = ", ".join(map(str, existing_pids))
@@ -259,12 +280,15 @@ def stop_command(
 
 def status_command(
     port: Annotated[
-        int,
-        typer.Option("--port", "-p", help="Port to query for Artemis server status."),
-    ] = 8000,
+        int | None,
+        typer.Option(
+            "--port", "-p", help="Port to query. Defaults to the running server's own."
+        ),
+    ] = None,
 ) -> None:
     """Check whether the Artemis server is currently running and display runtime metadata."""
     console.print()
+    port = _recorded_port(port)
     status = get_server_status(port=port)
 
     if status["running"]:
