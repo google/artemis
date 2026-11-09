@@ -11,6 +11,10 @@ cd "$ROOT"
 
 OUTPUT_DIR="${OUTPUT_DIR:-build/nuitka}"
 
+# Nuitka reuses an existing dist directory, which leaves data files from an
+# earlier build beside the new ones. The C build cache above it stays.
+rm -rf "$OUTPUT_DIR/launcher.dist"
+
 uv run python -m nuitka \
   --standalone \
   --assume-yes-for-downloads \
@@ -39,7 +43,7 @@ uv run python -m nuitka \
   --include-package-data=uiautomator2 \
   --include-package=uvicorn \
   --include-package=apps.admin_console \
-  --include-package-data=apps \
+  --include-data-file=apps/admin_console/index.html=apps/admin_console/index.html \
   --include-data-file=config/artemis.jsonc=config/artemis.jsonc \
   --include-package-data=third_party \
   packaging/launcher.py

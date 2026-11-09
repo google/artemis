@@ -25,12 +25,6 @@ def _point_imageio_at_the_bundled_ffmpeg() -> None:
 def main() -> None:
     _point_imageio_at_the_bundled_ffmpeg()
 
-    if len(sys.argv) > 1 and sys.argv[1] == "--admin":
-        from apps.admin_console.server import main as admin_main
-
-        admin_main(sys.argv[2:])
-        return
-
     if len(sys.argv) > 1 and sys.argv[1] == "--kernel":
         sys.argv = [sys.argv[0], *sys.argv[2:]]
         from ipykernel.kernelapp import IPKernelApp
