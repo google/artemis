@@ -24,6 +24,7 @@ from artemis.config.constants import (
 )
 from artemis.config.paths import ROOT_DIR, get_config_path
 from artemis.utils.cython_compat import CyFunctionDetector
+from artemis.llm.router import ModelProvider
 from third_party.mobile_use.config import llm as base_llm_config
 from third_party.mobile_use.config.llm import (
     LLM,
@@ -57,9 +58,42 @@ __all__ = [
 ]
 
 
-def lightweight_judge_default() -> "LLMWithFallback":
+def lightweight_judge_default(template: "LLMWithFallback | None" = None) -> "LLMWithFallback":
     """Factory default for the lightweight judge nodes (pixel safety net and
-    planner validation): a flash-lite model at temperature 0."""
+    planner validation), at temperature 0.
+
+    These nodes are not reachable through the ``default``/``nodes`` shorthand
+    in ``config/artemis.jsonc`` (``_expand_default_into_nodes`` only expands
+    the fixed node list), so without help they pin whatever model is written
+    here regardless of the provider configured for the run.
+
+    ``template`` is the run's own resolved config. The flash-lite default is
+    kept whenever it is actually reachable - i.e. the run is on Google - so
+    Google setups keep the cheap judge they have today. On any other provider
+    that model is unreachable, so the judges follow the run's own config
+    instead of failing. Only temperature is forced to 0; reasoning and
+    thought-streaming settings are deliberately not inherited, because these
+    are cheap verdict calls.
+    """
+    if (
+        template is not None
+        and ModelProvider.from_string(template.provider) is not ModelProvider.GOOGLE
+    ):
+        fallback = template.fallback
+        return LLMWithFallback(
+            provider=template.provider,
+            model=template.model,
+            temperature=0.0,
+            fallback=(
+                LLM(
+                    provider=fallback.provider,
+                    model=fallback.model,
+                    temperature=0.0,
+                )
+                if fallback is not None
+                else None
+            ),
+        )
     return LLMWithFallback(
         provider="google",
         model="gemini-3.5-flash-lite",
@@ -124,7 +158,7 @@ class LLMConfig(LLMConfigBase):
                 # Both are cheap, high-frequency judges: the pixel safety net
                 # runs before actions, the planner validator after every
                 # milestone edit. They share one lightweight default.
-                return lightweight_judge_default()
+                return lightweight_judge_default(self.operator)
             elif item == "output_analyzer":
                 return self.log_analyzer
         return val

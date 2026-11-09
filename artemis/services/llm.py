@@ -893,6 +893,33 @@ def get_google_llm(
     return ModelFactory.create_model(ep)
 
 
+def get_llm_for_model_id(
+    model_name: str,
+    temperature: float | None = None,
+    timeout: float | None = None,
+) -> BaseChatModel:
+    """Build a model from a bare model id, inferring the provider from its shape.
+
+    Some call sites carry a model *name* taken from config with no provider
+    beside it. Calling ``get_google_llm`` there pins ``provider=google`` no
+    matter which gateway the rest of the run uses, so on a non-Google setup
+    those paths fail with "API key required for Gemini Developer API" even
+    though every node in ``artemis.jsonc`` names another provider.
+
+    Gateway ids are namespaced (``"vendor/model"``, optionally with a
+    ``":suffix"`` routing tag) and route to OpenRouter; bare ids
+    (``"gemini-3.8-flash"``) keep the historical Google default.
+    """
+    provider = ModelProvider.OPENROUTER if "/" in model_name else ModelProvider.GOOGLE
+    ep = ModelEndpoint(
+        provider=provider,
+        model_name=model_name,
+        temperature=temperature or 0.0,
+        timeout_seconds=timeout or 60.0,
+    )
+    return ModelFactory.create_model(ep)
+
+
 def _resolve_endpoint(
     ctx: ArtemisContext,
     name: str,
