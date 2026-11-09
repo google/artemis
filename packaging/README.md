@@ -12,7 +12,7 @@ bash packaging/build.sh
 
 Requirements on the build machine:
 
-- macOS on Apple silicon. The staged ffmpeg is `imageio_ffmpeg`'s
+- macOS on Apple silicon. The bundled ffmpeg is `imageio_ffmpeg`'s
   `ffmpeg-macos-aarch64` binary, so a Linux or Windows bundle needs a different
   one.
 - Xcode command line tools, for clang.
@@ -28,10 +28,10 @@ Output:
 
 ```
 build/nuitka/launcher.dist/artemis-cli     the executable
-build/nuitka/launcher.dist/artemis/        package data: agent JSON, prompts, Showcase UI
+build/nuitka/launcher.dist/artemis/        package data: agent JSON and prompts
 build/nuitka/launcher.dist/config/         the shipped default configuration
 build/nuitka/launcher.dist/rapidocr/       ONNX models for local OCR
-build/nuitka/launcher.dist/toolchain/      ffmpeg staged for machines without one
+build/nuitka/launcher.dist/imageio_ffmpeg/  ffmpeg for machines without one
 build/nuitka/launcher.dist/packages/       the accessibility helper APK
 ```
 
@@ -44,11 +44,18 @@ a device at all.
 | --- | --- | --- |
 | `adb` | yes | `ARTEMIS_ADB_PATH`, then `ANDROID_HOME` or `ANDROID_SDK_ROOT` under `platform-tools/adb`, then common install paths, then `PATH` |
 | `scrcpy` | only for screen recording and live stream | `ARTEMIS_SCRCPY_PATH`, then common install paths, then `PATH` |
-| `ffmpeg` | optional | The resolver checks `ARTEMIS_FFMPEG_PATH`, then common install paths, then `PATH`, and only then falls back to `toolchain/ffmpeg` inside the bundle, which the launcher exposes through `IMAGEIO_FFMPEG_EXE` |
+| `ffmpeg` | optional | The resolver checks `ARTEMIS_FFMPEG_PATH`, then common install paths, then `PATH`, and only then falls back to the copy `imageio_ffmpeg` ships, which the build includes under `imageio_ffmpeg/binaries` |
 
 `artemis-cli doctor` reports which of these it resolved and from where. On a
 machine that already has ffmpeg installed, the system copy is used and the
-staged one stays unused; it exists for machines that have none.
+bundled one stays unused; it exists for machines that have none.
+
+## No web frontend
+
+The build drops the Angular bundle. The HTTP server still runs and serves the
+whole API, which is what `run` enqueues into and what `doctor` reports on, but
+`http://127.0.0.1:8000/` answers with the server's own "not built" page. `ui`
+does not open a browser unless you pass `--open`.
 
 ## Runtime state
 

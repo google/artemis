@@ -49,12 +49,10 @@ uv run python -m nuitka \
   packaging/launcher.py
 
 DIST="$ROOT/$OUTPUT_DIR/launcher.dist"
-SITE_PACKAGES="$(uv run python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
 
-mkdir -p "$DIST/toolchain" "$DIST/packages/artemis-accessibility-helper"
-cp "$SITE_PACKAGES"/imageio_ffmpeg/binaries/ffmpeg-* "$DIST/toolchain/ffmpeg"
-chmod +x "$DIST/toolchain/ffmpeg"
+rm -rf "$DIST/artemis/resources/showcase_ui"
+mkdir -p "$DIST/packages/artemis-accessibility-helper"
 cp packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk \
    packages/artemis-accessibility-helper/helper_manifest.json \
    "$DIST/packages/artemis-accessibility-helper/"
-echo "Staged imageio ffmpeg and the accessibility helper APK into $DIST"
+echo "Staged the accessibility helper APK into $DIST; frontend assets removed"
