@@ -44,6 +44,7 @@ async def test_video_analyzer_run():
 
     # Mock Gemini Client
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_chunk = MagicMock()
@@ -191,6 +192,7 @@ async def test_video_analyzer_preserves_thought_signature():
 
     # Mock Gemini Client
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.files = MagicMock()
 
@@ -385,6 +387,7 @@ async def test_video_analyzer_sub_agent_confidence_validation():
 
     # Mock Gemini Client
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.files = MagicMock()
 

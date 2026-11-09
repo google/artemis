@@ -57,6 +57,7 @@ async def test_explorer_run():
 
     # Mock Gemini Client and Response
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_response = MagicMock()
@@ -145,6 +146,7 @@ async def test_explorer_submit_answer():
 
     # Mock Gemini Client and Function Call for submit_answer
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_response = MagicMock()
@@ -306,6 +308,7 @@ async def test_explorer_submit_answer_self_correction():
     mock_response2.function_calls = [mock_func_call2]
 
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_client.aio.models.generate_content = AsyncMock(
@@ -388,6 +391,7 @@ async def test_explorer_initial_visual_marking():
 
     # Mock Gemini Client and response
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_response = MagicMock()
@@ -475,6 +479,7 @@ async def test_explorer_initial_visual_marking_previous_screenshot():
 
     # Mock Gemini Client and response
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_response = MagicMock()
@@ -567,6 +572,7 @@ async def test_explorer_initial_visual_marking_previous_screenshot_no_ui_tree():
 
     # Mock Gemini Client and response
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_response = MagicMock()
@@ -648,6 +654,7 @@ async def test_explorer_initial_visual_marking_previous_screenshot_ocr_fusion():
 
     # Mock Gemini Client and response
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_response = MagicMock()
@@ -750,6 +757,7 @@ async def test_explorer_initial_visual_marking_previous_screenshot_on_the_fly_oc
 
     # Mock Gemini Client and response
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_response = MagicMock()
@@ -900,6 +908,7 @@ async def test_explorer_denylisted_tool():
     )
 
     mock_client = MagicMock()
+    mock_ctx._genai_client = mock_client
     mock_client.aio = MagicMock()
     mock_client.aio.models = MagicMock()
     mock_client.aio.models.generate_content = AsyncMock(
