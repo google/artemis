@@ -109,6 +109,7 @@ _FINAL_TURN_WARNING = "[WARNING] This is your final turn; only 'report_task_stat
 _REPEAT_OBSERVE = 2
 _REPEAT_BLOCK = 3
 _REPEAT_STOP = 6
+_CAPTURE_FAILURE_LIMIT = 2
 _REPEAT_TEMPERATURE = 0.7
 _REPEAT_WINDOW = 12
 
@@ -658,6 +659,20 @@ class FlashRunner:
             await self.summarizer.flush()
         return final_report
 
+    def _note_capture_failure(self, message: str) -> None:
+        """Stops the run when the screen cannot be read, instead of letting the model guess.
+
+        On 2026-11-11 a run whose adb link dropped kept acting on a stale frame and
+        ended `failed` with "6 identical actions", naming the model as the cause
+        when the capture had been failing for every one of those steps.
+        """
+        self._capture_failures = getattr(self, "_capture_failures", 0) + 1
+        if self._capture_failures >= _CAPTURE_FAILURE_LIMIT:
+            self._device_stop_reason = (
+                f"Stopped after {self._capture_failures} failed screen captures, so no step "
+                f"could be judged: {message}"
+            )
+
     async def _capture_post_screenshot(
         self, exec_result, name: str, action_names, state: State | None = None
     ):
@@ -676,11 +691,14 @@ class FlashRunner:
         try:
             obs, screenshot_bytes = await observe(self.ctx, self.controller, settle_ms=0)
         except Exception as shot_err:
+            self._note_capture_failure(str(shot_err))
             logger.warning(f"Failed to capture fallback screenshot in FlashRunner: {shot_err}")
             return post_img_bytes
         if not obs.ok:
+            self._note_capture_failure(obs.message or "screen capture failed")
             logger.warning(f"Failed to capture fallback screenshot in FlashRunner: {obs.message}")
             return post_img_bytes
+        self._capture_failures = 0
         post_img_bytes = screenshot_bytes
         if not exec_result.ui_elements_text:
             exec_result.ui_elements_text = obs.elements_text
@@ -1168,9 +1186,15 @@ class FlashRunner:
                 native_text=native_text,
                 index_elements=index_elements,
             )
-            if getattr(self, "_repeat_stop_reason", None):
+            if getattr(self, "_repeat_stop_reason", None) or getattr(
+                self, "_device_stop_reason", None
+            ):
                 return (
-                    {"status": "failed", "explanation": self._repeat_stop_reason},
+                    {
+                        "status": "failed",
+                        "explanation": getattr(self, "_repeat_stop_reason", None)
+                        or self._device_stop_reason,
+                    },
                     pre_screenshot_bytes,
                     xml_list,
                     xml_diff,
