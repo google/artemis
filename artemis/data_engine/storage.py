@@ -298,6 +298,21 @@ class StorageManager:
         session_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Session directory created at {session_dir}")
 
+    def drop_empty_session_dir(self, session_id) -> None:
+        """Removes a session's trace directory when the session wrote nothing.
+
+        create_session makes the directory before any work starts, so every run
+        that stops before its first step leaves one behind: 204 of 336
+        directories on this checkout were empty shells. A directory holding
+        stdout.log or any step is never touched.
+        """
+        session_dir = self.base_trace_dir / str(session_id)
+        try:
+            if session_dir.is_dir() and not any(session_dir.iterdir()):
+                session_dir.rmdir()
+        except OSError as error:
+            logger.debug(f"Kept session directory {session_dir}: {error}")
+
     def update_session(self, session: SessionMetadata):
         """Update an existing session record."""
         with self._get_connection() as conn:

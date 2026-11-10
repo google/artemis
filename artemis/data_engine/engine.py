@@ -693,6 +693,7 @@ class DataEngine:
             self.storage.update_session(session)
             logger.info(f"Session ended: {session_id} with status: {status}")
             self._publish("session_ended", session.model_dump())
+            self.storage.drop_empty_session_dir(session_id)
         except Exception as e:
             logger.error(f"Failed to end session in DataEngine: {e}")
 
