@@ -57,6 +57,31 @@ whole API, which is what `run` enqueues into and what `doctor` reports on, but
 `http://127.0.0.1:8000/` answers with the server's own "not built" page. `ui`
 does not open a browser unless you pass `--open`.
 
+## Licenses
+
+The build stages the texts a redistribution has to carry. Nuitka copies modules
+and package data, never the `*.dist-info` directories that hold each
+dependency's license, so without this step the bundle ships the dependencies
+with no licenses at all.
+
+```
+dist/LICENSE                 Artemis, Apache-2.0
+dist/licenses/<pkg>-<file>   one file per license a dependency ships
+dist/licenses/FFMPEG.txt     the bundled ffmpeg is a GPL build, with sources
+dist/licenses/THIRD_PARTY-SUMMARY.txt   dependencies that ship no license file
+```
+
+`packaging/collect_licenses.py` performs that copy and runs as part of
+`build.sh`. A Windows build must call it too.
+
+The ffmpeg executable that `imageio_ffmpeg` provides is built with
+`--enable-gpl`, so it is GPL-2.0-or-later, not LGPL. `FFMPEG.txt` records the
+version, the build configuration, and where the corresponding source is
+published. Artemis itself is Apache-2.0 and links none of it: ffmpeg runs as a
+subprocess. A distribution that cannot accept GPL terms should delete the
+executable from the bundle and require ffmpeg on the host, which `doctor`
+already reports on.
+
 ## Runtime state
 
 A bundled run keeps mutable state outside the bundle, under the per-user

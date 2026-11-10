@@ -1,0 +1,36 @@
+FFmpeg
+======
+
+The bundle ships a prebuilt ffmpeg executable at
+`imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1`, taken unchanged from the
+`imageio-ffmpeg` wheel. It is used only when the host has no ffmpeg of its own.
+
+Version and build:
+
+    ffmpeg version 7.1 Copyright (c) 2000-2024 the FFmpeg developers
+    configuration: --enable-gpl --enable-libvmaf --enable-libopenjpeg
+      --enable-libopus --enable-libmp3lame --enable-libx264 --enable-libx265
+      --enable-libvpx --enable-libwebp --enable-libass --enable-libfreetype
+      --enable-fontconfig --enable-libtheora --enable-libvorbis
+      --enable-libsnappy --enable-libaom --enable-libvidstab --enable-libzimg
+      --enable-libsvtav1 --enable-libharfbuzz --enable-libkvazaar
+      --enable-ffplay --enable-postproc
+
+That configuration includes `--enable-gpl`, so this executable is distributed
+under the GNU General Public License version 2 or later, not the LGPL. The
+`--enable-libx264` and `--enable-libx265` encoders are GPL as well.
+
+The GPL requires that a distributor of the binary also provide the complete
+corresponding source code, or a written offer to provide it. This bundle
+carries the license text, and the corresponding source is available from:
+
+- FFmpeg 7.1: https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz
+- x264: https://www.videolan.org/developers/x264.html
+- x265: https://bitbucket.org/multicoreware/x265_git
+
+Artemis itself is Apache-2.0 and links no GPL code. The ffmpeg executable is an
+aggregated program invoked through a subprocess, not linked into Artemis.
+
+If GPL terms are unacceptable for a distribution, remove the executable from
+`imageio_ffmpeg/binaries/` in the bundle and require ffmpeg on the host PATH;
+`artemis-cli doctor` reports which one it resolved.

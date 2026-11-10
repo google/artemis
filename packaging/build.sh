@@ -55,4 +55,5 @@ mkdir -p "$DIST/packages/artemis-accessibility-helper"
 cp packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk \
    packages/artemis-accessibility-helper/helper_manifest.json \
    "$DIST/packages/artemis-accessibility-helper/"
+uv run python packaging/collect_licenses.py "$DIST"
 echo "Staged the accessibility helper APK into $DIST; frontend assets removed"
