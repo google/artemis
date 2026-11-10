@@ -40,29 +40,32 @@ def real_executable_name() -> str:
 
 
 def public_entry(dist: Path) -> Path:
-    """The command a user runs, which is the same relative path everywhere."""
-    return dist / "bin" / f"artemis{'.exe' if sys.platform == 'win32' else ''}"
+    """The command a user runs.
+
+    Only macOS needs the indirection. A Windows bundle started through a link
+    resolves its modules from the link's directory and imports fail, because
+    nothing canonicalises the link the way dyld does, so the binary stays where
+    Nuitka put it.
+    """
+    if sys.platform == "win32":
+        return dist / "artemis.exe"
+    return dist / "bin" / "artemis"
 
 
 def link_public_entry(dist: Path) -> Path:
-    """Give the binary its public name one directory down.
+    """Give the binary its public name.
 
     A symlink works on macOS because dyld canonicalises it and still resolves
-    ``@executable_path`` beside the real file. Windows has no such requirement,
-    and a hardlink costs no extra disk, so both platforms expose the same path.
+    ``@executable_path`` beside the real file. On Windows the binary already has
+    that name at the root, so there is nothing to create.
     """
     entry = public_entry(dist)
+    if sys.platform == "win32":
+        return entry
     entry.parent.mkdir(parents=True, exist_ok=True)
     if entry.exists() or entry.is_symlink():
         entry.unlink()
-    target = dist / real_executable_name()
-    if sys.platform == "win32":
-        try:
-            os.link(target, entry)
-        except OSError:
-            shutil.copy2(target, entry)
-    else:
-        entry.symlink_to(Path("..") / target.name)
+    entry.symlink_to(Path("..") / real_executable_name())
     return entry
 
 
@@ -148,6 +151,8 @@ def verify(dist: Path, smoke: bool = True) -> list[str]:
         failures.append(f"missing binary {real_executable_name()}")
     if sys.platform != "win32" and not entry.is_symlink():
         failures.append(f"{entry} is not a symlink, so the binary name is exposed")
+    if sys.platform == "win32" and (dist / "bin").exists():
+        failures.append("bin/ exists on Windows, where a linked binary cannot import")
 
     helper = dist / "packages" / HELPER_PACKAGE
     for name in HELPER_FILES:

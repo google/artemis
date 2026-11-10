@@ -24,9 +24,9 @@ platform-specific parts differ:
 
 | | macOS | Windows |
 | --- | --- | --- |
-| what you run | `bin/artemis` | `bin\artemis.exe` |
+| what you run | `bin/artemis` | `artemis.exe` |
 | real executable | `artemis-app` at the dist root | `artemis.exe` at the dist root |
-| how the names relate | symlink, because a file named `artemis` cannot sit beside the `artemis/` package-data directory on a case-insensitive filesystem, and moving the binary into `bin/` breaks dyld's `@executable_path`. dyld canonicalises a symlink, so the link gets the name and the libraries stay beside the real file | hardlink, which costs no extra disk |
+| how the names relate | symlink, because a file named `artemis` cannot sit beside the `artemis/` package-data directory on a case-insensitive filesystem, and moving the binary into `bin/` breaks dyld's `@executable_path`. dyld canonicalises a symlink, so the link gets the name and the libraries stay beside the real file | no link. Windows resolves modules from the executable's own directory with nothing canonicalising a link, so `bin\artemis.exe` fails to import `asyncio`. The binary keeps the name `artemis` at the root instead |
 | staging | `packaging/stage.py` | `packaging/stage.py` |
 
 Requirements on the build machine:

@@ -48,15 +48,27 @@ def test_macos_exposes_the_command_as_a_symlink_to_the_suffixed_binary(tmp_path,
     assert entry.resolve() == (dist / "artemis-app").resolve()
 
 
-def test_windows_exposes_the_same_relative_path_with_a_hardlink(tmp_path, monkeypatch):
+def test_windows_runs_the_binary_where_nuitka_put_it(tmp_path, monkeypatch):
+    """A link there resolves modules from the link's directory and fails."""
     monkeypatch.setattr(sys, "platform", "win32")
     dist = _fake_dist(tmp_path)
     (dist / "artemis.exe").write_bytes(b"binary")
 
     entry = stage.link_public_entry(dist)
 
-    assert entry == dist / "bin" / "artemis.exe"
-    assert entry.read_bytes() == b"binary"
+    assert entry == dist / "artemis.exe"
+    assert not (dist / "bin").exists()
+
+
+def test_verify_rejects_a_bin_directory_on_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    dist = _fake_dist(tmp_path, showcase=False)
+    (dist / "artemis.exe").write_bytes(b"binary")
+    (dist / "bin").mkdir()
+
+    failures = stage.verify(dist, smoke=False)
+
+    assert any("bin/" in failure for failure in failures)
 
 
 def test_staging_is_repeatable(tmp_path, monkeypatch):
