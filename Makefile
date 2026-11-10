@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: help test test-integration test-device test-all install install-deps setup start ui restart stop status build-ui doctor clean precommit-install precommit lint format typecheck quality-ratchet
+.PHONY: help test test-integration test-device test-all install install-deps setup start ui restart stop status build-ui doctor clean precommit-install precommit lint format typecheck quality-ratchet check
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -73,6 +73,11 @@ setup: ## Setup project (install dependencies + pre-commit hooks + build UI)
 	@$(MAKE) precommit-install
 	@echo ""
 	@echo "✅ Setup complete! You're ready to start developing."
+
+check: ## Run the full gate: lint, type check, tests
+	@$(MAKE) lint
+	@$(MAKE) typecheck
+	@$(MAKE) test
 
 lint: ## Run linting checks
 	@echo "🔍 Running linting checks..."

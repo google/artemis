@@ -37,16 +37,38 @@ from artemis.config.paths import (
     get_data_engine_db_path,
     get_default_traces_path,
     get_env_file,
+    get_executable_env_file,
     get_temp_dir,
 )
 from third_party.mobile_use.utils.logger import get_logger
 
-# Installed wheels load .env from the user directory, outside site-packages.
-_canonical_env = get_env_file()
-load_dotenv(dotenv_path=_canonical_env, verbose=True)
-_global_env = GLOBAL_APP_DIR / ".env"
-if _global_env.exists() and _global_env.resolve() != _canonical_env.resolve():
-    load_dotenv(dotenv_path=_global_env, verbose=True)
+
+def load_env_files() -> list[Path]:
+    """Load the dotenv files that apply, most specific first.
+
+    ``load_dotenv`` never overrides a value already in the environment, so the
+    first file to define a key wins and a real environment variable outranks
+    every file. A compiled bundle may carry its own file beside the executable;
+    installed wheels read the user directory, outside site-packages.
+    """
+    loaded: list[Path] = []
+    executable_env = get_executable_env_file()
+    if executable_env is not None and executable_env.is_file():
+        load_dotenv(dotenv_path=executable_env, verbose=True)
+        loaded.append(executable_env)
+
+    canonical_env = get_env_file()
+    load_dotenv(dotenv_path=canonical_env, verbose=True)
+    loaded.append(canonical_env)
+
+    global_env = GLOBAL_APP_DIR / ".env"
+    if global_env.is_file() and global_env.resolve() != canonical_env.resolve():
+        load_dotenv(dotenv_path=global_env, verbose=True)
+        loaded.append(global_env)
+    return loaded
+
+
+ENV_FILES_LOADED = load_env_files()
 
 logger = get_logger(__name__)
 

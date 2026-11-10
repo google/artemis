@@ -7,14 +7,24 @@ run.
 ## Build
 
 ```bash
-bash packaging/build.sh
+bash packaging/build.sh          # macOS
+pwsh packaging/build.ps1         # Windows
 ```
+
+Both scripts pass the same Nuitka include list, and
+`tests/unit/test_packaging_build_scripts.py` fails when they drift. Only the
+platform-specific parts differ:
+
+| | macOS | Windows |
+| --- | --- | --- |
+| executable | `artemis-cli` at the dist root | `artemis.exe` at the dist root |
+| why the name differs | a bare `artemis` collides with the `artemis/` package-data directory on a case-insensitive filesystem | no collision with an `.exe` |
+| staging | helper APK, then `collect_licenses.py` | same |
 
 Requirements on the build machine:
 
-- macOS on Apple silicon. The bundled ffmpeg is `imageio_ffmpeg`'s
-  `ffmpeg-macos-aarch64` binary, so a Linux or Windows bundle needs a different
-  one.
+- Build on the platform you ship: the bundled ffmpeg is the platform-specific
+  binary `imageio_ffmpeg` provides, so a macOS build carries a macOS ffmpeg.
 - Xcode command line tools, for clang.
 - `uv`, which the script uses to resolve dependencies and to find the site
   packages directory.

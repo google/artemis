@@ -85,6 +85,19 @@ def get_env_file() -> Path:
     return get_app_dir() / ".env" if _use_user_app_dir() else ROOT_DIR / ".env"
 
 
+def get_executable_env_file() -> Path | None:
+    """The dotenv file beside a compiled executable, or None when not frozen.
+
+    A portable bundle is expected to carry its own configuration next to the
+    binary, so that file is read before the user-level one. Nothing writes
+    here: a bundle installed under Program Files or /Applications must not
+    modify its own directory.
+    """
+    if not is_frozen_bundle():
+        return None
+    return Path(sys.executable).resolve().parent / ".env"
+
+
 def get_default_traces_path() -> Path:
     """Returns default traces directory.
 
