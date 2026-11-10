@@ -34,6 +34,23 @@ from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+class ScreenCaptureFailed(RuntimeError):
+    """Raised when a real device returns no screenshot.
+
+    A placeholder image here would let the agent act on a stale screen: on
+    2026-11-11 a session logged `device offline` and then ended `completed`
+    two steps later, because the placeholder kept the screen looking valid.
+    """
+
+    def __init__(self, device_id: str) -> None:
+        super().__init__(
+            f"no screenshot from {device_id}; the device is unreachable, so any "
+            "action now would run against a stale screen"
+        )
+        self.device_id = device_id
+
+
 # KeyCode mapping from string name to Android keycode integer
 ANDROID_KEYCODE_MAP: dict[str, int] = {
     "home": 3,
@@ -170,9 +187,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
                 logger.warning(f"Device screenshot capture failed on {self._device_id}: {e}")
 
         if not screenshot_base64 or not isinstance(screenshot_base64, str):
-            # Fallback for headless testing environments
-            screenshot_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-            screenshot_bytes = base64.b64decode(screenshot_base64)
+            raise ScreenCaptureFailed(self._device_id)
 
         # 2. Capture UI Hierarchy via UIAutomator
         if self._ui_adb_client and not ui_elements:
@@ -205,11 +220,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
             screen_width=w,
             screen_height=h,
         )
-        clean_b64 = (
-            screenshot_base64
-            if isinstance(screenshot_base64, str) and screenshot_base64
-            else "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-        )
+        clean_b64 = screenshot_base64
         clean_bytes = (
             screenshot_bytes
             if isinstance(screenshot_bytes, bytes) and screenshot_bytes
