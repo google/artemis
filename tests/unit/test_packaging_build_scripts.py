@@ -74,3 +74,8 @@ def test_both_scripts_wipe_the_previous_dist_directory():
 def test_the_entry_point_is_shared():
     assert "artemis_cli.py" in BASH.read_text(encoding="utf-8")
     assert "artemis_cli.py" in POWERSHELL.read_text(encoding="utf-8")
+
+
+def test_both_scripts_let_the_caller_lower_the_parallel_jobs():
+    assert "${JOBS:-8}" in BASH.read_text(encoding="utf-8")
+    assert "$env:JOBS" in POWERSHELL.read_text(encoding="utf-8")

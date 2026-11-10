@@ -10,6 +10,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 OUTPUT_DIR="${OUTPUT_DIR:-build/nuitka}"
+JOBS="${JOBS:-8}"
 
 # Nuitka reuses an existing dist directory, which leaves data files from an
 # earlier build beside the new ones. The C build cache above it stays.
@@ -18,7 +19,7 @@ rm -rf "$OUTPUT_DIR/artemis_cli.dist"
 uv run python -m nuitka \
   --standalone \
   --assume-yes-for-downloads \
-  --jobs=8 \
+  --jobs="$JOBS" \
   --output-dir="$OUTPUT_DIR" \
   --output-filename=artemis-cli \
   --include-package=langchain \

@@ -20,7 +20,7 @@ import hashlib
 import inspect
 import json
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import uuid
 from uuid import UUID
 
@@ -28,7 +28,8 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
 
-from artemis.context import ArtemisContext
+if TYPE_CHECKING:
+    from artemis.context import ArtemisContext
 from artemis.data_engine.context_vars import (
     CURRENT_NODE_NAME,
     CURRENT_TRACE_ID,
@@ -116,7 +117,7 @@ def serialize_error(error: Any) -> str:
 class DataEngineCallbackHandler(BaseCallbackHandler):
     """Callback handler to record executions to DataEngine."""
 
-    def __init__(self, ctx: ArtemisContext):
+    def __init__(self, ctx: "ArtemisContext"):
         self.ctx = ctx
         self.running_spans = {}
         self.chain_parents = {}
@@ -415,7 +416,7 @@ class DataEngineCallbackHandler(BaseCallbackHandler):
 def trace(
     type: str,
     name: str | None = None,
-    ctx: ArtemisContext | None = None,
+    ctx: "ArtemisContext | None" = None,
     serializer: Callable[[Any], dict[str, Any]] | None = None,
 ):
     """Decorator to trace execution of tools and agents in Data Engine.
@@ -432,7 +433,11 @@ def trace(
         trace_name = name or func.__name__
         sig = inspect.signature(func)
 
-        def _get_ctx(*args, **kwargs) -> ArtemisContext | None:
+        def _get_ctx(*args, **kwargs) -> "ArtemisContext | None":
+            # Imported here: artemis.context imports the engine, which imports
+            # this module, so a module-level import would be circular.
+            from artemis.context import ArtemisContext
+
             if ctx:
                 return ctx
             # Try to find in args
@@ -623,7 +628,7 @@ class TraceSpan:
         self,
         name: str,
         trace_type: str = "span",
-        ctx: ArtemisContext | None = None,
+        ctx: "ArtemisContext | None" = None,
         serializer: Callable[[Any], dict[str, Any]] | None = None,
     ):
         self.name = name
@@ -718,7 +723,7 @@ def detached_trace(node_name: str | None = None):
             CURRENT_NODE_NAME.reset(token_name)
 
 
-def trace_langchain_tool(tool: BaseTool, ctx: ArtemisContext) -> BaseTool:
+def trace_langchain_tool(tool: BaseTool, ctx: "ArtemisContext") -> BaseTool:
     """Wraps a LangChain tool to trace its execution.
 
     [REFACTORED] Tracing is now completely delegated to

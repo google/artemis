@@ -56,16 +56,29 @@ def test_kernel_mode_launches_ipykernel_with_the_remaining_arguments(monkeypatch
     assert sys.argv == ["artemis-cli", "-f", "connection.json"]
 
 
-def test_daemon_mode_forwards_the_remaining_arguments(monkeypatch, launcher):
-    received: list[list[str]] = []
-    _install(monkeypatch, "apps.admin_console.server", main=lambda argv: received.append(argv))
-    monkeypatch.setitem(sys.modules, "apps", types.ModuleType("apps"))
-    monkeypatch.setitem(sys.modules, "apps.admin_console", types.ModuleType("apps.admin_console"))
-    monkeypatch.setattr(sys, "argv", ["artemis-cli", "--daemon", "--port", "8123"])
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--daemon", "--port", "8123"], ("127.0.0.1", 8123)),
+        (["--daemon", "--host", "0.0.0.0", "--port", "9001"], ("0.0.0.0", 9001)),
+    ],
+)
+def test_daemon_mode_binds_the_host_and_port_it_is_given(monkeypatch, launcher, argv, expected):
+    from apps.admin_console import server as admin_server
+
+    monkeypatch.delenv("ARTEMIS_SERVER_HOST", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_SIDECAR_WEB_PORT", raising=False)
+    bound: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        admin_server,
+        "run_ui_server",
+        lambda host, port: bound.append((host, port)),
+    )
+    monkeypatch.setattr(sys, "argv", ["artemis-cli", *argv])
 
     launcher.main()
 
-    assert received == [["--port", "8123"]]
+    assert bound == [expected]
 
 
 def test_everything_else_reaches_the_cli(monkeypatch, launcher):

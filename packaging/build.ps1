@@ -10,6 +10,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
 $OutputDir = if ($env:OUTPUT_DIR) { $env:OUTPUT_DIR } else { "build/nuitka" }
+$Jobs = if ($env:JOBS) { $env:JOBS } else { "8" }
 $Dist = Join-Path $Root (Join-Path $OutputDir "artemis_cli.dist")
 
 # Nuitka reuses an existing dist directory, which leaves data files from an
@@ -19,7 +20,7 @@ if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
 uv run python -m nuitka `
   --standalone `
   --assume-yes-for-downloads `
-  --jobs=8 `
+  "--jobs=$Jobs" `
   "--output-dir=$OutputDir" `
   --output-filename=artemis `
   --include-package=langchain `

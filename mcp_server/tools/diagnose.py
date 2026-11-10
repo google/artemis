@@ -68,9 +68,7 @@ _ENDPOINT_PROVIDERS = frozenset({"custom", "ollama", "vllm"})
 #: Metadata keys that carry credential material. The console UI needs them to
 #: prefill its settings form; an MCP caller is an LLM context and must never
 #: see them.
-_SECRET_METADATA_KEYS = frozenset(
-    {"raw_key", "key", "api_keys", "current_key"}
-)
+_SECRET_METADATA_KEYS = frozenset({"raw_key", "key", "api_keys", "current_key"})
 
 _ERROR_MARKERS = ("traceback", "error", "exception", "failed", "critical")
 

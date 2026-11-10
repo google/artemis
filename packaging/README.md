@@ -11,6 +11,13 @@ bash packaging/build.sh          # macOS
 pwsh packaging/build.ps1         # Windows
 ```
 
+`JOBS` sets how many C translation units Nuitka compiles at once, 8 by
+default. Lower it on a machine that runs out of memory while compiling:
+
+```bash
+JOBS=4 bash packaging/build.sh
+```
+
 Both scripts pass the same Nuitka include list, and
 `tests/unit/test_packaging_build_scripts.py` fails when they drift. Only the
 platform-specific parts differ:
@@ -104,6 +111,32 @@ configured machine keeps working when the bundle is replaced.
 
 The bundled `config/artemis.jsonc` is the default. A file in the user
 application directory overrides it, and CLI flags override both.
+
+Credentials come from the environment first, then from dotenv files, and the
+first file to define a key wins:
+
+1. `.env` beside the executable. Only a compiled bundle reads it, which is what
+   makes a bundle configurable by dropping one file next to it.
+2. `.env` in the user application directory, or the repository root in a source
+   checkout.
+3. The user application directory again, skipped when it is the same file as 2.
+
+A source checkout has no compiled executable, so it skips the first file and
+reads the other two exactly as before.
+
+## The daemon entry point
+
+The executable runs the admin console server under `--daemon`, which is how the
+Windows console starts Artemis:
+
+```bash
+./artemis-cli --daemon --port 8123
+```
+
+`--host` and `--port` are parsed by `apps/admin_console/server.py`, the same
+function `artemis ui` calls, and default to `127.0.0.1:8000`. The bundle carries
+no console script, so this flag is the only way to reach the server from the
+compiled binary.
 
 ## The kernel entry point
 
