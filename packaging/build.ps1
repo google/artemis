@@ -29,6 +29,7 @@ uv run python -m nuitka `
   --include-package=langchain_community `
   --include-package=langgraph `
   --include-package=mcp `
+  --enable-plugin=no-qt `
   --nofollow-import-to=pytest `
   --nofollow-import-to=_pytest `
   --include-package=artemis `
