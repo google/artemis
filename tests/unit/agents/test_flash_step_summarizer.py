@@ -16,6 +16,7 @@
 
 from unittest.mock import ANY, AsyncMock, Mock, call
 from uuid import uuid4
+from pydantic import SecretStr
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -832,8 +833,15 @@ def test_build_focus_context_drops_blank_fields_and_caps_reasoning_tail_intact()
     assert "Active sub-goal" not in block
 
 
-def test_flash_config_and_builder():
+def test_flash_config_and_builder(monkeypatch):
     """Verify Flash profile configuration model and SDK builder fluent API."""
+    # Building a config validates the provider credentials, which this test does
+    # not exercise; a placeholder keeps it runnable on a machine with no .env.
+    import importlib
+
+    settings_module = importlib.import_module("artemis.config.settings")
+    monkeypatch.setattr(settings_module.settings, "OPENAI_API_KEY", SecretStr("placeholder-key"))
+
     cfg = Builders.AgentConfig.with_flash_config(
         max_turns=25,
         explorer_mode="flash",
