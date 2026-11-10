@@ -35,11 +35,13 @@ Requirements on the build machine:
 - Xcode command line tools, for clang.
 - `uv`, which the script uses to resolve dependencies and to find the site
   packages directory.
-- About 10 GB of free disk while compiling.
+- About 5 GB of free disk: 3.8 GB of generated C and object files, then a
+  756 MB dist. A run that fills the disk stops with
+  `OSError: [Errno 28] No space left on device` while generating the C sources.
 
-A cold build compiles roughly 7500 C translation units and takes 45 to 60
-minutes. A rebuild after a Python source change reuses the generated C where it
-can and takes 14 to 20 minutes.
+A cold build compiles 7555 C translation units. On an 8-core Mac at `JOBS=4` it
+took 30 minutes. A rebuild after a Python source change reuses the generated C
+where it can and takes 14 to 20 minutes.
 
 Output:
 
