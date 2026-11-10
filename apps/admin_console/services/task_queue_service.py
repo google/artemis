@@ -41,6 +41,7 @@ from artemis.config import (
     TEST_OUTPUTS_DIR,
     WORKSPACE_ROOT,
 )
+from artemis.config.paths import is_frozen_bundle
 from artemis.runtime import (
     AdbEndpoint,
     AdbTarget,
@@ -54,6 +55,18 @@ from artemis.runtime import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _task_worker_prefix() -> list[str]:
+    """How to start a task worker in its own process.
+
+    A compiled bundle cannot be started with `-m`: Nuitka refuses to run itself
+    that way and exits with code 2 before the task begins. The bundle entry
+    point takes `--task` for exactly this case.
+    """
+    if is_frozen_bundle():
+        return [sys.executable, "--task"]
+    return [sys.executable, "-m", "artemis.main"]
 
 
 class TaskQueueService:
@@ -532,9 +545,7 @@ class TaskQueueService:
             env[DeviceExecutionLock.QUEUE_TICKET_ENV] = str(queue_ticket)
 
         cmd = [
-            sys.executable,
-            "-m",
-            "artemis.main",
+            *_task_worker_prefix(),
             goal,
             "--profile",
             profile,

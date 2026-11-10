@@ -1111,3 +1111,24 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
         )
         assert len(state.queue_items) == 1
         assert res2["enqueued_count"] == 0
+
+
+def test_frozen_bundle_starts_the_worker_without_dash_m(monkeypatch):
+    """Nuitka refuses to run its own binary with `-m`, so the bundle uses --task."""
+    import artemis.config.paths as paths
+    import apps.admin_console.services.task_queue_service as queue_module
+
+    monkeypatch.setattr(paths, "is_frozen_bundle", lambda: True)
+    monkeypatch.setattr(queue_module, "is_frozen_bundle", lambda: True)
+    monkeypatch.setattr(sys, "executable", "/opt/artemis/bin/artemis")
+
+    assert queue_module._task_worker_prefix() == ["/opt/artemis/bin/artemis", "--task"]
+
+
+def test_source_checkout_still_starts_the_worker_with_dash_m(monkeypatch):
+    import apps.admin_console.services.task_queue_service as queue_module
+
+    monkeypatch.setattr(queue_module, "is_frozen_bundle", lambda: False)
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+
+    assert queue_module._task_worker_prefix() == ["/usr/bin/python3", "-m", "artemis.main"]

@@ -76,7 +76,10 @@ def test_macos_links_the_public_name_instead_of_moving_the_binary():
 def test_windows_names_the_binary_artemis():
     from_powershell = POWERSHELL.read_text(encoding="utf-8")
 
-    assert "--output-filename=artemis " in from_powershell or "--output-filename=artemis`" in from_powershell
+    assert (
+        "--output-filename=artemis " in from_powershell
+        or "--output-filename=artemis`" in from_powershell
+    )
 
 
 def test_both_scripts_wipe_the_previous_dist_directory():
