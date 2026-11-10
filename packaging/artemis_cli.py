@@ -2,18 +2,28 @@
 
 ``--kernel`` makes the same binary act as the Jupyter kernel host that the image
 processing agent spawns, because a compiled executable cannot be started with
-``-m ipykernel_launcher``.
+``-m ipykernel_launcher``. ``--daemon`` makes it act as the admin console HTTP
+server, because the bundle carries no console script for that.
 """
 
 import sys
 
 
 def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1] == "--kernel":
-        sys.argv = [sys.argv[0], *sys.argv[2:]]
+    command = sys.argv[1:2]
+    rest = sys.argv[2:]
+
+    if command == ["--kernel"]:
+        sys.argv = [sys.argv[0], *rest]
         from ipykernel.kernelapp import IPKernelApp
 
         IPKernelApp.launch_instance()
+        return
+
+    if command == ["--daemon"]:
+        from apps.admin_console.server import main as run_admin_console
+
+        run_admin_console(rest)
         return
 
     from artemis.interfaces.cli.main import cli
