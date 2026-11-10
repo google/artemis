@@ -3,7 +3,8 @@
 #
 # Every runtime dependency is included, so the resulting directory runs on a
 # machine with no Python and no virtualenv. The bundle needs about 2 GB of free
-# disk while compiling.
+# disk while compiling. Post-processing and the release checks live in
+# packaging/stage.py, which both platforms share.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,12 +12,13 @@ cd "$ROOT"
 
 OUTPUT_DIR="${OUTPUT_DIR:-build/nuitka}"
 JOBS="${JOBS:-8}"
+DIST="$ROOT/$OUTPUT_DIR/artemis_cli.dist"
 
 # Nuitka reuses both directories. A dist kept from an earlier layout leaves
 # orphaned data beside the new files, and a build directory from an interrupted
 # run keeps partial C files that trip Nuitka's own assertion
 # (`assert not os.path.isfile(filename)`). Object files stay cached in ccache.
-rm -rf "$OUTPUT_DIR/artemis_cli.dist" "$OUTPUT_DIR/artemis_cli.build"
+rm -rf "$DIST" "$ROOT/$OUTPUT_DIR/artemis_cli.build"
 
 uv run python -m nuitka \
   --standalone \
@@ -30,6 +32,7 @@ uv run python -m nuitka \
   --include-package=langchain_community \
   --include-package=langgraph \
   --include-package=mcp \
+  --enable-plugin=no-qt \
   --nofollow-import-to=pytest \
   --nofollow-import-to=_pytest \
   --include-package=artemis \
@@ -51,19 +54,6 @@ uv run python -m nuitka \
   --include-package-data=third_party \
   packaging/artemis_cli.py
 
-DIST="$ROOT/$OUTPUT_DIR/artemis_cli.dist"
+uv run python packaging/stage.py "$DIST"
 
-rm -rf "$DIST/artemis/resources/showcase_ui"
-# An executable named `artemis` cannot sit beside the `artemis/` package-data
-# directory on a case-insensitive filesystem, and moving it into bin/ breaks
-# dyld's @executable_path. The real binary stays at the root and a symlink one
-# level down gives it the name: dyld canonicalises the link, so the libraries
-# are still found beside the real file.
-mkdir -p "$DIST/bin"
-ln -sf ../artemis-app "$DIST/bin/artemis"
-mkdir -p "$DIST/packages/artemis-accessibility-helper"
-cp packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk \
-   packages/artemis-accessibility-helper/helper_manifest.json \
-   "$DIST/packages/artemis-accessibility-helper/"
-uv run python packaging/collect_licenses.py "$DIST"
-echo "Staged the accessibility helper APK into $DIST; frontend assets removed"
+echo "Bundle ready at $DIST (entry: bin/artemis)"

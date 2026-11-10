@@ -1,9 +1,10 @@
 #Requires -Version 5.1
 # Builds the standalone Artemis bundle with Nuitka on Windows.
 #
-# A Windows bundle needs its own script because the Nuitka invocation, the
-# binary name and the staging steps differ, while the include list must stay
-# identical to build.sh so both bundles carry the same modules and data.
+# A Windows bundle needs its own script because the Nuitka invocation and the
+# binary name differ, while the include list must stay identical to build.sh so
+# both bundles carry the same modules and data. Post-processing and the release
+# checks live in packaging/stage.py, which both platforms share.
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
@@ -12,10 +13,12 @@ Set-Location $Root
 $OutputDir = if ($env:OUTPUT_DIR) { $env:OUTPUT_DIR } else { "build/nuitka" }
 $Jobs = if ($env:JOBS) { $env:JOBS } else { "8" }
 $Dist = Join-Path $Root (Join-Path $OutputDir "artemis_cli.dist")
-
-# Nuitka reuses an existing dist directory, which leaves data files from an
-# earlier build beside the new ones. The C build cache above it stays.
 $BuildDir = Join-Path $Root (Join-Path $OutputDir "artemis_cli.build")
+
+# Nuitka reuses both directories. A dist kept from an earlier layout leaves
+# orphaned data beside the new files, and a build directory from an interrupted
+# run keeps partial C files that trip Nuitka's own assertion
+# (`assert not os.path.isfile(filename)`).
 if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
 if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
 
@@ -55,15 +58,7 @@ uv run python -m nuitka `
 
 if ($LASTEXITCODE -ne 0) { throw "Nuitka build failed with exit code $LASTEXITCODE" }
 
-# The bundle runs on a machine with no browser session, so the Angular build is
-# not shipped; the server answers with its own "not built" page.
-Remove-Item -Recurse -Force (Join-Path $Dist "artemis/resources/showcase_ui") -ErrorAction SilentlyContinue
+uv run python packaging/stage.py $Dist
+if ($LASTEXITCODE -ne 0) { throw "Staging failed with exit code $LASTEXITCODE" }
 
-$HelperTarget = Join-Path $Dist "packages/artemis-accessibility-helper"
-New-Item -ItemType Directory -Force -Path $HelperTarget | Out-Null
-Copy-Item "packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk" $HelperTarget
-Copy-Item "packages/artemis-accessibility-helper/helper_manifest.json" $HelperTarget
-
-uv run python packaging/collect_licenses.py $Dist
-
-Write-Host "Bundle ready at $Dist (executable: artemis.exe at the dist root)"
+Write-Host "Bundle ready at $Dist (entry: bin\artemis.exe)"

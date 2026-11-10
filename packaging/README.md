@@ -24,10 +24,10 @@ platform-specific parts differ:
 
 | | macOS | Windows |
 | --- | --- | --- |
-| what you run | `bin/artemis` | `artemis.exe` |
-| real executable | `artemis-app` at the dist root, linked from `bin/artemis` | `artemis.exe` at the dist root |
-| why | a file named `artemis` cannot sit beside the `artemis/` package-data directory on a case-insensitive filesystem, and moving the binary into `bin/` breaks dyld's `@executable_path`. dyld canonicalises a symlink, so the link gets the name and the libraries stay beside the real file | an `.exe` name cannot collide with a directory |
-| staging | helper APK, then `collect_licenses.py` | same |
+| what you run | `bin/artemis` | `bin\artemis.exe` |
+| real executable | `artemis-app` at the dist root | `artemis.exe` at the dist root |
+| how the names relate | symlink, because a file named `artemis` cannot sit beside the `artemis/` package-data directory on a case-insensitive filesystem, and moving the binary into `bin/` breaks dyld's `@executable_path`. dyld canonicalises a symlink, so the link gets the name and the libraries stay beside the real file | hardlink, which costs no extra disk |
+| staging | `packaging/stage.py` | `packaging/stage.py` |
 
 Requirements on the build machine:
 
@@ -46,14 +46,28 @@ interrupted run keeps partial C files that trip a Nuitka assertion
 (`AssertionError: .../module.PIL.c`). Compiled objects survive in ccache, so
 the rebuild is still much faster than a cold one.
 
-A cold build compiles 7555 C translation units. On an 8-core Mac at `JOBS=4` it
+A cold build compiles 7555 C translation units.
+
+Compilation is the only step each script performs itself. Everything after it
+lives in `packaging/stage.py`, which both platforms run, so a staging change is
+written once instead of twice:
+
+```bash
+uv run python packaging/stage.py build/nuitka/artemis_cli.dist
+```
+
+It removes the frontend, installs the helper APK, links the public entry,
+collects licenses, writes `BUILD-INFO.txt`, and then checks the result. A
+bundle that misses a helper file, an OCR model, the config, the license texts,
+or a working `--version` fails the build instead of shipping. On an 8-core Mac at `JOBS=4` it
 took 30 minutes. A rebuild after a Python source change reuses the generated C
 where it can and takes 14 to 20 minutes.
 
 Output:
 
 ```
-build/nuitka/artemis_cli.dist/bin/artemis      the executable (symlink)
+build/nuitka/artemis_cli.dist/bin/artemis      the command to run (symlink; artemis.exe on Windows)
+build/nuitka/artemis_cli.dist/BUILD-INFO.txt   commit, Python, Nuitka and platform of this artifact
 build/nuitka/artemis_cli.dist/artemis/        package data: agent JSON and prompts
 build/nuitka/artemis_cli.dist/config/         the shipped default configuration
 build/nuitka/artemis_cli.dist/rapidocr/       ONNX models for local OCR

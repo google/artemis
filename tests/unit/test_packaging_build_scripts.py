@@ -21,6 +21,7 @@ BASH = REPO_ROOT / "packaging" / "build.sh"
 POWERSHELL = REPO_ROOT / "packaging" / "build.ps1"
 
 SHARED_FLAGS = (
+    "--enable-plugin",
     "--include-package",
     "--include-package-data",
     "--include-data-file",
@@ -53,9 +54,12 @@ def test_both_scripts_pass_the_same_nuitka_includes():
         assert from_bash[flag] == from_powershell[flag], flag
 
 
-def test_both_scripts_collect_the_licenses():
+def test_each_script_hands_the_dist_to_the_shared_stager():
     for script in (BASH, POWERSHELL):
-        assert "collect_licenses.py" in script.read_text(encoding="utf-8"), script
+        assert "packaging/stage.py" in script.read_text(encoding="utf-8"), script
+    stager = (REPO_ROOT / "packaging" / "stage.py").read_text(encoding="utf-8")
+    assert "collect_licenses" in stager
+    assert "showcase_ui" in stager
 
 
 def test_the_executable_file_stays_at_the_dist_root():
@@ -68,9 +72,11 @@ def test_the_executable_file_stays_at_the_dist_root():
 
 def test_macos_links_the_public_name_instead_of_moving_the_binary():
     from_bash = BASH.read_text(encoding="utf-8")
+    stager = (REPO_ROOT / "packaging" / "stage.py").read_text(encoding="utf-8")
 
     assert "--output-filename=artemis-app" in from_bash
-    assert 'ln -sf ../artemis-app "$DIST/bin/artemis"' in from_bash
+    assert "symlink_to" in stager
+    assert "mv " not in stager
 
 
 def test_windows_names_the_binary_artemis():
