@@ -20,7 +20,7 @@ uv run python -m nuitka \
   --assume-yes-for-downloads \
   --jobs=8 \
   --output-dir="$OUTPUT_DIR" \
-  --output-filename=artemis-bin \
+  --output-filename=artemis-cli \
   --include-package=langchain \
   --include-package=langchain_core \
   --include-package=langchain_openai \
@@ -51,10 +51,8 @@ uv run python -m nuitka \
 DIST="$ROOT/$OUTPUT_DIR/artemis_cli.dist"
 
 rm -rf "$DIST/artemis/resources/showcase_ui"
-mkdir -p "$DIST/bin"
-mv "$DIST/artemis-bin" "$DIST/bin/artemis"
 mkdir -p "$DIST/packages/artemis-accessibility-helper"
 cp packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk \
    packages/artemis-accessibility-helper/helper_manifest.json \
    "$DIST/packages/artemis-accessibility-helper/"
-echo "Staged the accessibility helper APK into $DIST; frontend assets removed; binary at $DIST/bin/artemis"
+echo "Staged the accessibility helper APK into $DIST; frontend assets removed"

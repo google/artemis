@@ -27,7 +27,7 @@ can and takes 14 to 20 minutes.
 Output:
 
 ```
-build/nuitka/artemis_cli.dist/bin/artemis     the executable
+build/nuitka/artemis_cli.dist/artemis-cli     the executable
 build/nuitka/artemis_cli.dist/artemis/        package data: agent JSON and prompts
 build/nuitka/artemis_cli.dist/config/         the shipped default configuration
 build/nuitka/artemis_cli.dist/rapidocr/       ONNX models for local OCR
@@ -46,7 +46,7 @@ a device at all.
 | `scrcpy` | only for screen recording and live stream | `ARTEMIS_SCRCPY_PATH`, then common install paths, then `PATH` |
 | `ffmpeg` | optional | The resolver checks `ARTEMIS_FFMPEG_PATH`, then common install paths, then `PATH`, and only then falls back to the copy `imageio_ffmpeg` ships, which the build includes under `imageio_ffmpeg/binaries` |
 
-`bin/artemis doctor` reports which of these it resolved and from where. On a
+`artemis-cli doctor` reports which of these it resolved and from where. On a
 machine that already has ffmpeg installed, the system copy is used and the
 bundled one stays unused; it exists for machines that have none.
 
