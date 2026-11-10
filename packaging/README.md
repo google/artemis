@@ -1,7 +1,7 @@
 # Building the standalone bundle
 
 The bundle runs Artemis on a machine with no Python and no virtualenv. It is
-built with Nuitka and lives at `build/nuitka/launcher.dist` after a successful
+built with Nuitka and lives at `build/nuitka/artemis_cli.dist` after a successful
 run.
 
 ## Build
@@ -27,12 +27,12 @@ can and takes 14 to 20 minutes.
 Output:
 
 ```
-build/nuitka/launcher.dist/artemis-cli     the executable
-build/nuitka/launcher.dist/artemis/        package data: agent JSON and prompts
-build/nuitka/launcher.dist/config/         the shipped default configuration
-build/nuitka/launcher.dist/rapidocr/       ONNX models for local OCR
-build/nuitka/launcher.dist/imageio_ffmpeg/  ffmpeg for machines without one
-build/nuitka/launcher.dist/packages/       the accessibility helper APK
+build/nuitka/artemis_cli.dist/bin/artemis     the executable
+build/nuitka/artemis_cli.dist/artemis/        package data: agent JSON and prompts
+build/nuitka/artemis_cli.dist/config/         the shipped default configuration
+build/nuitka/artemis_cli.dist/rapidocr/       ONNX models for local OCR
+build/nuitka/artemis_cli.dist/imageio_ffmpeg/  ffmpeg for machines without one
+build/nuitka/artemis_cli.dist/packages/       the accessibility helper APK
 ```
 
 ## What the bundle needs from the target machine
@@ -46,7 +46,7 @@ a device at all.
 | `scrcpy` | only for screen recording and live stream | `ARTEMIS_SCRCPY_PATH`, then common install paths, then `PATH` |
 | `ffmpeg` | optional | The resolver checks `ARTEMIS_FFMPEG_PATH`, then common install paths, then `PATH`, and only then falls back to the copy `imageio_ffmpeg` ships, which the build includes under `imageio_ffmpeg/binaries` |
 
-`artemis-cli doctor` reports which of these it resolved and from where. On a
+`bin/artemis doctor` reports which of these it resolved and from where. On a
 machine that already has ffmpeg installed, the system copy is used and the
 bundled one stays unused; it exists for machines that have none.
 

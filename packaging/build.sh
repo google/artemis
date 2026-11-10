@@ -13,14 +13,14 @@ OUTPUT_DIR="${OUTPUT_DIR:-build/nuitka}"
 
 # Nuitka reuses an existing dist directory, which leaves data files from an
 # earlier build beside the new ones. The C build cache above it stays.
-rm -rf "$OUTPUT_DIR/launcher.dist"
+rm -rf "$OUTPUT_DIR/artemis_cli.dist"
 
 uv run python -m nuitka \
   --standalone \
   --assume-yes-for-downloads \
   --jobs=8 \
   --output-dir="$OUTPUT_DIR" \
-  --output-filename=artemis-cli \
+  --output-filename=artemis-bin \
   --include-package=langchain \
   --include-package=langchain_core \
   --include-package=langchain_openai \
@@ -46,13 +46,15 @@ uv run python -m nuitka \
   --include-data-file=apps/admin_console/index.html=apps/admin_console/index.html \
   --include-data-file=config/artemis.jsonc=config/artemis.jsonc \
   --include-package-data=third_party \
-  packaging/launcher.py
+  packaging/artemis_cli.py
 
-DIST="$ROOT/$OUTPUT_DIR/launcher.dist"
+DIST="$ROOT/$OUTPUT_DIR/artemis_cli.dist"
 
 rm -rf "$DIST/artemis/resources/showcase_ui"
+mkdir -p "$DIST/bin"
+mv "$DIST/artemis-bin" "$DIST/bin/artemis"
 mkdir -p "$DIST/packages/artemis-accessibility-helper"
 cp packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk \
    packages/artemis-accessibility-helper/helper_manifest.json \
    "$DIST/packages/artemis-accessibility-helper/"
-echo "Staged the accessibility helper APK into $DIST; frontend assets removed"
+echo "Staged the accessibility helper APK into $DIST; frontend assets removed; binary at $DIST/bin/artemis"
