@@ -255,6 +255,56 @@ def _inject_mutual_occlusion_warnings(
     return new_lines
 
 
+def _element_only_entries(
+    fused_xml: list[dict[str, Any]],
+    emitted_bounds: list[tuple[int, tuple[int, int, int, int]]],
+    normalize_bounds: Any,
+) -> list[dict[str, Any]]:
+    """Clickable nodes that carry no readable text still need an index.
+
+    The model taps an index, so a control without one is unreachable: it can only
+    guess a pixel from the screenshot. A dock icon is 48 pixels wide and a guess
+    lands 54 pixels to its right, on a different control. ``emitted_bounds`` holds
+    the entries listed before this pass; a control whose centre sits inside one of
+    them is already addressed through it and stays out.
+    """
+    entries: list[dict[str, Any]] = []
+    for node in fused_xml:
+        clickable = node.get("clickable")
+        if not (clickable is True or str(clickable).lower() == "true"):
+            continue
+        if str(node.get("text") or node.get("content-desc") or "").strip():
+            continue
+        if str(node.get("hint") or "").strip() or str(node.get("error") or "").strip():
+            continue
+        bounds = parse_bounds(node.get("bounds"))
+        if bounds is None:
+            continue
+        left, top, right, bottom = bounds
+        if right <= left or bottom <= top:
+            continue
+        cx, cy = get_center_coordinates(left, top, right, bottom)
+        if any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for _, b in emitted_bounds):
+            continue
+        resource_id = str(node.get("resource-id") or "").rsplit("/", 1)[-1]
+        short_class = str(node.get("class") or "").rsplit(".", 1)[-1]
+        description = f"Element: '{short_class}'"
+        if resource_id:
+            description += f" id={resource_id}"
+        description += f" | Bounds: {normalize_bounds(left, top, right, bottom)}"
+        entries.append(
+            {
+                "description": description,
+                "text": resource_id or short_class,
+                "center": [cx, cy],
+                "bounds": [left, top, right, bottom],
+                "class": node.get("class"),
+                "resource_id": node.get("resource-id"),
+            }
+        )
+    return entries
+
+
 def format_minimal_list_with_points(
     fused_xml: list[dict[str, Any]], width: int = 1080, height: int = 2400
 ) -> tuple[str, list[list[int]], list[str]]:
@@ -312,20 +362,30 @@ def format_minimal_list_with_points(
                     idx += 1
                     registered = True
 
-        if not registered and text.strip() and bounds:
+        state = str(node.get("state-description") or "").strip()
+        shown = text.strip() or state
+        if not registered and shown and bounds:
             left, top, right, bottom = bounds
             cx, cy = get_center_coordinates(left, top, right, bottom)
-            if is_duplicate(text, cx, cy):
+            if is_duplicate(shown, cx, cy):
                 continue
 
             norm_bounds = normalize_bounds(left, top, right, bottom)
-            lines.append(f"[{idx}] Text: '{text.strip()}' | Bounds: {norm_bounds}")
+            kind = "Text" if text.strip() else "State"
+            lines.append(f"[{idx}] {kind}: '{shown}' | Bounds: {norm_bounds}")
             items_bounds.append((idx, (left, top, right, bottom)))
 
             points.append([cx, cy])
             labels.append(str(idx))
-            added_items.append((text.strip(), cx, cy))
+            added_items.append((shown, cx, cy))
             idx += 1
+
+    for entry in _element_only_entries(fused_xml, items_bounds, normalize_bounds):
+        lines.append(f"[{idx}] {entry['description']}")
+        items_bounds.append((idx, tuple(entry["bounds"])))
+        points.append(entry["center"])
+        labels.append(str(idx))
+        idx += 1
 
     lines = _inject_mutual_occlusion_warnings(lines, items_bounds)
     return "\n".join(lines), points, labels
@@ -403,7 +463,8 @@ def format_minimal_list_with_elements(
         # accessibility helper's dump and are exactly what the agent needs to see.
         hint = str(node.get("hint") or "").strip()
         error = str(node.get("error") or "").strip()
-        shown = text.strip() or hint
+        state = str(node.get("state-description") or "").strip()
+        shown = text.strip() or hint or state
         if not registered and shown and bounds:
             left, top, right, bottom = bounds
             cx, cy = get_center_coordinates(left, top, right, bottom)
@@ -411,7 +472,7 @@ def format_minimal_list_with_elements(
                 continue
 
             norm_bounds = normalize_bounds(left, top, right, bottom)
-            kind = "Text" if text.strip() else "Hint"
+            kind = "Text" if text.strip() else ("Hint" if hint else "State")
             line = f"[{idx}] {kind}: '{shown}' | Bounds: {norm_bounds}"
             if error:
                 line += f" | Error: '{error}'"
@@ -435,6 +496,24 @@ def format_minimal_list_with_elements(
             labels.append(str(idx))
             added_items.append((shown, cx, cy))
             idx += 1
+
+    for entry in _element_only_entries(fused_xml, items_bounds, normalize_bounds):
+        lines.append(f"[{idx}] {entry['description']}")
+        items_bounds.append((idx, tuple(entry["bounds"])))
+        elements.append(
+            {
+                "index": idx,
+                "center": entry["center"],
+                "text": entry["text"],
+                "bounds": entry["bounds"],
+                "class": entry["class"],
+                "resource_id": entry["resource_id"],
+                "is_ocr": False,
+                "is_element": True,
+            }
+        )
+        labels.append(str(idx))
+        idx += 1
 
     lines = _inject_mutual_occlusion_warnings(lines, items_bounds)
     return "\n".join(lines), elements, labels

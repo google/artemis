@@ -383,7 +383,7 @@ def _make_runner(mock_context, responses, max_turns=None):
     runner.calls = []
     pending = list(responses)
 
-    async def _invoke(llm, tools, messages):
+    async def _invoke(llm, tools, messages, temperature=None):
         runner.calls.append({"tools": list(tools), "messages": list(messages)})
         return pending.pop(0)
 

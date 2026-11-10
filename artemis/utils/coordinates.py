@@ -193,17 +193,20 @@ def resolve_scrollable_container_bounds(
                 node.get("scrollable") is True or str(node.get("scrollable", "")).lower() == "true"
             )
             cls_name = str(node.get("class") or node.get("className") or "").lower()
+            is_slider = any(kw in cls_name for kw in ("seekbar", "slider"))
             if not is_scroll:
                 for kw in ("scrollview", "recyclerview", "listview", "webview", "viewpager"):
                     if kw in cls_name:
                         is_scroll = True
                         break
-            if is_scroll:
+            if is_scroll or is_slider:
                 b = _extract_bounds(node.get("bounds"))
                 if b and len(b) == 4:
                     w = b[2] - b[0]
                     h = b[3] - b[1]
-                    if w >= int(screen_width * 0.25) and h >= int(screen_height * 0.15):
+                    if is_slider or (
+                        w >= int(screen_width * 0.25) and h >= int(screen_height * 0.15)
+                    ):
                         candidates.append(b)
             children = node.get("children")
             if isinstance(children, list) and children:
@@ -217,7 +220,15 @@ def resolve_scrollable_container_bounds(
             cls_name = str(elem.get("class") or elem.get("className") or "").lower()
             if any(
                 kw in cls_name
-                for kw in ("scrollview", "recyclerview", "listview", "webview", "viewpager")
+                for kw in (
+                    "scrollview",
+                    "recyclerview",
+                    "listview",
+                    "webview",
+                    "viewpager",
+                    "seekbar",
+                    "slider",
+                )
             ):
                 if b and len(b) == 4:
                     candidates.append(b)

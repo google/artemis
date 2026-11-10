@@ -454,7 +454,7 @@ async def test_visual_lens_receives_the_recorded_action_shape(mock_context):
     args = {"action": "launch", "app_name": "Settings"}
 
     await runner._execute_and_record_action(
-        "manage_app", args, "tc", Mock(), [], "thought", {}, b"pre", "xml", 0, _TurnRecord()
+        "manage_app", args, "tc", Mock(), [], "thought", {}, b"pre", "xml", None, 0, _TurnRecord()
     )
 
     runner.summarizer.dispatch.assert_called_once()

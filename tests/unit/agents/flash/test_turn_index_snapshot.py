@@ -171,7 +171,7 @@ async def test_two_index_clicks_in_one_turn_resolve_against_the_original_list(mo
     messages: list = []
     turn = _TurnRecord()
 
-    final, _, xml_list, _ = await runner._process_tool_calls(
+    final, _, xml_list, _, _ = await runner._process_tool_calls(
         [_click(3, "tc-1"), _click(5, "tc-2")],
         state,
         messages,
@@ -179,6 +179,7 @@ async def test_two_index_clicks_in_one_turn_resolve_against_the_original_list(mo
         {},
         b"pre",
         "xml",
+        None,
         0,
         turn,
     )
@@ -219,6 +220,7 @@ async def test_second_index_beyond_the_refreshed_list_is_still_valid(mock_contex
         {},
         b"pre",
         "xml",
+        None,
         0,
         _TurnRecord(),
     )
@@ -258,6 +260,7 @@ async def test_explorer_candidates_registered_before_an_action_join_the_snapshot
         {},
         b"pre",
         "xml",
+        None,
         0,
         _TurnRecord(),
     )
@@ -294,6 +297,7 @@ async def test_explorer_after_an_action_moves_the_snapshot_to_the_list_it_number
         {},
         b"pre",
         "xml",
+        None,
         0,
         _TurnRecord(),
     )

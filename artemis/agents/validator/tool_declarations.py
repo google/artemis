@@ -53,11 +53,12 @@ class ToolExecutionResult(BaseModel):
 
     tool_call_id: str
     tool_name: str
-    status: Literal["success", "error", "cancelled"]
+    status: Literal["success", "error", "cancelled", "uncertain"]
     text_summary: str
     screenshot_bytes: bytes | None = None
     screenshot_path: str | None = None
     ui_elements_text: str | None = None
+    ui_elements_diff: str | None = None
     raw_result: Any = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -252,6 +253,15 @@ REPORT_TASK_STATUS_TOOL = ToolDeclaration(
             "explanation": {
                 "type": "string",
                 "description": "Provide the final explanation or summary of the task execution.",
+            },
+            "evidence": {
+                "type": "string",
+                "description": (
+                    "Required when status is 'completed' and the task names a value. Copy "
+                    "the line from the current UI element list that shows that value, such "
+                    "as \"State: '100%'\". A report whose evidence is missing, is not in the "
+                    "list, or shows a value short of the target is rejected."
+                ),
             },
         },
         "required": ["status", "explanation"],

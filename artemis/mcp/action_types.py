@@ -81,6 +81,7 @@ class ObserveResult(BaseModel):
     height: int | None = None
     elements_text: str | None = None
     elements: list[dict[str, Any]] = Field(default_factory=list)
+    diff_text: str | None = None
     hierarchy_ok: bool = True
     """False when the screenshot succeeded but the UI hierarchy parse failed; callers
     must then keep their previous element index rather than clobbering it."""

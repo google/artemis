@@ -39,6 +39,7 @@ active window until its turn is chunked, whose user lines then carry it on.
 
 import asyncio
 import base64
+from collections import deque
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
@@ -61,6 +62,7 @@ from artemis.agents.validator.tool_declarations import (
     LIST_NOTES_TOOL,
     READ_NOTE_TOOL,
     REPORT_TASK_STATUS_TOOL,
+    ToolExecutionResult,
     VALIDATOR_TOOLS_DECLARATION,
     capture_screenshot_and_parse_ui,
     prune_intermediate_screenshots,
@@ -80,6 +82,7 @@ from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.mcp.action_executor import McpActionExecutor
 from artemis.mcp.observation import observe
 from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger, mark_ephemeral
+from artemis.mcp.screen_diff import render_diff_block
 from artemis.services.llm import (
     acomplete,
     get_llm,
@@ -102,6 +105,17 @@ _NO_TOOL_CALL_NOTICE = (
 )
 
 _FINAL_TURN_WARNING = "[WARNING] This is your final turn; only 'report_task_status' is available."
+
+_REPEAT_OBSERVE = 2
+_REPEAT_BLOCK = 3
+_REPEAT_STOP = 6
+_REPEAT_TEMPERATURE = 0.7
+_REPEAT_WINDOW = 12
+
+_GOAL_PERCENT = re.compile(r"(\d{1,3})\s*%")
+_GOAL_MAX_WORDS = ("最大", "最高", "maximum", "max")
+_GOAL_MIN_WORDS = ("最小", "最低", "minimum", "min")
+_PERCENT_IN_LINE = re.compile(r"(\d{1,3})\s*%")
 
 
 @dataclass
@@ -336,6 +350,7 @@ class FlashRunner:
         turns: int,
         img_bytes,
         xml_list,
+        xml_diff: str | None = None,
         *,
         injected: UserGuidance | None = None,
         notices: list[str] | None = None,
@@ -365,9 +380,13 @@ class FlashRunner:
             blocks.append(
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             )
-        if xml_list:
-            blocks.append({"type": "text", "text": f"{PRO_UI_LIST_MARKER}\n{xml_list}"})
         ephemeral: list[int] = []
+        if xml_list:
+            diff_block = render_diff_block(xml_diff)
+            if diff_block is not None:
+                ephemeral.append(len(blocks))
+                blocks.append({"type": "text", "text": diff_block})
+            blocks.append({"type": "text", "text": f"{PRO_UI_LIST_MARKER}\n{xml_list}"})
         # (text, ephemeral) in tail order.
         per_turn: list[tuple[str, bool]] = [(text, True) for text in (notices or [])]
         if injected:
@@ -533,6 +552,59 @@ class FlashRunner:
     # Per-tool-call helpers (act / record / report)
     # ------------------------------------------------------------------
 
+    def _report_evidence_problem(self, args: dict, xml_list: str | None) -> str | None:
+        """Rejects a completion report that does not quote the value it claims.
+
+        Measured on the brightness task: the model swiped once, stopped at 77% of
+        the maximum, and reported completion, three times out of six runs. The
+        check compares the quoted line with the observation, so it needs no model
+        of what the goal means beyond the number it names.
+        """
+        if args.get("status") != "completed":
+            return None
+        goal = self.goal.lower()
+        target = _GOAL_PERCENT.search(goal)
+        wants_max = any(word in goal for word in _GOAL_MAX_WORDS)
+        wants_min = any(word in goal for word in _GOAL_MIN_WORDS)
+        if not (target or wants_max or wants_min):
+            return None
+        observation = xml_list or ""
+        evidence = str(args.get("evidence") or "").strip()
+        if not evidence:
+            return (
+                "Not accepted: this task names a value, so a completed report must quote the "
+                "value in 'evidence', copied from the current UI element list. Report again "
+                "with the value you see, or keep working if it does not reach the target."
+            )
+        if evidence not in observation:
+            return (
+                "Not accepted: the text you quoted does not appear in the current UI element "
+                "list, so it is not what the screen shows. Quote a line from the list as "
+                "'evidence', or keep working."
+            )
+        seen = _PERCENT_IN_LINE.search(evidence)
+        if seen is None:
+            return None
+        shown = int(seen.group(1))
+        if target is not None:
+            want = int(target.group(1))
+            if abs(shown - want) > 3:
+                return (
+                    f"Not accepted: the goal asks for {want}% and the screen shows {shown}%. "
+                    f"Keep working, and report only once the value is within 3 of {want}."
+                )
+        if wants_max and shown < 95:
+            return (
+                f"Not accepted: the goal asks for the maximum and the screen shows {shown}%. "
+                "Keep working until it is at least 95%."
+            )
+        if wants_min and shown > 5:
+            return (
+                f"Not accepted: the goal asks for the minimum and the screen shows {shown}%. "
+                "Keep working until it is at most 5%."
+            )
+        return None
+
     async def _finalize_task_report(
         self,
         name: str,
@@ -546,6 +618,18 @@ class FlashRunner:
         native_text: str | None = None,
     ) -> dict:
         """Records the final step, acknowledges the tool call, and flushes."""
+        problem = self._report_evidence_problem(args, xml_list)
+        if problem is not None and getattr(self, "_report_refusals", 0) < 2:
+            self._report_refusals = getattr(self, "_report_refusals", 0) + 1
+            messages.append(
+                ToolMessage(
+                    tool_call_id=tc_id,
+                    name=name,
+                    content=problem,
+                    status="error",
+                )
+            )
+            return None
         final_report = args
         if self.ctx.data_engine:
             try:
@@ -600,6 +684,8 @@ class FlashRunner:
         post_img_bytes = screenshot_bytes
         if not exec_result.ui_elements_text:
             exec_result.ui_elements_text = obs.elements_text
+        if exec_result.ui_elements_diff is None:
+            exec_result.ui_elements_diff = obs.diff_text
         if not exec_result.screenshot_path and obs.screenshot_path:
             exec_result.screenshot_path = obs.screenshot_path
         if state is not None:
@@ -750,6 +836,80 @@ class FlashRunner:
         except Exception as e:
             logger.warning(f"History chunker step stamp failed: {e}")
 
+    def _repeat_row_key(self, name: str, args: dict) -> tuple[object, ...]:
+        coords = args.get("coordinates") or args.get("target")
+        if isinstance(coords, (list, tuple)) and len(coords) == 2:
+            try:
+                return (name, "row", int(float(coords[1]) // 20))
+            except (TypeError, ValueError):
+                return (name, str(coords))
+        return (name, str(args.get("target")), str(args.get("direction")))
+
+    def _repetition_verdict(
+        self, name: str, args: dict, action_names: object
+    ) -> tuple[str | None, str | None, bool]:
+        """Runs the doom-loop ladder: observe at 2, block at 3, stop at 6.
+
+        OpenRouter's doom-loop detection and the H3 entropy-driven curiosity
+        pattern both break a stalled loop with a ladder rather than one
+        threshold: a cue before the block, and a stop so a model that ignores
+        both cannot spend the whole step budget on one control. Warning alone
+        did not work here: runs of 40 and 53 identical actions still happened.
+
+        The count is taken over a window of recent actions, not against the
+        previous one only, because a model that alternates two actions (a click
+        then a swipe, then the click again) resets a consecutive count on every
+        step and loops forever (measured: 32 steps, no intervention).
+        """
+        key = self._repeat_row_key(name, args)
+        window = getattr(self, "_repeat_window", None)
+        if window is None:
+            window = deque(maxlen=_REPEAT_WINDOW)
+            self._repeat_window = window
+        window.append(key)
+        self._repeat_key = key
+        self._repeat_count = window.count(key)
+        if name not in action_names:
+            return None, None, False
+        repeats = self._repeat_count
+        if repeats >= _REPEAT_STOP:
+            return None, None, True
+        if repeats >= _REPEAT_BLOCK:
+            return (
+                f"Not executed: this is identical action number {repeats} in the same place "
+                "and the control's value has not changed, so repeating it cannot move the "
+                "value. Read the value in the current observation. If it already reaches what "
+                'the goal asks for, call report_task_status(status="completed"). If it does '
+                "not, change the action: different coordinates, a different tool, or another "
+                "route. Reporting completion while the value is short is a wrong answer.",
+                None,
+                False,
+            )
+        if repeats >= _REPEAT_OBSERVE:
+            return (
+                None,
+                "You have now done this same action twice in the same place and the value "
+                "did not change. Do not do it a third time. Read the value in the observation. "
+                "If it reaches what the goal asks for, call "
+                'report_task_status(status="completed"). Otherwise change the coordinates, '
+                "change the tool, or take another route. Reporting completion while the value "
+                "is short is a wrong answer.",
+                False,
+            )
+        return None, None, False
+
+    def _sampling_temperature(self) -> float | None:
+        """Raises the temperature only while the loop is stalled.
+
+        H3 pairs its detection with a change in sampling, and a fixed
+        temperature of 0.0 replays the same action for the same observation.
+        Every other step wants the most likely coordinates, so the baseline
+        stays 0.0 and the escalated value lasts only until the model changes
+        the action.
+        """
+        escalated = getattr(self, "_repeat_count", 0) >= _REPEAT_BLOCK
+        return _REPEAT_TEMPERATURE if escalated else None
+
     async def _execute_and_record_action(
         self,
         name: str,
@@ -761,6 +921,7 @@ class FlashRunner:
         step_token_usage: dict,
         pre_screenshot_bytes,
         xml_list,
+        xml_diff: str | None,
         action_sequence: int,
         turn: _TurnRecord,
         injected: str | None = None,
@@ -774,16 +935,39 @@ class FlashRunner:
         ``index_elements`` is the turn's element snapshot index targets
         resolve against (see :meth:`_process_tool_calls`); ``None`` resolves
         against the state's current list. Returns the (possibly updated)
-        pre_screenshot_bytes, xml_list, and action_sequence for the next
-        iteration.
+        pre_screenshot_bytes, xml_list, xml_diff, and action_sequence for the
+        next iteration.
         """
         # Dynamic dispatch set: manifest device actions plus any backend
         # extension tools, so extension steps are recorded like actions.
         action_names = self.executor.action_tool_names
         try:
-            exec_result = await self.executor.execute(
-                name, args, tc_id, state, index_elements=index_elements
-            )
+            refuse, observe, stop = self._repetition_verdict(name, args, action_names)
+            if stop:
+                self._repeat_stop_reason = (
+                    f"Stopped after {self._repeat_count} identical actions in one place: the "
+                    "control's value never changed and the model repeated the action instead "
+                    "of changing it."
+                )
+                exec_result = ToolExecutionResult(
+                    tool_call_id=tc_id,
+                    tool_name=name,
+                    status="error",
+                    text_summary=self._repeat_stop_reason,
+                )
+            elif refuse is not None:
+                exec_result = ToolExecutionResult(
+                    tool_call_id=tc_id,
+                    tool_name=name,
+                    status="error",
+                    text_summary=refuse,
+                )
+            else:
+                exec_result = await self.executor.execute(
+                    name, args, tc_id, state, index_elements=index_elements
+                )
+                if observe is not None:
+                    exec_result.text_summary = f"{exec_result.text_summary or ''}\n{observe}"
 
             post_img_bytes = await self._capture_post_screenshot(
                 exec_result, name, action_names, state
@@ -842,6 +1026,8 @@ class FlashRunner:
                 pre_screenshot_bytes = post_img_bytes
             if exec_result.ui_elements_text:
                 xml_list = exec_result.ui_elements_text
+            if exec_result.ui_elements_diff is not None:
+                xml_diff = exec_result.ui_elements_diff
 
             # Helper tools may return multimodal blocks (a step screenshot);
             # device actions always report text — their post screenshot is the
@@ -872,12 +1058,22 @@ class FlashRunner:
                     status="error",
                 )
             )
-        return pre_screenshot_bytes, xml_list, action_sequence
+        return pre_screenshot_bytes, xml_list, xml_diff, action_sequence
 
-    async def _invoke_model(self, llm, current_tools: list, messages: list[BaseMessage]):
+    async def _invoke_model(
+        self,
+        llm,
+        current_tools: list,
+        messages: list[BaseMessage],
+        temperature: float | None = None,
+    ):
         """Binds the active tools and invokes the model through the LLM gateway."""
-        # Bind active tools
-        bound_llm = llm.bind_tools(current_tools)
+        active_llm = (
+            get_llm(self.ctx, name="operator", temperature=temperature)
+            if temperature is not None
+            else llm
+        )
+        bound_llm = active_llm.bind_tools(current_tools)
 
         # Invoke Model. Streaming, live-token UI deltas, classified
         # retries, and pause/resume are all owned by the LLM gateway
@@ -895,6 +1091,7 @@ class FlashRunner:
         step_token_usage: dict,
         pre_screenshot_bytes,
         xml_list,
+        xml_diff: str | None,
         action_sequence: int,
         turn: _TurnRecord,
         injected: str | None = None,
@@ -920,7 +1117,7 @@ class FlashRunner:
         resolve correctly, at the cost of the pre-action numbering (mixing
         the two in one turn is the model's error, not a supported case).
 
-        Returns (final_report, pre_screenshot_bytes, xml_list, action_sequence);
+        Returns (final_report, pre_screenshot_bytes, xml_list, xml_diff, action_sequence);
         final_report is non-None only when 'report_task_status' was called.
         """
         action_names = self.executor.action_tool_names
@@ -943,11 +1140,18 @@ class FlashRunner:
                     messages,
                     native_text=native_text,
                 )
-                return final_report, pre_screenshot_bytes, xml_list, action_sequence
+                if final_report is None:
+                    continue
+                return final_report, pre_screenshot_bytes, xml_list, xml_diff, action_sequence
 
             elements_before = getattr(state, "indexed_elements", None)
             before_len = len(elements_before) if isinstance(elements_before, list) else 0
-            pre_screenshot_bytes, xml_list, action_sequence = await self._execute_and_record_action(
+            (
+                pre_screenshot_bytes,
+                xml_list,
+                xml_diff,
+                action_sequence,
+            ) = await self._execute_and_record_action(
                 name,
                 args,
                 tc_id,
@@ -957,15 +1161,24 @@ class FlashRunner:
                 step_token_usage,
                 pre_screenshot_bytes,
                 xml_list,
+                xml_diff,
                 action_sequence,
                 turn,
                 injected=injected,
                 native_text=native_text,
                 index_elements=index_elements,
             )
+            if getattr(self, "_repeat_stop_reason", None):
+                return (
+                    {"status": "failed", "explanation": self._repeat_stop_reason},
+                    pre_screenshot_bytes,
+                    xml_list,
+                    xml_diff,
+                    action_sequence,
+                )
             if name not in action_names:
                 index_elements = self._extend_index_snapshot(state, index_elements, before_len)
-        return None, pre_screenshot_bytes, xml_list, action_sequence
+        return None, pre_screenshot_bytes, xml_list, xml_diff, action_sequence
 
     @staticmethod
     def _turn_index_snapshot(state: State) -> list[dict]:
@@ -1047,6 +1260,7 @@ class FlashRunner:
         final_report = None
         current_pre_screenshot_bytes = img_bytes
         current_xml_list = xml_list
+        current_xml_diff: str | None = None
         previous_turn: _TurnRecord | None = None
         pending_notices: list[str] = []
 
@@ -1074,6 +1288,7 @@ class FlashRunner:
                 turns,
                 current_pre_screenshot_bytes,
                 current_xml_list,
+                current_xml_diff,
                 injected=injected_guidance,
                 notices=pending_notices,
                 is_final=is_final,
@@ -1088,7 +1303,9 @@ class FlashRunner:
             turn_base = len(messages) - 1
             current_tools = report_only_tools if is_final else tools_declaration
 
-            response = await self._invoke_model(llm, current_tools, messages)
+            response = await self._invoke_model(
+                llm, current_tools, messages, temperature=self._sampling_temperature()
+            )
 
             if response is None:
                 break
@@ -1135,6 +1352,7 @@ class FlashRunner:
                 final_report_from_calls,
                 current_pre_screenshot_bytes,
                 current_xml_list,
+                current_xml_diff,
                 action_sequence,
             ) = await self._process_tool_calls(
                 tool_calls,
@@ -1144,6 +1362,7 @@ class FlashRunner:
                 step_token_usage,
                 current_pre_screenshot_bytes,
                 current_xml_list,
+                current_xml_diff,
                 action_sequence,
                 turn,
                 injected=injected,

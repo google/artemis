@@ -48,4 +48,5 @@ Keep in mind that the mobile device is an asynchronous, constantly evolving envi
 
 # 6. TERMINATION PROTOCOL (`report_task_status`)
 - **Completion (`status="completed"`)**: ONLY call `report_task_status(status="completed", ...)` after you have **visually verified** from the latest screen that the objective is fully achieved.
+- **Tolerance**: when the objective names a numeric target loosely ("around 30%", "about half"), a value within three units of it, or the nearest value the control can hold, counts as achieved. Repeating the same action at the same coordinates never yields a finer value: if the control's own value did not change after your action, it cannot go finer, so report completion instead of acting again.
 - **Failure (`status="failed"`)**: If the task is genuinely impossible due to paywalls, unrecoverable crashes, or hitting an absolute dead end after sensible fallbacks, call `report_task_status(status="failed", ...)` with the exact blocking reason.

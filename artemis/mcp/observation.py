@@ -28,6 +28,7 @@ from artemis.config import get_temp_dir
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.mcp.action_types import ActionCode, ObserveResult
+from artemis.mcp.screen_diff import ScreenTracker
 from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
 from artemis.utils.visualization import format_minimal_list_with_elements
 from third_party.mobile_use.utils.logger import get_logger
@@ -35,6 +36,18 @@ from third_party.mobile_use.utils.logger import get_logger
 logger = get_logger(__name__)
 
 __all__ = ["observe"]
+
+
+def _screen_tracker(ctx: ArtemisContext) -> ScreenTracker | None:
+    existing = getattr(ctx, "screen_diff_tracker", None)
+    if isinstance(existing, ScreenTracker):
+        return existing
+    tracker = ScreenTracker()
+    try:
+        setattr(ctx, "screen_diff_tracker", tracker)
+    except AttributeError:
+        return None
+    return tracker
 
 
 async def observe(
@@ -78,6 +91,7 @@ async def observe(
     ocr_results = ocr_results or []
     elements: list[dict] = []
     hierarchy_ok = True
+    diff_text: str | None = None
     width = height = None
     try:
         xml_hierarchy = device_data.elements
@@ -93,6 +107,12 @@ async def observe(
         logger.error(f"Failed to fetch or fuse UI hierarchy: {e}")
         minimal_list_str = "Not available due to hierarchy error."
         hierarchy_ok = False
+
+    if hierarchy_ok:
+        tracker = _screen_tracker(ctx)
+        if tracker is not None and isinstance(width, int) and isinstance(height, int):
+            diff = tracker.observe_frame(elements, minimal_list_str.split("\n"), width, height)
+            diff_text = None if diff.is_full else "\n".join(diff.lines)
 
     screenshot_path = None
     if ctx.data_engine:
@@ -127,6 +147,7 @@ async def observe(
             height=height,
             elements_text=minimal_list_str,
             elements=elements,
+            diff_text=diff_text,
             hierarchy_ok=hierarchy_ok,
         ),
         screenshot_bytes,

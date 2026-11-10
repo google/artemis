@@ -1383,6 +1383,18 @@
           "title": "Elements",
           "type": "array"
         },
+        "diff_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diff Text"
+        },
         "hierarchy_ok": {
           "default": true,
           "title": "Hierarchy Ok",

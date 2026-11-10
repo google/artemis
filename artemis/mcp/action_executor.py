@@ -54,6 +54,7 @@ from artemis.tools.tool_wrapper import split_multimodal_result
 from artemis.utils.coordinates import (
     compute_smart_swipe_coordinates,
     parse_swipe_parameters,
+    resolve_scrollable_container_bounds,
 )
 from artemis.utils.notes import (
     format_list_notes_failure,
@@ -169,6 +170,7 @@ class McpActionExecutor:
         img_bytes: bytes | None = None
         shot_path: str | None = None
         xml_list: str | None = None
+        xml_diff: str | None = None
         target_semantics: dict[str, Any] = {}
         target_coordinates: list[int] | None = None
         with span:
@@ -200,6 +202,7 @@ class McpActionExecutor:
                     if obs.ok:
                         shot_path = obs.screenshot_path
                         xml_list = obs.elements_text
+                        xml_diff = obs.diff_text
                         if obs.hierarchy_ok:
                             state.indexed_points = [el["center"] for el in obs.elements]
                             state.indexed_elements = obs.elements
@@ -219,6 +222,13 @@ class McpActionExecutor:
                 state.latest_screenshot = shot_path
 
             status = "success" if res.ok else "error"
+            if not res.ok and res.code == ActionCode.TIMEOUT:
+                status = "uncertain"
+                message = (
+                    f"{message}\nThis action timed out, so it may or may not have taken "
+                    "effect. Do not repeat it. Read the current screen first and decide "
+                    "from what you see."
+                )
             post_image_name = None
             if shot_path:
                 post_image_name = Path(shot_path).stem
@@ -242,6 +252,7 @@ class McpActionExecutor:
             screenshot_bytes=img_bytes,
             screenshot_path=shot_path,
             ui_elements_text=xml_list,
+            ui_elements_diff=xml_diff,
             metadata={
                 "code": res.code.value,
                 "normalized_coordinates": res.normalized_coordinates,
@@ -570,6 +581,20 @@ class McpActionExecutor:
 
         if kind == "direction":
             dir_name = target
+            container = resolve_scrollable_container_bounds(
+                target=args.get("target"),
+                indexed_elements=self._index_elements(state, index_elements) if state else None,
+                ui_hierarchy=getattr(state, "latest_ui_hierarchy", None) if state else None,
+                screen_width=width,
+                screen_height=height,
+            )
+            if args.get("target") is not None and container == [0, 0, width, height]:
+                raise _ArgError(
+                    f"Error during swipe: target {args.get('target')!r} is not an element, so a "
+                    f"{dir_name} swipe would run across the middle of the screen instead of the "
+                    "control. Click the control at the coordinates you want, or pass the element "
+                    "index from the element list as target."
+                )
             x1, y1, x2, y2, smart_dur = compute_smart_swipe_coordinates(
                 direction=target,
                 target=args.get("target"),
@@ -582,6 +607,18 @@ class McpActionExecutor:
 
             def _norm(v: float, size: int) -> int:
                 return int(max(0, min(1000, round(v * 1000 / max(1, size)))))
+
+            raw_start = args.get("start")
+            if isinstance(raw_start, (list, tuple)) and len(raw_start) >= 2:
+                try:
+                    hx, hy = int(float(raw_start[0])), int(float(raw_start[1]))
+                except (TypeError, ValueError):
+                    hx = hy = -1
+                if 0 <= hx <= 1000 and 0 <= hy <= 1000:
+                    if dir_name in ("left", "right"):
+                        y1 = y2 = int(hy * height / 1000)
+                    else:
+                        x1 = x2 = int(hx * width / 1000)
 
             def finalize(res: ActionResult) -> str:
                 if not res.ok:
