@@ -15,6 +15,7 @@
 """A compiled bundle may carry its own dotenv file beside the executable."""
 
 import importlib
+import os
 from pathlib import Path
 
 from artemis.config import paths
@@ -85,3 +86,37 @@ def test_the_user_file_is_not_loaded_twice(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "load_dotenv", lambda dotenv_path=None, verbose=False: None)
 
     assert settings.load_env_files() == [user_env]
+
+
+# Behavioural checks recovered from the discarded stash: they assert what lands
+# in the environment rather than the order of the calls that put it there.
+def _isolate(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    missing = tmp_path / "no-such-dir"
+    monkeypatch.setattr(settings, "get_env_file", lambda: missing / ".env")
+    monkeypatch.setattr(settings, "GLOBAL_APP_DIR", missing)
+
+
+def test_env_beside_a_frozen_executable_is_loaded(tmp_path, monkeypatch):
+    _isolate(monkeypatch, tmp_path)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / ".env").write_text("OPENAI_API_KEY=sk-from-beside-the-exe\n", encoding="utf-8")
+    monkeypatch.setattr(paths.sys, "executable", str(bundle / "artemis.exe"))
+    monkeypatch.setattr(paths, "is_frozen_bundle", lambda: True)
+
+    settings.load_env_files()
+
+    assert os.environ["OPENAI_API_KEY"] == "sk-from-beside-the-exe"
+
+
+def test_source_checkout_ignores_the_env_beside_the_executable(tmp_path, monkeypatch):
+    _isolate(monkeypatch, tmp_path)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / ".env").write_text("OPENAI_API_KEY=sk-from-beside-the-exe\n", encoding="utf-8")
+    monkeypatch.setattr(paths.sys, "executable", str(bundle / "artemis.exe"))
+
+    settings.load_env_files()
+
+    assert "OPENAI_API_KEY" not in os.environ
