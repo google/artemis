@@ -23,6 +23,9 @@ HELPER_PACKAGE = "artemis-accessibility-helper"
 HELPER_FILES = ("ArtemisAccessibilityHelper.apk", "helper_manifest.json")
 MINIMUM_LICENSE_FILES = 100
 SMOKE_TIMEOUT_SECONDS = 120
+# A child that prints UTF-8 fails to decode under a GBK locale, and the reader
+# thread swallows the error, so the output arrives truncated.
+CHILD_ENCODING = "utf-8"
 
 
 class StagingError(RuntimeError):
@@ -99,6 +102,8 @@ def _git_commit() -> str:
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            encoding=CHILD_ENCODING,
+            errors="replace",
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
@@ -132,6 +137,8 @@ def _smoke_version(entry: Path) -> str | None:
             [str(entry), "--version"],
             capture_output=True,
             text=True,
+            encoding=CHILD_ENCODING,
+            errors="replace",
             timeout=SMOKE_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as error:

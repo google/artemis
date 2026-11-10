@@ -149,3 +149,27 @@ def test_main_exits_non_zero_when_a_bundle_is_incomplete(tmp_path, monkeypatch):
     code = stage.main(["stage.py", str(dist), "--skip-smoke"])
 
     assert code == 1
+
+
+def test_the_stager_decodes_child_output_as_utf8(monkeypatch):
+    """A GBK locale otherwise kills the reader thread and truncates the output."""
+    captured: list[dict] = []
+
+    def fake_run(*args, **kwargs):
+        captured.append(kwargs)
+
+        class Completed:
+            returncode = 0
+            stdout = "artemis 1.0\n"
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr(stage.subprocess, "run", fake_run)
+    stage._smoke_version(Path("/nowhere/artemis"))
+    stage._git_commit()
+
+    assert captured
+    for kwargs in captured:
+        assert kwargs.get("encoding") == stage.CHILD_ENCODING
+        assert kwargs.get("errors") == "replace"
