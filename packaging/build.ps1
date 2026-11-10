@@ -15,7 +15,9 @@ $Dist = Join-Path $Root (Join-Path $OutputDir "artemis_cli.dist")
 
 # Nuitka reuses an existing dist directory, which leaves data files from an
 # earlier build beside the new ones. The C build cache above it stays.
+$BuildDir = Join-Path $Root (Join-Path $OutputDir "artemis_cli.build")
 if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
+if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
 
 uv run python -m nuitka `
   --standalone `

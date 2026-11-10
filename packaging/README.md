@@ -40,6 +40,12 @@ Requirements on the build machine:
   756 MB dist. A run that fills the disk stops with
   `OSError: [Errno 28] No space left on device` while generating the C sources.
 
+Each script deletes both output directories before it starts. A dist kept from
+an earlier layout leaves orphaned data files, and a build directory left by an
+interrupted run keeps partial C files that trip a Nuitka assertion
+(`AssertionError: .../module.PIL.c`). Compiled objects survive in ccache, so
+the rebuild is still much faster than a cold one.
+
 A cold build compiles 7555 C translation units. On an 8-core Mac at `JOBS=4` it
 took 30 minutes. A rebuild after a Python source change reuses the generated C
 where it can and takes 14 to 20 minutes.

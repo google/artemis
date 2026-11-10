@@ -12,9 +12,11 @@ cd "$ROOT"
 OUTPUT_DIR="${OUTPUT_DIR:-build/nuitka}"
 JOBS="${JOBS:-8}"
 
-# Nuitka reuses an existing dist directory, which leaves data files from an
-# earlier build beside the new ones. The C build cache above it stays.
-rm -rf "$OUTPUT_DIR/artemis_cli.dist"
+# Nuitka reuses both directories. A dist kept from an earlier layout leaves
+# orphaned data beside the new files, and a build directory from an interrupted
+# run keeps partial C files that trip Nuitka's own assertion
+# (`assert not os.path.isfile(filename)`). Object files stay cached in ccache.
+rm -rf "$OUTPUT_DIR/artemis_cli.dist" "$OUTPUT_DIR/artemis_cli.build"
 
 uv run python -m nuitka \
   --standalone \

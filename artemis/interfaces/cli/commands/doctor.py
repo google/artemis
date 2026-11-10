@@ -36,7 +36,7 @@ from rich.panel import Panel
 from rich.table import Table
 import typer
 
-from artemis.config.paths import ROOT_DIR
+from artemis.config.paths import ROOT_DIR, is_frozen_bundle
 from artemis.core.diagnostics.engine import readiness_engine
 from artemis.core.diagnostics.readiness import (
     Verdict,
@@ -184,6 +184,15 @@ def _showcase_row() -> ExtraRow:
             status_markup="[bold green]✔ Compiled[/bold green]",
             summary="Compiled",
             detail=f"{found_showcase.parent} (Angular ready)",
+        )
+    if is_frozen_bundle():
+        return ExtraRow(
+            key="showcase_ui",
+            title="Showcase UI",
+            status="missing",
+            status_markup="[bold yellow]○ Not Shipped[/bold yellow]",
+            summary="Not Shipped",
+            detail="This bundle serves the HTTP API only and carries no web frontend.",
         )
     return ExtraRow(
         key="showcase_ui",
