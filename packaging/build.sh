@@ -21,7 +21,7 @@ uv run python -m nuitka \
   --assume-yes-for-downloads \
   --jobs="$JOBS" \
   --output-dir="$OUTPUT_DIR" \
-  --output-filename=artemis-cli \
+  --output-filename=artemis-app \
   --include-package=langchain \
   --include-package=langchain_core \
   --include-package=langchain_openai \
@@ -52,6 +52,13 @@ uv run python -m nuitka \
 DIST="$ROOT/$OUTPUT_DIR/artemis_cli.dist"
 
 rm -rf "$DIST/artemis/resources/showcase_ui"
+# An executable named `artemis` cannot sit beside the `artemis/` package-data
+# directory on a case-insensitive filesystem, and moving it into bin/ breaks
+# dyld's @executable_path. The real binary stays at the root and a symlink one
+# level down gives it the name: dyld canonicalises the link, so the libraries
+# are still found beside the real file.
+mkdir -p "$DIST/bin"
+ln -sf ../artemis-app "$DIST/bin/artemis"
 mkdir -p "$DIST/packages/artemis-accessibility-helper"
 cp packages/artemis-accessibility-helper/ArtemisAccessibilityHelper.apk \
    packages/artemis-accessibility-helper/helper_manifest.json \

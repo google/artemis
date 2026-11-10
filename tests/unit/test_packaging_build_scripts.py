@@ -58,12 +58,25 @@ def test_both_scripts_collect_the_licenses():
         assert "collect_licenses.py" in script.read_text(encoding="utf-8"), script
 
 
-def test_neither_script_moves_the_executable_out_of_the_dist_root():
-    for script in (BASH, POWERSHELL):
-        text = script.read_text(encoding="utf-8")
-        assert "libpython" not in text
-        assert "bin/artemis" not in text
-        assert "bin\\artemis" not in text
+def test_the_executable_file_stays_at_the_dist_root():
+    from_bash = BASH.read_text(encoding="utf-8")
+    from_powershell = POWERSHELL.read_text(encoding="utf-8")
+
+    assert "mv " not in from_bash
+    assert "Move-Item" not in from_powershell
+
+
+def test_macos_links_the_public_name_instead_of_moving_the_binary():
+    from_bash = BASH.read_text(encoding="utf-8")
+
+    assert "--output-filename=artemis-app" in from_bash
+    assert 'ln -sf ../artemis-app "$DIST/bin/artemis"' in from_bash
+
+
+def test_windows_names_the_binary_artemis():
+    from_powershell = POWERSHELL.read_text(encoding="utf-8")
+
+    assert "--output-filename=artemis " in from_powershell or "--output-filename=artemis`" in from_powershell
 
 
 def test_both_scripts_wipe_the_previous_dist_directory():

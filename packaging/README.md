@@ -24,8 +24,9 @@ platform-specific parts differ:
 
 | | macOS | Windows |
 | --- | --- | --- |
-| executable | `artemis-cli` at the dist root | `artemis.exe` at the dist root |
-| why the name differs | a bare `artemis` collides with the `artemis/` package-data directory on a case-insensitive filesystem | no collision with an `.exe` |
+| what you run | `bin/artemis` | `artemis.exe` |
+| real executable | `artemis-app` at the dist root, linked from `bin/artemis` | `artemis.exe` at the dist root |
+| why | a file named `artemis` cannot sit beside the `artemis/` package-data directory on a case-insensitive filesystem, and moving the binary into `bin/` breaks dyld's `@executable_path`. dyld canonicalises a symlink, so the link gets the name and the libraries stay beside the real file | an `.exe` name cannot collide with a directory |
 | staging | helper APK, then `collect_licenses.py` | same |
 
 Requirements on the build machine:
@@ -46,7 +47,7 @@ where it can and takes 14 to 20 minutes.
 Output:
 
 ```
-build/nuitka/artemis_cli.dist/artemis-cli     the executable
+build/nuitka/artemis_cli.dist/bin/artemis      the executable (symlink)
 build/nuitka/artemis_cli.dist/artemis/        package data: agent JSON and prompts
 build/nuitka/artemis_cli.dist/config/         the shipped default configuration
 build/nuitka/artemis_cli.dist/rapidocr/       ONNX models for local OCR
@@ -65,7 +66,7 @@ a device at all.
 | `scrcpy` | only for screen recording and live stream | `ARTEMIS_SCRCPY_PATH`, then common install paths, then `PATH` |
 | `ffmpeg` | optional | The resolver checks `ARTEMIS_FFMPEG_PATH`, then common install paths, then `PATH`, and only then falls back to the copy `imageio_ffmpeg` ships, which the build includes under `imageio_ffmpeg/binaries` |
 
-`artemis-cli doctor` reports which of these it resolved and from where. On a
+`bin/artemis doctor` reports which of these it resolved and from where. On a
 machine that already has ffmpeg installed, the system copy is used and the
 bundled one stays unused; it exists for machines that have none.
 
