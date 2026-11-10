@@ -214,10 +214,10 @@ def test_observation_tail_has_pro_shape(mock_context):
         assert OBSERVATION_HEADER_RE.match(texts[0])
         assert "objective" not in "".join(texts).lower()
         assert texts[1:] == [
-            "nudge",
             "[INJECTED]",
             'User instruction: "stop"',
             _FINAL_TURN_WARNING,
+            "nudge",
         ]
 
 
@@ -243,15 +243,17 @@ def test_per_turn_notices_are_marked_ephemeral(mock_context):
     )
     texts = [b.get("text") for b in tail.content]
     # header, screenshot label, image, UI list, then the per-turn notices with
-    # the persistent instruction body right after its wrapper
+    # the persistent instruction body right after its wrapper. The nudge rides
+    # last: a learned route offered at the head of the tail was overlooked for
+    # 11 turns on 2026-11-11.
     assert texts[4:] == [
-        "nudge",
         guidance.wrapper,
         guidance.body,
         _FINAL_TURN_WARNING,
         REASONING_REMINDER,
+        "nudge",
     ]
-    assert tail.additional_kwargs[EPHEMERAL_BLOCKS_KEY] == [4, 5, 7, 8]
+    assert tail.additional_kwargs[EPHEMERAL_BLOCKS_KEY] == [4, 6, 7, 8]
 
 
 def test_injected_instruction_body_outlives_its_wrapper(mock_context):

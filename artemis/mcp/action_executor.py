@@ -72,7 +72,8 @@ __all__ = ["McpActionExecutor"]
 
 #: Non-device tools executed agent-side (never behind the action server).
 AGENT_TOOL_NAMES: frozenset[str] = (
-    frozenset({"read_note", "list_notes", "ask_explorer", "video_analyzer"}) | HISTORY_TOOL_NAMES
+    frozenset({"read_note", "list_notes", "remember_insight", "ask_explorer", "video_analyzer"})
+    | HISTORY_TOOL_NAMES
 )
 
 #: Actions whose ``target`` is a single point: an element index or an [x, y] pair.
@@ -679,6 +680,8 @@ class McpActionExecutor:
                 )
             elif raw_name == "list_notes":
                 text = await self._list_notes()
+            elif raw_name == "remember_insight":
+                text = await self._remember_insight(args.get("screen", ""), args.get("insight", ""))
             elif raw_name == "video_analyzer":
                 text, ok = await self._video_analyzer(
                     args.get("time_description") or args.get("TimeDescription") or "",
@@ -731,6 +734,23 @@ class McpActionExecutor:
             return format_list_notes_success(list_notes_info(base_dir))
         except Exception as e:
             return format_list_notes_failure(str(e))
+
+    async def _remember_insight(self, screen: str, insight: str) -> str:
+        """Stores a route the model found so a later run starts from it."""
+        serial = getattr(getattr(self.ctx, "device", None), "device_id", None)
+        storage = getattr(getattr(self.ctx, "data_engine", None), "storage", None)
+        if not serial or storage is None:
+            return "Insight not stored: this run has no device or data engine."
+        if not screen.strip() or not insight.strip():
+            return "Insight not stored: both `screen` and `insight` are required."
+        try:
+            count = storage.remember_device_insight(serial, screen.strip(), insight.strip())
+        except Exception as error:
+            return f"Insight not stored: {error}"
+        return (
+            f"Stored for {serial} on screen '{screen.strip()}': {insight.strip()} "
+            f"(now backed by {count} run)."
+        )
 
     async def _history_tool(
         self, raw_name: str, args: dict[str, Any]

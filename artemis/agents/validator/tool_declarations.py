@@ -232,6 +232,38 @@ LIST_NOTES_TOOL = ToolDeclaration(
 
 MANAGE_APP_TOOL = tool_declaration("manage_app")
 
+REMEMBER_INSIGHT_TOOL = ToolDeclaration(
+    name="remember_insight",
+    description=(
+        "[MEMORY] Saves a route that worked on this device so future runs start with it "
+        "instead of rediscovering it. Call this after you get past a screen that gave "
+        "no visible way forward, for example a full-screen panel you had to swipe away. "
+        "`screen` is the title text of the screen the route starts on, exactly as it "
+        "appears in the observation. `insight` is the action that worked, with its "
+        "coordinates, in one sentence."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "screen": {
+                "type": "string",
+                "description": (
+                    "Title text of the screen the route starts on, as shown in the "
+                    "observation, for example '控制中心'."
+                ),
+            },
+            "insight": {
+                "type": "string",
+                "description": (
+                    "The action that worked, with coordinates, in one sentence, for "
+                    "example 'swipe from (960, 1050) to (960, 700) closes the panel'."
+                ),
+            },
+        },
+        "required": ["screen", "insight"],
+    },
+)
+
 WAIT_FOR_DELAY_TOOL = tool_declaration("wait_for_delay")
 
 REPORT_TASK_STATUS_TOOL = ToolDeclaration(

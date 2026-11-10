@@ -61,6 +61,7 @@ from artemis.agents.validator.tool_declarations import (
     CLICK_SEQUENCE_TOOL,
     LIST_NOTES_TOOL,
     READ_NOTE_TOOL,
+    REMEMBER_INSIGHT_TOOL,
     REPORT_TASK_STATUS_TOOL,
     ToolExecutionResult,
     VALIDATOR_TOOLS_DECLARATION,
@@ -82,7 +83,7 @@ from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.mcp.action_executor import McpActionExecutor
 from artemis.mcp.observation import observe
 from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger, mark_ephemeral
-from artemis.mcp.screen_diff import render_diff_block
+from artemis.mcp.screen_diff import NO_SCREEN_CHANGES, render_diff_block
 from artemis.services.llm import (
     acomplete,
     get_llm,
@@ -110,6 +111,13 @@ _REPEAT_OBSERVE = 2
 _REPEAT_BLOCK = 3
 _REPEAT_STOP = 6
 _CAPTURE_FAILURE_LIMIT = 2
+_NO_CHANGE_LIMIT = 2
+_CLICK_TOOL_NAMES = frozenset({"click", "click_sequence"})
+_NO_PROGRESS_NOTICE = (
+    "Your last {count} actions left the screen unchanged. `click` is withdrawn for this "
+    "turn because these coordinates hold no way forward. Change the screen first with "
+    "`swipe`, `press_key` or `manage_app`, then look at what appeared."
+)
 _REPEAT_TEMPERATURE = 0.7
 _REPEAT_WINDOW = 12
 
@@ -216,6 +224,7 @@ class FlashRunner:
         ]
         tools.insert(1, CLICK_SEQUENCE_TOOL)
         tools.append(ASK_EXPLORER_TOOL)
+        tools.append(REMEMBER_INSIGHT_TOOL)
         # Helper tools shared with the Pro operator: the history tools are
         # declared from the very same args schemas the LangChain tools bind
         # (same availability gates: a DataEngine session, recall config).
@@ -388,8 +397,10 @@ class FlashRunner:
                 ephemeral.append(len(blocks))
                 blocks.append({"type": "text", "text": diff_block})
             blocks.append({"type": "text", "text": f"{PRO_UI_LIST_MARKER}\n{xml_list}"})
-        # (text, ephemeral) in tail order.
-        per_turn: list[tuple[str, bool]] = [(text, True) for text in (notices or [])]
+        # (text, ephemeral) in tail order. Notices ride last: a run whose learned
+        # route was offered 11 times at the head of the tail still pressed `back`
+        # first, so the instruction sits where the model reads before acting.
+        per_turn: list[tuple[str, bool]] = []
         if injected:
             # The wrapper is per-turn; the verbatim body right after it is a
             # regular block that stays until the turn is chunked.
@@ -399,6 +410,7 @@ class FlashRunner:
             per_turn.append((_FINAL_TURN_WARNING, True))
         if previous_turn_silent:
             per_turn.append((REASONING_REMINDER, True))
+        per_turn.extend((text, True) for text in (notices or []))
         for text, is_ephemeral in per_turn:
             if is_ephemeral:
                 ephemeral.append(len(blocks))
@@ -658,6 +670,46 @@ class FlashRunner:
         if self.summarizer:
             await self.summarizer.flush()
         return final_report
+
+    def _device_insight_notices(self, xml_list: str | None) -> list[str]:
+        """Surfaces a route stored by an earlier run when the screen it starts on is here."""
+        if not xml_list:
+            return []
+        serial = getattr(getattr(self.ctx, "device", None), "device_id", None)
+        storage = getattr(getattr(self.ctx, "data_engine", None), "storage", None)
+        if not serial or storage is None:
+            return []
+        try:
+            rows = storage.device_insights(serial)
+        except Exception as error:
+            logger.debug(f"Device insights unavailable: {error}")
+            return []
+        hits = [row for row in rows if row["screen_key"] and row["screen_key"] in xml_list]
+        notices = [
+            f"Proven route on this screen, use it: {row['insight']} "
+            f"(worked {row['success_count']}x on this device)"
+            for row in hits[:5]
+        ]
+        if notices:
+            logger.info(f"Offering {len(notices)} learned route(s) for {serial}")
+        return notices
+
+    def _note_screen_change(self, diff: str) -> None:
+        """Counts actions that left the screen identical, and clears on any change.
+
+        A panel with no exit control is where the model guessed four coordinates in a
+        row on 2026-11-11 (298, 107, 203, 486 at y=850 in the control centre).
+        """
+        unchanged = not diff.strip() or diff.strip() == NO_SCREEN_CHANGES
+        if unchanged:
+            self._no_change_streak = getattr(self, "_no_change_streak", 0) + 1
+        else:
+            self._no_change_streak = 0
+
+    def _tools_without_click(self, tools: list) -> list:
+        if getattr(self, "_no_change_streak", 0) < _NO_CHANGE_LIMIT:
+            return tools
+        return [t for t in tools if getattr(t, "name", "") not in _CLICK_TOOL_NAMES]
 
     def _note_capture_failure(self, message: str) -> None:
         """Stops the run when the screen cannot be read, instead of letting the model guess.
@@ -1046,6 +1098,7 @@ class FlashRunner:
                 xml_list = exec_result.ui_elements_text
             if exec_result.ui_elements_diff is not None:
                 xml_diff = exec_result.ui_elements_diff
+                self._note_screen_change(xml_diff)
 
             # Helper tools may return multimodal blocks (a step screenshot);
             # device actions always report text — their post screenshot is the
@@ -1321,11 +1374,16 @@ class FlashRunner:
                 previous_turn_silent=bool(getattr(ledger, "last_turn_silent", False)),
             )
             pending_notices = []
+            pending_notices.extend(self._device_insight_notices(current_xml_list))
+            if getattr(self, "_no_change_streak", 0) >= _NO_CHANGE_LIMIT:
+                pending_notices.append(_NO_PROGRESS_NOTICE.format(count=self._no_change_streak))
 
             # S + F + A + tail: chunk compression and the scrub edge advance here.
             messages = ledger.render([tail])
             turn_base = len(messages) - 1
-            current_tools = report_only_tools if is_final else tools_declaration
+            current_tools = (
+                report_only_tools if is_final else self._tools_without_click(tools_declaration)
+            )
 
             response = await self._invoke_model(
                 llm, current_tools, messages, temperature=self._sampling_temperature()

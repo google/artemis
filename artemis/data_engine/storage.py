@@ -20,6 +20,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import threading
+import time
 from typing import Any
 import uuid
 from uuid import UUID
@@ -252,6 +253,16 @@ class StorageManager:
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS device_insights (
+                    device_serial TEXT NOT NULL,
+                    screen_key TEXT NOT NULL,
+                    insight TEXT NOT NULL,
+                    success_count INTEGER NOT NULL DEFAULT 1,
+                    last_used REAL,
+                    PRIMARY KEY (device_serial, screen_key, insight)
+                )
+            """)
             video_recording_columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(video_recordings)").fetchall()
             }
@@ -331,6 +342,47 @@ class StorageManager:
                 ),
             )
             conn.commit()
+
+    def remember_device_insight(self, device_serial: str, screen_key: str, insight: str) -> int:
+        """Stores a route that worked on this device, keyed by the screen it starts on.
+
+        Session notes live under the session directory and vanish with the trace, so
+        the same navigation problem is solved from scratch every run: on 2026-11-11
+        the control centre was probed with four clicks at y=850 twice in one hour.
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO device_insights (device_serial, screen_key, insight, success_count, last_used)
+                VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(device_serial, screen_key, insight)
+                DO UPDATE SET success_count = success_count + 1, last_used = excluded.last_used
+                """,
+                (device_serial, screen_key, insight.strip(), time.time()),
+            )
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT success_count FROM device_insights
+                WHERE device_serial = ? AND screen_key = ? AND insight = ?
+                """,
+                (device_serial, screen_key, insight.strip()),
+            ).fetchone()
+        return int(row["success_count"]) if row else 1
+
+    def device_insights(self, device_serial: str) -> list[dict[str, Any]]:
+        """Returns every stored route for a device, most reusable first."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT screen_key, insight, success_count FROM device_insights
+                WHERE device_serial = ?
+                ORDER BY success_count DESC, last_used DESC
+                LIMIT 40
+                """,
+                (device_serial,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def create_video_recording(self, record: VideoRecordingRecord):
         """Insert a new video recording record."""
