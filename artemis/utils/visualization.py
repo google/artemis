@@ -255,10 +255,14 @@ def _inject_mutual_occlusion_warnings(
     return new_lines
 
 
+_ADJUSTABLE_CONTROLS = ("SeekBar", "ProgressBar", "Slider", "RatingBar")
+
+
 def _element_only_entries(
     fused_xml: list[dict[str, Any]],
     emitted_bounds: list[tuple[int, tuple[int, int, int, int]]],
     normalize_bounds: Any,
+    control_values: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Clickable nodes that carry no readable text still need an index.
 
@@ -267,11 +271,17 @@ def _element_only_entries(
     lands 54 pixels to its right, on a different control. ``emitted_bounds`` holds
     the entries listed before this pass; a control whose centre sits inside one of
     them is already addressed through it and stays out.
+
+    An Android SeekBar reports ``clickable=false`` while still being draggable, so
+    it needs the same index: without one the model guesses a pixel per attempt and
+    the brightness slider took 19 steps instead of one on 2026-11-11.
     """
     entries: list[dict[str, Any]] = []
     for node in fused_xml:
         clickable = node.get("clickable")
-        if not (clickable is True or str(clickable).lower() == "true"):
+        short_class = str(node.get("class") or "").rsplit(".", 1)[-1]
+        is_adjustable = short_class in _ADJUSTABLE_CONTROLS
+        if not (clickable is True or str(clickable).lower() == "true") and not is_adjustable:
             continue
         if str(node.get("text") or node.get("content-desc") or "").strip():
             continue
@@ -287,10 +297,12 @@ def _element_only_entries(
         if any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for _, b in emitted_bounds):
             continue
         resource_id = str(node.get("resource-id") or "").rsplit("/", 1)[-1]
-        short_class = str(node.get("class") or "").rsplit(".", 1)[-1]
         description = f"Element: '{short_class}'"
         if resource_id:
             description += f" id={resource_id}"
+        percent = (control_values or {}).get(str(node.get("bounds")))
+        if percent is not None:
+            description += f": 约 {percent}%"
         description += f" | Bounds: {normalize_bounds(left, top, right, bottom)}"
         entries.append(
             {
@@ -298,6 +310,7 @@ def _element_only_entries(
                 "text": resource_id or short_class,
                 "center": [cx, cy],
                 "bounds": [left, top, right, bottom],
+                "raw_bounds": str(node.get("bounds")),
                 "class": node.get("class"),
                 "resource_id": node.get("resource-id"),
             }
@@ -392,7 +405,10 @@ def format_minimal_list_with_points(
 
 
 def format_minimal_list_with_elements(
-    fused_xml: list[dict[str, Any]], width: int = 1080, height: int = 2400
+    fused_xml: list[dict[str, Any]],
+    width: int = 1080,
+    height: int = 2400,
+    control_values: dict[str, int] | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     """Formats fused XML hierarchy into a minimal list with sequence numbers,
 
@@ -497,21 +513,23 @@ def format_minimal_list_with_elements(
             added_items.append((shown, cx, cy))
             idx += 1
 
-    for entry in _element_only_entries(fused_xml, items_bounds, normalize_bounds):
+    for entry in _element_only_entries(fused_xml, items_bounds, normalize_bounds, control_values):
         lines.append(f"[{idx}] {entry['description']}")
         items_bounds.append((idx, tuple(entry["bounds"])))
-        elements.append(
-            {
-                "index": idx,
-                "center": entry["center"],
-                "text": entry["text"],
-                "bounds": entry["bounds"],
-                "class": entry["class"],
-                "resource_id": entry["resource_id"],
-                "is_ocr": False,
-                "is_element": True,
-            }
-        )
+        element = {
+            "index": idx,
+            "center": entry["center"],
+            "text": entry["text"],
+            "bounds": entry["bounds"],
+            "class": entry["class"],
+            "resource_id": entry["resource_id"],
+            "is_ocr": False,
+            "is_element": True,
+        }
+        percent = (control_values or {}).get(str(entry.get("raw_bounds")))
+        if percent is not None:
+            element["value_percent"] = percent
+        elements.append(element)
         labels.append(str(idx))
         idx += 1
 

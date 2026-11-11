@@ -86,6 +86,27 @@ def _escape_for_adb_text(s: str) -> str:
     )
 
 
+def drag_command(
+    start_x: int,
+    start_y: int,
+    end_x: int,
+    end_y: int,
+    duration_ms: int = 800,
+    steps: int = 12,
+) -> str:
+    """Builds a drag from move events because `input swipe` never moved the 中控 slider on 2026-11-11."""
+    gap = max(duration_ms / steps / 1000.0, 0.01)
+    parts = [f"input motionevent DOWN {start_x} {start_y}"]
+    for step in range(1, steps + 1):
+        x = start_x + (end_x - start_x) * step // steps
+        y = start_y + (end_y - start_y) * step // steps
+        parts.append(f"sleep {gap:.3f}")
+        parts.append(f"input motionevent MOVE {x} {y}")
+    parts.append(f"sleep {gap:.3f}")
+    parts.append(f"input motionevent UP {end_x} {end_y}")
+    return "; ".join(parts)
+
+
 class AndroidAdbDriver(BaseDeviceDriver):
     """Android device driver using ADB and UIAutomator2."""
 
@@ -274,7 +295,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
         duration_ms: int = 800,
     ) -> bool:
         try:
-            cmd = f"input swipe {start_x} {start_y} {end_x} {end_y} {duration_ms}"
+            cmd = drag_command(start_x, start_y, end_x, end_y, duration_ms)
             logger.info(f"[ADB] {cmd}")
             await asyncio.to_thread(self.device.shell, cmd)
             return True

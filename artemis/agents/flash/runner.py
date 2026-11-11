@@ -96,6 +96,15 @@ from artemis.utils.coordinates import (
     COORDINATE_SPACE_NORMALIZED,
     parse_swipe_parameters,
 )
+from PIL import Image
+
+from artemis.utils.slider_value import (
+    ADJUSTABLE_CLASSES,
+    measure_fill_percent,
+    point_at_share,
+    share_from_text,
+    snap_press_point,
+)
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -113,6 +122,7 @@ _REPEAT_STOP = 6
 _CAPTURE_FAILURE_LIMIT = 2
 _NO_CHANGE_LIMIT = 2
 _CLICK_TOOL_NAMES = frozenset({"click", "click_sequence"})
+_PRESS_KEY_TOOL_NAMES = frozenset({"press_key"})
 _NO_PROGRESS_NOTICE = (
     "Your last {count} actions left the screen unchanged. `click` is withdrawn for this "
     "turn because these coordinates hold no way forward. Change the screen first with "
@@ -706,10 +716,23 @@ class FlashRunner:
         else:
             self._no_change_streak = 0
 
-    def _tools_without_click(self, tools: list) -> list:
-        if getattr(self, "_no_change_streak", 0) < _NO_CHANGE_LIMIT:
+    def _tools_without_click(self, tools: list, route_offered: bool = False) -> list:
+        """Withdraws actions a stalled run cannot use.
+
+        A stored route withdraws `press_key`: on 2026-11-11 a run that had the
+        control-centre route in hand pressed HOME first, which does nothing on
+        that screen, and spent the next five steps clicking the stale screen.
+        """
+        blocked: set[str] = set()
+        if getattr(self, "_click_withdrawn", False) or (
+            getattr(self, "_no_change_streak", 0) >= _NO_CHANGE_LIMIT
+        ):
+            blocked |= _CLICK_TOOL_NAMES
+        if route_offered:
+            blocked |= _PRESS_KEY_TOOL_NAMES
+        if not blocked:
             return tools
-        return [t for t in tools if getattr(t, "name", "") not in _CLICK_TOOL_NAMES]
+        return [t for t in tools if getattr(t, "name", "") not in blocked]
 
     def _note_capture_failure(self, message: str) -> None:
         """Stops the run when the screen cannot be read, instead of letting the model guess.
@@ -906,13 +929,98 @@ class FlashRunner:
         except Exception as e:
             logger.warning(f"History chunker step stamp failed: {e}")
 
+    def _snap_slider_press(
+        self, args: dict, index_elements: list[dict] | None, goal: str | None, state=None
+    ) -> dict:
+        """Puts a drag's press point on the thumb of the control it lands on.
+
+        The release point carries the caller's intent and is left alone. A model
+        reads the thumb's position off the screenshot and lands about ten points
+        short of it; on 2026-11-11 that turned one slider drag into ten steps.
+        """
+        start = args.get("start")
+        if not (isinstance(start, (list, tuple)) and len(start) == 2):
+            share_only = share_from_text(goal or "")
+            width_only, height_only = self.executor._screen_size()
+            controls_only = self._measurable_controls(index_elements, state)
+            if share_only is None or len(controls_only) != 1:
+                return args
+            bounds, percent = controls_only[0]
+            if abs(percent - share_only) <= 3:
+                return args
+            logger.info(
+                "Slider calibration replaced a directional swipe with a drag "
+                f"{percent}% -> {share_only}%"
+            )
+            return {
+                **args,
+                "direction": None,
+                "start": point_at_share(bounds, percent, width_only, height_only),
+                "end": point_at_share(bounds, share_only, width_only, height_only),
+            }
+        width, height = self.executor._screen_size()
+        controls = self._measurable_controls(index_elements, state)
+        if not controls:
+            logger.warning(
+                "Slider calibration skipped: no measurable control under this swipe"
+            )
+            return args
+        snapped = snap_press_point(list(start), controls, width, height)
+        corrected = dict(args)
+        if snapped != list(start):
+            corrected["start"] = snapped
+        share = share_from_text(goal or "")
+        if share is not None:
+            target = self._control_under(snapped, controls, width, height)
+            if target is not None:
+                corrected["end"] = point_at_share(target, share, width, height)
+        return corrected
+
+    def _measurable_controls(self, index_elements, state):
+        """Reads each adjustable control's thumb straight from the current frame."""
+        image = None
+        path = getattr(state, "latest_screenshot", None)
+        if path:
+            try:
+                image = Image.open(str(path)).convert("RGB")
+            except Exception as e:
+                logger.warning(f"Slider calibration could not open {path}: {e}")
+        controls = []
+        for element in index_elements or []:
+            short_class = str(element.get("class") or "").rsplit(".", 1)[-1]
+            bounds = element.get("bounds")
+            if short_class not in ADJUSTABLE_CLASSES:
+                continue
+            if not (isinstance(bounds, (list, tuple)) and len(bounds) == 4):
+                continue
+            percent = element.get("value_percent")
+            if percent is None and image is not None:
+                percent = measure_fill_percent(image, tuple(bounds))
+            if percent is not None:
+                controls.append((tuple(bounds), percent))
+        return controls
+
+    @staticmethod
+    def _control_under(start, controls, width, height):
+        px = round(start[0] * width / 1000)
+        py = round(start[1] * height / 1000)
+        for bounds, _percent in controls:
+            left, top, right, bottom = bounds
+            if left <= px <= right and top <= py <= bottom:
+                return bounds
+        return None
+
     def _repeat_row_key(self, name: str, args: dict) -> tuple[object, ...]:
         coords = args.get("coordinates") or args.get("target")
         if isinstance(coords, (list, tuple)) and len(coords) == 2:
             try:
-                return (name, "row", int(float(coords[1]) // 20))
+                return (name, "cell", int(float(coords[0]) // 20), int(float(coords[1]) // 20))
             except (TypeError, ValueError):
                 return (name, str(coords))
+        start = args.get("start")
+        end = args.get("end")
+        if isinstance(start, (list, tuple)) and isinstance(end, (list, tuple)):
+            return (name, "drag", tuple(start[:2]), tuple(end[:2]))
         return (name, str(args.get("target")), str(args.get("direction")))
 
     def _repetition_verdict(
@@ -939,12 +1047,15 @@ class FlashRunner:
         window.append(key)
         self._repeat_key = key
         self._repeat_count = window.count(key)
+        if self._repeat_count <= 1:
+            self._click_withdrawn = False
         if name not in action_names:
             return None, None, False
         repeats = self._repeat_count
         if repeats >= _REPEAT_STOP:
             return None, None, True
         if repeats >= _REPEAT_BLOCK:
+            self._click_withdrawn = True
             return (
                 f"Not executed: this is identical action number {repeats} in the same place "
                 "and the control's value has not changed, so repeating it cannot move the "
@@ -1033,6 +1144,8 @@ class FlashRunner:
                     text_summary=refuse,
                 )
             else:
+                if name == "swipe" and isinstance(args, dict):
+                    args = self._snap_slider_press(args, index_elements, self.goal, state)
                 exec_result = await self.executor.execute(
                     name, args, tc_id, state, index_elements=index_elements
                 )
@@ -1374,7 +1487,8 @@ class FlashRunner:
                 previous_turn_silent=bool(getattr(ledger, "last_turn_silent", False)),
             )
             pending_notices = []
-            pending_notices.extend(self._device_insight_notices(current_xml_list))
+            learned_routes = self._device_insight_notices(current_xml_list)
+            pending_notices.extend(learned_routes)
             if getattr(self, "_no_change_streak", 0) >= _NO_CHANGE_LIMIT:
                 pending_notices.append(_NO_PROGRESS_NOTICE.format(count=self._no_change_streak))
 
@@ -1382,7 +1496,11 @@ class FlashRunner:
             messages = ledger.render([tail])
             turn_base = len(messages) - 1
             current_tools = (
-                report_only_tools if is_final else self._tools_without_click(tools_declaration)
+                report_only_tools
+                if is_final
+                else self._tools_without_click(
+                    tools_declaration, route_offered=bool(learned_routes)
+                )
             )
 
             response = await self._invoke_model(

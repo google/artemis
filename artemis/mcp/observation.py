@@ -22,7 +22,10 @@ Validator -- which runs its own UI-change polling -- simply never calls it.
 
 import asyncio
 import base64
+import io
 import time
+
+from PIL import Image
 
 from artemis.config import get_temp_dir
 from artemis.context import ArtemisContext
@@ -30,6 +33,7 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.mcp.action_types import ActionCode, ObserveResult
 from artemis.mcp.screen_diff import ScreenTracker
 from artemis.utils.ocr_xml_fusion import fuse_ocr_with_xml
+from artemis.utils.slider_value import measure_control_values
 from artemis.utils.visualization import format_minimal_list_with_elements
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -102,7 +106,14 @@ async def observe(
             ctx.device.device_height = height
 
         fused_xml = fuse_ocr_with_xml(xml_hierarchy, ocr_results)
-        minimal_list_str, elements, _ = format_minimal_list_with_elements(fused_xml, width, height)
+        control_values: dict[str, int] = {}
+        try:
+            control_values = measure_control_values(Image.open(io.BytesIO(screenshot_bytes)), fused_xml)
+        except Exception as e:
+            logger.warning(f"Failed to read slider values: {e}")
+        minimal_list_str, elements, _ = format_minimal_list_with_elements(
+            fused_xml, width, height, control_values
+        )
     except Exception as e:
         logger.error(f"Failed to fetch or fuse UI hierarchy: {e}")
         minimal_list_str = "Not available due to hierarchy error."
