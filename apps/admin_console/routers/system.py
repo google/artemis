@@ -493,6 +493,32 @@ async def get_model_config_and_env():
     }
 
 
+@router.get("/settings")
+async def get_settings():
+    """Return persisted console settings merged over their defaults."""
+    try:
+        from apps.admin_console.services.settings_service import settings_service
+    except ImportError:
+        from admin_console.services.settings_service import settings_service
+    return {"settings": settings_service.get_all()}
+
+
+@router.put("/settings")
+async def update_settings(payload: dict):
+    """Persist the provided settings keys and return the merged snapshot."""
+    try:
+        from apps.admin_console.services.settings_service import settings_service
+    except ImportError:
+        from admin_console.services.settings_service import settings_service
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Settings payload must be a JSON object.")
+    try:
+        merged = settings_service.update(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"settings": merged}
+
+
 @router.get("/server-status")
 async def get_server_runtime_status():
     """Retrieve runtime status, PID, port, and uptime of the Artemis server.

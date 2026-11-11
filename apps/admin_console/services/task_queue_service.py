@@ -29,11 +29,13 @@ try:
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.services import worker_process_io
     from admin_console.services.media_service import media_service
+    from admin_console.services.settings_service import settings_service
 except ImportError:
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.services import worker_process_io
     from apps.admin_console.services.media_service import media_service
+    from apps.admin_console.services.settings_service import settings_service
 
 from artemis.config import (
     PAUSE_FILE,
@@ -525,6 +527,13 @@ class TaskQueueService:
             env["ARTEMIS_SESSION_ID"] = str(sess_id)
         env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
         env["ARTEMIS_TASK_WORKER"] = "1"
+        # Forward the console's power-off-during-run preference so every
+        # recording segment built by the worker honours it.
+        try:
+            screen_off = bool(settings_service.get("screen_off", True))
+        except Exception:
+            screen_off = True
+        env["ARTEMIS_SCREEN_OFF"] = "1" if screen_off else "0"
         target.endpoint.apply_to_environment(env)
         env[DeviceExecutionLock.LOCK_SCOPE_ENV] = target.lock_scope
         queue_ticket = task_item.get("queue_ticket")

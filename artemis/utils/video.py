@@ -21,6 +21,7 @@ Recording session types and the session registry live in
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -51,6 +52,7 @@ def build_scrcpy_record_command(
     output_path: Path,
     video_bit_rate: str = "2M",
     lock_capture_orientation: bool = True,
+    turn_screen_off: bool | None = None,
 ) -> list[str]:
     """Build the shared scrcpy command used by all recording paths.
 
@@ -58,12 +60,32 @@ def build_scrcpy_record_command(
     The recording supervisor starts a new segment when Android rotates, so a
     segment never contains multiple coded sizes while still displaying the app
     in its natural orientation.
+
+    ``--turn-screen-off`` powers the physical display off while scrcpy runs
+    (the device stays awake), so tasks run with a dark screen; SurfaceFlinger
+    keeps composing, so mirroring, screencap and input injection are unaffected
+    and the recorded track still carries the real frame content. When
+    ``turn_screen_off`` is ``None`` the value is read from the
+    ``ARTEMIS_SCREEN_OFF`` environment variable (set by the console settings),
+    which defaults to off so an existing setup records exactly as before unless
+    the operator opts in.
     """
+    if turn_screen_off is None:
+        turn_screen_off = os.getenv("ARTEMIS_SCREEN_OFF", "0").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
     command = [
         scrcpy_executable,
         "--serial",
         device_id,
         "--no-window",
+    ]
+    if turn_screen_off:
+        command.append("--turn-screen-off")
+    command += [
         "--record",
         str(output_path),
         "--record-format",
