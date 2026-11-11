@@ -240,6 +240,13 @@ class StorageManager:
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at REAL
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS video_recordings (
                     video_id TEXT PRIMARY KEY,
                     session_id TEXT,
