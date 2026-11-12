@@ -1088,8 +1088,8 @@ class DataEngine:
             or len([t for t in self._pending_threads if t.is_alive()]) > 0
         )
 
-    async def shutdown(self):
-        """Wait for all pending background tasks and threads to complete."""
+    async def flush_pending_writes(self):
+        """Wait for pending background storage writes (steps, images) to finish."""
         if self._pending_tasks:
             logger.info(
                 f"Waiting for {len(self._pending_tasks)} pending async tasks to complete..."
@@ -1102,6 +1102,10 @@ class DataEngine:
             for thread in threads_to_join:
                 if thread.is_alive():
                     await asyncio.to_thread(thread.join)
+
+    async def shutdown(self):
+        """Wait for all pending background tasks and threads to complete."""
+        await self.flush_pending_writes()
 
         with self._ipc_socket_lock:
             self._ipc_shutdown = True

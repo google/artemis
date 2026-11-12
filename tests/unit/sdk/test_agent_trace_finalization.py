@@ -142,3 +142,85 @@ async def test_agent_inherits_session_id_from_env_and_propagates_to_tracing(monk
         mock_data_engine.start_session.assert_called_once()
         call_kwargs = mock_data_engine.start_session.call_args.kwargs
         assert call_kwargs["session_id"] == uuid.UUID(canonical_sid)
+
+
+@pytest.mark.asyncio
+async def test_compiled_trace_keeps_steps_persisted_in_session_db(tmp_path, monkeypatch, capsys):
+    """Steps recorded through DataEngine must survive trace compilation (#203)."""
+    import json
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    import artemis.data_engine.engine as engine_module
+    from artemis.data_engine.engine import DataEngine
+    from artemis.interfaces.cli.commands.trace import view_trace
+    from third_party.mobile_use.sdk.agent import AgentBase
+
+    class OfflineEngine(DataEngine):
+        def _connect_ipc_locked(self):
+            return None
+
+        def _publish(self, *args, **kwargs):
+            return None
+
+    traces = tmp_path / "traces"
+    output = tmp_path / "output"
+    trace_name = "recorded-task"
+    (traces / trace_name).mkdir(parents=True)
+    output.mkdir()
+
+    context = SimpleNamespace(
+        execution_setup=SimpleNamespace(traces_path=traces, trace_name=trace_name),
+        device=None,
+        run_outcome=None,
+    )
+    context.data_engine = OfflineEngine(context)
+    # start_session publishes the engine as the process-wide _CURRENT_DATA_ENGINE.
+    # Register the current value with monkeypatch *before* that happens so the
+    # global is restored at teardown instead of leaking this engine into later tests.
+    monkeypatch.setattr(engine_module, "_CURRENT_DATA_ENGINE", engine_module._CURRENT_DATA_ENGINE)
+    with patch("artemis.runtime.DeviceExecutionLock.annotate_active_owner"):
+        context.data_engine.start_session("Open Settings", session_id="recorded-session")
+    # Keep log capture out of the session DB so only the recorded steps are asserted.
+    engine_module._CURRENT_DATA_ENGINE = None
+
+    # Recorded inside a running loop, so the writes are still pending background
+    # tasks when finalization starts, as they are at the end of a real run.
+    context.data_engine.record_step(action_taken={"action": "click"}, summary="tap Settings")
+    context.data_engine.record_step(action_taken={"action": "swipe"}, summary="scroll down")
+    context.data_engine.record_step(
+        action_taken={"action": "report_task_status", "args": {"status": "success"}},
+        summary="done",
+    )
+
+    task = SimpleNamespace(
+        status="completed",
+        created_at=datetime(2026, 1, 1),
+        request=SimpleNamespace(record_trace=True, trace_path=output),
+        get_name=lambda: trace_name,
+    )
+    agent = object.__new__(AgentBase)
+    agent._tmp_traces_dir = traces
+
+    try:
+        await agent._finalize_tracing(task=task, context=context)
+    finally:
+        # Drain any remaining background writes so nothing outlives this test.
+        await context.data_engine.shutdown()
+
+    compiled = next(output.glob(f"{trace_name}_PASS_*"))
+    steps = json.loads((compiled / "steps.json").read_text(encoding="utf-8"))
+    assert [(s["step"], s["action"], s["motivation"]) for s in steps] == [
+        (1, "click", "tap Settings"),
+        (2, "swipe", "scroll down"),
+        (3, "report_task_status", "done"),
+    ]
+    assert steps[2]["action_taken"]["args"] == {"status": "success"}
+    assert len(context.data_engine.storage.get_steps("recorded-session")) == 3
+
+    monkeypatch.setenv("COLUMNS", "200")
+    capsys.readouterr()
+    view_trace(compiled.name, output)
+    rendered = capsys.readouterr().out
+    assert "tap Settings" in rendered
+    assert "report_task_status" in rendered
