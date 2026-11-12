@@ -90,6 +90,7 @@ from third_party.mobile_use.utils.app_launch_utils import _handle_initial_app_la
 from third_party.mobile_use.utils.logger import get_logger
 from third_party.mobile_use.utils.media import (
     create_gif_from_trace_folder,
+    create_steps_json_from_step_records,
     create_steps_json_from_trace_folder,
     remove_images_from_trace_folder,
     remove_steps_json_from_trace_folder,
@@ -918,7 +919,8 @@ class AgentBase:
 
         logger.info(f"[{task_name}] Compiling trace FROM FOLDER: " + str(temp_trace_path))
         create_gif_from_trace_folder(temp_trace_path)
-        create_steps_json_from_trace_folder(temp_trace_path)
+        if create_steps_json_from_trace_folder(temp_trace_path) == 0:
+            await self._compile_session_steps(temp_trace_path, context)
 
         logger.info(f"[{task_name}] Video created, removing dust...")
         remove_images_from_trace_folder(temp_trace_path)
@@ -931,6 +933,25 @@ class AgentBase:
         new_video_path = output_folder_path / "recording.mp4"
         if new_video_path.exists() and context.data_engine:
             context.data_engine.update_video_path(new_video_path)
+
+    async def _compile_session_steps(self, trace_folder: Path, context: ArtemisContext):
+        """Fill ``steps.json`` from the steps persisted for this session.
+
+        Steps are written to the session database by ``DataEngine.record_step``
+        rather than as files in the trace folder, so without this the compiled
+        trace has an empty step history.
+        """
+        data_engine = context.data_engine
+        session_id = getattr(data_engine, "current_session_id", None) if data_engine else None
+        if not session_id:
+            return
+        try:
+            await data_engine.flush_pending_writes()
+            steps = data_engine.storage.get_steps(session_id)
+            if steps:
+                create_steps_json_from_step_records(trace_folder, steps)
+        except Exception as e:
+            logger.warning(f"Could not compile session steps into steps.json: {e}")
 
     def _prepare_output_files(self, task: Task):
         if task.request.llm_output_path:

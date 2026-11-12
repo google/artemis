@@ -19,6 +19,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Any
 import subprocess
 import tempfile
 
@@ -189,8 +190,11 @@ def remove_images_from_trace_folder(trace_folder_path: Path):
             file.unlink()
 
 
-def create_steps_json_from_trace_folder(trace_folder_path: Path):
-    """Compile legacy timestamp-named step files without consuming manifests."""
+def create_steps_json_from_trace_folder(trace_folder_path: Path) -> int:
+    """Compile legacy timestamp-named step files without consuming manifests.
+
+    Returns the number of compiled steps.
+    """
     steps = []
     for file in trace_folder_path.iterdir():
         if file.suffix == ".json" and file.stem.isdigit():
@@ -204,6 +208,47 @@ def create_steps_json_from_trace_folder(trace_folder_path: Path):
 
     with open(trace_folder_path / "steps.json", "w", encoding="utf-8", errors="ignore") as f:
         f.write(json.dumps(steps))
+    return len(steps)
+
+
+def _step_action_label(action_taken: Any) -> str:
+    if isinstance(action_taken, dict):
+        for key in ("action", "name", "tool"):
+            value = action_taken.get(key)
+            if isinstance(value, str) and value:
+                return value
+    if isinstance(action_taken, str) and action_taken:
+        return action_taken
+    return "-"
+
+
+def create_steps_json_from_step_records(trace_folder_path: Path, steps: list[Any]) -> int:
+    """Write ``steps.json`` from persisted DataEngine step records.
+
+    Steps are stored in the session database rather than as per-step files in
+    the trace folder, so this is the source of the compiled step history. Each
+    entry carries the ``step`` / ``action`` / ``motivation`` keys that
+    ``artemis trace view`` renders, plus the raw recorded fields.
+    """
+    entries = []
+    for step in steps:
+        motivation = getattr(step, "summary", None) or getattr(step, "operator_raw_thinking", None)
+        entries.append(
+            {
+                "step": step.step_number,
+                "timestamp": step.timestamp,
+                "action": _step_action_label(step.action_taken),
+                "motivation": motivation or "-",
+                "action_taken": step.action_taken,
+                "last_execution_result": step.last_execution_result,
+            }
+        )
+
+    with open(trace_folder_path / "steps.json", "w", encoding="utf-8", errors="ignore") as f:
+        f.write(json.dumps(entries, default=str))
+
+    logger.info(f"Compiled {len(entries)} steps from the session database")
+    return len(entries)
 
 
 def remove_steps_json_from_trace_folder(trace_folder_path: Path):
