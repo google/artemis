@@ -39,12 +39,17 @@ def parse_swipe_parameters(
         coordinates = args.get("coordinates") or args.get("normalized_coordinates")
         action = args.get("action")
         gesture = args.get("gesture")
-        duration = (
-            args.get("duration")
-            or args.get("duration_ms")
-            or args.get("time_in_ms")
-            or default_duration
-        )
+        duration = default_duration
+        for _key in ("duration", "duration_ms", "time_in_ms"):
+            _value = args.get(_key)
+            if _value is None or isinstance(_value, bool):
+                continue
+            try:
+                int(_value)
+            except (ValueError, TypeError):
+                continue
+            duration = _value
+            break
     else:
         direction = None
         start = None
