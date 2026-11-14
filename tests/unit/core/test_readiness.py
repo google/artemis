@@ -131,6 +131,7 @@ def test_sort_by_fix_order_follows_check_order_and_appends_unknown_ids():
         "integration_host",
         "gemini_api_key",
         "android_adb",
+        "ios_simulators",
         "toolchain",
         "vision_ocr_key",
     ]

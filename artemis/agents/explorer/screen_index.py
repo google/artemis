@@ -24,7 +24,7 @@ import difflib
 import re
 from typing import Any, Literal
 
-from artemis.utils.visualization import parse_bounds
+from artemis.utils.visualization import get_hit_point, parse_bounds
 
 Bounds = tuple[int, int, int, int]
 ElementSource = Literal["xml", "ocr"]
@@ -84,6 +84,8 @@ class ScreenElement:
 
     @property
     def center(self) -> tuple[int, int]:
+        if (point := get_hit_point(self.node)) is not None:
+            return point
         left, top, right, bottom = self.bounds
         return (left + right) // 2, (top + bottom) // 2
 
@@ -173,8 +175,12 @@ class ScreenIndex:
         for node in fused_xml or []:
             if not isinstance(node, dict):
                 continue
+            if "hit_point" in node and get_hit_point(node, width, height) is None:
+                node = {key: value for key, value in node.items() if key != "hit_point"}
             class_name = node.get("class") or node.get("className")
-            resource_id = node.get("resource-id") or node.get("resourceId")
+            resource_id = (
+                node.get("resource-id") or node.get("resourceId") or node.get("resource_id")
+            )
             interactive = any(_is_truthy_attr(node.get(key)) for key in INTERACTION_KEYS)
 
             for ocr in node.get("ocr_elements") or []:

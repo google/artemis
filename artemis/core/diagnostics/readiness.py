@@ -41,8 +41,9 @@ CHECK_ORDER: dict[str, int] = {
     "integration_host": 2,
     "gemini_api_key": 3,
     "android_adb": 4,
-    "toolchain": 5,
-    "vision_ocr_key": 6,
+    "ios_simulators": 5,
+    "toolchain": 6,
+    "vision_ocr_key": 7,
 }
 
 
@@ -70,7 +71,7 @@ def base_verdict(results: Sequence[ProbeResult]) -> Verdict:
     blockers = [r for r in results if r.is_blocker]
     if not blockers or any(r.status is not ProbeStatus.PASS for r in blockers):
         return "blocked"
-    if any(r.status is not ProbeStatus.PASS for r in results):
+    if any(r.status not in (ProbeStatus.PASS, ProbeStatus.SKIPPED) for r in results):
         return "degraded"
     return "ready"
 

@@ -35,6 +35,7 @@ from artemis.data_engine.trace import TraceSpan, trace
 from artemis.services.llm import get_llm
 from artemis.utils.python_executor import PythonExecutor
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -118,7 +119,7 @@ class ImageProcessor:
                     {"type": "text", "text": "Here is the target image. Begin writing your code."},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                        "image_url": {"url": image_data_uri(img_b64)},
                     },
                 ]
             ),
@@ -186,9 +187,7 @@ class ImageProcessor:
                                     image_blocks.append(
                                         {
                                             "type": "image_url",
-                                            "image_url": {
-                                                "url": f"data:image/jpeg;base64,{b64_data}"
-                                            },
+                                            "image_url": {"url": image_data_uri(b64_data)},
                                         }
                                     )
                                     image_blocks.append({"type": "text", "text": f"\n{label}\n"})

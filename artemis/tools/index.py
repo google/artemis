@@ -27,9 +27,16 @@ def get_tools_from_wrappers(
     wrappers: list[ToolWrapper],
 ) -> list[BaseTool]:
     """Instantiate the available tools of ``wrappers``, traced into the data engine."""
-    return build_tools_from_wrappers(
+    tools = build_tools_from_wrappers(
         ctx, wrappers, wrap_tool=lambda t: trace_langchain_tool(t, ctx)
     )
+    if getattr(getattr(ctx, "device", None), "mobile_platform", None) == "ios":
+        tools = [
+            t
+            for t in tools
+            if t.name not in {"run_adb_command", "manage_task", "analyze_task_output"}
+        ]
+    return tools
 
 
 def get_tool_by_name(name: str, tools: list[BaseTool]) -> BaseTool | None:

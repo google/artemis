@@ -54,6 +54,7 @@ from artemis.memory.context_policy import build_history_for
 from artemis.utils.cython_compat import CyFunctionDetector
 from third_party.mobile_use.utils.decorators import agent_lifecycle_logging
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -279,7 +280,7 @@ class PlannerNode:
             human_message_content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
+                    "image_url": {"url": image_data_uri(screenshot_b64)},
                 }
             )
         messages = [

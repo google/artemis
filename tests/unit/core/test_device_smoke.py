@@ -48,10 +48,13 @@ def patch_controller(monkeypatch):
             controller.get_screen_data = get_screen_data
         calls: list[str | None] = []
 
-        def _fake_get_controller(device_serial=None):
+        def _fake_get_controller(device_serial=None, target_platform=None):
             calls.append(device_serial)
             if factory is not None:
-                return factory(device_serial)
+                if target_platform is None:
+                    # Preserve the Android call shape: no platform kwarg.
+                    return factory(device_serial)
+                return factory(device_serial, target_platform=target_platform)
             return controller
 
         monkeypatch.setattr("artemis.mcp.adb_server._get_controller", _fake_get_controller)
@@ -356,6 +359,123 @@ def test_fix_for_error_generic_fallback_uses_serial():
     assert any("uiautomator dump" in step for step in fix)
     assert device_smoke.fix_for_error(None, SERIAL) == []
     assert "<serial>" in device_smoke.fix_for_error("timeout", None)[1]
+
+
+# --------------------------------------------------------------------------- #
+# iOS path
+# --------------------------------------------------------------------------- #
+
+IOS_UDID = "AAAA-1111-0000"
+
+
+def _ios_screen_data():
+    return SimpleNamespace(
+        base64=base64.b64encode(FAKE_JPEG).decode("ascii"),
+        elements='<hierarchy><node class="XCUIElementTypeButton"/></hierarchy>',
+        width=1170,
+        height=2532,
+    )
+
+
+def _ios_controller(device_id=IOS_UDID):
+    controller = MagicMock()
+    controller.ctx = SimpleNamespace(
+        device=SimpleNamespace(device_id=device_id, mobile_platform="ios")
+    )
+    controller._driver = SimpleNamespace()  # not a PhysicalIosDriver -> xcode
+    return controller
+
+
+@pytest.mark.asyncio
+async def test_ios_smoke_runs_observation_helper_and_reports_xcode(patch_controller, monkeypatch):
+    """iOS observes through the lease-owning helper on the caller's loop."""
+    observe = AsyncMock(return_value=_ios_screen_data())
+    monkeypatch.setattr(device_smoke, "observe_ios_controller", observe)
+    captured: dict = {}
+
+    def factory(device_serial, target_platform=None):
+        captured["device_serial"] = device_serial
+        captured["target_platform"] = target_platform
+        return _ios_controller()
+
+    patch_controller(factory=factory)
+
+    result = await smoke_test_device(device_serial=IOS_UDID, platform="ios")
+
+    assert result["ok"] is True
+    assert result["error"] is None
+    assert result["fix"] == []
+    assert result["serial"] == IOS_UDID
+    assert result["hierarchy_backend"] == "xcode"
+    assert captured == {"device_serial": IOS_UDID, "target_platform": "ios"}
+    observe.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ios_smoke_ignores_adb_serial_env(patch_controller, monkeypatch):
+    """ADB_DEVICE_SERIAL must never seed an iOS target."""
+    monkeypatch.setenv("ADB_DEVICE_SERIAL", "emulator-5554")
+    observe = AsyncMock(return_value=_ios_screen_data())
+    monkeypatch.setattr(device_smoke, "observe_ios_controller", observe)
+
+    def factory(device_serial, target_platform=None):
+        return _ios_controller(device_id=device_serial or "booted")
+
+    patch_controller(factory=factory)
+
+    result = await smoke_test_device(platform="ios")
+
+    assert result["ok"] is True
+    # Serial comes from ctx after canonical resolution — never the ADB serial.
+    assert result["serial"] == "booted"
+    assert "emulator-5554" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_ios_smoke_skips_unscoped_android_busy_guard(patch_controller, monkeypatch):
+    """The helper performs scope-correct admission; an Android owner on the
+    same serial text must not veto the iOS smoke."""
+    monkeypatch.setattr(
+        DeviceExecutionLock,
+        "get_active_owners",
+        classmethod(lambda cls: {IOS_UDID: _owner(IOS_UDID, "android task")}),
+    )
+    observe = AsyncMock(return_value=_ios_screen_data())
+    monkeypatch.setattr(device_smoke, "observe_ios_controller", observe)
+    patch_controller(factory=lambda device_serial, target_platform=None: _ios_controller())
+
+    result = await smoke_test_device(device_serial=IOS_UDID, platform="ios")
+
+    assert result["ok"] is True
+    observe.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ios_smoke_failure_maps_to_ios_fixes(patch_controller, monkeypatch):
+    observe = AsyncMock(side_effect=RuntimeError("WebDriverAgent did not answer within 45s"))
+    monkeypatch.setattr(device_smoke, "observe_ios_controller", observe)
+    patch_controller(factory=lambda device_serial, target_platform=None: _ios_controller())
+
+    result = await smoke_test_device(device_serial=IOS_UDID, platform="ios")
+
+    assert result["ok"] is False
+    assert "WebDriverAgent" in result["error"]
+    assert any("WebDriverAgent" in step for step in result["fix"])
+    assert not any("adb " in step for step in result["fix"])
+
+
+@pytest.mark.asyncio
+async def test_ios_smoke_init_failure_reports_ios_target(patch_controller):
+    def _boom(device_serial, target_platform=None):
+        raise Exception("iOS support requires macOS and Xcode 27 or later")
+
+    patch_controller(factory=_boom)
+
+    result = await smoke_test_device(device_serial=IOS_UDID, platform="ios")
+
+    assert result["ok"] is False
+    assert "Failed to initialize iOS device controller" in result["error"]
+    assert any("Xcode" in step for step in result["fix"])
 
 
 def test_smoke_test_is_exported_from_diagnostics_package():

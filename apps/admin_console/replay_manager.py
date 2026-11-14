@@ -113,21 +113,15 @@ class ReplayManager:
     def __init__(
         self,
         workspace_root: Path = WORKSPACE_ROOT,
-        device_id: str = None,
         original_db_path: Path = None,
-        init_device: bool = False,
     ):
-        """Initializes the ReplayManager and autodetects the connected Android device.
+        """Initializes the ReplayManager.
 
         Args:
             workspace_root (Path, optional): The absolute path to the workspace
               root. Defaults to WORKSPACE_ROOT.
-            device_id (str, optional): The serial ID of the target Android
-              device. If not specified, autodetects the first connected device.
             original_db_path (Path, optional): Path to the master SQLite
               database. Defaults to DB_PATH.
-            init_device (bool, optional): Whether to initialize the ADB device
-              connection on startup.
         """
         self.workspace_root = workspace_root
         self.traces_path = TRACES_PATH
@@ -136,62 +130,6 @@ class ReplayManager:
         self.test_outputs_dir = self.replay_base_dir / "outputs"
         self.db_path = Path(original_db_path) if original_db_path else DB_PATH
         self.images_dir = IMAGES_DIR
-
-        # Device connection and autodetection
-        self.device_id = None
-        self.w = None
-        self.h = None
-        self.adb = None
-        self.ui_client = None
-
-        if init_device:
-            try:
-                self._init_device(device_id)
-            except Exception as e:
-                print(
-                    "Warning: Connected device could not be initialized during"
-                    f" ReplayManager startup: {e}"
-                )
-
-    def _init_device(self, device_id: str = None):
-        """Initializes connection to the target device and queries screen metrics."""
-        from adbutils import AdbClient
-
-        try:
-            from third_party.mobile_use.clients.ui_automator_client import UIAutomatorClient
-        except ImportError:
-            raise ImportError(
-                "Failed to import UIAutomatorClient. Ensure artemis package is installed in path."
-            )
-
-        self.adb = AdbClient(host="localhost", port=5037)
-        try:
-            devices = self.adb.device_list()
-        except Exception as adb_err:
-            raise ConnectionError(
-                f"Failed to query device list from ADB server: {adb_err}"
-            ) from adb_err
-
-        if not devices:
-            raise ConnectionError(
-                "No active ADB devices connected. Please connect an Android device via ADB."
-            )
-
-        if device_id:
-            matched_device = next((d.serial for d in devices if d.serial == device_id), None)
-            if not matched_device:
-                raise ConnectionError(
-                    f"Requested device '{device_id}' is not connected."
-                    f" Connected devices: {[d.serial for d in devices]}"
-                )
-            self.device_id = matched_device
-        else:
-            self.device_id = devices[0].serial
-
-        self.ui_client = UIAutomatorClient(device_id=self.device_id)
-        ui_data = self.ui_client.get_screen_data()
-        self.w, self.h = ui_data.width, ui_data.height
-        print(f"Connected to device: {self.device_id} ({self.w}x{self.h})")
 
     def chunk_session_traces(self, session_id: str, output_dir: Path = None) -> Path:
         """Chunks traces, screenshots, and metadata for a specific execution session.
@@ -395,18 +333,6 @@ class ReplayManager:
             print(f"Warning: Failed to write chunked sentinel file: {e}")
         print("Chunking trace completion status: success")
         return output_dir
-
-    def list_devices(self) -> list[dict]:
-        """Dynamically queries the ADB server for connected Android devices."""
-        try:
-            from adbutils import AdbClient
-
-            adb = AdbClient(host="localhost", port=5037)
-            devices = adb.device_list()
-            return [{"serial": d.serial, "status": "online"} for d in devices]
-        except Exception as e:
-            print(f"Warning: Failed to query device list from ADB: {e}")
-            return []
 
     def load_session_goal(
         self, session_id: str, step_dir: Path, original_db_path: str = None
@@ -1604,12 +1530,69 @@ class ReplayManager:
         except Exception as e:
             print(f"Warning: Failed to update sandbox SQLite database: {e}")
 
+    def _session_device_info(self, session_id: str) -> dict:
+        """The recorded session's ``device_info`` blob (``{}`` when absent)."""
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                row = conn.execute(
+                    "SELECT device_info FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return {}
+        if not row or not row[0]:
+            return {}
+        try:
+            info = json.loads(row[0])
+        except (ValueError, TypeError):
+            # Malformed device_info: simulate with the defaults.
+            return {}
+        return info if isinstance(info, dict) else {}
+
+    @staticmethod
+    def _replay_device_context(device_info: dict, override_device_id: str | None):
+        """Build the simulated ``DeviceContext`` for a replayed session.
+
+        The recorded session decides the platform: an iOS session replays
+        through the native iOS driver, never through ADB. The frontend's
+        device pick only retargets iOS replays (the picker was always
+        decorative for Android and stays that way); the driver still
+        validates the UDID — simctl for simulators, devicectl for physical
+        devices — at connect time.
+        """
+        from artemis.context import DeviceContext, DevicePlatform
+
+        sim_platform = str(
+            device_info.get("mobile_platform") or DevicePlatform.ANDROID.value
+        ).lower()
+        mobile_platform = (
+            DevicePlatform.IOS
+            if sim_platform == DevicePlatform.IOS.value
+            else DevicePlatform.ANDROID
+        )
+        sim_device_id = device_info.get("device_id", "replay-device")
+        if mobile_platform == DevicePlatform.IOS and override_device_id:
+            sim_device_id = override_device_id
+        return DeviceContext(
+            host_platform=("DARWIN" if mobile_platform == DevicePlatform.IOS else "LINUX"),
+            mobile_platform=mobile_platform,
+            device_id=sim_device_id,
+            device_width=device_info.get("device_width", 1080),
+            device_height=device_info.get("device_height", 2400),
+        )
+
     def create_ctx(
         self,
         session_id: str,
         step_number: int,
         agent_name: str = "explorer",
         replay_id: str = None,
+        override_device_id: str = None,
     ) -> ArtemisContext:
         """Creates a sandboxed ArtemisContext and DataEngine for the given session and step."""
         self._ensure_session_chunked(session_id)
@@ -1682,37 +1665,13 @@ class ReplayManager:
         except ImportError as import_err:
             raise ImportError(f"Failed to import Artemis core modules: {import_err}")
 
-        import sqlite3
-
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT device_info FROM sessions WHERE session_id = ?",
-            (session_id,),
+        device_info = self._session_device_info(session_id)
+        device_context = self._replay_device_context(device_info, override_device_id)
+        sim_device_id = device_context.device_id
+        print(
+            f"Replay simulated device: {sim_device_id} "
+            f"({device_context.device_width}x{device_context.device_height})"
         )
-        row = cursor.fetchone()
-        conn.close()
-
-        device_info = {}
-        if row and row[0]:
-            try:
-                device_info = json.loads(row[0])
-            except (ValueError, TypeError):
-                # Malformed device_info: simulate with the defaults below.
-                pass
-
-        sim_device_id = device_info.get("device_id", "replay-device")
-        sim_w = device_info.get("device_width", 1080)
-        sim_h = device_info.get("device_height", 2400)
-
-        device_context = DeviceContext(
-            host_platform="LINUX",
-            mobile_platform=DevicePlatform.ANDROID,
-            device_id=sim_device_id,
-            device_width=sim_w,
-            device_height=sim_h,
-        )
-        print(f"Replay simulated device: {sim_device_id} ({sim_w}x{sim_h})")
 
         from artemis.config import get_default_llm_config
 
@@ -1765,6 +1724,7 @@ class ReplayManager:
                 pre_image_meta = json.load(f)
 
         initial_goal = self.load_session_goal(session_id, step_dir, str(self.db_path))
+        device_info = self._session_device_info(session_id)
 
         # State has no fields for the app info or device date (extra="forbid").
         ui_hier, decisions, _app_info, _dev_date = self.extract_state_prepopulation_data(
@@ -1781,7 +1741,10 @@ class ReplayManager:
             latest_screenshot=str(step_dir / "pre.jpg")
             if (step_dir / "pre.jpg").exists()
             else str(step_dir / "post.jpg"),
-            operator_raw_data={"width": self.w, "height": self.h},
+            operator_raw_data={
+                "width": device_info.get("device_width"),
+                "height": device_info.get("device_height"),
+            },
             current_step_id=step_data["step_id"],
             subagent_calls=step_data.get("subagent_calls") or [],
             latest_ui_hierarchy=ui_hier,
@@ -1872,6 +1835,7 @@ class ReplayManager:
             step_number=step_number,
             agent_name=agent_name,
             replay_id=replay_id,
+            override_device_id=override_device_id,
         )
 
         state = self.instantiate_state(

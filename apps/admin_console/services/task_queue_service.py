@@ -52,6 +52,13 @@ from artemis.runtime import (
     request_cancel,
     trace_store,
 )
+from artemis.runtime.device_target import (
+    IOS_LOCK_SCOPE,
+    IosTarget,
+    device_pool_for,
+    normalize_device_platform,
+    target_for_platform,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -216,15 +223,16 @@ class TaskQueueService:
         ).start()
 
     @staticmethod
-    def _task_target(task_item: dict[str, Any]) -> AdbTarget:
+    def _task_target(task_item: dict[str, Any]) -> AdbTarget | IosTarget:
+        serial = str(task_item.get("device_serial") or "") or None
+        if normalize_device_platform(task_item.get("platform"), strict=False) == "ios":
+            # iOS targets never read a stale/malformed Android endpoint blob.
+            return IosTarget(serial=serial)
         endpoint_data = task_item.get("adb_endpoint")
         endpoint = (
-            AdbEndpoint.from_mapping(endpoint_data)
-            if isinstance(endpoint_data, dict)
-            else current_adb_endpoint()
+            AdbEndpoint.from_mapping(endpoint_data) if isinstance(endpoint_data, dict) else None
         )
-        serial = task_item.get("device_serial")
-        return AdbTarget(endpoint=endpoint, serial=str(serial) if serial else None)
+        return target_for_platform(task_item.get("platform"), serial=serial, endpoint=endpoint)
 
     @classmethod
     def _broadcast_event(cls, event_type: str, data: Any):
@@ -498,7 +506,7 @@ class TaskQueueService:
         sess_id: Any,
         goal: str,
         profile: str,
-        target: AdbTarget,
+        target: AdbTarget | IosTarget,
     ) -> tuple[list[str], dict[str, str]]:
         """Assemble the worker subprocess command line and environment."""
         expected_output = task_item.get("expected_output")
@@ -525,7 +533,7 @@ class TaskQueueService:
             env["ARTEMIS_SESSION_ID"] = str(sess_id)
         env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
         env["ARTEMIS_TASK_WORKER"] = "1"
-        target.endpoint.apply_to_environment(env)
+        target.apply_to_environment(env)
         env[DeviceExecutionLock.LOCK_SCOPE_ENV] = target.lock_scope
         queue_ticket = task_item.get("queue_ticket")
         if queue_ticket:
@@ -556,7 +564,14 @@ class TaskQueueService:
         if app_path:
             cmd.extend(["--app-path", str(app_path)])
         device_serial = task_item.get("device_serial")
-        if device_serial:
+        if isinstance(target, IosTarget):
+            cmd.extend(["--platform", "ios"])
+            ios_workspace = task_item.get("ios_workspace")
+            if ios_workspace:
+                cmd.extend(["--ios-workspace", str(ios_workspace)])
+            if device_serial:
+                cmd.extend(["--device-serial", str(device_serial)])
+        elif device_serial:
             cmd.extend(["--device-serial", str(device_serial)])
             env["ADB_DEVICE_SERIAL"] = str(device_serial)
         return cmd, env
@@ -569,7 +584,7 @@ class TaskQueueService:
         sess_id: Any,
         goal: str,
         profile: str,
-        target: AdbTarget,
+        target: AdbTarget | IosTarget,
         proc: asyncio.subprocess.Process,
     ) -> None:
         """Record the spawned worker in shared state and hand it the device reservation."""
@@ -580,7 +595,9 @@ class TaskQueueService:
             "process": proc,
             "device_id": str(device_serial) if device_serial else None,
             "lock_key": target.lock_key if device_serial else None,
-            "adb_endpoint": target.endpoint.to_dict(),
+            "platform": target.platform,
+            "target": target.to_dict(),
+            "adb_endpoint": (target.endpoint.to_dict() if isinstance(target, AdbTarget) else None),
             "goal": goal,
             "profile": profile,
         }
@@ -909,6 +926,8 @@ class TaskQueueService:
         device_serial: str | None,
         endpoint: AdbEndpoint,
         now: float,
+        *,
+        platform: str = "android",
     ) -> dict[str, Any] | None:
         """Return the short-circuit response for a duplicate submission, if any."""
         # 1. Deduplication by session_id: if session_id is already running or queued, do not re-enqueue
@@ -947,8 +966,14 @@ class TaskQueueService:
                     if isinstance(item, dict)
                     and item.get("status") == "pending"
                     and item.get("goal") == first_goal
+                    and normalize_device_platform(item.get("platform"), strict=False) == platform
                     and (not device_serial or item.get("device_serial") == device_serial)
-                    and item.get("adb_endpoint", {}).get("identity") == endpoint.identity
+                    # iOS items carry no ADB endpoint snapshot; matching the
+                    # platform + serial is the whole identity there.
+                    and (
+                        platform == "ios"
+                        or (item.get("adb_endpoint") or {}).get("identity") == endpoint.identity
+                    )
                     and (now - float(item.get("created_at", 0))) < 1.0
                 ),
                 None,
@@ -963,7 +988,9 @@ class TaskQueueService:
         return None
 
     @classmethod
-    async def _reject_unavailable_device(cls, device_serial: str | None) -> dict[str, Any] | None:
+    async def _reject_unavailable_device(
+        cls, device_serial: str | None, platform: str = "android"
+    ) -> dict[str, Any] | None:
         """Return the rejection response for an unattached explicit serial, if any."""
         # Strict device binding: reject an explicitly requested serial that is not
         # attached and authorized, instead of silently running on another device.
@@ -971,9 +998,9 @@ class TaskQueueService:
         # the task can proceed and fail downstream with a clear no-device error.
         if device_serial:
             try:
-                from artemis.runtime import device_pool
-
-                rejection = await device_pool.validate_explicit_serial_async(device_serial)
+                rejection = await device_pool_for(platform).validate_explicit_serial_async(
+                    device_serial
+                )
             except Exception:
                 rejection = None
             if rejection:
@@ -1004,6 +1031,8 @@ class TaskQueueService:
         conversation_id: str | None,
         verification_level: str | None = None,
         explorer_mode: str | None = None,
+        platform: str = "android",
+        ios_workspace: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1015,7 +1044,7 @@ class TaskQueueService:
             device_id=assigned_serial or "pending",
             session_id=sess_id,
             ingress=ingress,
-            lock_scope=endpoint.identity,
+            lock_scope=IOS_LOCK_SCOPE if platform == "ios" else endpoint.identity,
         )
         return {
             "session_id": sess_id,
@@ -1028,7 +1057,11 @@ class TaskQueueService:
             "locked_app_package": locked_app_package,
             "app_path": app_path,
             "device_serial": assigned_serial,
-            "adb_endpoint": endpoint.to_dict(),
+            # iOS targets have no endpoint; serialize None rather than leaking
+            # the caller's ADB preference into the task snapshot.
+            "adb_endpoint": endpoint.to_dict() if platform != "ios" else None,
+            "platform": platform,
+            "ios_workspace": ios_workspace,
             "ingress": ingress,
             "conversation_id": conversation_id,
             "status": "pending",
@@ -1052,13 +1085,20 @@ class TaskQueueService:
         conversation_id: str | None = None,
         verification_level: str | None = None,
         explorer_mode: str | None = None,
+        platform: str | None = None,
+        ios_workspace: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
 
         ``verification_level`` and ``explorer_mode`` are Pro-profile tuning knobs
         forwarded to the worker as ``--verification-level`` / ``--explorer-pro-mode``;
         they are normalised here so the queue item and the CLI see one spelling.
+
+        ``platform="ios"`` enqueues a native iOS task: the serial is a simulator
+        or paired physical UDID, the device lock is scoped under ``ios``, and the worker
+        runs with ``--platform ios`` instead of ADB bindings.
         """
+        platform = normalize_device_platform(platform, strict=False)
         verification_level = (
             str(verification_level).strip().lower() or None if verification_level else None
         )
@@ -1070,22 +1110,19 @@ class TaskQueueService:
         endpoint = current_adb_endpoint()
 
         duplicate_response = cls._find_duplicate_submission(
-            goals, session_id, device_serial, endpoint, now
+            goals, session_id, device_serial, endpoint, now, platform=platform
         )
         if duplicate_response is not None:
             return duplicate_response
 
-        rejection_response = await cls._reject_unavailable_device(device_serial)
+        rejection_response = await cls._reject_unavailable_device(device_serial, platform)
         if rejection_response is not None:
             return rejection_response
 
         single_session_id = session_id if (session_id and len(goals) == 1) else None
         if not device_serial:
-            # Device enumeration may block on ADB.
-            from artemis.runtime import device_pool
-
             try:
-                device_serial = await device_pool.select_device_async()
+                device_serial = await device_pool_for(platform).select_device_async()
             except Exception:
                 device_serial = None
         for i, goal in enumerate(goals):
@@ -1105,6 +1142,8 @@ class TaskQueueService:
                 conversation_id,
                 verification_level=verification_level,
                 explorer_mode=explorer_mode,
+                platform=platform,
+                ios_workspace=ios_workspace,
             )
             state.queue_items.append(task_item)
             enqueued_tasks.append(task_item)

@@ -326,6 +326,26 @@ def test_active_owner_is_discoverable_and_can_be_annotated(monkeypatch):
         owner_lock.release()
 
 
+def test_annotation_preserves_lock_scope(monkeypatch):
+    """Annotating a scoped (e.g. iOS) owner must not strip its lock_scope."""
+    monkeypatch.setenv("ARTEMIS_TASK_INGRESS", "daemon")
+    owner_lock = DeviceExecutionLock("00008100-000000000000001E", "iOS task", lock_scope="ios")
+    owner_lock.acquire()
+    try:
+        assert DeviceExecutionLock.annotate_active_owner(
+            session_id="ios-session",
+            device_id="00008100-000000000000001E",
+        )
+        annotated = DeviceExecutionLock.get_active_owner(
+            "00008100-000000000000001E", lock_scope="ios"
+        )
+        assert annotated is not None
+        assert annotated.lock_scope == "ios"
+        assert annotated.session_id == "ios-session"
+    finally:
+        owner_lock.release()
+
+
 def test_multi_device_locks_can_run_concurrently():
     lock_a = DeviceExecutionLock("emulator-5554", "task on device A")
     lock_b = DeviceExecutionLock("pixel-9-test", "task on device B")

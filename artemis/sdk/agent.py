@@ -13,16 +13,20 @@
 # limitations under the License.
 
 import asyncio
+import contextlib
 import inspect
 import os
 import re
+import threading
 
 import uuid
+from io import BytesIO
 from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
 from langchain_google_genai import ChatGoogleGenerativeAI
+from PIL import Image
 
 from artemis.clients.screen_client_factory import (
     describe_backend,
@@ -36,17 +40,19 @@ from artemis.config import (
 )
 from artemis.context import (
     ArtemisContext,
+    DeviceContext,
     DevicePlatform,
     ExecutionSetup,
 )
 from artemis.data_engine.engine import DataEngine
 from artemis.graph.state import State
-from artemis.runtime import trace_store
+from artemis.runtime import DeviceExecutionLock, trace_store
+from artemis.runtime.device_target import IOS_LOCK_SCOPE
 from artemis.runtime.cancel_requests import watch_for_cancel_request
 from artemis.sdk.run_outcome import attach_test_summary, resolve_trace_suffix
 from artemis.sdk.types.agent import AgentConfig
 from artemis.utils.startup_progress import publish_startup_progress
-from third_party.mobile_use.sdk.types.exceptions import AgentError
+from third_party.mobile_use.sdk.types.exceptions import AgentError, AgentNotInitializedError
 from third_party.mobile_use.sdk.types.task import Task
 from third_party.mobile_use.sdk.agent import AgentBase, TOutput
 from third_party.mobile_use.utils.logger import get_logger
@@ -113,7 +119,7 @@ class Agent(AgentBase):
             updates = {}
             if target_dev:
                 updates["device_id"] = target_dev
-                updates["device_platform"] = DevicePlatform.ANDROID
+                updates["device_platform"] = config.device_platform or DevicePlatform.ANDROID
             if concurrency_mode:
                 updates["concurrency_mode"] = str(concurrency_mode).strip().lower()
             if max_concurrency is not None:
@@ -125,6 +131,148 @@ class Agent(AgentBase):
         self._tmp_traces_dir = Path(settings.TRACES_PATH)
         self._initialized = False
         self._task_lock = asyncio.Lock()
+        self._ios_driver = None
+        self._adb_client = None
+        self._ui_adb_client = None
+
+    async def _init_internal(
+        self,
+        api_key: str | None = None,
+        retry_count: int = 5,
+        retry_wait_seconds: int = 5,
+    ):
+        if self._config.device_platform != DevicePlatform.IOS:
+            return await super()._init_internal(api_key, retry_count, retry_wait_seconds)
+        if os.environ.get("ARTEMIS_CLOUD_MODE") == "1":
+            raise AgentError("iOS support is local only; cloud mode targets Android.")
+        if self._initialized:
+            return True
+        from artemis.drivers.factory import ios_driver_class
+        from artemis.drivers.ios.discovery import BOOTED_SIMULATOR_ID
+
+        publish_startup_progress(
+            "device_check", "Checking the iOS device", session_id=self._session_id
+        )
+        # The picker runs simctl/devicectl subprocesses — keep them off the
+        # event loop so init timeouts and progress stays responsive.
+        driver_class = await asyncio.to_thread(
+            ios_driver_class, self._config.device_id or BOOTED_SIMULATOR_ID
+        )
+        driver = driver_class(
+            device_id=self._config.device_id or BOOTED_SIMULATOR_ID,
+            workspace_path=getattr(self._config, "ios_workspace_path", None),
+        )
+        self._ios_driver = driver
+        try:
+            # Resolve the device without booting it or opening a native UI
+            # session. Mutating setup waits for run_task's execution lease.
+            await driver.resolve_device()
+        except (OSError, ValueError, RuntimeError, TimeoutError, asyncio.CancelledError):
+            await driver.disconnect()
+            self._ios_driver = None
+            raise
+        width, height = driver.screen_size
+        self._device_context = DeviceContext(
+            host_platform="DARWIN",
+            mobile_platform=DevicePlatform.IOS,
+            device_id=driver.device_id,
+            device_width=width,
+            device_height=height,
+        )
+        # Android read-only ADB probes have no iOS equivalent yet; native
+        # simctl recording is supported and honors the configured flag.
+        self._config = self._config.model_copy(update={"disable_device_probes": True})
+        publish_startup_progress("device_ready", "iOS device selected", session_id=self._session_id)
+        asyncio.create_task(self._prewarm_llm_connections(api_key))
+        self._initialized = True
+        return True
+
+    @contextlib.asynccontextmanager
+    async def _ios_operation(self):
+        """Serialize one public iOS SDK call behind the device execution lease.
+
+        Called from ``run_task`` itself (internal app installation), the helper
+        reuses the lease and native session the task already holds. Called
+        publicly, it acquires the same FIFO device lease a task would, then
+        opens a short-lived native session that is always closed on exit.
+        """
+        driver = self._ios_driver
+        if not self._initialized or driver is None:
+            raise AgentNotInitializedError()
+        if asyncio.current_task() is getattr(self, "_current_task", None):
+            yield driver
+            return
+        async with self._task_lock:
+            if not self._initialized or self._ios_driver is not driver:
+                raise AgentNotInitializedError()
+            device_lock = DeviceExecutionLock(
+                driver.device_id,
+                description="Artemis iOS device operation",
+                concurrency_mode=getattr(self._config, "concurrency_mode", "per_device"),
+                max_concurrency=getattr(self._config, "max_concurrency", None),
+                session_id=self._session_id,
+                ingress="sdk",
+                lock_scope=IOS_LOCK_SCOPE,
+            )
+            queue_cancel_event = threading.Event()
+            acquire_task = asyncio.create_task(
+                asyncio.to_thread(device_lock.acquire, cancel_event=queue_cancel_event)
+            )
+            connect_attempted = False
+            try:
+                try:
+                    await asyncio.shield(acquire_task)
+                except asyncio.CancelledError:
+                    queue_cancel_event.set()
+                    try:
+                        await asyncio.shield(acquire_task)
+                    except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+                        # Draining the lock acquisition after cancellation is best effort.
+                        logger.debug(
+                            f"Device lock acquisition drain after cancel failed: {exc}",
+                            exc_info=True,
+                        )
+                    raise
+                connect_attempted = True
+                await driver.connect()
+                (
+                    self._device_context.device_width,
+                    self._device_context.device_height,
+                ) = driver.screen_size
+                yield driver
+            finally:
+                try:
+                    if connect_attempted:
+                        try:
+                            await driver.disconnect()
+                        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+                            logger.debug(
+                                f"iOS driver disconnect after SDK operation failed: {exc}",
+                                exc_info=True,
+                            )
+                finally:
+                    await asyncio.to_thread(device_lock.release)
+
+    async def _install_app_internal(self, app_path: str | Path) -> str | None:
+        if self._config.device_platform != DevicePlatform.IOS:
+            return await super()._install_app_internal(app_path)
+        async with self._ios_operation() as driver:
+            return await driver.install_app(Path(app_path))
+
+    async def _prepare_app_lock(self, task: Task, context: ArtemisContext):
+        if context.device.mobile_platform == DevicePlatform.IOS and task.request.locked_app_package:
+            raise AgentError(
+                "iOS app locking is unavailable because foreground ownership cannot be verified."
+            )
+        return await super()._prepare_app_lock(task, context)
+
+    async def get_screenshot(self):
+        if self._config.device_platform != DevicePlatform.IOS:
+            return await super().get_screenshot()
+        async with self._ios_operation() as driver:
+            data = await driver.get_screen_data()
+            with Image.open(BytesIO(data.screenshot_bytes)) as image:
+                return image.copy()
 
     async def _prewarm_llm_connections(self, api_key: str | None = None):
         """Pre-warms the HTTP2/gRPC connection pools for both Native GenAI and LangChain clients in the background."""
@@ -200,6 +348,10 @@ class Agent(AgentBase):
             logger.debug(f"[{task_name}] Cancel watcher stopped: {exc}")
 
     async def clean(self, force: bool = False):
+        driver = getattr(self, "_ios_driver", None)
+        if driver is not None:
+            await driver.disconnect()
+            self._ios_driver = None
         if not self._initialized and not force:
             return
 
@@ -210,6 +362,14 @@ class Agent(AgentBase):
 
     async def _ensure_device_unlocked(self) -> None:
         """Reject secure keyguard instead of allowing an agent to guess credentials."""
+        driver = getattr(self, "_ios_driver", None)
+        if driver is not None:
+            # A previous task may have closed its native transport.
+            await driver.connect()
+            self._device_context.device_width, self._device_context.device_height = (
+                driver.screen_size
+            )
+            return
         if self._adb_client is None:
             raise AgentError("ADB client is not initialized.")
 
@@ -234,6 +394,8 @@ class Agent(AgentBase):
 
     async def _prepare_device_environment(self, context: ArtemisContext):
         """Prepare device environment flags (like forcing Web Accessibility) before the task runs."""
+        if context.device.mobile_platform == DevicePlatform.IOS:
+            return
         if not self._config.force_web_accessibility:
             logger.info(
                 "Forcing web accessibility is disabled in AgentConfig. Skipping"
@@ -282,6 +444,12 @@ class Agent(AgentBase):
 
     def _prepare_tracing(self, task: Task, context: ArtemisContext):
         """Prepare tracing and data engine setup."""
+        driver = getattr(self, "_ios_driver", None)
+        if driver is not None:
+            from artemis.mcp.actuators.ios import IosActuator
+
+            context._active_driver = driver
+            context.actuator = IosActuator(context)
         task_name = self._prepare_trace_paths(task)
 
         context.execution_setup = ExecutionSetup(

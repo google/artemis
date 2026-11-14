@@ -37,7 +37,7 @@ class DeviceStatus:
     """State and lock allocation metadata for a connected device."""
 
     serial: str
-    state: str  # "device", "offline", "unauthorized", etc.
+    state: str  # "device", "offline", "unauthorized", "Shutdown", etc.
     model: str | None = None
     product: str | None = None
     is_emulator: bool = False
@@ -46,6 +46,7 @@ class DeviceStatus:
     active_task_desc: str | None = None
     active_session_id: str | None = None
     acquired_at: str | None = None
+    platform: str = "android"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +60,7 @@ class DeviceStatus:
             "active_task_desc": self.active_task_desc,
             "active_session_id": self.active_session_id,
             "acquired_at": self.acquired_at,
+            "platform": self.platform,
         }
 
 

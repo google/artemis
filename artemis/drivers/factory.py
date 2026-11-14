@@ -31,8 +31,57 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def ios_driver_class(device_id: str | None) -> type[BaseDeviceDriver]:
+    """Pick the driver class for an iOS serial by device reality.
+
+    A serial resolving to a CoreDevice physical entry maps to
+    ``PhysicalIosDriver``; simulators, ``booted``, and unknown serials keep
+    ``XcodeSimulatorDriver`` so its existing validation and error paths apply.
+    """
+    from artemis.drivers.ios.discovery import BOOTED_SIMULATOR_ID
+    from artemis.drivers.ios.xcode_driver import XcodeSimulatorDriver
+
+    if device_id and device_id.strip().lower() != BOOTED_SIMULATOR_ID:
+        from artemis.drivers.ios.discovery import (
+            device_matches_identifier,
+            find_physical_ios_device_sync,
+            list_ios_simulators_sync,
+        )
+
+        simulators = list_ios_simulators_sync()
+        if simulators is None or not any(
+            device_matches_identifier(device, device_id) for device in simulators
+        ):
+            if find_physical_ios_device_sync(device_id) is not None:
+                from artemis.drivers.ios.physical_driver import PhysicalIosDriver
+
+                return PhysicalIosDriver
+    return XcodeSimulatorDriver
+
+
+def _create_ios_driver(ctx: "ArtemisContext") -> BaseDeviceDriver:
+    """Instantiate the simulator or physical-device driver for an iOS target."""
+    if os.environ.get("ARTEMIS_CLOUD_MODE") == "1":
+        raise ValueError("iOS support is local only; cloud mode targets Android.")
+    config = getattr(ctx, "agent_config", None)
+    workspace_path = getattr(config, "ios_workspace_path", None) if config is not None else None
+    driver_class = ios_driver_class(ctx.device.device_id)
+    return driver_class(
+        device_id=ctx.device.device_id,
+        width=ctx.device.device_width,
+        height=ctx.device.device_height,
+        workspace_path=workspace_path,
+    )
+
+
 def create_driver(ctx: "ArtemisContext") -> BaseDeviceDriver:
     """Instantiates the appropriate BaseDeviceDriver based on the runtime context."""
+    mobile_platform = getattr(ctx.device, "mobile_platform", "android")
+    if mobile_platform == "ios":
+        return _create_ios_driver(ctx)
+    if mobile_platform not in {"android", "mock"}:
+        raise ValueError(f"Unsupported mobile platform: {mobile_platform}")
+
     # 1. Cloud mode check. Cloud devices are reached through the gateway's
     # RemoteUIAutomatorClient; ARTEMIS_HIERARCHY_BACKEND does not apply there
     # because the Accessibility Helper needs a local adb forward.

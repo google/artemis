@@ -44,7 +44,14 @@ from artemis.clients.screen_client_factory import create_screen_client
 from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.platform import platform
+from artemis.drivers.ios.discovery import BOOTED_SIMULATOR_ID
+from artemis.runtime.device_target import normalize_device_platform
 from third_party.mobile_use.utils.app_launch_utils import launch_app_with_retries
+
+# Placeholder iOS screen metrics for the lazy context — the driver replaces
+# them with the real display size when it connects.
+_LAZY_IOS_PLACEHOLDER_WIDTH = 1206
+_LAZY_IOS_PLACEHOLDER_HEIGHT = 2622
 
 
 def configure_stdio_mode() -> None:
@@ -115,12 +122,42 @@ _GLOBAL_CONTROLLER = None
 _CONTROLLERS: dict[str, Any] = {}
 
 
-def _get_controller(device_serial: str | None = None):
-    """Lazy-load device controller on-demand, caching per device serial."""
+def _get_controller(device_serial: str | None = None, target_platform: str | None = None):
+    """Lazy-load device controller on-demand, caching per device serial.
+
+    ``target_platform="ios"`` builds a native iOS controller: the serial is a
+    simulator UDID (or "booted") or a paired physical device UDID, the context carries
+    ``DevicePlatform.IOS`` so the factory selects the Xcode driver, and the
+    cache key is namespaced so a UDID can never collide with an Android
+    serial. Callers must ``await driver.connect()`` before interacting --
+    the native session opens lazily on first use.
+    """
     global _GLOBAL_CONTROLLER, _CONTROLLERS
-    target_serial = (
-        device_serial or os.environ.get("ARTEMIS_DEVICE_ID") or os.environ.get("ADB_DEVICE_SERIAL")
-    )
+    is_ios_target = normalize_device_platform(target_platform, strict=False) == "ios"
+    # ADB_DEVICE_SERIAL is Android-only and must never leak into an iOS target.
+    target_serial = device_serial or os.environ.get("ARTEMIS_DEVICE_ID")
+    if not is_ios_target:
+        target_serial = target_serial or os.environ.get("ADB_DEVICE_SERIAL")
+    if is_ios_target:
+        cache_key = f"ios:{target_serial or BOOTED_SIMULATOR_ID}"
+        if cache_key in _CONTROLLERS:
+            return _CONTROLLERS[cache_key]
+        logger.info("Initializing lazy iOS device controller...")
+        ctx = ArtemisContext(
+            trace_id="mcp-session",
+            device=DeviceContext(
+                host_platform=platform.os_type.name,
+                mobile_platform=DevicePlatform.IOS,
+                device_id=target_serial or BOOTED_SIMULATOR_ID,
+                # Placeholder until the driver reports real screen metrics.
+                device_width=_LAZY_IOS_PLACEHOLDER_WIDTH,
+                device_height=_LAZY_IOS_PLACEHOLDER_HEIGHT,
+            ),
+        )
+        controller = UnifiedMobileController(ctx=ctx)
+        _CONTROLLERS[cache_key] = controller
+        return controller
+
     if target_serial and target_serial in _CONTROLLERS:
         return _CONTROLLERS[target_serial]
     if not target_serial and _GLOBAL_CONTROLLER is not None:

@@ -403,6 +403,64 @@ async def test_mobile_get_device_state_passes_device_serial():
 
 
 @pytest.mark.asyncio
+async def test_mobile_get_device_state_rejects_invalid_platform_before_factory():
+    """An invalid platform token must never reach the controller factory."""
+    with (
+        patch("mcp_server.tools.device_state._get_controller") as get_ctrl_mock,
+        patch(
+            "mcp_server.tools.device_state.observe_ios_controller", new_callable=AsyncMock
+        ) as observe_mock,
+    ):
+        result = await mobile_get_device_state(view_type="hierarchy", platform="windows-phone")
+
+    assert result.startswith("Error:")
+    assert "platform" in result.lower()
+    get_ctrl_mock.assert_not_called()
+    observe_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mobile_get_device_state_ios_routes_through_observation_helper():
+    """A case/whitespace-tolerant iOS token builds an iOS controller and
+    observes it through the lease-owning helper, not a raw connect."""
+    controller = MagicMock()
+    controller.ctx.device.mobile_platform = "ios"
+    controller.ctx.device.device_width = 1206
+    controller.ctx.device.device_height = 2622
+    screen = SimpleNamespace(
+        base64="aVBORw==",
+        elements=[
+            {
+                "class": "XCUIElementTypeButton",
+                "text": "Continue",
+                "bounds": "[100,500][400,600]",
+            }
+        ],
+        width=1206,
+        height=2622,
+    )
+
+    with (
+        patch(
+            "mcp_server.tools.device_state._get_controller", return_value=controller
+        ) as get_ctrl_mock,
+        patch(
+            "mcp_server.tools.device_state.observe_ios_controller",
+            new_callable=AsyncMock,
+            return_value=screen,
+        ) as observe_mock,
+        patch("mcp_server.tools.device_state.is_ocr_configured", return_value=False),
+    ):
+        result = await mobile_get_device_state(view_type="hierarchy", platform=" iOS ")
+
+    assert "Continue" in result
+    assert not result.startswith("Error:")
+    get_ctrl_mock.assert_called_once_with(device_serial=None, target_platform="ios")
+    observe_mock.assert_awaited_once_with(controller)
+    controller.get_screen_data.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_mobile_inspect_trace_includes_device_serial(temp_trace_env):
     import sqlite3
 

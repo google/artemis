@@ -180,6 +180,53 @@ describe('AgentService live LLM retry timeline', () => {
     expect(selectSpy).toHaveBeenCalledWith('new-session', false);
   });
 
+  it('sends platform and device_serial when an iOS simulator is selected', () => {
+    const service = createServiceWithoutPolling();
+    let postedPayload: any = null;
+    (service as any).http = {
+      post: (_url: string, payload: any) => {
+        postedPayload = payload;
+        return of({ tasks: [] });
+      }
+    };
+    (service as any).systemService = {
+      selectedIosDevice: () => ({ serial: 'UDID-1', platform: 'ios' })
+    };
+    service.agentStatus = signal('idle');
+    service.runningSessionId = signal<string | null>(null);
+    service.userPinnedSessionId = signal<string | null>(null);
+    (service as any).sessions = signal<any[]>([]);
+    spyOn(service, 'selectSession');
+
+    service.runTask('test goal').subscribe();
+
+    expect(postedPayload.platform).toBe('ios');
+    expect(postedPayload.device_serial).toBe('UDID-1');
+  });
+
+  it('keeps the Android payload unchanged when no iOS simulator is selected', () => {
+    const service = createServiceWithoutPolling();
+    let postedPayload: any = null;
+    (service as any).http = {
+      post: (_url: string, payload: any) => {
+        postedPayload = payload;
+        return of({ tasks: [] });
+      }
+    };
+    (service as any).systemService = { selectedIosDevice: () => null };
+    service.agentStatus = signal('idle');
+    service.runningSessionId = signal<string | null>(null);
+    service.userPinnedSessionId = signal<string | null>(null);
+    (service as any).sessions = signal<any[]>([]);
+    spyOn(service, 'selectSession');
+
+    service.runTask('test goal').subscribe();
+
+    expect(postedPayload.goal).toBe('test goal');
+    expect('platform' in postedPayload).toBeFalse();
+    expect('device_serial' in postedPayload).toBeFalse();
+  });
+
   it('keeps the paused state when the backend says there is nothing to resume', () => {
     const service = createServiceWithoutPolling();
     (service as any).http = { post: () => of({ status: 'not_paused' }) };

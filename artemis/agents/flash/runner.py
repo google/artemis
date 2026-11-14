@@ -95,6 +95,7 @@ from artemis.utils.coordinates import (
     parse_swipe_parameters,
 )
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -102,6 +103,22 @@ _NO_TOOL_CALL_NOTICE = (
     "You did not call any tools last turn. Please make progress by calling an"
     " action tool or 'report_task_status'."
 )
+
+_REPEATED_THOUGHT_NOTICE = (
+    "You returned the same response again without calling a tool. Do not repeat"
+    " reasoning — call an action tool or 'report_task_status' now."
+)
+
+#: Consecutive identical tool-less responses that mark a deterministic loop:
+#: at temperature zero a healthy model never repeats verbatim, so this many
+#: identical replies in a row mean the agent is stuck rather than reasoning.
+MAX_IDENTICAL_THOUGHT_TURNS = 3
+
+#: Consecutive tool-less turns regardless of content. Paraphrased repetition
+#: (the same plan re-stated with different wording) evades the identical-text
+#: guard, so a plain streak cap is the backstop — healthy runs interleave
+#: occasional thinking turns with actions, never this many in a row.
+MAX_SILENT_TURN_STREAK = 8
 
 _FINAL_TURN_WARNING = "[WARNING] This is your final turn; only 'report_task_status' is available."
 
@@ -296,7 +313,11 @@ class FlashRunner:
         prompt_path = Path(__file__).parent / "flash_runner.md"
         prompt_template = prompt_path.read_text(encoding="utf-8")
         available_tools = frozenset(t.name for t in tools_declaration)
-        return Template(prompt_template).render(goal=self.goal, available_tools=available_tools)
+        from artemis.agents.platform_guidance import device_action_guidance
+
+        return device_action_guidance(self.ctx) + Template(prompt_template).render(
+            goal=self.goal, available_tools=available_tools
+        )
 
     # ------------------------------------------------------------------
     # Per-turn helpers (observe / think)
@@ -369,9 +390,7 @@ class FlashRunner:
         if img_bytes:
             img_b64 = base64.b64encode(img_bytes).decode("utf-8")
             blocks.append({"type": "text", "text": "--- Current Screenshot ---"})
-            blocks.append(
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-            )
+            blocks.append({"type": "image_url", "image_url": {"url": image_data_uri(img_b64)}})
         if xml_list:
             blocks.append({"type": "text", "text": f"{PRO_UI_LIST_MARKER}\n{xml_list}"})
         ephemeral: list[int] = []
@@ -1056,6 +1075,9 @@ class FlashRunner:
         current_xml_list = xml_list
         previous_turn: _TurnRecord | None = None
         pending_notices: list[str] = []
+        last_thought = ""
+        identical_thoughts = 0
+        silent_turns = 0
 
         while limit is None or turns < limit:
             turns += 1
@@ -1131,12 +1153,45 @@ class FlashRunner:
                 if is_final:
                     final_report = {"status": "failed", "explanation": raw_text}
                     break
-                pending_notices.append(_NO_TOOL_CALL_NOTICE)
+                thought = " ".join((raw_text or native_text).split()) or "<empty>"
+                if thought == last_thought:
+                    identical_thoughts += 1
+                else:
+                    identical_thoughts = 0
+                last_thought = thought
+                silent_turns += 1
+                if identical_thoughts + 1 >= MAX_IDENTICAL_THOUGHT_TURNS:
+                    final_report = {
+                        "status": "failed",
+                        "explanation": (
+                            f"The model returned the identical response"
+                            f" {identical_thoughts + 1} turns in a row without calling"
+                            " a tool; the run is stalled rather than reasoning."
+                            f" Last response: {raw_text[:200]}"
+                        ),
+                    }
+                    break
+                if silent_turns >= MAX_SILENT_TURN_STREAK:
+                    final_report = {
+                        "status": "failed",
+                        "explanation": (
+                            f"The model produced {silent_turns} consecutive turns"
+                            " without calling a tool; the run is stalled rather"
+                            f" than reasoning. Last response: {raw_text[:200]}"
+                        ),
+                    }
+                    break
+                pending_notices.append(
+                    _REPEATED_THOUGHT_NOTICE if identical_thoughts else _NO_TOOL_CALL_NOTICE
+                )
                 ledger.stage_turn(messages[turn_base:])
                 previous_turn = _TurnRecord()
                 continue
 
             # Process tool calls
+            last_thought = ""
+            identical_thoughts = 0
+            silent_turns = 0
             turn = _TurnRecord()
             (
                 final_report_from_calls,

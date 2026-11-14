@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 from artemis.config import (
     ExplorerConfig,
@@ -34,6 +35,13 @@ from pydantic import Field
 __all__ = ["AgentConfig", "AgentProfile", "ApiBaseUrl", "DevicePlatform", "ServerConfig"]
 
 
+def _default_video_recording_tools(data: dict[str, Any]) -> bool:
+    """Detect the recording toolchain for the configured device platform."""
+    platform = data.get("device_platform")
+    platform_name = getattr(platform, "value", platform) or DevicePlatform.ANDROID.value
+    return detect_video_tools_enabled(str(platform_name))
+
+
 class AgentConfig(AgentConfigBase):
     """ARTEMIS agent configuration.
 
@@ -41,7 +49,9 @@ class AgentConfig(AgentConfigBase):
     settings to :class:`AgentConfigBase`.
     """
 
-    video_recording_tools_enabled: bool = Field(default_factory=detect_video_tools_enabled)
+    video_recording_tools_enabled: bool = Field(
+        default_factory=lambda data: _default_video_recording_tools(data)
+    )
     force_web_accessibility: bool = False
     disable_checker: bool = False
     disable_midway_checks: bool = True
@@ -71,6 +81,10 @@ class AgentConfig(AgentConfigBase):
     video_analyzer: VideoAnalyzerConfig = Field(default_factory=VideoAnalyzerConfig)
     concurrency_mode: Literal["global", "per_device"] = "per_device"
     max_concurrency: int | None = None
+    ios_workspace_path: Path | None = Field(
+        default=None,
+        description="Optional existing Xcode project/workspace for local iOS first-run approval; no permission grants.",
+    )
 
     model_config = {"arbitrary_types_allowed": True}
 

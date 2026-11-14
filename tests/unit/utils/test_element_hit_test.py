@@ -95,3 +95,49 @@ def test_graceful_degradation_to_none():
         None,
     ]
     assert find_element_at_point(malformed, 10, 10) == (None, "none")
+
+
+def test_equal_frame_prefers_text_field_over_container():
+    """iOS container-over-box shape: field and container share one frame."""
+    container = _xml_el(
+        "",
+        [100, 100, 400, 160],
+        cls="UIView",
+    )
+    box = _xml_el(
+        "",
+        [100, 100, 400, 160],
+        cls="UITextField",
+    )
+    for elements in ([container, box], [box, container]):
+        el, source = find_element_at_point(elements, 250, 130)
+        assert source == "hit_test"
+        assert el["class"] == "UITextField"
+
+
+def test_tie_rank_order_search_textfield_textview_focus_container():
+    frame = [100, 100, 400, 160]
+    search = _xml_el("q", frame, cls="UISearchBarTextField")
+    textfield = _xml_el("f", frame, cls="UITextField")
+    textview = _xml_el("v", frame, cls="UITextView")
+    focused = dict(_xml_el("k", frame, cls="UIView"), keyboard_focused=True)
+    container = _xml_el("c", frame, cls="UIView")
+
+    pairs = [
+        (search, "q"),
+        (textfield, "f"),
+        (textview, "v"),
+        (focused, "k"),
+        (container, "c"),
+    ]
+    for index, (_, label) in enumerate(pairs):
+        el, _ = find_element_at_point([el for el, _ in pairs[index:]], 250, 130)
+        assert el["text"] == label
+
+
+def test_smaller_container_still_beats_larger_text_field():
+    """Tie-break only applies on equal area; smallest covering element wins."""
+    field = _xml_el("big field", [0, 0, 1080, 400], cls="UITextField")
+    button = _xml_el("btn", [100, 100, 300, 160], cls="UIButton")
+    el, _ = find_element_at_point([field, button], 200, 130)
+    assert el["text"] == "btn"

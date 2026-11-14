@@ -130,3 +130,97 @@ async def test_manifest_returns_none_without_valid_segments(tmp_path):
     ):
         assert await write_recording_manifest(tmp_path, [tmp_path / "nope.mp4"]) is None
     assert not (tmp_path / "recording.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_manifest_forwards_probe_timeout_only_when_supplied(tmp_path):
+    """iOS callers bound the probe; default callers keep the old signature."""
+    import artemis.utils.video as video
+
+    seg = tmp_path / "recording.mp4"
+    seg.write_bytes(b"mp4")
+    seen: list = []
+
+    async def probe(path, timeout_seconds=None):
+        seen.append(timeout_seconds)
+        return {"duration": 1.0, "width": 1080, "height": 1920}
+
+    with patch("artemis.utils.video.probe_video_segment", AsyncMock(side_effect=probe)):
+        await write_recording_manifest(tmp_path, [seg], probe_timeout_seconds=30.0)
+    assert seen == [30.0]
+
+
+@pytest.mark.asyncio
+async def test_probe_timeout_kills_and_drains_the_ffprobe_child(tmp_path, monkeypatch):
+    """A bounded probe must reap its owned ffprobe child on timeout."""
+    import asyncio
+
+    import artemis.utils.video as video
+
+    class _Proc:
+        def __init__(self):
+            self.returncode = None
+            self.killed = False
+            self.drained = False
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        async def communicate(self):
+            if self.killed:
+                self.drained = True
+                return b"", b""
+            await asyncio.Event().wait()  # never answers in time
+            return b"", b""
+
+    proc = _Proc()
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(video.asyncio, "create_subprocess_exec", fake_exec)
+    seg = tmp_path / "seg.mp4"
+    seg.write_bytes(b"mp4")
+    with pytest.raises(TimeoutError):
+        await video.probe_video_segment(seg, timeout_seconds=0.05)
+    assert proc.killed and proc.drained
+
+
+@pytest.mark.asyncio
+async def test_probe_cancellation_reaps_the_child_before_propagating(tmp_path, monkeypatch):
+    import asyncio
+
+    import artemis.utils.video as video
+
+    class _Proc:
+        def __init__(self):
+            self.returncode = None
+            self.killed = False
+            self.drained = False
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        async def communicate(self):
+            if self.killed:
+                self.drained = True
+                return b"", b""
+            await asyncio.Event().wait()
+            return b"", b""
+
+    proc = _Proc()
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(video.asyncio, "create_subprocess_exec", fake_exec)
+    seg = tmp_path / "seg.mp4"
+    seg.write_bytes(b"mp4")
+    task = asyncio.create_task(video.probe_video_segment(seg, timeout_seconds=30.0))
+    await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert proc.killed and proc.drained

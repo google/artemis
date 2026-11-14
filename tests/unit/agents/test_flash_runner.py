@@ -556,3 +556,72 @@ async def test_final_report_persists_native_thinking(mock_context):
     assert kwargs["operator_raw_thinking"] == "final text"
     assert kwargs["operator_native_thinking"] == "native summary"
     assert isinstance(messages[-1], ToolMessage)
+
+
+# --- Deterministic stall guard (identical thought-only turns) -----------------
+
+
+def _loop_ready_runner(mock_context, responses):
+    """A FlashRunner whose reactive loop runs entirely on mocks."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    with (
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch("artemis.agents.flash.runner.VisualStepSummarizer"),
+    ):
+        runner = FlashRunner(mock_context, goal="g")
+    runner.summarizer = None
+    runner._init_llm = Mock(return_value=Mock())
+    runner._get_tools = Mock(return_value=[SimpleNamespace(name="report_task_status")])
+    runner._read_injected_instruction = AsyncMock(return_value=(None, None))
+    runner._build_tail = Mock(return_value=HumanMessage(content="tail"))
+    runner._record_llm_trace = Mock()
+    runner._resolve_token_usage = Mock(return_value=({}, False))
+    ledger = Mock()
+    ledger.render = Mock(side_effect=lambda tail: [HumanMessage(content="m")])
+    ledger.elapsed_label = Mock(return_value="T+00:00")
+    ledger.last_turn_silent = False
+    ledger.step_keys = []
+    runner._prepare_conversation = AsyncMock(return_value=(ledger, b"img", []))
+    queue = [AIMessage(content=text) if text else None for text in responses]
+    runner._invoke_model = AsyncMock(side_effect=lambda *a, **k: queue.pop(0))
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_identical_thought_turns_stall_out_instead_of_burning(mock_context):
+    responses = ["same stuck reasoning"] * 5
+    runner = _loop_ready_runner(mock_context, responses)
+    report = await runner.run(Mock())
+
+    assert report["status"] == "failed"
+    assert "identical response" in report["explanation"]
+    assert runner._invoke_model.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_distinct_thought_turns_do_not_trip_the_stall_guard(mock_context):
+    responses = ["thought one", "thought two", "thought three", "thought four", None]
+    runner = _loop_ready_runner(mock_context, responses)
+    report = await runner.run(Mock())
+
+    assert report["status"] == "failed"
+    assert "identical response" not in report["explanation"]
+    assert runner._invoke_model.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_paraphrased_thought_streak_still_stalls_out(mock_context):
+    """Alternating wording evades the identical-text guard — the streak cap
+    catches it anyway (observed live: 23 tool-less turns cycling two phrases)."""
+    from artemis.agents.flash.runner import MAX_SILENT_TURN_STREAK
+
+    responses = ["planning the scroll", "still observing the page"] * (
+        MAX_SILENT_TURN_STREAK // 2 + 1
+    )
+    runner = _loop_ready_runner(mock_context, responses)
+    report = await runner.run(Mock())
+
+    assert report["status"] == "failed"
+    assert "consecutive turns" in report["explanation"]
+    assert runner._invoke_model.await_count == MAX_SILENT_TURN_STREAK

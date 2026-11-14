@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import io
+import math
 import os
 import re
 from typing import Any
@@ -170,6 +171,38 @@ def get_center_coordinates(left: int, top: int, right: int, bottom: int) -> tupl
     return (left + right) // 2, (top + bottom) // 2
 
 
+def get_hit_point(
+    node: dict[str, Any], width: int | None = None, height: int | None = None
+) -> tuple[int, int] | None:
+    """Return a valid native interaction point, when the driver supplied one."""
+    point = node.get("hit_point")
+    if not isinstance(point, (list, tuple)) or len(point) != 2:
+        return None
+    try:
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            for value in point
+        ):
+            return None
+    except OverflowError:
+        return None
+    x, y = map(round, point)
+    if x < 0 or y < 0 or (width is not None and x >= width) or (height is not None and y >= height):
+        return None
+    return x, y
+
+
+def _native_interaction_metadata(node: dict[str, Any], width: int, height: int) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if (point := get_hit_point(node, width, height)) is not None:
+        metadata["hit_point"] = list(point)
+    if isinstance(bundle := node.get("activation_bundle_id"), str) and bundle:
+        metadata["activation_bundle_id"] = bundle
+    return metadata
+
+
 def _inject_mutual_occlusion_warnings(
     lines: list[str], items_bounds: list[tuple[int, tuple[int, int, int, int]]]
 ) -> list[str]:
@@ -298,7 +331,9 @@ def format_minimal_list_with_points(
                 ocr_bounds = parse_bounds(ocr.get("bounds"))
                 if ocr_bounds:
                     left, top, right, bottom = ocr_bounds
-                    cx, cy = get_center_coordinates(left, top, right, bottom)
+                    cx, cy = get_hit_point(node, width, height) or get_center_coordinates(
+                        left, top, right, bottom
+                    )
                     if is_duplicate(ocr["text"], cx, cy):
                         continue
 
@@ -314,7 +349,9 @@ def format_minimal_list_with_points(
 
         if not registered and text.strip() and bounds:
             left, top, right, bottom = bounds
-            cx, cy = get_center_coordinates(left, top, right, bottom)
+            cx, cy = get_hit_point(node, width, height) or get_center_coordinates(
+                left, top, right, bottom
+            )
             if is_duplicate(text, cx, cy):
                 continue
 
@@ -374,7 +411,9 @@ def format_minimal_list_with_elements(
                 ocr_bounds = parse_bounds(ocr.get("bounds"))
                 if ocr_bounds:
                     left, top, right, bottom = ocr_bounds
-                    cx, cy = get_center_coordinates(left, top, right, bottom)
+                    cx, cy = get_hit_point(node, width, height) or get_center_coordinates(
+                        left, top, right, bottom
+                    )
                     if is_duplicate(ocr["text"], cx, cy):
                         continue
 
@@ -389,8 +428,9 @@ def format_minimal_list_with_elements(
                             "text": ocr["text"].strip(),
                             "bounds": [left, top, right, bottom],
                             "class": node.get("class"),
-                            "resource_id": node.get("resource-id"),
+                            "resource_id": node.get("resource-id") or node.get("resource_id"),
                             "is_ocr": True,
+                            **_native_interaction_metadata(node, width, height),
                         }
                     )
                     labels.append(str(idx))
@@ -406,7 +446,9 @@ def format_minimal_list_with_elements(
         shown = text.strip() or hint
         if not registered and shown and bounds:
             left, top, right, bottom = bounds
-            cx, cy = get_center_coordinates(left, top, right, bottom)
+            cx, cy = get_hit_point(node, width, height) or get_center_coordinates(
+                left, top, right, bottom
+            )
             if is_duplicate(shown, cx, cy):
                 continue
 
@@ -424,8 +466,9 @@ def format_minimal_list_with_elements(
                 "text": shown,
                 "bounds": [left, top, right, bottom],
                 "class": node.get("class"),
-                "resource_id": node.get("resource-id"),
+                "resource_id": node.get("resource-id") or node.get("resource_id"),
                 "is_ocr": False,
+                **_native_interaction_metadata(node, width, height),
             }
             if not text.strip():
                 element["is_hint"] = True
@@ -513,8 +556,13 @@ def _resolve_coordinates(coord: Any, width: int, height: int) -> tuple[int, int]
         if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
             px = int(round(x * width))
             py = int(round(y * height))
-        elif 0 <= x <= 1000 and 0 <= y <= 1000 and (width > 1000 or height > 1000):
-            # Android normalized 1000 coordinate space
+        elif (
+            0 <= x <= 1000
+            and 0 <= y <= 1000
+            and (width > 1000 or height > 1000 or x > width or y > height)
+        ):
+            # Normalized 0-1000 space — also on small (logical-size) iOS
+            # screenshots where the values exceed the pixel bounds anyway.
             px = int(round(x * width / 1000.0))
             py = int(round(y * height / 1000.0))
         else:

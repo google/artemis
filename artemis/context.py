@@ -198,6 +198,17 @@ class ArtemisContext(DeviceClientAccessors, BaseModel):
     async def __aenter__(self) -> ArtemisContext:
         return self
 
+    async def disconnect_driver(self) -> None:
+        """Release the cached driver, including partially initialized transports."""
+        driver = self._active_driver
+        self._active_driver = None
+        self._mobile_controller = None
+        if driver is not None:
+            try:
+                await driver.disconnect()
+            except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+                logger.debug(f"Device driver disconnect failed: {exc}", exc_info=True)
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # Close the in-process action session before draining background tasks so its
         # owner task exits cleanly rather than being cancelled below.
@@ -282,6 +293,8 @@ class ArtemisContext(DeviceClientAccessors, BaseModel):
                 await self.data_engine.shutdown()
             except Exception as exc:
                 logger.debug(f"DataEngine shutdown failed; skipped: {exc}", exc_info=True)
+
+        await self.disconnect_driver()
 
 
 from artemis.data_engine.engine import DataEngine

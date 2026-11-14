@@ -27,6 +27,7 @@ from artemis.core.diagnostics.probes.credentials_probe import (
     LLMCredentialsProbe,
     VisionOCRProbe,
 )
+from artemis.core.diagnostics.probes.ios_probe import IosDeviceProbe
 from artemis.core.diagnostics.probes.runtime_probe import (
     PythonRuntimeProbe,
     SystemConfigProbe,
@@ -67,6 +68,7 @@ class ReadinessEngine:
         self._credentials_probe = LLMCredentialsProbe()
         self._ocr_probe = VisionOCRProbe()
         self._adb_probe = AdbDeviceProbe()
+        self._ios_probe = IosDeviceProbe()
         self._report_cache: SystemReadinessReport | None = None
         self._report_cache_time = 0.0
         self._report_cache_generation = -1
@@ -80,6 +82,7 @@ class ReadinessEngine:
         self.register_probe(self._credentials_probe)
         self.register_probe(self._ocr_probe)
         self.register_probe(self._adb_probe)
+        self.register_probe(self._ios_probe)
 
     def register_probe(self, probe: BaseProbe) -> None:
         """Register a new diagnostic probe."""

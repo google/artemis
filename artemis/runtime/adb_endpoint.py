@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Immutable ADB endpoint and task target primitives.
+"""ADB server endpoint primitives.
 
-The selected endpoint is a user preference. An :class:`AdbTarget` is an
-execution snapshot. Keeping those concepts separate prevents a queued or
-running task from silently moving to another ADB server when the preference
-changes in the Admin Console.
+:class:`AdbEndpoint` is the network address of one ADB server; the selected
+endpoint is a user preference snapshotted into each Android task so a queued
+or running task cannot silently move to another server when the preference
+changes in the Admin Console. Cross-platform task targets
+(:class:`~artemis.runtime.device_target.AdbTarget`,
+:class:`~artemis.runtime.device_target.IosTarget`) and the platform vocabulary
+live in :mod:`artemis.runtime.device_target`.
 """
 
 from __future__ import annotations
@@ -111,25 +114,6 @@ class AdbEndpoint:
         target["ADB_SERVER_SOCKET"] = self.socket
         target[ADB_ENDPOINT_ID_ENV] = self.identity
         return target
-
-
-@dataclass(frozen=True, slots=True)
-class AdbTarget:
-    """A device serial bound to the ADB endpoint that discovered it."""
-
-    endpoint: AdbEndpoint
-    serial: str | None = None
-
-    @property
-    def lock_scope(self) -> str:
-        return self.endpoint.identity
-
-    @property
-    def lock_key(self) -> str:
-        return f"{self.lock_scope}/{self.serial or 'pending'}"
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"endpoint": self.endpoint.to_dict(), "serial": self.serial}
 
 
 class AdbSession:

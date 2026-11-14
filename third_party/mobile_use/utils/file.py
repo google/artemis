@@ -17,14 +17,51 @@
 # See third_party/mobile_use/METADATA for the upstream source and local modifications.
 
 import json
-import re
 from typing import IO
 
 
 def strip_json_comments(text: str) -> str:
-    text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    return text
+    """Remove ``//`` and ``/* */`` comments while preserving string literals.
+
+    The naive regex version stripped ``//`` sequences inside quoted strings,
+    which made URL values (e.g. ``"api_base": "http://127.0.0.1:8080/v1"``)
+    unparseable. This scan tracks string/escape state and only treats the
+    comment markers that appear outside strings as comments.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_string = False
+    while i < n:
+        char = text[i]
+        if in_string:
+            out.append(char)
+            if char == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if char == '"':
+                in_string = False
+            i += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            i += 1
+            continue
+        if char == "/" and i + 1 < n:
+            if text[i + 1] == "/":
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if text[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i += 2
+                continue
+        out.append(char)
+        i += 1
+    return "".join(out)
 
 
 def load_jsonc(file: IO) -> dict:

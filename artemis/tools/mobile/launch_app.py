@@ -18,15 +18,33 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from artemis.context import ArtemisContext
+from artemis.context import ArtemisContext, DevicePlatform
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.graph.state import State
 from artemis.tools.base import ArtemisTool, ToolCategory
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.utils.cython_compat import CyFunctionDetector
-from third_party.mobile_use.tools.mobile.launch_app import LAUNCH_APP_DOCSTRING, find_package
+from third_party.mobile_use.tools.mobile.launch_app import (
+    LAUNCH_APP_DOCSTRING,
+    find_package as find_android_package,
+)
 from third_party.mobile_use.utils.app_launch_utils import launch_app_with_retries
+
+
+async def find_package(ctx: ArtemisContext, app_name: str, use_fallback: bool = True) -> str | None:
+    """Resolve an installed Android package or iOS bundle identifier."""
+    if getattr(getattr(ctx, "device", None), "mobile_platform", None) != DevicePlatform.IOS:
+        return await find_android_package(ctx, app_name, use_fallback=use_fallback)
+    from artemis.drivers.factory import get_driver
+
+    apps = await get_driver(ctx).list_apps()
+    if app_name in apps:
+        return app_name
+    matches = [
+        bundle_id for bundle_id, name in apps.items() if name.casefold() == app_name.casefold()
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 class LaunchAppArgs(BaseModel):
@@ -82,11 +100,24 @@ class LaunchAppTool(ArtemisTool):
                     outcome = f"Failed to launch app '{app}': Package not found."
                     error_msg = "Package not found."
                 else:
-                    success, error_msg = await launch_app_with_retries(
-                        ctx=ctx, app_package=package_name
-                    )
+                    if (
+                        getattr(getattr(ctx, "device", None), "mobile_platform", None)
+                        == DevicePlatform.IOS
+                    ):
+                        from artemis.drivers.factory import get_driver
+
+                        success = await get_driver(ctx).launch_app(package_name)
+                        error_msg = None if success else "Launch failed."
+                    else:
+                        success, error_msg = await launch_app_with_retries(
+                            ctx=ctx, app_package=package_name
+                        )
                     outcome = (
-                        f"Launched app '{app}' ({package_name}); foreground confirmed."
+                        f"Launched app '{app}' ({package_name})."
+                        if success
+                        and getattr(getattr(ctx, "device", None), "mobile_platform", None)
+                        == DevicePlatform.IOS
+                        else f"Launched app '{app}' ({package_name}); foreground confirmed."
                         if success
                         else f"Failed to launch app '{app}': {error_msg}"
                     )

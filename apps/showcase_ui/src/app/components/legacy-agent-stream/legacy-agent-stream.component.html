@@ -35,7 +35,7 @@ limitations under the License.
           <option
             [value]="session.session_id"
             >
-            {{ session.initial_goal || 'Unnamed Goal' }} ({{ session.device_serial ? session.device_serial + ' · ' : '' }}{{ session.start_time * 1000 | date:'short' }})
+            {{ session.initial_goal || 'Unnamed Goal' }} ({{ session.platform === 'ios' ? 'iOS · ' : '' }}{{ session.device_serial ? session.device_serial + ' · ' : '' }}{{ session.start_time * 1000 | date:'short' }})
           </option>
         }
       </select>

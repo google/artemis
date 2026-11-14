@@ -30,12 +30,6 @@ replay_manager = ReplayManager(WORKSPACE_ROOT)
 router = APIRouter(tags=["replay"])
 
 
-@router.get("/api/devices")
-async def list_devices():
-    """Dynamically queries the ADB server for connected Android devices."""
-    return replay_manager.list_devices()
-
-
 @router.get("/api/replay/tools")
 async def get_replay_tools():
     """Returns the list of registered tools available for replay."""

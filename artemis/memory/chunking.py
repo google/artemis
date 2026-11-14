@@ -323,10 +323,37 @@ class StepCapsuleLens(StepLens):
 
     def _get_llm(self):
         if self._llm is None:
-            from artemis.services.llm import get_google_llm
-
-            self._llm = get_google_llm(model_name=self._model_name, temperature=0.0)
+            self._llm = self._resolve_llm()
         return self._llm
+
+    def _resolve_llm(self):
+        """Instantiate the capsule model on the provider path in use.
+
+        ``chunking.model`` names a Google model for the raw-google path. When
+        the configured summarizer endpoint is not Google (e.g. a custom
+        OpenAI-compatible backend), a keyless Google client can never succeed,
+        so the lens rides the configured endpoint instead.
+        """
+        provider = self._summarizer_provider()
+        if provider and not is_google_provider(provider) and self._ctx is not None:
+            from artemis.services.llm import get_llm
+
+            return get_llm(self._ctx, name="summarizer", temperature=0.0)
+        from artemis.services.llm import get_google_llm
+
+        return get_google_llm(model_name=self._model_name, temperature=0.0)
+
+    def _summarizer_provider(self) -> str | None:
+        try:
+            llm_cfg = getattr(self._ctx, "llm_config", None) if self._ctx is not None else None
+            if llm_cfg is None:
+                from artemis.config.llm import get_default_llm_config
+
+                llm_cfg = get_default_llm_config()
+            provider = getattr(getattr(llm_cfg, "summarizer", None), "provider", None)
+            return str(provider) if provider else None
+        except Exception:
+            return None
 
     def _get_fallback_llm(self):
         if self._fallback_llm is None and self._fallback_model_name:

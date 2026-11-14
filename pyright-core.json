@@ -1,11 +1,15 @@
 {
   "venvPath": ".",
   "venv": ".venv",
+  "pythonVersion": "3.12",
   "include": [
     "artemis/graph/state.py",
     "artemis/graph/visibility.py",
     "artemis/runtime/adb_endpoint.py",
     "artemis/runtime/process_probe.py",
+    "artemis/drivers/ios",
+    "artemis/runtime/ios_device_pool.py",
+    "artemis/mcp/actuators/ios.py",
     "artemis/mcp/action_types.py",
     "artemis/data_engine/models.py",
     "artemis/agents/explorer/native_runner.py",

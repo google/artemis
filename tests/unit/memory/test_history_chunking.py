@@ -30,6 +30,7 @@ step addressability (step number + ``T+mm:ss``) after every compression level
 import json
 import re
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -357,6 +358,60 @@ async def test_capsule_lens_render_returns_none_on_gap_so_service_retries():
     lens_ok = StepCapsuleLens(model_name="test", llm=FullLLM())
     result = await lens_ok.render("chunk:1-2", payload)
     assert result is not None and json.loads(result)["doing"]
+
+
+def test_capsule_lens_rides_configured_provider_when_not_google(monkeypatch):
+    """A non-Google summarizer endpoint must not build a keyless Google client."""
+    import artemis.services.llm as services_llm
+
+    calls = {}
+    monkeypatch.setattr(
+        services_llm,
+        "get_llm",
+        lambda ctx, name, **kwargs: calls.update(
+            {"path": "get_llm", "name": name, "temperature": kwargs.get("temperature")}
+        )
+        or object(),
+    )
+    monkeypatch.setattr(
+        services_llm,
+        "get_google_llm",
+        lambda **kwargs: calls.update({"path": "get_google_llm"}) or object(),
+    )
+    ctx = SimpleNamespace(
+        llm_config=SimpleNamespace(summarizer=SimpleNamespace(provider="custom"))
+    )
+    lens = StepCapsuleLens(model_name="test", ctx=ctx)
+    assert lens._get_llm() is not None
+    assert calls["path"] == "get_llm"
+    assert calls["name"] == "summarizer"
+    assert calls["temperature"] == 0.0
+
+
+def test_capsule_lens_keeps_raw_google_path_for_google_provider(monkeypatch):
+    import artemis.services.llm as services_llm
+
+    calls = {}
+    monkeypatch.setattr(
+        services_llm,
+        "get_llm",
+        lambda *a, **k: calls.update({"path": "get_llm"}) or object(),
+    )
+    monkeypatch.setattr(
+        services_llm,
+        "get_google_llm",
+        lambda **kwargs: calls.update(
+            {"path": "get_google_llm", "model_name": kwargs.get("model_name")}
+        )
+        or object(),
+    )
+    ctx = SimpleNamespace(
+        llm_config=SimpleNamespace(summarizer=SimpleNamespace(provider="google"))
+    )
+    lens = StepCapsuleLens(model_name="test-model", ctx=ctx)
+    assert lens._get_llm() is not None
+    assert calls["path"] == "get_google_llm"
+    assert calls["model_name"] == "test-model"
 
 
 # ---------------------------------------------------------------------------

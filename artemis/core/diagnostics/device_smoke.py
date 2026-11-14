@@ -56,7 +56,9 @@ import threading
 import time
 from typing import Any, TypeVar
 
+from artemis.runtime.device_target import normalize_device_platform
 from artemis.runtime.device_lock import DeviceExecutionLock
+from artemis.runtime.ios_observation import observe_ios_controller
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -96,8 +98,55 @@ def _uiautomator_fix(serial: str | None) -> list[str]:
     ]
 
 
-def fix_for_error(error: str | None, serial: str | None) -> list[str]:
+def _ios_fix_for_error(error: str | None, serial: str | None) -> list[str]:
+    """iOS repair steps (simctl/Xcode for simulators, devicectl/WDA for hardware)."""
+    if not error:
+        return []
+    s = serial or "<UDID>"
+    text = (error or "").lower()
+    if "busy" in text or "another task" in text:
+        return [
+            "Wait for the running task to finish, or stop it with mobile_manage_task(action='stop', ...).",
+            "Then rerun the smoke test.",
+        ]
+    if "approv" in text or "authoriz" in text or "permission" in text:
+        return [
+            "Approve Artemis's agent access in Xcode (the first run opens a workspace approval prompt; choose persistent approval).",
+            "Confirm the permitted agent and workspace under Xcode > Settings > Agentic Tools.",
+        ]
+    if "xcode" in text or "macos" in text or "darwin" in text:
+        return [
+            "Install Xcode 27 or later and select it: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer",
+        ]
+    if (
+        "webdriveragent" in text
+        or "wda" in text
+        or "physical" in text
+        or "pair" in text
+        or "trust" in text
+        or "devicectl" in text
+        or "developer mode" in text
+    ):
+        return [
+            f"List paired devices: xcrun devicectl list devices; check capture: xcrun devicectl device capture screenshot --device {s} --destination /tmp/ios.png",
+            "Pair the device (plug in, tap Trust), enable Developer Mode under Settings > Privacy & Security, and ensure WebDriverAgent is installed "
+            "(build-for-testing via Xcode, or set ARTEMIS_IOS_WDA_URL to a running server).",
+        ]
+    if "simulator" in text or "udid" in text or "boot" in text or "not available" in text:
+        return [
+            f"List simulators: xcrun simctl list devices; boot one with: xcrun simctl boot {s}",
+            "Create a simulator in Xcode > Settings > Platforms if none exist.",
+        ]
+    return [
+        "Check native capture manually: xcrun simctl io booted screenshot /tmp/ios.png",
+        'Verify Xcode MCP access: echo \'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\' | xcrun mcpbridge',
+    ]
+
+
+def fix_for_error(error: str | None, serial: str | None, platform: str = "android") -> list[str]:
     """Map an error string to concrete repair steps (substring match, case-insensitive)."""
+    if normalize_device_platform(platform, strict=False) == "ios":
+        return _ios_fix_for_error(error, serial)
     if not error:
         return []
     text = error.lower()
@@ -260,19 +309,31 @@ def _decoded_length(b64: Any) -> int | None:
 
 
 async def smoke_test_device(
-    device_serial: str | None = None, timeout_seconds: float = 20.0
+    device_serial: str | None = None,
+    timeout_seconds: float = 20.0,
+    platform: str = "android",
 ) -> dict[str, Any]:
     """Observe the device exactly like ``mobile_get_device_state`` and report a verdict.
+
+    ``platform="ios"`` exercises the native iOS path (``simctl`` + mcpbridge
+    for simulators, ``devicectl`` + WebDriverAgent for physical devices)
+    instead of ADB/UIAutomator.
 
     Never raises. Returns::
 
         {"ok": bool, "serial": str | None, "elapsed_seconds": float,
          "screenshot_bytes": int | None, "element_count": int | None,
-         "hierarchy_backend": "helper" | "uiautomator" | None,
+         "hierarchy_backend": "helper" | "uiautomator" | "xcode" | "wda" | None,
          "error": str | None, "fix": list[str]}
     """
     started = time.monotonic()
-    requested_serial = _resolve_requested_serial(device_serial)
+    is_ios = normalize_device_platform(platform, strict=False) == "ios"
+    # iOS targets are UDIDs; ADB_DEVICE_SERIAL is Android-only fallback.
+    requested_serial = (
+        (device_serial or os.environ.get("ARTEMIS_DEVICE_ID"))
+        if is_ios
+        else _resolve_requested_serial(device_serial)
+    )
     result: dict[str, Any] = {
         "ok": False,
         "serial": requested_serial,
@@ -289,10 +350,14 @@ async def smoke_test_device(
         result["elapsed_seconds"] = round(time.monotonic() - started, 3)
         result["error"] = error
         result["ok"] = error is None
-        result["fix"] = fix_for_error(cause if cause is not None else error, result["serial"])
+        result["fix"] = fix_for_error(
+            cause if cause is not None else error, result["serial"], platform
+        )
         return result
 
-    busy = _find_busy_owner(requested_serial)
+    # iOS skips this unscoped sweep: observe_ios_controller performs atomic,
+    # scope-correct lease admission on the resolved UDID itself.
+    busy = None if is_ios else _find_busy_owner(requested_serial)
     if busy is not None:
         key, owner = busy
         description = getattr(owner, "description", "") or "unknown task"
@@ -306,20 +371,33 @@ async def smoke_test_device(
     try:
         from artemis.mcp import adb_server
 
-        controller = await _run_in_daemon_thread(
-            lambda: adb_server._get_controller(device_serial=device_serial),
-            timeout_seconds,
-            "controller-init",
-        )
+        if is_ios:
+            # iOS controller construction enumerates simctl/devicectl lazily;
+            # offload the sync factory instead of the daemon-thread hop used
+            # for the blocking Android UIAutomator handshake.
+            controller = await asyncio.wait_for(
+                asyncio.to_thread(
+                    adb_server._get_controller,
+                    device_serial=device_serial,
+                    target_platform="ios",
+                ),
+                timeout_seconds,
+            )
+        else:
+            controller = await _run_in_daemon_thread(
+                lambda: adb_server._get_controller(device_serial=device_serial),
+                timeout_seconds,
+                "controller-init",
+            )
     except TimeoutError:
-        return _finish(
-            f"UIAutomator/controller initialization did not respond within {timeout_seconds:g}s"
-        )
+        label = "iOS driver" if is_ios else "UIAutomator/controller"
+        return _finish(f"{label} initialization did not respond within {timeout_seconds:g}s")
     except _PASSTHROUGH_EXCEPTIONS:
         raise
     except BaseException as exc:  # pylint: disable=broad-exception-caught
         cause = _describe_failure(exc)
-        return _finish(f"Failed to initialize Android device controller: {cause}", cause)
+        target = "iOS device" if is_ios else "Android device"
+        return _finish(f"Failed to initialize {target} controller: {cause}", cause)
 
     controller_ctx = getattr(controller, "ctx", None)
     device = getattr(controller_ctx, "device", None)
@@ -329,13 +407,25 @@ async def smoke_test_device(
 
     remaining = max(0.5, timeout_seconds - (time.monotonic() - started))
     try:
-        device_data = await _run_in_daemon_thread(
-            lambda: _run_coroutine_blocking(controller.get_screen_data),
-            remaining,
-            "screen-data",
-        )
+        if is_ios:
+            # Runs on the caller's loop: the helper owns lease + connect +
+            # capture + disconnect + release and is cancellation-safe, unlike
+            # the Android coroutine which must be bounced onto a private
+            # thread/loop because UIAutomator blocks the loop thread.
+            device_data = await asyncio.wait_for(observe_ios_controller(controller), remaining)
+        else:
+
+            async def _observe() -> Any:
+                return await controller.get_screen_data()
+
+            device_data = await _run_in_daemon_thread(
+                lambda: _run_coroutine_blocking(_observe),
+                remaining,
+                "screen-data",
+            )
     except TimeoutError:
-        return _finish(f"UIAutomator/screen capture did not respond within {timeout_seconds:g}s")
+        label = "iOS session capture" if is_ios else "UIAutomator/screen capture"
+        return _finish(f"{label} did not respond within {timeout_seconds:g}s")
     except _PASSTHROUGH_EXCEPTIONS:
         raise
     except BaseException as exc:  # pylint: disable=broad-exception-caught
@@ -344,9 +434,24 @@ async def smoke_test_device(
 
     result["screenshot_bytes"] = _decoded_length(getattr(device_data, "base64", None))
     result["element_count"] = _count_elements(getattr(device_data, "elements", None))
-    from artemis.clients.screen_client_factory import describe_backend
+    if is_ios:
+        from artemis.drivers.ios.physical_driver import PhysicalIosDriver
 
-    result["hierarchy_backend"] = describe_backend(getattr(controller_ctx, "ui_adb_client", None))
+        # Report the canonical UDID the observation lease actually resolved.
+        resolved_serial = getattr(device, "device_id", None)
+        if isinstance(resolved_serial, str) and resolved_serial:
+            result["serial"] = resolved_serial
+        result["hierarchy_backend"] = (
+            "wda"
+            if isinstance(getattr(controller, "_driver", None), PhysicalIosDriver)
+            else "xcode"
+        )
+    else:
+        from artemis.clients.screen_client_factory import describe_backend
+
+        result["hierarchy_backend"] = describe_backend(
+            getattr(controller_ctx, "ui_adb_client", None)
+        )
 
     if result["screenshot_bytes"] is None:
         return _finish("Screen capture returned no screenshot data")
@@ -355,9 +460,8 @@ async def smoke_test_device(
             f"Screenshot capture failed (driver returned a {result['screenshot_bytes']}-byte placeholder image)"
         )
     if not result["element_count"]:
-        return _finish(
-            "UIAutomator hierarchy dump returned no UI elements (screenshot worked, hierarchy did not)"
-        )
+        backend = "Xcode accessibility tree" if is_ios else "UIAutomator hierarchy dump"
+        return _finish(f"{backend} returned no UI elements (screenshot worked, hierarchy did not)")
     return _finish(None)
 
 

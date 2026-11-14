@@ -28,6 +28,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 import json
 import os
+from pathlib import Path
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +45,7 @@ from artemis.llm.reliability import (
     retry_policy_for,
 )
 from artemis.services.llm import _record_llm_event, _record_llm_retry
+from artemis.utils.image_mime import image_mime_type
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -188,12 +190,13 @@ class NativeRunnerMixin:
                 return types.Part(
                     file_data=types.FileData(
                         file_uri=file_ref.uri,
-                        mime_type=file_ref.mime_type or "image/jpeg",
+                        mime_type=file_ref.mime_type
+                        or image_mime_type(Path(file_path).read_bytes()),
                     )
                 )
             with open(file_path, "rb") as f:
                 img_bytes = f.read()
-            return types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
+            return types.Part.from_bytes(data=img_bytes, mime_type=image_mime_type(img_bytes))
 
         return get_image_part
 

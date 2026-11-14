@@ -15,9 +15,11 @@
 """Unit tests for UnifiedMobileController video recording and playback features."""
 
 import asyncio
+import collections
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -794,3 +796,256 @@ def test_segment_session_offsets_without_data_engine_anchor(tmp_path):
     assert offsets[tmp_path / "recording_001.mp4"] == 7.5
     # An emergency fallback remux has no record; it starts at the recording anchor.
     assert offsets[fallback] == 0.0
+
+
+# --- iOS native recording through the shared controller contract ---
+
+
+class _FakeIosStderr:
+    def __init__(self, lines=None, eof: bool = False):
+        self._lines = collections.deque(lines if lines is not None else [b"Recording started\n"])
+        self._eof = asyncio.Event()
+        if eof:
+            self._eof.set()
+
+    async def readline(self):
+        if self._lines:
+            return self._lines.popleft()
+        await self._eof.wait()
+        return b""
+
+
+class _FakeIosRecorderProcess:
+    def __init__(self, stderr=None):
+        self.stderr = stderr or _FakeIosStderr()
+        self.returncode = None
+        self.signals = []
+        self._exit = asyncio.Event()
+
+    def send_signal(self, sig):
+        self.signals.append(sig)
+        self.returncode = 0
+        self._exit.set()
+
+    def terminate(self):
+        self.returncode = -15
+        self._exit.set()
+
+    def kill(self):
+        self.returncode = -9
+        self._exit.set()
+
+    async def wait(self):
+        await self._exit.wait()
+        return self.returncode
+
+
+@pytest.fixture
+def ios_ctx():
+    from artemis.drivers.ios.xcode_driver import XcodeSimulatorDriver
+
+    ctx = MagicMock(spec=ArtemisContext)
+    ctx.device = MagicMock()
+    ctx.device.device_id = "sim-udid-1"
+    ctx.device.mobile_platform = "ios"
+    ctx.data_engine = MagicMock()
+    ctx.data_engine.current_session_id = uuid4()
+    ctx.data_engine.session_start_time = time.time() - 1.0
+    ctx.data_engine.storage = MagicMock()
+    driver = XcodeSimulatorDriver(device_id="sim-udid-1")
+    driver._session_key = "test-session"
+    driver._bridge = SimpleNamespace(
+        connected=True, call=AsyncMock(), close=AsyncMock(), start=AsyncMock()
+    )
+    ctx._active_driver = driver
+    return ctx
+
+
+@pytest.fixture
+def ios_recording_seams(monkeypatch):
+    """Fake the simctl child process, display probe, and MP4 finalization."""
+    from artemis.drivers.ios import recording as rec
+    from artemis.utils import video as video_utils
+
+    procs: list[_FakeIosRecorderProcess] = []
+
+    async def spawn(*argv, **kwargs):
+        proc = _FakeIosRecorderProcess()
+        procs.append(proc)
+        return proc
+
+    async def fake_finalize(source_path, output_path, width, height, span):
+        Path(output_path).write_bytes(b"fake mp4")
+        return True
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(rec, "probe_display_dimensions", AsyncMock(return_value=(1206, 2622)))
+    monkeypatch.setattr(rec, "finalize_mov_to_mp4", fake_finalize)
+    monkeypatch.setattr(
+        video_utils,
+        "probe_video_segment",
+        AsyncMock(return_value={"duration": 1.0, "width": 100, "height": 200}),
+    )
+    monkeypatch.setattr(rec, "WATCHDOG_INTERVAL_SECONDS", 0.01)
+    return procs
+
+
+@pytest.mark.asyncio
+async def test_ios_start_registers_driver_session_and_publishes_de_anchor(
+    ios_ctx, ios_recording_seams, tmp_path
+):
+    remove_active_session("sim-udid-1")
+    controller = UnifiedMobileController(ios_ctx)
+
+    res = await controller.start_video_recording(output_dir=tmp_path)
+
+    try:
+        assert res.success is True
+        session = get_active_session("sim-udid-1")
+        assert session is not None
+        # Controller and driver share one recording session/process.
+        assert session is ios_ctx._active_driver.recording_session
+        assert session.data_engine_start_time == ios_ctx.data_engine.session_start_time
+        ios_ctx.data_engine.record_video_start.assert_called_once()
+        assert res.video_id == session.video_id
+
+        duplicate = await controller.start_video_recording(output_dir=tmp_path)
+        assert duplicate.success is False
+    finally:
+        remove_active_session("sim-udid-1")
+        await ios_ctx._active_driver.stop_video_recording()
+
+
+@pytest.mark.asyncio
+async def test_ios_start_failure_publishes_start_and_failure(
+    ios_ctx, ios_recording_seams, tmp_path, monkeypatch
+):
+    from artemis.drivers.ios import recording as rec
+
+    async def dead_spawn(*argv, **kwargs):
+        return _FakeIosRecorderProcess(_FakeIosStderr(lines=[], eof=True))
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", dead_spawn)
+    remove_active_session("sim-udid-1")
+    controller = UnifiedMobileController(ios_ctx)
+
+    res = await controller.start_video_recording(output_dir=tmp_path)
+
+    assert res.success is False
+    assert "failed to start" in res.message
+    ios_ctx.data_engine.record_video_start.assert_called_once()
+    ios_ctx.data_engine.record_video_failure.assert_called_once()
+    assert get_active_session("sim-udid-1") is None
+    # The driver's failed session is still inspectable.
+    assert ios_ctx._active_driver.recording_session is not None
+
+
+@pytest.mark.asyncio
+async def test_ios_stop_records_stop_metadata_and_clears_registry(
+    ios_ctx, ios_recording_seams, tmp_path
+):
+    remove_active_session("sim-udid-1")
+    controller = UnifiedMobileController(ios_ctx)
+    await controller.start_video_recording(output_dir=tmp_path)
+
+    res = await controller.stop_video_recording()
+
+    assert res.success is True
+    assert res.video_path == tmp_path / "recording.mp4"
+    assert res.source_revision and res.source_revision.endswith(":ready")
+    ios_ctx.data_engine.record_video_stop.assert_called_once()
+    assert get_active_session("sim-udid-1") is None
+
+
+@pytest.mark.asyncio
+async def test_ios_stop_failure_reports_unsuccessful_result(
+    ios_ctx, ios_recording_seams, tmp_path, monkeypatch
+):
+    from artemis.drivers.ios import recording as rec
+
+    monkeypatch.setattr(rec, "finalize_mov_to_mp4", AsyncMock(return_value=False))
+    remove_active_session("sim-udid-1")
+    controller = UnifiedMobileController(ios_ctx)
+    await controller.start_video_recording(output_dir=tmp_path)
+
+    res = await controller.stop_video_recording()
+
+    assert res.success is False
+    ios_ctx.data_engine.record_video_failure.assert_called()
+    assert get_active_session("sim-udid-1") is None
+    # The failed session is retained with actionable errors for reporting.
+    retained = ios_ctx._active_driver.recording_session
+    assert retained is not None and retained.errors
+
+
+@pytest.mark.asyncio
+async def test_ios_extract_seals_then_renders_only_final_mp4(
+    ios_ctx, ios_recording_seams, tmp_path
+):
+    remove_active_session("sim-udid-1")
+    controller = UnifiedMobileController(ios_ctx)
+    await controller.start_video_recording(output_dir=tmp_path)
+    await asyncio.sleep(0.05)
+    session = get_active_session("sim-udid-1")
+    seal_spy = AsyncMock(wraps=ios_ctx._active_driver.seal_recording_segment)
+    ios_ctx._active_driver.seal_recording_segment = seal_spy
+
+    rendered = {}
+
+    async def fake_render(segments, start, end, output_path, **kwargs):
+        rendered["segments"] = segments
+        rendered["range"] = (start, end)
+        Path(output_path).write_bytes(b"clip")
+        return True
+
+    output_path = tmp_path / "clip.mp4"
+    shift = session.start_time - session.data_engine_start_time
+    with patch(
+        "artemis.controllers.unified_controller.render_timeline_clip",
+        AsyncMock(side_effect=fake_render),
+    ) as render:
+        res = await controller.extract_segment_metadata(
+            start_time=shift + 0.0, end_time=shift + 0.02, output_path=output_path
+        )
+        assert res.success is True
+        assert res.video_path == output_path
+        seal_spy.assert_awaited_once()
+        # Only finalized MP4 segment paths are rendered — never the open .mov.
+        assert rendered["segments"]
+        assert all(s["path"].endswith(".mp4") for s in rendered["segments"])
+        assert all(".mov" not in s["path"] for s in rendered["segments"])
+
+        # Generation-scoped cache: same range reuses the clip without render.
+        res2 = await controller.extract_segment_metadata(
+            start_time=shift + 0.0, end_time=shift + 0.02, output_path=output_path
+        )
+        assert res2.success is True
+        assert render.await_count == 1
+
+    await controller._driver.stop_video_recording()
+    remove_active_session("sim-udid-1")
+
+
+@pytest.mark.asyncio
+async def test_ios_extract_rejects_range_outside_sealed_capture(
+    ios_ctx, ios_recording_seams, tmp_path
+):
+    remove_active_session("sim-udid-1")
+    controller = UnifiedMobileController(ios_ctx)
+    await controller.start_video_recording(output_dir=tmp_path)
+    session = get_active_session("sim-udid-1")
+    shift = session.start_time - session.data_engine_start_time
+
+    with patch(
+        "artemis.controllers.unified_controller.render_timeline_clip",
+        AsyncMock(return_value=True),
+    ) as render:
+        res = await controller.extract_segment_metadata(
+            start_time=shift + 50.0, end_time=shift + 55.0
+        )
+
+    assert res.success is False
+    assert "overlap" in res.message
+    render.assert_not_awaited()
+    await controller._driver.stop_video_recording()
+    remove_active_session("sim-udid-1")

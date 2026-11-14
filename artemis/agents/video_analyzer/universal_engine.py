@@ -42,6 +42,7 @@ from artemis.agents.video_analyzer.reliability import (
 )
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan
 from third_party.mobile_use.utils.logger import get_logger
+from artemis.utils.image_mime import image_data_uri
 
 logger = get_logger(__name__)
 
@@ -159,7 +160,7 @@ async def _build_universal_user_blocks(
         user_blocks.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64_str}"},
+                "image_url": {"url": image_data_uri(b64_str)},
             }
         )
 

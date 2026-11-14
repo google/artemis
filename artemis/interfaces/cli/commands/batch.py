@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Annotated
 
 from artemis.config import initialize_llm_config
+from artemis.runtime.device_target import normalize_device_platform
 from artemis.sdk import Agent
 from artemis.sdk.builders import Builders
 from third_party.mobile_use.sdk.types.task import AgentProfile
@@ -38,6 +39,9 @@ async def run_batch_tasks(
     delay_seconds: float = 5.0,
     verification_level: str | None = None,
     explorer_pro_mode: str | None = None,
+    platform: str = "android",
+    device_serial: str | None = None,
+    ios_workspace: str | None = None,
 ) -> None:
     """Executes a list of automation tasks sequentially.
 
@@ -49,6 +53,9 @@ async def run_batch_tasks(
             'strict') for the Pro profile; ignored by Flash.
         explorer_pro_mode: Explorer tier ('flash', 'pro', 'ultra') behind
             ``ask_explorer`` under the Pro profile; ignored by Flash.
+        platform: 'android' (default) or 'ios' (local simulator or paired device).
+        device_serial: Android serial or iOS device UDID for all tasks.
+        ios_workspace: Xcode project/workspace for first-run iOS approval.
     """
     if not os.environ.get("ARTEMIS_TASK_INGRESS"):
         os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
@@ -59,6 +66,15 @@ async def run_batch_tasks(
         config_builder.with_verification_level(verification_level)
     if explorer_pro_mode is not None:
         config_builder.with_explorer(pro_mode=explorer_pro_mode)
+    if normalize_device_platform(platform, strict=False) == "ios":
+        config_builder.for_ios_device(
+            device_id=device_serial or "booted",
+            workspace_path=ios_workspace,
+        )
+    elif device_serial:
+        from artemis.context import DevicePlatform
+
+        config_builder.for_device(DevicePlatform.ANDROID, device_serial)
     config = config_builder.build()
 
     agent = Agent(config=config)
@@ -162,8 +178,44 @@ def batch_command(
             help="Explorer tier behind ask_explorer under the Pro profile ('flash', 'pro', 'ultra').",
         ),
     ] = None,
+    platform: Annotated[
+        str,
+        typer.Option(
+            "--platform",
+            help="Target mobile platform: 'android' (default) or 'ios' (local simulator or paired device).",
+        ),
+    ] = "android",
+    device_serial: Annotated[
+        str | None,
+        typer.Option(
+            "--device-serial",
+            help="Android serial or iOS device UDID (simulator or paired physical device) for every task in the batch.",
+        ),
+    ] = None,
+    ios_workspace: Annotated[
+        Path | None,
+        typer.Option(
+            "--ios-workspace",
+            exists=True,
+            dir_okay=True,
+            file_okay=False,
+            resolve_path=True,
+            help="Existing Xcode project/workspace to request iOS first-run agent approval.",
+        ),
+    ] = None,
 ) -> None:
     """Execute multiple automation tasks in sequence."""
+    try:
+        platform = normalize_device_platform(platform)
+    except ValueError as exc:
+        typer.secho(
+            f"Error: --platform must be 'android' or 'ios' (got '{platform}').",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(1) from exc
+    if ios_workspace is not None and platform != "ios":
+        typer.secho("Error: --ios-workspace requires --platform ios.", fg=typer.colors.RED)
+        raise typer.Exit(1)
     task_list: list[str] = []
 
     if tasks_file:
@@ -222,8 +274,11 @@ def batch_command(
                 resp = submit_batch_to_daemon(
                     task_list,
                     profile=profile,
+                    device_serial=device_serial,
                     verification_level=verification_level,
                     explorer_mode=explorer_pro_mode,
+                    platform=platform,
+                    ios_workspace=str(ios_workspace) if ios_workspace else None,
                     base_url=base_url,
                 )
                 if resp and resp.get("tasks"):
@@ -274,5 +329,8 @@ def batch_command(
             delay_seconds=delay,
             verification_level=verification_level,
             explorer_pro_mode=explorer_pro_mode,
+            platform=platform,
+            device_serial=device_serial,
+            ios_workspace=str(ios_workspace) if ios_workspace else None,
         )
     )

@@ -233,7 +233,14 @@ async def get_action_session(ctx: Any, actuator: Any = None) -> ActionSession:
     from artemis.mcp.action_server import build_action_server
     from artemis.mcp.actuators.adb import AdbActuator
 
-    actuator = actuator or getattr(ctx, "actuator", None) or AdbActuator(ctx)
+    actuator = actuator or getattr(ctx, "actuator", None)
+    if actuator is None:
+        if getattr(getattr(ctx, "device", None), "mobile_platform", None) == "ios":
+            from artemis.mcp.actuators.ios import IosActuator
+
+            actuator = IosActuator(ctx)
+        else:
+            actuator = AdbActuator(ctx)
     server = build_action_server(actuator)
     session = ActionSession(server)
     await session.start()

@@ -66,6 +66,7 @@ from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
 from artemis.graph.state import State
 from artemis.runtime import DeviceExecutionLock
+from artemis.runtime.device_target import IOS_LOCK_SCOPE
 from artemis.sdk.run_outcome import attach_test_summary, resolve_trace_suffix
 from artemis.sdk.types.agent import AgentConfig
 from artemis.utils.startup_progress import publish_startup_progress
@@ -123,7 +124,10 @@ class AgentBase:
         target_dev = device_serial or device_id
         if target_dev:
             self._config = self._config.model_copy(
-                update={"device_id": target_dev, "device_platform": DevicePlatform.ANDROID}
+                update={
+                    "device_id": target_dev,
+                    "device_platform": self._config.device_platform or DevicePlatform.ANDROID,
+                }
             )
 
         return await self._init_internal(
@@ -440,6 +444,8 @@ class AgentBase:
             llm_config=agent_profile.llm_config,
             agent_config=self._config,
         )
+        if context.device.mobile_platform == DevicePlatform.IOS:
+            context._active_driver = getattr(self, "_ios_driver", None)
 
         output_config = None
         if request.output_description or request.output_format:
@@ -467,7 +473,14 @@ class AgentBase:
                 or getattr(task, "id", None)
                 or getattr(getattr(task, "request", None), "task_name", None)
             )
-            active_owner = DeviceExecutionLock.get_active_owner(self._device_context.device_id)
+            # iOS simulators lock under the "ios" scope so a UDID can never
+            # collide with an Android serial carrying the same text.
+            lock_scope = (
+                IOS_LOCK_SCOPE if context.device.mobile_platform == DevicePlatform.IOS else None
+            )
+            active_owner = DeviceExecutionLock.get_active_owner(
+                self._device_context.device_id, lock_scope=lock_scope
+            )
             already_held = (
                 active_owner is not None
                 and active_owner.pid == os.getpid()
@@ -486,6 +499,7 @@ class AgentBase:
                     max_concurrency=effective_max,
                     session_id=str(sess_id) if sess_id else None,
                     ingress=os.getenv("ARTEMIS_TASK_INGRESS") or "agent",
+                    lock_scope=lock_scope,
                 )
             )
             try:
@@ -516,12 +530,15 @@ class AgentBase:
                 # DataEngine uses a shared database, so a queued task must not
                 # publish a new active session while the current task is still
                 # finishing.
+                if context.device.mobile_platform == DevicePlatform.IOS:
+                    await self._ensure_device_unlocked()
                 self._prepare_tracing(task=task, context=context)
                 self._prepare_output_files(task=task)
                 if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
                     if self._ui_adb_client is not None:
                         await self._connect_screen_client(context, str(sess_id))
-                    await self._ensure_device_unlocked()
+                    if context.device.mobile_platform != DevicePlatform.IOS:
+                        await self._ensure_device_unlocked()
                 publish_startup_progress(
                     "environment", "Preparing the device environment", session_id=str(sess_id)
                 )
@@ -749,6 +766,10 @@ class AgentBase:
 
                 raise
             finally:
+                # The native simulator transport is task-owned even when setup
+                # fails before entering the context manager.
+                if context.device.mobile_platform == DevicePlatform.IOS:
+                    await context.disconnect_driver()
                 try:
                     # Background ADB processes (logcat, screenrecord, ...) started
                     # by the Operator must not outlive the automation task.

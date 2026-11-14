@@ -151,7 +151,7 @@ async def test_outputter_with_history_and_image(mock_get_llm, mock_context):
     assert "Step 1: Opened browser" in human_content[0]["text"]
     assert "Plan: Find capital" in human_content[0]["text"]
     assert human_content[1]["type"] == "image_url"
-    assert human_content[1]["image_url"]["url"] == "data:image/jpeg;base64,mock_b64_data"
+    assert human_content[1]["image_url"]["url"] == "data:image/png;base64,mock_b64_data"
 
 
 @patch("artemis.agents.outputter.outputter.get_llm")

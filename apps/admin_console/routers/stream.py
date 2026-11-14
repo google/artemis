@@ -45,12 +45,13 @@ async def stream_device_live():
 
 @router.get("/api/stream/device-state")
 async def get_device_stream_state():
-    """Returns whether an ADB device is connected and live streaming is available."""
-    serial = await device_stream_service.get_device_serial()
+    """Returns whether a device is connected and live streaming is available."""
+    target = await device_stream_service.get_stream_target()
     return JSONResponse(
         {
-            "connected": serial is not None,
-            "serial": serial,
-            "live_stream_url": "/api/stream/device-live" if serial else None,
+            "connected": target is not None,
+            "serial": target["serial"] if target else None,
+            "platform": target["platform"] if target else None,
+            "live_stream_url": "/api/stream/device-live" if target else None,
         }
     )

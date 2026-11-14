@@ -15,6 +15,7 @@
 """Builder for AgentConfig objects using a fluent interface."""
 
 import os
+from pathlib import Path
 from typing import Any, cast
 
 from artemis.config import (
@@ -23,6 +24,7 @@ from artemis.config import (
     load_agent_config,
     settings,
 )
+from artemis.drivers.ios.discovery import BOOTED_SIMULATOR_ID
 from artemis.context import DevicePlatform
 from artemis.sdk.types.agent import AgentConfig, ServerConfig
 from artemis.utils.video import detect_video_tools_enabled
@@ -37,11 +39,13 @@ class AgentConfigBuilder(AgentConfigBuilderBase):
     def __init__(self):
         """Initialize an empty AgentConfigBuilder with Artemis defaults."""
         super().__init__(servers=get_default_servers())
+        self._video_recording_tools_explicit: bool = False
         self._video_recording_tools_enabled: bool = detect_video_tools_enabled()
         self._force_web_accessibility: bool = False
         self._disable_checker: bool = False
         self._concurrency_mode: str = "per_device"
         self._max_concurrency: int | None = None
+        self._ios_workspace_path: Path | None = None
 
         agent_cfg = load_agent_config()
         self._explorer = agent_cfg.explorer
@@ -50,9 +54,8 @@ class AgentConfigBuilder(AgentConfigBuilderBase):
         self._video_analyzer = agent_cfg.video_analyzer
         self._enable_video_ledger = agent_cfg.video_analyzer.enable_ledger
         if agent_cfg.video_analyzer.enabled is not None:
+            self._video_recording_tools_explicit = True
             self._video_recording_tools_enabled = agent_cfg.video_analyzer.enabled
-        else:
-            self._video_recording_tools_enabled = detect_video_tools_enabled()
         self._disable_planner_validation = not agent_cfg.planner_validation.enabled
         self._enable_committee = agent_cfg.committee.enabled
         self._committee_debate_rounds = agent_cfg.committee.debate_rounds
@@ -76,6 +79,24 @@ class AgentConfigBuilder(AgentConfigBuilderBase):
         """Target a specific Android device by its ADB serial number."""
         return self.for_device(DevicePlatform.ANDROID, device_serial)
 
+    def for_ios_device(
+        self, device_id: str = BOOTED_SIMULATOR_ID, *, workspace_path: str | Path | None = None
+    ) -> "AgentConfigBuilder":
+        """Target an iOS device UDID (simulator or paired physical), or the booted simulator."""
+        if workspace_path is not None:
+            self.with_ios_workspace(workspace_path)
+        return self.for_device(DevicePlatform.IOS, device_id)
+
+    # Backward-compatible alias from when iOS support was simulator-only.
+    for_ios_simulator = for_ios_device
+
+    def with_ios_workspace(self, workspace_path: str | Path | None) -> "AgentConfigBuilder":
+        """Set an existing Xcode project/workspace for iOS first-run approval."""
+        self._ios_workspace_path = (
+            Path(workspace_path).expanduser().resolve() if workspace_path is not None else None
+        )
+        return self
+
     def with_concurrency_mode(self, mode: str) -> "AgentConfigBuilder":
         """Configure concurrency mode: 'global' (1 task globally) or 'per_device' (1 task per device)."""
         self._concurrency_mode = str(mode).strip().lower()
@@ -92,6 +113,7 @@ class AgentConfigBuilder(AgentConfigBuilderBase):
         Args:
             enabled: Whether to enable video recording tools
         """
+        self._video_recording_tools_explicit = True
         self._video_recording_tools_enabled = enabled
         return self
 
@@ -425,7 +447,15 @@ class AgentConfigBuilder(AgentConfigBuilderBase):
                 or os.environ.get("ARTEMIS_DEVICE_ID")
                 or os.environ.get("ADB_DEVICE_SERIAL")
             ),
-            "video_recording_tools_enabled": self._video_recording_tools_enabled,
+            "video_recording_tools_enabled": (
+                self._video_recording_tools_enabled
+                if self._video_recording_tools_explicit
+                else detect_video_tools_enabled(
+                    self._device_platform.value
+                    if self._device_platform is not None
+                    else DevicePlatform.ANDROID.value
+                )
+            ),
             "force_web_accessibility": self._force_web_accessibility,
             "disable_checker": self._disable_checker,
             "disable_midway_checks": self._disable_midway_checks,
@@ -454,6 +484,7 @@ class AgentConfigBuilder(AgentConfigBuilderBase):
             ),
             "concurrency_mode": self._concurrency_mode,
             "max_concurrency": self._max_concurrency,
+            "ios_workspace_path": self._ios_workspace_path,
         }
 
     def build(self, validate_profiles: bool = True) -> AgentConfig:

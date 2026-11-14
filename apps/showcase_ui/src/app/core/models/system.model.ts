@@ -34,6 +34,8 @@ export interface DeviceInfo {
   is_locked: boolean | null;
   is_emulator: boolean;
   installed_packages?: string[];
+  /** 'android' (default) or 'ios' (iOS Simulator; serial is the UDID). */
+  platform?: 'android' | 'ios';
 }
 
 export interface AdbServerEndpoint {
