@@ -14,6 +14,7 @@
 import asyncio
 import base64
 import json
+import unicodedata
 from pathlib import Path
 import plistlib
 import re
@@ -26,7 +27,12 @@ import pytest
 from artemis.drivers.base import KeyCode
 from artemis.drivers.ios import xcode_driver
 from artemis.drivers.ios.bridge import XcodeApprovalRequiredError
-from artemis.drivers.ios.hierarchy import application_bundle, parse_hierarchy
+from artemis.drivers.ios.hierarchy import (
+    application_bundle,
+    element_center,
+    focused_field_value,
+    parse_hierarchy,
+)
 from artemis.drivers.ios.xcode_driver import XcodeSimulatorDriver, run_xcrun
 from third_party.mobile_use.controllers.types import ElementQuery
 
@@ -107,7 +113,7 @@ def simulator(tmp_path, monkeypatch):
     native = NativeBridge(observation)
     inventory = {"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-27-0": [device()]}}
 
-    async def command(*arguments, timeout=30):
+    async def command(*arguments, timeout=30, stdin_data=None):
         if arguments == ("xcodebuild", "-version"):
             return b"Xcode 27.0\nBuild version 27A266a\n"
         if arguments == ("simctl", "list", "devices", "--json"):
@@ -439,7 +445,7 @@ async def test_element_action_uses_native_hit_point_and_app_activation(simulator
 @pytest.mark.asyncio
 async def test_text_preserves_unicode_whitespace_and_literal_native_escape_sequences(simulator):
     await simulator.driver.connect()
-    text = "한글🙂  'quoted'\n\t" + r"\u{000A} b h $(literal)"
+    text = "ascii 'quoted'\n\t" + r"\u{000A} b h $(literal)"
     assert await simulator.driver.input_text(text, clear_existing=False)
     command = simulator.native.call.await_args.args[1]["interactionCommand"]
     assert command.startswith("sender keyboard kbd ")
@@ -649,6 +655,36 @@ def test_labeled_textfield_keeps_label_text_and_retains_field_metadata():
     assert field["value"] == "typed"
     assert field["placeholder"] == "Habit to avoid"
     assert field["hit_point"] == [201, 210]
+
+
+def test_keyboard_focused_marker_is_emitted_as_focus_flags():
+    elements, _ = parse_hierarchy(EMPTY_FIELD, 402, 874)
+    field = elements[0]
+    assert field["keyboard_focused"] is True
+    assert field["focused"] == "true"
+
+    elements, _ = parse_hierarchy(LABELED_FIELD, 402, 874)
+    assert "keyboard_focused" not in elements[0]
+    assert "focused" not in elements[0]
+
+
+def test_focused_field_value_reads_value_never_placeholder():
+    elements, _ = parse_hierarchy(FILLED_FIELD, 402, 874)
+    assert focused_field_value(elements) == "caf\u00e9 \U0001f642"
+
+    empty, _ = parse_hierarchy(EMPTY_FIELD, 402, 874)
+    # Empty field: placeholder is text, but no ``value`` exists to verify.
+    assert focused_field_value(empty) is None
+
+
+def test_element_center_prefers_hit_point_then_bounds_center():
+    assert element_center(
+        {"hit_point": [10, 20], "parsed_bounds": {"left": 0, "top": 0, "right": 100, "bottom": 100}}
+    ) == (10, 20)
+    assert element_center(
+        {"parsed_bounds": {"left": 0, "top": 0, "right": 100, "bottom": 100}}
+    ) == (50, 50)
+    assert element_center({}) is None
 
 
 def test_unquoted_native_value_metadata_keeps_label_text():
@@ -1039,3 +1075,99 @@ async def test_orphaned_native_session_is_ended_and_start_retried(simulator):
     assert ends[0].args[1] == {"interactionSessionKey": "Artemis Simulator deadbeef"}
     assert len([c for c in calls]) == 2
     await simulator.driver.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_input_text_routes_ascii_to_keyboard_and_nonascii_to_pasteboard():
+    driver = XcodeSimulatorDriver()
+    synthesize = AsyncMock()
+    pasteboard = AsyncMock(return_value=True)
+    driver._synthesize = synthesize
+    driver._input_via_pasteboard = pasteboard
+
+    assert await driver.input_text("hello 123", clear_existing=False) is True
+    synthesize.assert_awaited_once()
+    pasteboard.assert_not_awaited()
+
+    assert await driver.input_text("한글 café", clear_existing=False) is True
+    pasteboard.assert_awaited_once_with("한글 café")
+    assert synthesize.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_pasteboard_retries_read_box_before_each_retry():
+    driver = XcodeSimulatorDriver()
+    copies = AsyncMock()
+    pastes = AsyncMock()
+    matches = AsyncMock(side_effect=[False, False, True])
+    driver._copy_text_to_pasteboard = copies
+    driver._paste_focused_field = pastes
+    driver._field_value_matches = matches
+
+    assert await driver._input_via_pasteboard("한글") is True
+    # First attempt pastes once and fails its check; the retry reads the box
+    # first (returns False here), pastes again, then verifies.
+    assert copies.await_count == 2
+    assert pastes.await_count == 2
+    assert matches.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_pasteboard_stops_when_readback_already_matches():
+    driver = XcodeSimulatorDriver()
+    copies = AsyncMock()
+    pastes = AsyncMock()
+    matches = AsyncMock(side_effect=[False, True])
+    driver._copy_text_to_pasteboard = copies
+    driver._paste_focused_field = pastes
+    driver._field_value_matches = matches
+
+    assert await driver._input_via_pasteboard("한글") is True
+    # Second attempt's pre-retry read saw the value already present: no
+    # third paste, so nothing is typed twice.
+    assert copies.await_count == 1
+    assert pastes.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_pasteboard_gives_up_after_two_retries():
+    driver = XcodeSimulatorDriver()
+    copies = AsyncMock()
+    pastes = AsyncMock()
+    matches = AsyncMock(return_value=False)
+    driver._copy_text_to_pasteboard = copies
+    driver._paste_focused_field = pastes
+    driver._field_value_matches = matches
+
+    assert await driver._input_via_pasteboard("한글") is False
+    assert copies.await_count == 3  # initial + two retries
+    assert pastes.await_count == 3
+
+
+def test_paste_value_landed_exact_and_suffix():
+    landed = XcodeSimulatorDriver._paste_value_landed
+    assert landed("한글테스트", "한글테스트")
+    assert landed("buy milk한글테스트", "한글테스트")
+    assert landed("prefix 한글테스트 ", "한글테스트") is False
+    assert landed("buy milk", "한글테스트") is False
+
+
+def test_paste_value_landed_nfkc_and_truncation():
+    landed = XcodeSimulatorDriver._paste_value_landed
+    # NFKC: compatibility jamo vs precomposed syllables normalize equal.
+    assert landed("한글", unicodedata.normalize("NFKC", "한글"))
+    # iOS ellipsis-truncated AX value still counts as landed.
+    assert landed("notes 한글테스...", "한글테스트")
+    assert landed("notes 한글테스트…", "한글테스트")
+
+
+def test_field_tap_point_aims_at_text_not_center():
+    field = {
+        "value": "buy milk",
+        "parsed_bounds": {"left": 54, "top": 178, "right": 351, "bottom": 200},
+    }
+    x, y = XcodeSimulatorDriver._field_tap_point(field)
+    assert x < 120  # over the glyphs, not the empty right half
+    assert y == 189
+    empty = dict(field, value="")
+    assert XcodeSimulatorDriver._field_tap_point(empty) == (202, 189)

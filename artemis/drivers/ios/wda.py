@@ -186,9 +186,7 @@ class WdaClient:
             path = await self._reopen_session_with_path(path, suppress_errors=True)
             return await self._request(method, path, payload, timeout, _recovered=True)
 
-    async def _reopen_session_with_path(
-        self, path: str, suppress_errors: bool = False
-    ) -> str:
+    async def _reopen_session_with_path(self, path: str, suppress_errors: bool = False) -> str:
         """Rebind the session and rewrite the old session id inside ``path``."""
         old_id = self._session_id
         await self._reopen_session(suppress_errors=suppress_errors)
@@ -607,8 +605,10 @@ def parse_wda_elements(
                 )
                 element["hit_point"] = [(left + right) // 2, (top + bottom) // 2]
                 element["visible"] = bool(entry.get("isVisible", True))
-                if value is not None and str(value) != text:
+                if value is not None and str(value):
                     element["value"] = str(value)
+                if entry.get("hasKeyboardFocus"):
+                    element["hasKeyboardFocus"] = True
                 elements.append(element)
         children = entry.get("children")
         if isinstance(children, list):

@@ -14,6 +14,61 @@
 import re
 from typing import Any
 
+
+def element_is_focused(element: dict[str, Any]) -> bool:
+    """Keyboard/input focus across the simulator and WDA element shapes."""
+    if element.get("keyboard_focused") or element.get("has_keyboard_focus"):
+        return True
+    if element.get("hasKeyboardFocus") is True:
+        return True
+    return str(element.get("focused", "")).lower() == "true"
+
+
+def element_is_text_entry(element: dict[str, Any]) -> bool:
+    haystack = f"{element.get('class') or ''} {element.get('resource_id') or ''}".lower()
+    return any(
+        token in haystack for token in ("search", "textfield", "text_field", "edittext", "textview")
+    )
+
+
+def focused_field_value(elements: list[dict[str, Any]]) -> str | None:
+    """Value of the box that received text — never its placeholder.
+
+    Prefers the keyboard-focused element carrying a ``value`` attribute;
+    when no element reports focus, falls back to a lone text-entry element
+    with a ``value``. Returns ``None`` when no readable box exists.
+    """
+    focused = [e for e in elements if element_is_focused(e) and "value" in e]
+    if not focused:
+        entries = [e for e in elements if element_is_text_entry(e) and "value" in e]
+        if len(entries) == 1:
+            focused = entries
+    if not focused:
+        return None
+    value = focused[0].get("value")
+    return value if isinstance(value, str) else str(value) if value is not None else None
+
+
+def element_center(element: dict[str, Any]) -> tuple[int, int] | None:
+    """Pixel-space center of an element: hit point first, bounds center else."""
+    hit = element.get("hit_point")
+    if isinstance(hit, (list, tuple)) and len(hit) == 2:
+        try:
+            return int(hit[0]), int(hit[1])
+        except (TypeError, ValueError):
+            pass
+    bounds = element.get("parsed_bounds")
+    if isinstance(bounds, dict):
+        try:
+            return (
+                (int(bounds["left"]) + int(bounds["right"])) // 2,
+                (int(bounds["top"]) + int(bounds["bottom"])) // 2,
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+    return None
+
+
 _NUMBER = r"(-?\d+(?:\.\d+)?)"
 _FRAME = re.compile(
     r"\{\{\s*"
@@ -132,5 +187,10 @@ def parse_hierarchy(
             element["placeholder"] = placeholder.group(1)
         if value_text is not None:
             element["value"] = value_text
+        # `Keyboard Focused` marks the field currently receiving keyboard
+        # input; the shared element shape reports focus as the string "true".
+        if re.search(r"Keyboard Focused(?!\s*[:=]?\s*(?:false|no|0)\b)", line):
+            element["keyboard_focused"] = True
+            element["focused"] = "true"
         elements.append(element)
     return elements, scale

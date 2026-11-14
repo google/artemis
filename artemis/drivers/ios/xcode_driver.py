@@ -21,7 +21,9 @@ import re
 from pathlib import Path
 import plistlib
 import sys
+import time
 from typing import TYPE_CHECKING, Any, Literal
+import unicodedata
 from uuid import uuid4
 
 from PIL import Image
@@ -37,7 +39,14 @@ from artemis.drivers.ios.discovery import (
     plist_to_json,
     run_xcrun,
 )
-from artemis.drivers.ios.hierarchy import application_bundle, parse_hierarchy
+from artemis.drivers.ios.hierarchy import (
+    application_bundle,
+    element_center,
+    element_is_focused,
+    element_is_text_entry,
+    focused_field_value,
+    parse_hierarchy,
+)
 from artemis.drivers.ios.recording import (
     DEFAULT_MAX_DURATION_SECONDS,
     IosRecordingSession,
@@ -214,8 +223,7 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
                 # retry once with a fresh label after a short delay.
                 await asyncio.sleep(1.0)
                 start_arguments["sessionIdentifier"] = self._session_label()
-                return await self._bridge.call(
-                    "DeviceInteractionStartSession", start_arguments)
+                return await self._bridge.call("DeviceInteractionStartSession", start_arguments)
             raise
 
     async def connect(self) -> None:
@@ -345,9 +353,7 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
                 session = await self._start_interaction_session()
                 key = session.get("interactionSessionKey")
                 if not key:
-                    raise RuntimeError(
-                        "Xcode did not return a device interaction session key."
-                    )
+                    raise RuntimeError("Xcode did not return a device interaction session key.")
                 self._validate_session_device(session)
                 self._session_key = key
                 logger.warning(
@@ -503,12 +509,159 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
             raise NotImplementedError(
                 "Xcode has no verified replace-text operation. Use clear_existing=False to append, or clear the field through its UI."
             )
-        # Encode every code point: literal native escape sequences cannot become
-        # unintended control characters, and newlines/Unicode retain their value.
-        escaped = "".join(f"\\u{{{ord(char):04X}}}" for char in text)
         async with self._operation_lock:
-            await self._synthesize(f"sender keyboard kbd {escaped}")
-        return True
+            if text.isascii():
+                # Encode every code point: literal native escape sequences cannot become
+                # unintended control characters, and newlines/Unicode retain their value.
+                escaped = "".join(f"\\u{{{ord(char):04X}}}" for char in text)
+                await self._synthesize(f"sender keyboard kbd {escaped}")
+                return True
+            return await self._input_via_pasteboard(text)
+
+    async def _input_via_pasteboard(self, text: str) -> bool:
+        """Non-ASCII input through the device pasteboard and the edit menu.
+
+        Key events can split IME composition (e.g. hangul jamo), so text with
+        non-ASCII code points is copied with ``simctl pbcopy`` and inserted by
+        tapping Paste in the edit menu. The focused field's value is read
+        before every retry — a slow but successful paste is never typed twice.
+        At most two retries follow the first attempt.
+        """
+        for attempt in range(3):
+            if attempt and await self._field_value_matches(text):
+                return True
+            try:
+                await self._copy_text_to_pasteboard(text)
+                await self._paste_focused_field()
+            except Exception as error:
+                logger.warning(f"iOS pasteboard input attempt {attempt + 1} failed: {error}")
+            if await self._field_value_matches(text, timeout=8.0):
+                return True
+        return False
+
+    async def _copy_text_to_pasteboard(self, text: str) -> None:
+        await run_xcrun(
+            "simctl",
+            "pbcopy",
+            self._device_id,
+            timeout=30.0,
+            stdin_data=text.encode("utf-8"),
+        )
+
+    async def _paste_focused_field(self) -> None:
+        data = await self._capture()
+        # An untouched field reports no ``value`` attribute at all, so entry
+        # capability — not the presence of a value — identifies the target.
+        field = next(
+            (
+                e
+                for e in data.ui_elements or []
+                if element_is_focused(e) and (element_is_text_entry(e) or "value" in e)
+            ),
+            None,
+        ) or next(
+            (e for e in data.ui_elements or [] if element_is_text_entry(e)),
+            None,
+        )
+        if field is None:
+            raise RuntimeError("No focused text field is available for paste input.")
+        point = self._field_tap_point(field)
+        if point is None:
+            raise RuntimeError("The focused text field has no usable bounds for paste input.")
+        x, y = point
+        # A single tap places the cursor and raises the edit menu on modern
+        # iOS; a long-press on empty field space raises nothing, so it is only
+        # a fallback and must aim at the text, not the field center.
+        await self._synthesize(
+            f"t {self._point(x, y)} 0.1",
+            activation=self._activation_for(data, x, y),
+        )
+        await asyncio.sleep(0.5)
+        menu = await self._capture()
+        item = self._find_paste_item(menu)
+        if item is None:
+            await self._synthesize(
+                f"t {self._point(x, y)} 0.8",
+                activation=self._activation_for(menu, x, y),
+            )
+            await asyncio.sleep(0.6)
+            menu = await self._capture()
+            item = self._find_paste_item(menu)
+        if item is None:
+            raise RuntimeError("The Paste edit-menu item did not appear after tapping the field.")
+        point = element_center(item)
+        if point is None:
+            raise RuntimeError("The Paste menu item has no usable bounds.")
+        await self._synthesize(
+            f"t {self._point(*point)} 0.1",
+            activation=self._activation_for(menu, point[0], point[1]),
+        )
+
+    @staticmethod
+    def _field_tap_point(field: dict[str, Any]) -> tuple[int, int] | None:
+        """Aim at the field's text so gestures hit glyphs, not empty space."""
+        bounds = field.get("parsed_bounds")
+        if not isinstance(bounds, dict):
+            return element_center(field)
+        left, top = int(bounds["left"]), int(bounds["top"])
+        right, bottom = int(bounds["right"]), int(bounds["bottom"])
+        if right <= left or bottom <= top:
+            return None
+        has_text = bool(str(field.get("value") or field.get("text") or "").strip())
+        x = left + min(48, max(12, (right - left) // 6)) if has_text else (left + right) // 2
+        return (x, (top + bottom) // 2)
+
+    @staticmethod
+    def _find_paste_item(screen_data: ScreenData) -> dict[str, Any] | None:
+        return next(
+            (
+                e
+                for e in screen_data.ui_elements or []
+                if str(e.get("text") or "").strip().lower() == "paste"
+            ),
+            None,
+        )
+
+    async def _field_value_matches(self, text: str, timeout: float = 2.0) -> bool:
+        """True once the focused field shows ``text`` landed (NFKC-normalized).
+
+        Paste appends at the cursor, so the field may already hold earlier
+        content — matching requires the value to end with the pasted text,
+        not to equal it. iOS can also report long values ellipsis-truncated;
+        a tail matching a prefix of the text still counts as landed so a
+        successful paste is never typed twice.
+        """
+        normalized = unicodedata.normalize("NFKC", text)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                data = await self._capture()
+                elements = data.ui_elements or []
+            except Exception:
+                elements = []
+            value = focused_field_value(elements)
+            if value is not None and self._paste_value_landed(value, normalized):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.5)
+
+    @staticmethod
+    def _paste_value_landed(value: str, normalized_text: str) -> bool:
+        actual = unicodedata.normalize("NFKC", value)
+        if actual == normalized_text or actual.endswith(normalized_text):
+            return True
+        for suffix in ("...", "…"):
+            if actual.endswith(suffix):
+                actual = actual[: -len(suffix)]
+                break
+        if actual == normalized_text or actual.endswith(normalized_text):
+            return True
+        # Truncated mid-paste: the visible tail is a prefix of the text.
+        for length in range(min(len(normalized_text), len(actual)), 3, -1):
+            if actual.endswith(normalized_text[:length]):
+                return True
+        return False
 
     async def press_key(self, key: KeyCode | str | int) -> bool:
         key = key.value if isinstance(key, KeyCode) else str(key).lower()

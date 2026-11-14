@@ -90,17 +90,22 @@ async def reap_process(process: asyncio.subprocess.Process) -> None:
     await process.communicate()
 
 
-async def run_xcrun(*arguments: str, timeout: float = 30.0) -> bytes:
+async def run_xcrun(
+    *arguments: str, timeout: float = 30.0, stdin_data: bytes | None = None
+) -> bytes:
     """Run argv directly, reporting native errors and reaping cancelled children."""
     process = await asyncio.create_subprocess_exec(
         "xcrun",
         *arguments,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=(asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(stdin_data) if stdin_data is not None else process.communicate(),
+            timeout,
+        )
     except (TimeoutError, asyncio.CancelledError):
         await reap_process(process)
         raise

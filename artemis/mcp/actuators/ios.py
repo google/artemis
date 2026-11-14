@@ -14,9 +14,43 @@
 
 """Native iOS actuator sharing Artemis's normalized action contract."""
 
+import asyncio
+import logging
+import time
+import unicodedata
+
+from artemis.drivers.ios.hierarchy import focused_field_value
 from artemis.mcp.action_types import ActionCode, ActionResult
 from artemis.mcp.action_manifest import DEVICE_ACTIONS
 from artemis.mcp.actuators.adb import AdbActuator, ensure_focus_at_coords
+
+logger = logging.getLogger(__name__)
+
+_VERIFY_POLL_SECONDS = 1.0
+_VERIFY_TIMEOUT_SECONDS = 15.0
+
+
+async def _verify_field_value(controller, expected: str) -> bool:
+    """Re-read the focused field's value until it exactly matches ``expected``.
+
+    Comparison is on Unicode NFKC-normalized strings so composed/decomposed
+    forms of the same text verify identically. Success requires an exact
+    match; a placeholder or a partially-typed value never counts.
+    """
+    normalized = unicodedata.normalize("NFKC", expected)
+    deadline = time.monotonic() + _VERIFY_TIMEOUT_SECONDS
+    while True:
+        try:
+            elements = await controller.get_ui_elements()
+        except Exception as error:
+            logger.warning("iOS input verification read failed: %s", error)
+            elements = []
+        value = focused_field_value(elements or [])
+        if value is not None and unicodedata.normalize("NFKC", value) == normalized:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(_VERIFY_POLL_SECONDS)
 
 
 class IosActuator(AdbActuator):
@@ -43,6 +77,12 @@ class IosActuator(AdbActuator):
         success = await self.controller.type_text(text, clear_existing=False)
         if not success:
             return ActionResult.failure("input_text", "Failed to type text on the iOS device.")
+        if not await _verify_field_value(self.controller, text):
+            return ActionResult.failure(
+                "input_text",
+                "Typed text could not be verified: the focused field's value "
+                "did not match after 15 seconds (placeholder values never count).",
+            )
         note = (
             " (no whole-field clear on iOS; text was inserted without clearing)"
             if clear_exist
