@@ -513,3 +513,37 @@ async def test_build_report_does_not_swallow_cancellation():
 
     with pytest.raises(asyncio.CancelledError):
         await engine._build_report()
+
+
+@pytest.mark.asyncio
+async def test_llm_credentials_probe_fails_when_keys_do_not_match_configured_models(monkeypatch):
+    """A valid key for another provider must not read as "ready": tasks die within seconds."""
+    from artemis.config import settings
+
+    settings.set_api_key("anthropic", "sk-ant-test_key_1234567890", persist_to_env=False)
+    monkeypatch.setattr(
+        LLMCredentialsProbe,
+        "_config_provider_mismatch",
+        staticmethod(lambda: "Planner requires GOOGLE_API_KEY in .env"),
+    )
+
+    result = await LLMCredentialsProbe().probe()
+
+    assert result.status == ProbeStatus.FAIL
+    assert result.summary == "Key Does Not Match Config"
+    assert "Planner requires GOOGLE_API_KEY" in result.description
+    assert "Claude" in result.description  # names the keys that are configured
+
+
+@pytest.mark.asyncio
+async def test_llm_credentials_probe_passes_when_config_and_keys_agree(monkeypatch):
+    from artemis.config import settings
+
+    settings.set_api_key("anthropic", "sk-ant-test_key_1234567890", persist_to_env=False)
+    monkeypatch.setattr(
+        LLMCredentialsProbe, "_config_provider_mismatch", staticmethod(lambda: None)
+    )
+
+    result = await LLMCredentialsProbe().probe()
+
+    assert result.status == ProbeStatus.PASS

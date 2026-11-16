@@ -46,6 +46,17 @@ class LLMCredentialsProbe(BaseProbe):
             return f"{key_str[:6]}...{key_str[-4:]}"
         return "***"
 
+    @staticmethod
+    def _config_provider_mismatch() -> str | None:
+        """The first agent node whose configured provider lacks credentials, or ``None``."""
+        try:
+            from artemis.config.llm import get_default_llm_config
+
+            get_default_llm_config().validate_providers()
+        except Exception as exc:  # noqa: BLE001 - config loading has open-ended failure modes
+            return str(exc)
+        return None
+
     async def probe(self) -> ProbeResult:
         import os
 
@@ -161,6 +172,36 @@ class LLMCredentialsProbe(BaseProbe):
             "current_gemini_key": gemini_key.get_secret_value() if gemini_key else "",
             "api_keys": api_keys_map,
         }
+
+        # Keys exist, but do they match what the configured agent nodes will actually call? A task fails
+        # within seconds ("Planner requires GOOGLE_API_KEY") when config/artemis.jsonc names a provider
+        # whose key is missing, even though some other provider's key is valid.
+        mismatch = self._config_provider_mismatch() if configured_providers else None
+        if mismatch:
+            return ProbeResult(
+                id=self.probe_id,
+                category=self.category,
+                title="Multimodal LLM API Key",
+                status=ProbeStatus.FAIL,
+                is_blocker=self.is_blocker,
+                summary="Key Does Not Match Config",
+                description=(
+                    f"{mismatch} Configured keys: "
+                    f"{', '.join(p['label'] for p in configured_providers)}."
+                ),
+                metadata=metadata,
+                actions=[
+                    ProbeAction(
+                        action_type="hint",
+                        label="Align keys and models",
+                        payload=(
+                            "Add the missing provider key to .env, or point the 'default' block of "
+                            "config/artemis.jsonc (and any node that pins a model) at a provider you "
+                            "have a key for. Then restart the MCP server."
+                        ),
+                    )
+                ],
+            )
 
         # Case 1: Gemini API Key configured (Standard / Recommended)
         if gemini_key:
