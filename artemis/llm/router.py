@@ -291,9 +291,15 @@ class ModelFactory:
             base_url = endpoint.api_base or (
                 str(settings.OPENAI_BASE_URL) if settings.OPENAI_BASE_URL else None
             )
+            # Copilot's OpenAI-compatible reasoning models reject temperature.
+            temperature = (
+                None
+                if endpoint.model_name.strip().lower().startswith("copilot/")
+                else endpoint.temperature
+            )
             kwargs = {
                 "model": endpoint.model_name,
-                "temperature": endpoint.temperature,
+                "temperature": temperature,
                 "max_tokens": endpoint.max_tokens,
                 "api_key": api_key,
                 "base_url": base_url,

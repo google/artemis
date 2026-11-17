@@ -169,6 +169,7 @@ class GetLLM(Protocol):
         *,
         use_fallback: bool = False,
         temperature: float | None = None,
+        model_name: str | None = None,
     ) -> BaseChatModel: ...
 
     @overload
@@ -179,6 +180,7 @@ class GetLLM(Protocol):
         *,
         is_utils: Literal[True],
         temperature: float | None = None,
+        model_name: str | None = None,
     ) -> BaseChatModel: ...
 
     @overload
@@ -190,4 +192,5 @@ class GetLLM(Protocol):
         is_utils: Literal[True],
         use_fallback: bool = False,
         temperature: float | None = None,
+        model_name: str | None = None,
     ) -> BaseChatModel: ...

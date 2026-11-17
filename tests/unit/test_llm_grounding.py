@@ -14,6 +14,9 @@
 
 """Unit tests for ModelFactory instantiation and grounding tool wiring."""
 
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
 
 
@@ -41,6 +44,42 @@ def test_model_factory_openai_instantiation():
     model = ModelFactory.create_model(oai_ep)
     assert model.model_name == "o3-mini"
     assert getattr(model, "reasoning_effort", None) == "medium"
+
+
+def test_model_factory_copilot_model_omits_temperature():
+    """Copilot reasoning models reject the temperature parameter."""
+    endpoint = ModelEndpoint(
+        provider=ModelProvider.OPENAI,
+        model_name="copilot/gpt-6.1-sol",
+        api_key="sk-test-key",
+    )
+
+    model = ModelFactory.create_model(endpoint)
+
+    assert model.temperature is None
+
+
+def test_get_llm_model_override_preserves_configured_provider():
+    """An explicit model name changes the model but not its configured provider."""
+    from artemis.services.llm import get_llm
+
+    llm_config = SimpleNamespace(
+        get_agent=lambda _: SimpleNamespace(provider="openai", model="configured-model")
+    )
+    ctx = SimpleNamespace(llm_config=llm_config, data_engine=None)
+    model_name = "copilot/gpt-5.6-sol"
+
+    with (
+        patch("artemis.services.llm.ModelFactory.get_model", return_value=Mock()) as get_model,
+        patch("artemis.services.llm.DataEngineCallbackHandler"),
+        patch("artemis.services.llm.RobustChatModelWrapper", return_value=Mock()),
+    ):
+        get_llm(ctx, "summarizer", model_name=model_name, temperature=0.0)
+
+    endpoint = get_model.call_args.args[0]
+    assert endpoint.provider is ModelProvider.OPENAI
+    assert endpoint.model_name == model_name
+    assert endpoint.temperature == 0.0
 
 
 def test_robust_chat_model_wrapper_grounding_google():
