@@ -46,6 +46,19 @@ def test_model_factory_openai_instantiation():
     assert getattr(model, "reasoning_effort", None) == "medium"
 
 
+def test_model_factory_copilot_model_omits_temperature():
+    """Copilot reasoning models reject the temperature parameter."""
+    endpoint = ModelEndpoint(
+        provider=ModelProvider.OPENAI,
+        model_name="copilot/gpt-6.1-sol",
+        api_key="sk-test-key",
+    )
+
+    model = ModelFactory.create_model(endpoint)
+
+    assert model.temperature is None
+
+
 def test_get_llm_model_override_preserves_configured_provider():
     """An explicit model name changes the model but not its configured provider."""
     from artemis.services.llm import get_llm
