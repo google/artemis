@@ -7,12 +7,12 @@
   // 1. Global Default Model (Applied to all sub-agents unless overridden below)
   // ------------------------------------------------------------------------------
   "default": {
-    "provider": "google",
-    "model": "gemini-3.8-flash",
+    "provider": "openai",
+    "model": "copilot/gpt-6.1-sol",
     "thinking_level": "medium",
     "fallback": {
-      "provider": "google",
-      "model": "gemini-3.7-flash",
+      "provider": "openai",
+      "model": "copilot/gpt-6.1-terra",
       "thinking_level": "medium"
     }
   },
@@ -22,29 +22,29 @@
   // ------------------------------------------------------------------------------
   "presets": {
     "gemini-flagship": {
-      "provider": "google",
-      "model": "gemini-3.8-flash",
-      "fallback": { "provider": "google", "model": "gemini-3.7-flash" }
+      "provider": "openai",
+      "model": "copilot/gpt-6.1-sol",
+      "fallback": { "provider": "openai", "model": "copilot/gpt-6.1-terra" }
     },
     "gemini-flash": {
-      "provider": "google",
-      "model": "gemini-2.5-flash",
-      "fallback": { "provider": "google", "model": "gemini-2.0-flash" }
+      "provider": "openai",
+      "model": "copilot/gpt-6-sol",
+      "fallback": { "provider": "openai", "model": "copilot/gpt-6.1-terra" }
     },
     "openai-gpt4o": {
       "provider": "openai",
-      "model": "gpt-4o",
-      "fallback": { "provider": "openai", "model": "gpt-4o-mini" }
+      "model": "copilot/gpt-6.1-sol",
+      "fallback": { "provider": "openai", "model": "copilot/gpt-6-sol" }
     },
     "cost-saving": {
-      "provider": "google",
-      "model": "gemini-3.5-flash-lite",
-      "fallback": { "provider": "google", "model": "gemini-3.1-flash-lite" }
+      "provider": "openai",
+      "model": "copilot/gpt-5.6-sol",
+      "fallback": { "provider": "openai", "model": "copilot/gpt-5.6-terra" }
     },
     "local-ollama": {
       "provider": "openai",
-      "model": "llama3.2-vision",
-      "fallback": { "provider": "openai", "model": "llama3.2-vision" }
+      "model": "copilot/gpt-6.1-sol",
+      "fallback": { "provider": "openai", "model": "copilot/gpt-6.1-terra" }
     }
   },
 
@@ -71,14 +71,13 @@
     "video_analyzer": {},
 
     // 👁️ Object Detector & Explorer (Flash Mode): Visual coordinates grounding and bounding boxes
-    // CRITICAL REQUIREMENT: Standard LLMs (including standard Gemini Flash, GPT-4o, Claude 3.7) lack sub-pixel spatial coordinate fine-tuning.
-    // To achieve accurate [x, y] point and bounding box localization, this node MUST use specialized Gemini ER (Embodied Reasoning / Robotics) models:
-    // e.g., "gemini-robotics-er-2-preview". Non-ER models will fail spatial coordinate detection.
+    // This uses a Copilot model rather than a specialized Gemini ER model; coordinate localization may be less reliable.
     "object_detector": {
-      "model": "gemini-robotics-er-2-preview",
+      "provider": "openai",
+      "model": "copilot/gpt-6.1-sol",
       "fallback": {
-        "provider": "google",
-        "model": "gemini-robotics-er-2-preview"
+        "provider": "openai",
+        "model": "copilot/gpt-6.1-terra"
       }
     },
 
@@ -95,10 +94,11 @@
 
     // 🔽 Hopper: Fast lightweight package name locator
     "hopper": {
-      "model": "gemini-3.5-flash-lite",
+      "provider": "openai",
+      "model": "copilot/gpt-5.6-sol",
       "fallback": {
-        "provider": "google",
-        "model": "gemini-3.1-flash-lite"
+        "provider": "openai",
+        "model": "copilot/gpt-5.6-terra"
       }
     },
 
@@ -125,7 +125,7 @@
     }
     // 🎯 Planner Validation: Advisory review of milestone changes.
     // Defaults to the same lightweight model as the pixel safety net
-    // (gemini-3.5-flash-lite, temperature 0); add "planner_validation": {...} here to override.
+    // (copilot/gpt-5.6-sol, temperature 0); add "planner_validation": {...} here to override.
   },
 
   // ------------------------------------------------------------------------------
@@ -145,7 +145,7 @@
       // replacing images only after strictly objective, high-density summaries are ready.
       "step_summarizer": {
         "enabled": true, // Whether background step summarization is active
-        "model": "gemini-3.5-flash-lite", // Lightweight model for fast background inference
+        "model": "copilot/gpt-5.6-sol", // Lightweight model for fast background inference
         "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
       }
     },
@@ -246,7 +246,7 @@
         // call each); milestone closes are exempt, the hard line waives it.
         "min_steps": 3,
         "target_source_tokens": 2000,
-        "model": "gemini-3.8-flash",
+        "model": "copilot/gpt-6.1-sol",
         "max_chunks": 8
         // "max_eras": 8 // independent era cap; omitted = follows max_chunks
       },
