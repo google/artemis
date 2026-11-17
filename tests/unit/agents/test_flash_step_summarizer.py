@@ -14,7 +14,7 @@
 
 """Unit tests for VisualStepSummarizer and Context Compressor in Flash profile."""
 
-from unittest.mock import ANY, AsyncMock, Mock, call
+from unittest.mock import ANY, AsyncMock, Mock, call, patch
 from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -36,6 +36,23 @@ def mock_context():
     ctx = Mock(spec=ArtemisContext)
     ctx.data_engine = None
     return ctx
+
+
+def test_explicit_summarizer_model_uses_configured_provider(mock_context):
+    """A model override must not force the Google provider."""
+    llm = Mock()
+    model_name = "copilot/gpt-5.6-sol"
+
+    with patch("artemis.agents.flash.summarizer.get_llm", return_value=llm) as get_llm:
+        summarizer = VisualStepSummarizer(mock_context, model_name=model_name)
+
+    get_llm.assert_called_once_with(
+        mock_context,
+        name="summarizer",
+        model_name=model_name,
+        temperature=0.0,
+    )
+    assert summarizer._llm is llm
 
 
 @pytest.mark.asyncio

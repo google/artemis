@@ -945,11 +945,17 @@ def _get_llm(
     is_utils: bool = False,
     use_fallback: bool = False,
     temperature: float | None = None,
+    model_name: str | None = None,
 ) -> BaseChatModel:
     """Resolves and instantiates the appropriate LLM wrapper for the given agent role."""
     endpoint = _resolve_endpoint(ctx, name, is_utils=is_utils, use_fallback=use_fallback)
+    updates: dict[str, Any] = {}
     if temperature is not None:
-        endpoint = endpoint.model_copy(update={"temperature": temperature})
+        updates["temperature"] = temperature
+    if model_name is not None:
+        updates["model_name"] = model_name
+    if updates:
+        endpoint = endpoint.model_copy(update=updates)
     raw_model = ModelFactory.get_model(endpoint)
 
     handler = DataEngineCallbackHandler(ctx)
