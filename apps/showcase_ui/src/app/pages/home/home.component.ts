@@ -98,7 +98,9 @@ export interface TuningSliderVm {
 export type { AppReference, SmartSuggestion, SuggestionCategory };
 
 type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
+type ModelSetupMode = 'gemini' | 'custom';
 
+const MODEL_SETUP_MODE_STORAGE_KEY = 'artemis_model_setup_mode';
 
 @Component({
   selector: 'app-home',
@@ -121,8 +123,8 @@ export class HomeComponent implements OnInit, OnDestroy {
   public activeAdbGuideTab = signal<AdbGuideTab>('emulator');
   public emulatorSetupMode = signal<'studio' | 'cli'>('studio');
 
-  // Interactive guide tab for LLM / OCR credentials: 'gemini' | 'ocr'
-  public modelSetupMode = signal<'gemini' | 'custom'>('gemini');
+  // Interactive guide tab for LLM credentials: 'gemini' | 'custom'
+  public modelSetupMode = signal<ModelSetupMode>('gemini');
   public showOcrConfig = signal<boolean>(false);
   public showFullConfigFile = signal<boolean>(false);
 
@@ -536,6 +538,9 @@ export class HomeComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    const savedMode = this.getSavedModelSetupMode();
+    this.modelSetupMode.set(savedMode);
+    this.systemService.setSkipCredentialsCheck(savedMode === 'custom');
 
     this.loadProTuningDefaults();
     // Initial fetch of system readiness & model configuration
@@ -581,13 +586,36 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.emulatorSetupMode.set(mode);
   }
 
-  public setModelSetupMode(mode: 'gemini' | 'custom'): void {
+  public setModelSetupMode(mode: ModelSetupMode): void {
     this.modelSetupMode.set(mode);
+    this.saveModelSetupMode(mode);
     if (mode === 'custom') {
       this.systemService.setSkipCredentialsCheck(true);
       this.systemService.fetchModelConfigEnv().subscribe();
     } else {
       this.systemService.setSkipCredentialsCheck(false);
+    }
+  }
+
+  private getSavedModelSetupMode(): ModelSetupMode {
+    if (typeof localStorage === 'undefined') {
+      return 'gemini';
+    }
+    try {
+      return localStorage.getItem(MODEL_SETUP_MODE_STORAGE_KEY) === 'custom' ? 'custom' : 'gemini';
+    } catch {
+      return 'gemini';
+    }
+  }
+
+  private saveModelSetupMode(mode: ModelSetupMode): void {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+    try {
+      localStorage.setItem(MODEL_SETUP_MODE_STORAGE_KEY, mode);
+    } catch {
+      // Keep the in-memory selection if browser storage is unavailable.
     }
   }
 
